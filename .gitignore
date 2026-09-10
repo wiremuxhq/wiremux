@@ -1,4 +1,5 @@
 /target/
+/DESIGN.md
 **/*.rs.bk
 .DS_Store
 .idea/
