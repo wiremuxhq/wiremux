@@ -172,11 +172,13 @@ pub(crate) async fn read_oauth_body(mut resp: reqwest::Response) -> Result<Strin
         )));
     }
     let mut buf = Vec::new();
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| AuthError::TokenProvider(format!("failed to read OAuth response body: {e}")))?
-    {
+    while let Some(chunk) = resp.chunk().await.map_err(|e| {
+        AuthError::TokenProvider(format_oauth_transport_error(
+            "failed to read OAuth response body",
+            &e,
+            resp.url().as_str(),
+        ))
+    })? {
         append_oauth_body_chunk(&mut buf, &chunk)?;
     }
     Ok(String::from_utf8_lossy(&buf).into_owned())
@@ -224,6 +226,27 @@ pub fn sanitize_oauth_error_text(text: &str) -> String {
         summary = summary.chars().take(MAX_CHARS).collect();
     }
     summary
+}
+
+/// Short reason plus origin only. Never format a raw `reqwest` error.
+pub fn format_oauth_transport_error(context: &str, err: &reqwest::Error, url: &str) -> String {
+    format_oauth_transport_via(context, oauth_transport_reason(err), url)
+}
+
+pub(crate) fn format_oauth_transport_via(context: &str, reason: &str, url: &str) -> String {
+    format!("{context} ({reason}) via {}", redact_url_origin(url))
+}
+
+fn oauth_transport_reason(err: &reqwest::Error) -> &'static str {
+    if err.is_timeout() {
+        "timeout"
+    } else if err.is_connect() {
+        "connect"
+    } else if err.is_request() {
+        "request"
+    } else {
+        "transport"
+    }
 }
 
 pub(crate) fn format_oauth_http_error(
@@ -626,6 +649,24 @@ mod tests {
         assert!(!redacted.contains("s3cret"));
         assert!(!redacted.contains("supersecret"));
         assert!(!redacted.contains("/oauth"));
+    }
+
+    #[test]
+    fn format_oauth_transport_error_redacts_userinfo_and_client_secret() {
+        let msg = format_oauth_transport_via(
+            "auth code exchange failed",
+            "connect",
+            "https://user:s3cret@auth.example.invalid/oauth/token?client_secret=supersecret",
+        );
+        assert!(
+            msg.contains("via https://auth.example.invalid"),
+            "transport error must name the redacted origin, got {msg}"
+        );
+        assert!(!msg.contains("s3cret"), "{msg}");
+        assert!(!msg.contains("client_secret="), "{msg}");
+        assert!(!msg.contains("supersecret"), "{msg}");
+        assert!(!msg.contains("user:"), "{msg}");
+        assert!(!msg.contains("/oauth"), "{msg}");
     }
 
     #[test]

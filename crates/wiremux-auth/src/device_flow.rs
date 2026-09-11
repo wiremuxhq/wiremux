@@ -6,7 +6,9 @@ use serde::Deserialize;
 
 use crate::error::AuthError;
 use crate::exchange::TokenExchangeResponse;
-use crate::helpers::{format_oauth_http_error, oauth_http_client, read_oauth_body};
+use crate::helpers::{
+    format_oauth_http_error, format_oauth_transport_error, oauth_http_client, read_oauth_body,
+};
 use crate::profile::OauthPack;
 
 /// Response from the device authorization endpoint.
@@ -127,7 +129,11 @@ pub async fn start_device_flow(
     }
 
     let resp = req.send().await.map_err(|e| {
-        AuthError::TokenProvider(format!("device authorization request failed: {e}"))
+        AuthError::TokenProvider(format_oauth_transport_error(
+            "device authorization request failed",
+            &e,
+            device_auth_url,
+        ))
     })?;
 
     if !resp.status().is_success() {
@@ -182,10 +188,13 @@ pub async fn poll_device_token(
             }
         }
 
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| AuthError::TokenProvider(format!("device token poll failed: {e}")))?;
+        let resp = req.send().await.map_err(|e| {
+            AuthError::TokenProvider(format_oauth_transport_error(
+                "device token poll failed",
+                &e,
+                token_url,
+            ))
+        })?;
 
         let status = resp.status();
         let body = read_oauth_body(resp).await?;

@@ -3,7 +3,10 @@
 use std::collections::BTreeMap;
 
 use crate::error::AuthError;
-use crate::helpers::{format_oauth_http_error, oauth_http_client, percent_encode, read_oauth_body};
+use crate::helpers::{
+    format_oauth_http_error, format_oauth_transport_error, oauth_http_client, percent_encode,
+    read_oauth_body,
+};
 use crate::profile::OauthPack;
 
 pub use crate::exchange::TokenExchangeResponse;
@@ -143,7 +146,13 @@ pub async fn exchange_auth_code(
         ])
         .send()
         .await
-        .map_err(|e| AuthError::TokenProvider(format!("auth code exchange failed: {e}")))?;
+        .map_err(|e| {
+            AuthError::TokenProvider(format_oauth_transport_error(
+                "auth code exchange failed",
+                &e,
+                token_url,
+            ))
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -325,5 +334,30 @@ mod tests {
         let debug = format!("{resp:?}");
         assert!(!debug.contains("sk-secret"));
         assert!(!debug.contains("rt-secret"));
+    }
+
+    #[tokio::test]
+    async fn exchange_transport_error_redacts_userinfo_and_secret() {
+        let url = "https://user:s3cret@127.0.0.1:1/oauth/token?client_secret=supersecret";
+        let err = exchange_auth_code(url, "cid", "code", "http://127.0.0.1/cb", "ver")
+            .await
+            .expect_err("closed port must fail");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("client_secret="),
+            "transport error leaked query: {msg}"
+        );
+        assert!(
+            !msg.contains("s3cret"),
+            "transport error leaked userinfo: {msg}"
+        );
+        assert!(
+            !msg.contains("supersecret"),
+            "transport error leaked secret: {msg}"
+        );
+        assert!(
+            !msg.contains("user:"),
+            "transport error leaked userinfo: {msg}"
+        );
     }
 }

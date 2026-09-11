@@ -14,9 +14,9 @@ use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
     AUTH_LOCK_TIMEOUT, InFlight, cached_token_on_lock_failure, duration_from_expires_in_secs,
-    expand_tilde, format_oauth_http_error, is_token_rotation_error, jail_creds_path,
-    lead_or_follow, oauth_http_client, parse_rfc3339, read_oauth_body, redact_url_origin,
-    remaining_from_system_time, resolve_creds_path, sanitize_oauth_error_body,
+    expand_tilde, format_oauth_http_error, format_oauth_transport_error, is_token_rotation_error,
+    jail_creds_path, lead_or_follow, oauth_http_client, parse_rfc3339, read_oauth_body,
+    redact_url_origin, remaining_from_system_time, resolve_creds_path, sanitize_oauth_error_body,
     try_acquire_refresh_lock,
 };
 use crate::keychain_guard::keychain_disabled;
@@ -126,8 +126,16 @@ struct Inner {
 impl std::fmt::Debug for ProfileTokenProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProfileTokenProvider")
-            .field("token_url", &self.inner.oauth.token_url)
-            .field("token_url_fallback", &self.inner.oauth.token_url_fallback)
+            .field("token_url", &redact_url_origin(&self.inner.oauth.token_url))
+            .field(
+                "token_url_fallback",
+                &self
+                    .inner
+                    .oauth
+                    .token_url_fallback
+                    .as_deref()
+                    .map(redact_url_origin),
+            )
             .field("write_back", &self.inner.write_back)
             .finish()
     }
@@ -596,9 +604,13 @@ async fn token_post(
         TokenRequestFormat::Json => req.json(body),
         TokenRequestFormat::Form => req.form(body),
     };
-    req.send()
-        .await
-        .map_err(|e| AuthError::TokenProvider(format!("token refresh request failed: {e}")))
+    req.send().await.map_err(|e| {
+        AuthError::TokenProvider(format_oauth_transport_error(
+            "token refresh request failed",
+            &e,
+            url,
+        ))
+    })
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -624,9 +636,13 @@ async fn token_post_non_https(
         TokenRequestFormat::Json => req.json(body),
         TokenRequestFormat::Form => req.form(body),
     };
-    req.send()
-        .await
-        .map_err(|e| AuthError::TokenProvider(format!("token refresh request failed: {e}")))
+    req.send().await.map_err(|e| {
+        AuthError::TokenProvider(format_oauth_transport_error(
+            "token refresh request failed",
+            &e,
+            url,
+        ))
+    })
 }
 
 #[cfg(not(any(test, feature = "test-util")))]
@@ -2190,5 +2206,34 @@ access_env = "WIREMUX_TEST_ACCESS"
         let debug = format!("{p:?}");
         assert!(!debug.contains("sk-ant-oat01-secret"));
         assert!(!debug.contains("rt-secret"));
+    }
+
+    #[test]
+    fn debug_redacts_token_url_userinfo_and_query() {
+        let home = IsolatedHome::new();
+        home.plant_credentials(PlantCredentials::Claude {
+            access: "sk-ant-oat01-secret",
+            refresh: Some("rt-secret"),
+            expires_at_ms: None,
+        });
+        let leaky =
+            "https://user:s3cret@auth.example.invalid/oauth/token?client_secret=supersecret";
+        let oauth = pack_from_toml(&claude_toml(leaky, Some(leaky)));
+        let p = provider(&oauth);
+        let debug = format!("{p:?}");
+        assert!(!debug.contains("s3cret"), "Debug leaked userinfo: {debug}");
+        assert!(
+            !debug.contains("client_secret="),
+            "Debug leaked query: {debug}"
+        );
+        assert!(
+            !debug.contains("supersecret"),
+            "Debug leaked secret: {debug}"
+        );
+        assert!(!debug.contains("/oauth"), "Debug leaked path: {debug}");
+        assert!(
+            debug.contains("https://auth.example.invalid"),
+            "Debug must keep redacted origin: {debug}"
+        );
     }
 }
