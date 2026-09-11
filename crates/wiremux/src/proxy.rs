@@ -20,7 +20,7 @@ use serde_json::Value;
 use crate::cli::{parse_listen, proxy_token, upstream_url_for_model};
 use crate::ir::{IrStreamEvent, LossReport};
 use crate::map::{decode, encode};
-use crate::stream::{RawSse, SseFrameReader, decode_stream_event, encode_stream_event};
+use crate::stream::{RawSse, SseFrameReader, decode_stream_events, encode_stream_event};
 
 type ProxyBody = UnsyncBoxBody<Bytes, Infallible>;
 
@@ -421,27 +421,30 @@ async fn push_mapped_frames(
     frames: Vec<RawSse>,
 ) -> bool {
     for raw in frames {
-        match decode_stream_event(target, &raw, &state.profile) {
-            Ok(Some(ev)) => match encode_stream_event(state.from, &ev) {
-                Ok(mapped) => {
-                    if tx
-                        .send(Ok(Frame::data(Bytes::from(format_sse(&mapped)))))
-                        .await
-                        .is_err()
-                    {
-                        return false;
+        match decode_stream_events(target, &raw, &state.profile) {
+            Ok(events) => {
+                for ev in events {
+                    match encode_stream_event(state.from, &ev) {
+                        Ok(mapped) => {
+                            if tx
+                                .send(Ok(Frame::data(Bytes::from(format_sse(&mapped)))))
+                                .await
+                                .is_err()
+                            {
+                                return false;
+                            }
+                        }
+                        Err(err) => {
+                            let _ = tx
+                                .send(Ok(Frame::data(Bytes::from(format!(
+                                    "encode stream: {err}\n"
+                                )))))
+                                .await;
+                            return false;
+                        }
                     }
                 }
-                Err(err) => {
-                    let _ = tx
-                        .send(Ok(Frame::data(Bytes::from(format!(
-                            "encode stream: {err}\n"
-                        )))))
-                        .await;
-                    return false;
-                }
-            },
-            Ok(None) => {}
+            }
             Err(err) => {
                 let _ = tx
                     .send(Ok(Frame::data(Bytes::from(format!(
