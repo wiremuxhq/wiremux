@@ -85,6 +85,8 @@ pub enum Wire {
     Messages,
     /// OpenAI Responses.
     Responses,
+    /// Google Gemini generateContent.
+    Gemini,
 }
 
 impl Wire {
@@ -115,6 +117,7 @@ impl Wire {
                 "response.failed",
                 "response.incomplete",
             ],
+            Self::Gemini => &["chunk"],
         }
     }
 
@@ -125,6 +128,7 @@ impl Wire {
             Self::ChatCompletions => "/v1/chat/completions",
             Self::Messages => "/v1/messages",
             Self::Responses => "/v1/responses",
+            Self::Gemini => "/v1beta/models/{model}:generateContent",
         }
     }
 
@@ -133,7 +137,7 @@ impl Wire {
     pub fn default_auth_scheme(self) -> AuthScheme {
         match self {
             Self::Messages => AuthScheme::XApiKey,
-            Self::ChatCompletions | Self::Responses => AuthScheme::Bearer,
+            Self::ChatCompletions | Self::Responses | Self::Gemini => AuthScheme::Bearer,
         }
     }
 }
