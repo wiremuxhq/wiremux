@@ -158,7 +158,9 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     );
 
     if content_type.contains("text/event-stream") {
-        return map_sse(&state, target, &body);
+        // Thin proxy buffers the upstream SSE then remaps. Forward status
+        // so a 4xx/5xx stream is not rewritten as 200.
+        return map_sse(&state, target, status_from_reqwest(status), &body);
     }
     if target == state.from {
         return bytes_response(status_from_reqwest(status), &content_type, body);
@@ -213,7 +215,12 @@ fn apply_profile_headers(
     req
 }
 
-fn map_sse(state: &ProxyState, target: Wire, body: &Bytes) -> Response<Full<Bytes>> {
+fn map_sse(
+    state: &ProxyState,
+    target: Wire,
+    status: StatusCode,
+    body: &Bytes,
+) -> Response<Full<Bytes>> {
     let payload = String::from_utf8_lossy(body);
     let frames = RawSse::parse_all(&payload);
     let mut out = String::new();
@@ -231,7 +238,7 @@ fn map_sse(state: &ProxyState, target: Wire, body: &Bytes) -> Response<Full<Byte
             }
         }
     }
-    bytes_response(StatusCode::OK, "text/event-stream", Bytes::from(out))
+    bytes_response(status, "text/event-stream", Bytes::from(out))
 }
 
 fn format_sse(raw: &RawSse) -> String {

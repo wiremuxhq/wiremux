@@ -74,10 +74,10 @@ pub fn redact_secret_url(raw: &str) -> String {
         Some((scheme, rest)) => (Some(scheme), rest),
         None => (None, raw),
     };
-    let (authority, path_query) = match rest.split_once('/') {
-        Some((auth, path)) => (auth, Some(path)),
-        None => (rest, None),
-    };
+    // Split host from path, query, or fragment. `https://host?key=s` has no `/`.
+    let cut = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..cut];
+    let tail = &rest[cut..];
     let authority = if let Some(at) = authority.find('@') {
         format!("[redacted]@{}", &authority[at + 1..])
     } else {
@@ -87,32 +87,35 @@ pub fn redact_secret_url(raw: &str) -> String {
         Some(scheme) => format!("{scheme}://{authority}"),
         None => authority,
     };
-    if let Some(path) = path_query {
+    let (path, query, frag) = split_url_tail(tail);
+    if let Some(path) = path {
         out.push('/');
-        let (path, query) = match path.split_once('?') {
-            Some((p, q)) => (p, Some(q)),
-            None => (path, None),
-        };
-        let (path, frag) = match path.split_once('#') {
-            Some((p, f)) => (p, Some(f)),
-            None => (path, None),
-        };
         out.push_str(path);
-        if let Some(query) = query {
-            let (query, qfrag) = match query.split_once('#') {
-                Some((q, f)) => (q, Some(f)),
-                None => (query, None),
-            };
-            out.push('?');
-            out.push_str(&redact_query(query));
-            if qfrag.is_some() {
-                out.push_str("#[redacted]");
-            }
-        } else if frag.is_some() {
-            out.push_str("#[redacted]");
-        }
+    }
+    if let Some(query) = query {
+        out.push('?');
+        out.push_str(&redact_query(query));
+    }
+    if frag.is_some() {
+        out.push_str("#[redacted]");
     }
     redact_secret_looking(&out)
+}
+
+fn split_url_tail(tail: &str) -> (Option<&str>, Option<&str>, Option<&str>) {
+    if tail.is_empty() {
+        return (None, None, None);
+    }
+    let (before_hash, frag) = match tail.split_once('#') {
+        Some((before, frag)) => (before, Some(frag)),
+        None => (tail, None),
+    };
+    let (before_query, query) = match before_hash.split_once('?') {
+        Some((before, query)) => (before, Some(query)),
+        None => (before_hash, None),
+    };
+    let path = before_query.strip_prefix('/');
+    (path, query, frag)
 }
 
 fn redact_query(query: &str) -> String {
@@ -586,6 +589,24 @@ mod tests {
         assert!(redacted.contains("[redacted]"));
         assert!(redacted.contains("https://"));
         assert!(redacted.contains("api.example.invalid/v1"));
+    }
+
+    #[test]
+    fn redact_url_query_and_fragment_without_path() {
+        let query_only = redact_secret_url("https://auth.example.invalid?api_key=supersecret");
+        assert!(
+            !query_only.contains("supersecret"),
+            "query leaked: {query_only}"
+        );
+        assert!(query_only.contains("https://auth.example.invalid"));
+        assert!(query_only.contains("api_key=[redacted]"), "{query_only}");
+
+        let frag_only = redact_secret_url("https://auth.example.invalid#token=s3cret");
+        assert!(
+            !frag_only.contains("s3cret"),
+            "fragment leaked: {frag_only}"
+        );
+        assert!(frag_only.ends_with("#[redacted]"), "{frag_only}");
     }
 
     fn shipped(id: &str) -> ResolvedProfile {
