@@ -1,5 +1,6 @@
 //! Dialect maps. Not ready.
 
+#[cfg(feature = "cli")]
 pub mod cli;
 pub mod ir;
 pub mod map;
