@@ -165,6 +165,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         return map_sse(&state, target, status_from_reqwest(status), &body);
     }
     if ir.sampling.stream == Some(true)
+        && status.is_success()
         && let Some(sse) = json_completion_to_sse(state.from, &body)
     {
         return bytes_response(status_from_reqwest(status), "text/event-stream", sse);
@@ -182,20 +183,73 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
 /// ignored `stream: true` and returned a JSON completion.
 fn json_completion_to_sse(from: Wire, body: &Bytes) -> Option<Bytes> {
     let value: Value = serde_json::from_slice(body).ok()?;
-    let text = assistant_text(from, &value)?;
+    let tools = chat_tool_calls(&value);
+    let text = assistant_text(from, &value);
+    if tools.is_empty() && text.is_none() {
+        return None;
+    }
+    let mut events = Vec::new();
+    if let Some(text) = text {
+        events.push(IrStreamEvent::TextDelta { text });
+    }
+    for (id, name, args) in tools {
+        events.push(IrStreamEvent::ToolCallStart { id, name });
+        if !args.is_empty() {
+            events.push(IrStreamEvent::ToolCallArgDelta { delta: args });
+        }
+        events.push(IrStreamEvent::ToolCallEnd);
+    }
+    let reason = if events
+        .iter()
+        .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. }))
+    {
+        "tool_calls"
+    } else {
+        "stop"
+    };
+    events.push(IrStreamEvent::FinishReason {
+        reason: reason.into(),
+    });
+    events.push(IrStreamEvent::Done);
     let mut out = String::new();
-    let events = [
-        IrStreamEvent::TextDelta { text },
-        IrStreamEvent::FinishReason {
-            reason: "stop".into(),
-        },
-        IrStreamEvent::Done,
-    ];
     for ev in events {
         let raw = encode_stream_event(from, &ev).ok()?;
         out.push_str(&format_sse(&raw));
     }
     Some(Bytes::from(out))
+}
+
+fn chat_tool_calls(value: &Value) -> Vec<(String, String, String)> {
+    let Some(calls) = value
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    calls
+        .iter()
+        .filter_map(|call| {
+            let func = call.get("function").unwrap_or(call);
+            let name = func
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())?;
+            let id = call
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let args = func
+                .get("arguments")
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| v.to_string())
+                })
+                .unwrap_or_default();
+            Some((id, name.to_owned(), args))
+        })
+        .collect()
 }
 
 fn assistant_text(wire: Wire, value: &Value) -> Option<String> {
