@@ -25,8 +25,8 @@ use crate::profile::{
 #[cfg(target_os = "macos")]
 use crate::writeback::apply_tokens;
 use crate::writeback::{
-    TokenWrite, json_string, json_u64, oidc_store_pointers, pointer_get, read_creds_string,
-    write_tokens,
+    TokenWrite, copilot_store_pointers, json_string, json_u64, oidc_store_pointers, pointer_get,
+    read_creds_string, write_tokens,
 };
 
 const DEFAULT_LIFETIME_SECS: u64 = 3600;
@@ -831,6 +831,14 @@ fn resolve_layout(oauth: &OauthPack, doc: Option<&Value>) -> Result<StoreLayout,
             expires_unit: oauth.expires_unit.unwrap_or(ExpiresUnit::S),
         });
     }
+    if let Some((access, refresh)) = copilot_store_pointers(oauth, doc)? {
+        return Ok(StoreLayout {
+            access_ptr: access,
+            refresh_ptr: refresh,
+            expires_ptr: None,
+            expires_unit: oauth.expires_unit.unwrap_or(ExpiresUnit::S),
+        });
+    }
     // Env-only / no store: pointers unused until write-back (which is None).
     Ok(StoreLayout {
         access_ptr: "/access_token".into(),
@@ -1556,6 +1564,57 @@ expires_unit = "s"
         assert!(
             !msg.contains("must-not-guess"),
             "must not leak a guessed token: {msg}"
+        );
+    }
+
+    fn copilot_toml(creds: &std::path::Path) -> String {
+        let creds = creds.to_string_lossy().replace('\\', "/");
+        format!(
+            r#"
+schema_version = 1
+id = "gist-copilot"
+[oauth]
+token_url = "https://github.com/login/oauth/access_token"
+creds_format = "copilot-hosts"
+creds_path = "{creds}"
+login = "none"
+"#
+        )
+    }
+
+    #[tokio::test]
+    async fn copilot_hosts_reads_oauth_token() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/github-copilot/hosts.json",
+            document: serde_json::json!({
+                "github.com": { "oauth_token": "ghu_from_hosts" },
+                "other": { "oauth_token": "" }
+            }),
+        });
+        let oauth = pack_from_toml(&copilot_toml(&path));
+        let p = provider(&oauth);
+        assert_eq!(
+            p.get_token().await.expect("copilot token"),
+            "ghu_from_hosts"
+        );
+    }
+
+    #[tokio::test]
+    async fn copilot_hosts_empty_token_fails_closed() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/github-copilot/hosts.json",
+            document: serde_json::json!({
+                "github.com": { "user": "x" }
+            }),
+        });
+        let oauth = pack_from_toml(&copilot_toml(&path));
+        let err = provider_from_oauth(&oauth).expect_err("missing oauth_token");
+        assert!(
+            err.to_string().contains("empty access token")
+                || err.to_string().contains("credentials"),
+            "{err}"
         );
     }
 

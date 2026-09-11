@@ -109,6 +109,87 @@ pub(crate) fn oidc_store_pointers(
     )))
 }
 
+/// Access pointer for `creds_format = "copilot-hosts"`.
+pub(crate) fn copilot_store_pointers(
+    oauth: &OauthPack,
+    doc: Option<&Value>,
+) -> Result<Option<(String, Option<String>)>, AuthError> {
+    if oauth.creds_format != Some(CredsFormat::CopilotHosts) {
+        return Ok(None);
+    }
+    if oauth.access_token_ptr.is_some() {
+        return Ok(None);
+    }
+    let host = select_copilot_host(doc);
+    let escaped = escape_pointer_token(&host);
+    let refresh = oauth.refresh_token_ptr.clone().or_else(|| {
+        let ptr = format!("/{escaped}/refresh_token");
+        doc.and_then(|d| pointer_get(d, &ptr))
+            .and_then(json_string)
+            .map(|_| ptr)
+    });
+    Ok(Some((format!("/{escaped}/oauth_token"), refresh)))
+}
+
+struct PersistPtrs {
+    access: String,
+    refresh: Option<String>,
+    expires: Option<String>,
+    expires_rfc3339: bool,
+}
+
+fn persist_store_pointers(
+    oauth: &OauthPack,
+    doc: Option<&Value>,
+) -> Result<PersistPtrs, AuthError> {
+    if let Some((access, refresh, expires)) = oidc_store_pointers(oauth, doc)? {
+        return Ok(PersistPtrs {
+            access,
+            refresh: Some(refresh),
+            expires: Some(expires),
+            expires_rfc3339: true,
+        });
+    }
+    if let Some((access, refresh)) = copilot_store_pointers(oauth, doc)? {
+        return Ok(PersistPtrs {
+            access,
+            refresh,
+            expires: None,
+            expires_rfc3339: false,
+        });
+    }
+    Ok(PersistPtrs {
+        access: oauth
+            .access_token_ptr
+            .clone()
+            .unwrap_or_else(|| "/access_token".into()),
+        refresh: oauth
+            .refresh_token_ptr
+            .clone()
+            .or_else(|| Some("/refresh_token".into())),
+        expires: oauth
+            .expires_ptr
+            .clone()
+            .or_else(|| Some("/expires_in".into())),
+        expires_rfc3339: false,
+    })
+}
+
+fn select_copilot_host(doc: Option<&Value>) -> String {
+    let Some(obj) = doc.and_then(Value::as_object) else {
+        return "github.com".into();
+    };
+    obj.iter()
+        .find_map(|(key, entry)| {
+            entry
+                .get("oauth_token")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(|_| key.clone())
+        })
+        .unwrap_or_else(|| "github.com".into())
+}
+
 /// Persist tokens from a login exchange.
 ///
 /// Creates the credential file when missing. Refuses to invent a Claude
@@ -137,40 +218,16 @@ pub async fn persist_login_tokens(
     } else {
         None
     };
-    let oidc = oidc_store_pointers(oauth, existing.as_ref())?;
-    let access_owned;
-    let refresh_owned;
-    let expires_owned;
-    let (access_ptr, refresh_ptr, expires_ptr, expires_rfc3339) = if let Some(ptrs) = oidc {
-        access_owned = ptrs.0;
-        refresh_owned = ptrs.1;
-        expires_owned = ptrs.2;
-        (
-            access_owned.as_str(),
-            Some(refresh_owned.as_str()),
-            Some(expires_owned.as_str()),
-            true,
-        )
-    } else {
-        (
-            oauth.access_token_ptr.as_deref().unwrap_or("/access_token"),
-            oauth
-                .refresh_token_ptr
-                .as_deref()
-                .or(Some("/refresh_token")),
-            oauth.expires_ptr.as_deref().or(Some("/expires_in")),
-            false,
-        )
-    };
+    let ptrs = persist_store_pointers(oauth, existing.as_ref())?;
     let write = TokenWrite {
-        access_ptr,
-        refresh_ptr,
-        expires_ptr,
+        access_ptr: &ptrs.access,
+        refresh_ptr: ptrs.refresh.as_deref(),
+        expires_ptr: ptrs.expires.as_deref(),
         expires_unit: oauth.expires_unit.unwrap_or(ExpiresUnit::S),
         access_token: &tokens.access_token,
         refresh_token: tokens.refresh_token.as_deref(),
         expires_in_secs: tokens.expires_in.unwrap_or(3600),
-        expires_rfc3339,
+        expires_rfc3339: ptrs.expires_rfc3339,
     };
     if path.is_file() {
         return write_tokens(&path, &write).await;
@@ -748,5 +805,39 @@ login = "none"
             doc.get("access_token").is_none(),
             "must not use root /access_token"
         );
+    }
+
+    #[tokio::test]
+    async fn persist_login_tokens_writes_copilot_hosts_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts.json");
+        let oauth = crate::parse_profile_str(&format!(
+            r#"
+schema_version = 1
+id = "gist-copilot"
+[oauth]
+token_url = "https://github.com/login/oauth/access_token"
+creds_format = "copilot-hosts"
+creds_path = "{}"
+login = "none"
+"#,
+            path.display().to_string().replace('\\', "/")
+        ))
+        .unwrap()
+        .oauth
+        .unwrap();
+        let tokens = TokenExchangeResponse {
+            access_token: "ghu_new".into(),
+            refresh_token: None,
+            expires_in: Some(3600),
+            token_type: None,
+            scope: None,
+        };
+        persist_login_tokens(&oauth, &tokens)
+            .await
+            .expect("persist copilot");
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["github.com"]["oauth_token"].as_str(), Some("ghu_new"));
+        assert!(doc.get("access_token").is_none());
     }
 }

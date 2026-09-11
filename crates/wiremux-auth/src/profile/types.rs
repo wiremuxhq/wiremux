@@ -358,7 +358,11 @@ pub enum CredsFormat {
     /// else `token_url`. A `{issuer}::{client_id}@{name}` suffix matches
     /// when the exact key is absent.
     OidcAuthJson,
-    /// GitHub Copilot hosts.json layout.
+    /// GitHub Copilot `hosts.json` / `apps.json` layout.
+    ///
+    /// Pointer: `/{host}/oauth_token` (first object that has a non-empty
+    /// token; default host `github.com`). GitHub Copilot product terms
+    /// apply to the token. This crate does not ship a Copilot preset.
     CopilotHosts,
 }
 
