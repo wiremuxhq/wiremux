@@ -1,0 +1,9 @@
+schema_version = 1
+id = "grok-ollama"
+display_name = "Grok-shaped Chat Completions to local Ollama"
+wire = "chat-completions"
+tool_type_policy = "hard-error"
+stream_unknown_policy = "passthrough"
+base_url = "http://localhost:11434"
+chat_path = "/v1/chat/completions"
+auth_scheme = "none"
