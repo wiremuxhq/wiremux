@@ -246,7 +246,7 @@ pub async fn persist_login_tokens(
     }
     let mut doc = serde_json::json!({});
     apply_tokens(&mut doc, &write)?;
-    let updated = serde_json::to_string_pretty(&doc)?;
+    let updated = serde_json::to_string_pretty(&doc).map_err(|e| AuthError::json(&path, e))?;
     write_secret_file(&path, updated.as_bytes()).await
 }
 
@@ -295,7 +295,7 @@ pub async fn remove_store_entry(oauth: &OauthPack) -> Result<(), AuthError> {
         std::fs::remove_file(&path).map_err(|e| AuthError::io(Some(path.clone()), e))?;
         return Ok(());
     }
-    let updated = serde_json::to_string_pretty(&doc)?;
+    let updated = serde_json::to_string_pretty(&doc).map_err(|e| AuthError::json(&path, e))?;
     write_secret_file(&path, updated.as_bytes()).await
 }
 
@@ -309,12 +309,12 @@ pub(crate) async fn write_tokens(path: &Path, write: &TokenWrite<'_>) -> Result<
         return Err(AuthError::EmptyWriteRefused);
     }
     let content = read_creds_string(path).await?;
-    let mut doc: Value = serde_json::from_str(&content)?;
+    let mut doc: Value = serde_json::from_str(&content).map_err(|e| AuthError::json(path, e))?;
     if !doc.is_object() {
         return Err(AuthError::EmptyWriteRefused);
     }
     apply_tokens(&mut doc, write)?;
-    let updated = serde_json::to_string_pretty(&doc)?;
+    let updated = serde_json::to_string_pretty(&doc).map_err(|e| AuthError::json(path, e))?;
     write_secret_file(path, updated.as_bytes()).await
 }
 
@@ -965,6 +965,40 @@ login = "none"
             "must mention parse, got {err}"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "not-json");
+    }
+
+    #[tokio::test]
+    async fn write_tokens_json_error_names_store_path() {
+        let home = crate::isolated_home::IsolatedHome::new();
+        let path = home.path().join("auth-openai.json");
+        std::fs::write(&path, "not-json { sentinel-secret-do-not-echo }").unwrap();
+        let err = write_tokens(
+            &path,
+            &TokenWrite {
+                access_ptr: "/access",
+                refresh_ptr: None,
+                expires_ptr: None,
+                expires_unit: ExpiresUnit::S,
+                access_token: "tok",
+                refresh_token: None,
+                expires_in_secs: 60,
+                expires_rfc3339: false,
+                token_url_ptr: None,
+                token_url: None,
+            },
+        )
+        .await
+        .expect_err("corrupt store must fail");
+        let msg = err.to_string();
+        let path_s = path.display().to_string();
+        assert!(
+            msg.contains(&path_s),
+            "JSON error must name the store path {path_s}, got {msg}"
+        );
+        assert!(
+            !msg.contains("sentinel-secret-do-not-echo"),
+            "JSON error must not echo store contents: {msg}"
+        );
     }
 
     #[tokio::test]

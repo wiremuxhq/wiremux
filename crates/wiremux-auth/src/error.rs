@@ -1,7 +1,7 @@
 //! TokenProvider errors. Independent of any host `LlmError`.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Failure from credential load, refresh, or fail-closed write-back.
 #[derive(Debug, thiserror::Error)]
@@ -19,8 +19,14 @@ pub enum AuthError {
         source: io::Error,
     },
     /// JSON parse or serialize failed.
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
+    #[error("JSON error{}: {source}", path.as_ref().map(|p| format!(" ({})", p.display())).unwrap_or_default())]
+    Json {
+        /// Path that failed, when known.
+        path: Option<PathBuf>,
+        /// Underlying JSON error.
+        #[source]
+        source: serde_json::Error,
+    },
     /// Provider construction or refresh failed.
     #[error("{0}")]
     TokenProvider(String),
@@ -43,5 +49,19 @@ pub enum AuthError {
 impl AuthError {
     pub(crate) fn io(path: Option<PathBuf>, source: io::Error) -> Self {
         Self::Io { path, source }
+    }
+
+    /// Label a JSON error with the store path. Path-less `?` still uses [`Self::Json`].
+    pub(crate) fn json(path: impl AsRef<Path>, source: serde_json::Error) -> Self {
+        Self::Json {
+            path: Some(path.as_ref().to_path_buf()),
+            source,
+        }
+    }
+}
+
+impl From<serde_json::Error> for AuthError {
+    fn from(source: serde_json::Error) -> Self {
+        Self::Json { path: None, source }
     }
 }

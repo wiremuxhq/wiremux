@@ -244,12 +244,12 @@ impl ProfileTokenProvider {
         match &self.inner.write_back {
             WriteBack::File(path) => {
                 let content = read_creds_string(path).await?;
-                store_tokens_from_json(&content, &self.inner.oauth, &self.inner.layout)
+                store_tokens_from_json(&content, &self.inner.oauth, &self.inner.layout, Some(path))
             }
             #[cfg(any(target_os = "macos", test, feature = "test-util"))]
             WriteBack::Keychain { service, account } => {
                 let secret = read_keychain(service, account)?;
-                store_tokens_from_json(&secret, &self.inner.oauth, &self.inner.layout)
+                store_tokens_from_json(&secret, &self.inner.oauth, &self.inner.layout, None)
             }
             WriteBack::None => Ok(None),
         }
@@ -827,8 +827,17 @@ fn store_tokens_from_json(
     secret: &str,
     oauth: &OauthPack,
     layout: &StoreLayout,
+    path: Option<&Path>,
 ) -> Result<Option<(String, Option<String>, Duration)>, AuthError> {
-    let doc: Value = serde_json::from_str(secret)?;
+    let doc: Value = match serde_json::from_str(secret) {
+        Ok(doc) => doc,
+        Err(e) => {
+            return Err(match path {
+                Some(path) => AuthError::json(path, e),
+                None => AuthError::from(e),
+            });
+        }
+    };
     let layout = resolve_layout(oauth, Some(&doc)).unwrap_or_else(|_| layout.clone());
     Ok(tokens_from_doc(&doc, &layout).filter(|(a, _, _)| !a.is_empty()))
 }
