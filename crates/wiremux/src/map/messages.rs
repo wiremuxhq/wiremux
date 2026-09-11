@@ -582,6 +582,11 @@ fn text_block(text: &str, cache: bool, retention: Option<&str>) -> Value {
     block
 }
 
+/// Anthropic rejects more than this many `cache_control` blocks.
+const ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS: usize = 4;
+/// Preferred agent layout. Leaves headroom if a proxy injects more.
+const ANTHROPIC_PREFERRED_CACHE_CONTROL_BLOCKS: usize = 2;
+
 fn apply_cache_breakpoints(body: &mut Value, cache: &IrCache, report: &mut LossReport) {
     if !cache.enabled || cache.retention.as_deref() == Some("none") {
         return;
@@ -592,21 +597,76 @@ fn apply_cache_breakpoints(body: &mut Value, cache: &IrCache, report: &mut LossR
         Some("5m") | Some("short") | None => None,
         Some(other) => Some(other),
     };
+    strip_all_cache_control(body);
+    apply_preferred_cache_breakpoints(body, ttl);
+    enforce_cache_control_limit(body, ttl);
+}
+
+fn apply_preferred_cache_breakpoints(body: &mut Value, ttl: Option<&str>) {
     let has_tools = body
         .get("tools")
         .and_then(Value::as_array)
         .is_some_and(|t| !t.is_empty());
-    if ttl.is_some() && has_tools {
-        tag_last_tool(body, ttl);
+    if ttl.is_some() {
+        // Long TTL must sit early (tools, then first system). A 1h marker
+        // after a later resume fragment is rejected by the API.
+        if has_tools {
+            tag_last_tool(body, ttl);
+            if !tag_first_system(body, ttl) {
+                tag_first_user_text(body, ttl);
+            }
+            return;
+        }
         if !tag_first_system(body, ttl) {
             tag_first_user_text(body, ttl);
+            return;
         }
+        tag_first_user_text(body, ttl);
         return;
     }
     if !tag_last_system(body, ttl) {
         tag_first_system(body, ttl);
     }
     tag_first_user_text(body, ttl);
+}
+
+fn strip_all_cache_control(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("cache_control");
+            for child in map.values_mut() {
+                strip_all_cache_control(child);
+            }
+        }
+        Value::Array(arr) => {
+            for child in arr {
+                strip_all_cache_control(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn enforce_cache_control_limit(body: &mut Value, ttl: Option<&str>) {
+    let n = count_cache_control(body);
+    if n <= ANTHROPIC_PREFERRED_CACHE_CONTROL_BLOCKS {
+        debug_assert!(n <= ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS);
+        return;
+    }
+    strip_all_cache_control(body);
+    apply_preferred_cache_breakpoints(body, ttl);
+    debug_assert!(count_cache_control(body) <= ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS);
+}
+
+fn count_cache_control(value: &Value) -> usize {
+    match value {
+        Value::Object(map) => {
+            usize::from(map.contains_key("cache_control"))
+                + map.values().map(count_cache_control).sum::<usize>()
+        }
+        Value::Array(arr) => arr.iter().map(count_cache_control).sum(),
+        _ => 0,
+    }
 }
 
 fn ephemeral_cache_control(ttl: Option<&str>) -> Value {

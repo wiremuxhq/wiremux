@@ -8,9 +8,18 @@ work is a later Bline PR against `blineai/bline`.
 This is the extract-side plan for design K13. It does not add a path
 dependency, a wrapper, or a request map in either repo.
 
-`wiremux-auth` is the first attach surface (profile AST plus
-`TokenProvider`). Dialect maps in `wiremux` come later in the extract.
-Bline maps `ChatRequest` only after those maps exist.
+`wiremux-auth` is ready to pin (`Static` + `Profile`, IsolatedHome
+behind `test-util`, shipped `anthropic-oauth` and
+`openai-codex-oauth`). Dialect maps already exist on main:
+`wiremux::{decode,encode}` for Chat Completions, Messages, Responses,
+and Gemini (`wire = "gemini"`). Stream maps include thoughtSignature
+and a Chat id-then-name assembler.
+
+Auth-only is still a valid first attach (`wiremux-auth` alone). Maps
+no longer have to wait.
+
+Bline consume is not started. `blineai/bline` `Cargo.toml` has no
+`wiremux` dep.
 
 The wiremux README stays:
 
@@ -42,40 +51,48 @@ independent of `LlmError`.
 
 ## Order
 
-Path-dep `wiremux-auth` first, then maps. Refresh was the first pain;
-do not start with IR.
+Path-dep `wiremux-auth` first, then maps at the adapter boundary.
 
 1. Bline path-deps `wiremux-auth` (local path for dogfood, then a
    pinned git SHA).
 2. Wrap `wiremux_auth::TokenProvider` inside `bline_auth::TokenProvider`.
 3. Map `AuthError` to `LlmError::Auth`.
-4. After maps exist, map `ChatRequest` at the `bline-llm` adapter
-   boundary (`wiremux::{decode,encode}`).
+4. Map `ChatRequest` at the `bline-llm` adapter boundary
+   (`wiremux::{decode,encode}`). Use `default-features = false` so
+   clap, tokio, and reqwest stay off the maps crate.
 5. Ship the Bline change behind a feature flag or a single adapter
    call site so rollback is one Bline revert.
 
 This workspace has `publish = false`. crates.io is not the attach path.
 
-## Auth first
+## Suggested attach (Bline crate, not this repo)
 
-Today Bline's Claude Code path hardcodes client id, token URLs, and
-credential load. After consume:
-
-| Bline today | After consume |
-|-------------|----------------|
-| `ClaudeCodeTokenProvider` plus hardcoded URLs | `provider_from_oauth` / `provider_from_profile` plus shipped or overlay profile |
-| Hardcoded OAuth beta on `sk-ant-oat` | Profile `[oauth]` / betas data |
-| Token trait coupled to host errors | Wrap; map `AuthError` at the `bline-auth` facade |
-
-Suggested attach (Bline crate, not this repo):
+Auth-only (valid from
+[`8630a7f`](https://github.com/wiremuxhq/wiremux/commit/8630a7f0aa82d2343bfc4ff930ee2f3b52ceb4a3)):
 
 ```toml
 [dependencies]
-wiremux-auth = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux-auth" }
+wiremux-auth = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux-auth", rev = "8630a7f0aa82d2343bfc4ff930ee2f3b52ceb4a3" }
 ```
 
-Pin a SHA once the extract is stable. Local dogfood may use a path
-dependency on `crates/wiremux-auth` instead.
+Maps (optional clap/tokio/reqwest;
+[`0977970a33e1`](https://github.com/wiremuxhq/wiremux/commit/0977970a33e1cba2869589bce35fa484c45c6a48)
+or later on `main`):
+
+```toml
+wiremux = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux", rev = "0977970a33e1cba2869589bce35fa484c45c6a48", default-features = false }
+```
+
+`default-features = false` is maps plus re-exported profile types.
+It does not pull clap, a fat tokio, or reqwest on the `wiremux`
+crate. `wiremux-auth` still has its own reqwest for TokenProvider.
+
+Bline `deny.toml` has `unknown-git = deny` and `allow-git` for workpen
+only. A git pin needs `https://github.com/wiremuxhq/wiremux` on that
+allow list. That change lives in Bline, not this repo.
+
+Local dogfood may use a path dependency on `crates/wiremux-auth`
+instead.
 
 Wrapper sketch (illustrative; do not land it here):
 
@@ -95,8 +112,7 @@ Do not take a `bline-types` dependency in `wiremux-auth`.
 
 ## Then maps
 
-After auth is path-dep'd and wrapped, Bline maps requests at the
-`bline-llm` adapter boundary only:
+Bline maps requests at the `bline-llm` adapter boundary only:
 
 | Bline today | After consume |
 |-------------|----------------|
@@ -108,18 +124,27 @@ Do not `pub use` `IrRequest` as `ChatRequest`. The factory continues
 to construct Bline adapters and still owns router and failover.
 Wiremux does not become the router.
 
-Gemini stays a Bline adapter. It is not a v1 `wire` value.
+Gemini is `wire = "gemini"` in wiremux. Bline still owns the
+`ChatRequest` wrap and the adapter that calls decode/encode.
 
-## What stays in Bline
+## Stay in Bline
 
-These do not move into wiremux:
+These were leftovers in the extract design. They are not missing
+wiremux APIs.
 
-- Agent loop
-- Factory, router, failover
-- Wire logger
-- `bline diagnose`
-- `bline auth login` presets (optionally add a wiremux profile path later)
-- Account and provider config on `ProviderConfig`
+| Stay in Bline | Why |
+|---------------|-----|
+| `GcpTokenProvider`, `AzureTokenProvider`, `AwsStsTokenProvider` | DESIGN non-goal for v1. Same crate later. |
+| `install_wake_monitor` / wake flag on `get_token` | Host laptop-wake policy. Wiremux has `mark_stale` only. The Bline wrapper can call `mark_stale` when the host wake flag is set. |
+| Dedicated Copilot device-flow login | Gist + `copilot-hosts` store exist. Product ToS. Device login stays later. |
+| `ChatRequest` and factory | K13. Adapter maps at the `bline-llm` boundary. |
+| Unknown name + `protocol = "anthropic"` is `FactoryError::UnknownProvider` | Host factory change. Optional later: resolve a wiremux profile by `wire = "messages"`. |
+| `PromptCacheConfig.min_cacheable_tokens` and `estimate_prompt_tokens` | Host floor (`chars / 4`). `IrCache` is only `enabled` + `retention`. |
+| Router, failover, wire logger, diagnose, `repair.rs` | Out of scope. |
+
+Also stay in Bline: agent loop, `bline auth login` presets (optionally
+add a wiremux profile path later), account and provider config on
+`ProviderConfig`.
 
 ## Bline follow-ups (not this extract)
 
@@ -139,6 +164,7 @@ PR and not part of this spike.
 - No dest-parent-copy of Bline sources into this repo.
 - No third published crate.
 - No launch pitch. README remains `Not ready.`
+- Do not start the Bline path-dep in this repo.
 
 ## Rollback
 

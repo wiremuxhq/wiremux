@@ -1,4 +1,5 @@
 //! CLI corpus: profile validate, auth login/status, listen bind.
+#![cfg(feature = "cli")]
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

@@ -136,6 +136,9 @@ jobs:
           mkdir -p "$out"
           cargo nextest run --locked --workspace --profile ci
           cp target/nextest/ci/junit.xml "${out}/default.xml"
+          cargo test --locked -p wiremux --no-default-features --test request_maps --test stream_maps
+          cargo check --locked -p wiremux --no-default-features --features proxy
+          bash scripts/assert-maps-only-deps.sh
       - name: Doc tests
         if: >-
           github.event_name != 'pull_request' ||

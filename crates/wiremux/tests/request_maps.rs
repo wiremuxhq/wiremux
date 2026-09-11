@@ -1103,3 +1103,221 @@ fn cache_retention_none_skips_cache_control() {
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(count_cache_control(&body), 0, "retention=none, got {body}");
 }
+
+const ANTHROPIC_MAX_CACHE_CONTROL: usize = 4;
+const ANTHROPIC_PREFERRED_CACHE_CONTROL: usize = 2;
+
+fn system_ttl(body: &Value, index: usize) -> Option<&str> {
+    body.pointer(&format!("/system/{index}/cache_control/ttl"))
+        .and_then(Value::as_str)
+}
+
+fn system_has_cache_control(body: &Value, index: usize) -> bool {
+    body.pointer(&format!("/system/{index}/cache_control"))
+        .is_some()
+}
+
+#[test]
+fn multi_fragment_system_stays_at_or_under_cache_control_limit() {
+    let mut items: Vec<IrItem> = (0..6)
+        .map(|i| IrItem::System {
+            text: format!("system fragment {i}"),
+        })
+        .collect();
+    items.push(IrItem::User {
+        parts: vec![IrPart::Text("do the work".into())],
+    });
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items,
+        tools: vec![],
+        sampling: IrSampling {
+            cache: IrCache {
+                enabled: true,
+                retention: Some("1h".into()),
+            },
+            ..IrSampling::default()
+        },
+    };
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let system = body
+        .get("system")
+        .and_then(Value::as_array)
+        .expect("system");
+    assert_eq!(
+        system.len(),
+        6,
+        "each system item is its own block, got {body}"
+    );
+    assert_eq!(
+        system_ttl(&body, 0),
+        Some("1h"),
+        "first system must carry 1h, got {body}"
+    );
+    for i in 1..6 {
+        assert!(
+            !system_has_cache_control(&body, i),
+            "system fragment {i} must not get cache_control, got {body}"
+        );
+    }
+    let n = count_cache_control(&body);
+    assert!(
+        n <= ANTHROPIC_MAX_CACHE_CONTROL,
+        "must not exceed Anthropic max of {ANTHROPIC_MAX_CACHE_CONTROL}, got {n} in {body}"
+    );
+    assert!(
+        n <= ANTHROPIC_PREFERRED_CACHE_CONTROL,
+        "prefer at most {ANTHROPIC_PREFERRED_CACHE_CONTROL} breakpoints, got {n} in {body}"
+    );
+    assert_eq!(n, 2, "first system + first user, got {body}");
+    assert!(
+        body.pointer("/messages/0/content/0/cache_control")
+            .is_some(),
+        "first user must be tagged, got {body}"
+    );
+}
+
+#[test]
+fn multi_fragment_long_ttl_with_tools_tags_first_system_not_last() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![
+            IrItem::System {
+                text: "You are a coding agent.".into(),
+            },
+            IrItem::System {
+                text: "Restored goal state from previous session:\nGoal: current task".into(),
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("continue the work".into())],
+            },
+        ],
+        tools: vec![
+            IrTool::Function {
+                name: "one".into(),
+                description: "a".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            IrTool::Function {
+                name: "two".into(),
+                description: "b".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ],
+        sampling: IrSampling {
+            cache: IrCache {
+                enabled: true,
+                retention: Some("1h".into()),
+            },
+            ..IrSampling::default()
+        },
+    };
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let tools = body.get("tools").and_then(Value::as_array).expect("tools");
+    assert!(tools[0].get("cache_control").is_none());
+    assert_eq!(
+        tools[1]
+            .pointer("/cache_control/ttl")
+            .and_then(Value::as_str),
+        Some("1h")
+    );
+    assert_eq!(
+        system_ttl(&body, 0),
+        Some("1h"),
+        "first (static) system must hold long TTL, got {body}"
+    );
+    assert!(
+        !system_has_cache_control(&body, 1),
+        "resume goal fragment must not hold 1h after main system, got {body}"
+    );
+    assert_eq!(count_cache_control(&body), 2, "got {body}");
+}
+
+#[test]
+fn short_ttl_multi_system_tags_last_system_and_first_user() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![
+            IrItem::System {
+                text: "static".into(),
+            },
+            IrItem::System {
+                text: "resume".into(),
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("hello".into())],
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling {
+            cache: IrCache {
+                enabled: true,
+                retention: None,
+            },
+            ..IrSampling::default()
+        },
+    };
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        !system_has_cache_control(&body, 0),
+        "short TTL must not tag first system, got {body}"
+    );
+    assert!(
+        system_has_cache_control(&body, 1),
+        "short TTL tags last system, got {body}"
+    );
+    assert!(
+        body.pointer("/messages/0/content/0/cache_control")
+            .is_some(),
+        "first user tagged, got {body}"
+    );
+    assert_eq!(count_cache_control(&body), 2, "got {body}");
+}
+
+#[test]
+fn encode_after_decode_strips_six_cache_markers_to_preferred_pair() {
+    let req = br#"{
+        "model": "claude-opus-4-6",
+        "system": [
+            { "type": "text", "text": "a", "cache_control": { "type": "ephemeral" } },
+            { "type": "text", "text": "b", "cache_control": { "type": "ephemeral" } },
+            { "type": "text", "text": "c", "cache_control": { "type": "ephemeral" } }
+        ],
+        "messages": [
+            { "role": "user", "content": [{ "type": "text", "text": "u1", "cache_control": { "type": "ephemeral" } }] },
+            { "role": "assistant", "content": [{ "type": "text", "text": "a1", "cache_control": { "type": "ephemeral" } }] },
+            { "role": "user", "content": [{ "type": "text", "text": "u2", "cache_control": { "type": "ephemeral" } }] }
+        ]
+    }"#;
+    let incoming: Value = serde_json::from_slice(req).expect("fixture");
+    assert_eq!(
+        count_cache_control(&incoming),
+        6,
+        "fixture starts with 6 markers"
+    );
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let n = count_cache_control(&body);
+    assert!(
+        n <= ANTHROPIC_MAX_CACHE_CONTROL,
+        "hard cap 4, got {n} in {body}"
+    );
+    assert_eq!(n, 2, "preferred pair after remap, got {body}");
+    assert!(
+        system_has_cache_control(&body, 2),
+        "short TTL keeps last system, got {body}"
+    );
+    assert!(
+        !system_has_cache_control(&body, 0),
+        "first system must be stripped on short TTL, got {body}"
+    );
+    assert!(
+        body.pointer("/messages/0/content/0/cache_control")
+            .is_some(),
+        "first user kept, got {body}"
+    );
+}
