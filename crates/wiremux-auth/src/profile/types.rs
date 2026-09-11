@@ -11,8 +11,8 @@ use super::error::ProfileError;
 /// Highest `schema_version` this crate understands.
 pub const SCHEMA_VERSION_MAX: u32 = 1;
 
-/// Catalog load inputs. Overlay of same-id layers is specified here and
-/// implemented in a later PR; this crate keys the catalog by document `id`.
+/// Catalog load inputs. Same-id layers merge field-wise
+/// (shipped < user dir < explicit file).
 #[derive(Debug, Clone)]
 pub struct LoadOptions<'a> {
     /// Optional id hint (required unless an explicit file supplies `id`).
@@ -23,6 +23,8 @@ pub struct LoadOptions<'a> {
     pub extra_profile_dirs: Vec<PathBuf>,
     /// When false, skip crate-shipped presets.
     pub include_shipped: bool,
+    /// When false, skip XDG/HOME user dirs and `WIREMUX_PROFILE_DIR`.
+    pub include_user_config: bool,
 }
 
 impl Default for LoadOptions<'_> {
@@ -32,6 +34,7 @@ impl Default for LoadOptions<'_> {
             explicit_file: None,
             extra_profile_dirs: Vec::new(),
             include_shipped: true,
+            include_user_config: true,
         }
     }
 }

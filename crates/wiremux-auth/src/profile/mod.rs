@@ -3,6 +3,7 @@
 mod envsubst;
 mod error;
 mod load;
+mod overlay;
 mod parse;
 mod refuse;
 mod shipped;

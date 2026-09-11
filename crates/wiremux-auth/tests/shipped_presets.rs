@@ -21,6 +21,7 @@ fn shipped_opts() -> LoadOptions<'static> {
         explicit_file: None,
         extra_profile_dirs: Vec::new(),
         include_shipped: true,
+        include_user_config: false,
     }
 }
 
@@ -33,6 +34,7 @@ fn no_shipped_opts() -> LoadOptions<'static> {
 
 #[test]
 fn load_profile_anthropic_oauth_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
     let profile = load_profile("anthropic-oauth", &shipped_opts())
         .expect("include_shipped must expose anthropic-oauth");
     assert_eq!(profile.id, "anthropic-oauth");
@@ -75,6 +77,7 @@ fn load_profile_anthropic_oauth_from_shipped_catalog() {
 
 #[test]
 fn load_profile_openai_codex_oauth_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
     let profile = load_profile("openai-codex-oauth", &shipped_opts())
         .expect("include_shipped must expose openai-codex-oauth");
     assert_eq!(profile.id, "openai-codex-oauth");
@@ -105,6 +108,7 @@ fn load_profile_openai_codex_oauth_from_shipped_catalog() {
 
 #[test]
 fn load_profile_openrouter_codex_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
     let profile = load_profile("openrouter-codex", &shipped_opts())
         .expect("include_shipped must expose openrouter-codex");
     assert_eq!(profile.id, "openrouter-codex");
@@ -127,6 +131,7 @@ fn load_profile_openrouter_codex_from_shipped_catalog() {
 
 #[test]
 fn load_profile_grok_ollama_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
     let profile = load_profile("grok-ollama", &shipped_opts())
         .expect("include_shipped must expose grok-ollama");
     assert_eq!(profile.id, "grok-ollama");
@@ -141,6 +146,7 @@ fn load_profile_grok_ollama_from_shipped_catalog() {
 
 #[test]
 fn include_shipped_false_hides_catalog() {
+    let _home = IsolatedHome::new();
     for id in [
         "anthropic-oauth",
         "openai-codex-oauth",
@@ -157,6 +163,7 @@ fn include_shipped_false_hides_catalog() {
 
 #[test]
 fn list_profiles_includes_shipped_ids() {
+    let _home = IsolatedHome::new();
     let ids = list_profiles(&shipped_opts()).expect("list shipped");
     for id in [
         "anthropic-oauth",
@@ -170,6 +177,7 @@ fn list_profiles_includes_shipped_ids() {
 
 #[test]
 fn no_claude_pro_in_codex_preset() {
+    let _home = IsolatedHome::new();
     let dir = presets_dir();
     assert!(
         !dir.join("claude-pro-in-codex.toml").exists(),

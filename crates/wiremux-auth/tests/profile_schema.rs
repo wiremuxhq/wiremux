@@ -20,6 +20,7 @@ fn empty_opts() -> LoadOptions<'static> {
         explicit_file: None,
         extra_profile_dirs: Vec::new(),
         include_shipped: false,
+        include_user_config: false,
     }
 }
 
@@ -41,6 +42,7 @@ fn load_id(id: &str, dir: &Path) -> Result<ResolvedProfile, ProfileError> {
         explicit_file: None,
         extra_profile_dirs: vec![dir.to_path_buf()],
         include_shipped: false,
+        include_user_config: false,
     };
     load_profile(id, &opts)
 }

@@ -1,0 +1,43 @@
+# Restore gist for a yanked Anthropic pack (WIREMUX_NO_SHIPPED_PRESETS).
+# Same schema as presets/anthropic-oauth.toml. Rotated URL / beta / client id.
+# Not a shipped preset.
+
+schema_version = 1
+id = "anthropic-oauth"
+display_name = "Anthropic OAuth (gist restore)"
+
+wire = "messages"
+tool_type_policy = "hard-error"
+
+base_url = "https://api.anthropic.com"
+chat_path = "/v1/messages"
+auth_scheme = "bearer"
+header_merge = "union"
+
+[headers]
+anthropic-version = "2023-06-01"
+
+[oauth]
+token_url = "https://platform.claude.com/v1/oauth/token-rotated"
+token_url_fallback = "https://console.anthropic.com/v1/oauth/token-rotated"
+client_id = "rotated-anthropic-client-id"
+refresh_grant = "refresh_token"
+token_request_format = "json"
+pkce = true
+creds_path = "~/.claude/.credentials.json"
+creds_format = "claude-credentials"
+access_env = "CLAUDE_CODE_OAUTH_TOKEN"
+login = "setup-token"
+setup_token_hint = "run `claude setup-token` (restored gist)"
+
+[oauth.refresh_body]
+grant_type = "refresh_token"
+
+[betas]
+values = [
+  "oauth-2026-09-01",
+  "prompt-caching-2024-07-31",
+  "extended-cache-ttl-2025-04-11",
+]
+header = "anthropic-beta"
+merge = "verbatim"

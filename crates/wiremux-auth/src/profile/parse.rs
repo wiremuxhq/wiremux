@@ -18,25 +18,37 @@ use super::types::{
 
 /// Parse a profile document from TOML or JSON text.
 pub fn parse_profile_str(text: &str) -> Result<ResolvedProfile, ProfileError> {
-    parse_profile_text(text, None)
+    resolve(parse_layer_text(text, None)?)
 }
 
-pub(crate) fn parse_profile_file(path: &Path) -> Result<ResolvedProfile, ProfileError> {
+pub(crate) fn parse_layer_file(path: &Path) -> Result<RawProfile, ProfileError> {
     let text = fs::read_to_string(path).map_err(|source| ProfileError::Io {
         path: path.to_path_buf(),
         source,
     })?;
-    parse_profile_text(&text, Some(path))
+    parse_layer_text(&text, Some(path))
 }
 
-fn parse_profile_text(text: &str, path: Option<&Path>) -> Result<ResolvedProfile, ProfileError> {
+pub(crate) fn parse_layer_str(text: &str) -> Result<RawProfile, ProfileError> {
+    parse_layer_text(text, None)
+}
+
+fn parse_layer_text(text: &str, path: Option<&Path>) -> Result<RawProfile, ProfileError> {
     let value = parse_to_value(text, path)?;
     refuse::scan(&value)?;
     let value = envsubst::walk(value);
     refuse::scan(&value)?;
     let raw: RawProfile =
         serde_json::from_value(value).map_err(|e| ProfileError::Parse(e.to_string()))?;
-    resolve(raw)
+    if let Some(found) = raw.schema_version
+        && found > SCHEMA_VERSION_MAX
+    {
+        return Err(ProfileError::SchemaVersion {
+            found,
+            max: SCHEMA_VERSION_MAX,
+        });
+    }
+    Ok(raw)
 }
 
 fn looks_like_json(text: &str, path: Option<&Path>) -> bool {
@@ -59,149 +71,149 @@ fn parse_to_value(text: &str, path: Option<&Path>) -> Result<Value, ProfileError
 }
 
 #[derive(Debug, Deserialize)]
-struct RawProfile {
+pub(crate) struct RawProfile {
     #[serde(default, alias = "schemaVersion")]
-    schema_version: Option<u32>,
+    pub(crate) schema_version: Option<u32>,
     #[serde(default)]
-    id: Option<String>,
+    pub(crate) id: Option<String>,
     #[serde(default, alias = "displayName")]
-    display_name: Option<String>,
+    pub(crate) display_name: Option<String>,
     #[serde(default)]
-    wire: Option<Wire>,
+    pub(crate) wire: Option<Wire>,
     #[serde(default, alias = "streamEvents")]
-    stream_events: Option<Vec<String>>,
+    pub(crate) stream_events: Option<Vec<String>>,
     #[serde(default, alias = "listMerge")]
-    list_merge: Option<ListMerge>,
+    pub(crate) list_merge: Option<ListMerge>,
     #[serde(default, alias = "toolTypePolicy")]
-    tool_type_policy: Option<ToolTypePolicy>,
+    pub(crate) tool_type_policy: Option<ToolTypePolicy>,
     #[serde(default, alias = "streamUnknownPolicy")]
-    stream_unknown_policy: Option<StreamUnknownPolicy>,
+    pub(crate) stream_unknown_policy: Option<StreamUnknownPolicy>,
     #[serde(default, alias = "baseUrl")]
-    base_url: Option<String>,
+    pub(crate) base_url: Option<String>,
     #[serde(default, alias = "chatPath")]
-    chat_path: Option<String>,
+    pub(crate) chat_path: Option<String>,
     #[serde(default, alias = "authScheme")]
-    auth_scheme: Option<AuthScheme>,
+    pub(crate) auth_scheme: Option<AuthScheme>,
     #[serde(default)]
-    headers: Option<BTreeMap<String, String>>,
+    pub(crate) headers: Option<BTreeMap<String, String>>,
     #[serde(default, alias = "headerMerge")]
-    header_merge: Option<ListMerge>,
+    pub(crate) header_merge: Option<ListMerge>,
     #[serde(default)]
-    oauth: Option<RawOauth>,
+    pub(crate) oauth: Option<RawOauth>,
     #[serde(default)]
-    fingerprint: Option<RawFingerprint>,
+    pub(crate) fingerprint: Option<RawFingerprint>,
     #[serde(default)]
-    betas: Option<RawBetasField>,
+    pub(crate) betas: Option<RawBetasField>,
     #[serde(default, alias = "betaHeader")]
-    beta_header: Option<String>,
+    pub(crate) beta_header: Option<String>,
     #[serde(default, alias = "betaMerge")]
-    beta_merge: Option<ListMerge>,
+    pub(crate) beta_merge: Option<ListMerge>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum RawBetasField {
+pub(crate) enum RawBetasField {
     List(Vec<String>),
     Table(RawBetasTable),
 }
 
 #[derive(Debug, Deserialize)]
-struct RawBetasTable {
+pub(crate) struct RawBetasTable {
     #[serde(default)]
-    values: Option<Vec<String>>,
+    pub(crate) values: Option<Vec<String>>,
     #[serde(default)]
-    header: Option<String>,
+    pub(crate) header: Option<String>,
     #[serde(default)]
-    merge: Option<ListMerge>,
+    pub(crate) merge: Option<ListMerge>,
 }
 
 #[derive(Debug, Deserialize)]
-struct RawOauth {
+pub(crate) struct RawOauth {
     #[serde(default, alias = "tokenUrl")]
-    token_url: Option<String>,
+    pub(crate) token_url: Option<String>,
     #[serde(default, alias = "tokenUrlFallback")]
-    token_url_fallback: Option<String>,
+    pub(crate) token_url_fallback: Option<String>,
     #[serde(default, alias = "authorizeUrl")]
-    authorize_url: Option<String>,
+    pub(crate) authorize_url: Option<String>,
     #[serde(default, alias = "authorizeParams")]
-    authorize_params: Option<BTreeMap<String, String>>,
+    pub(crate) authorize_params: Option<BTreeMap<String, String>>,
     #[serde(default, alias = "deviceAuthUrl")]
-    device_auth_url: Option<String>,
+    pub(crate) device_auth_url: Option<String>,
     #[serde(default, alias = "clientId")]
-    client_id: Option<String>,
+    pub(crate) client_id: Option<String>,
     #[serde(default, alias = "redirectUri")]
-    redirect_uri: Option<String>,
+    pub(crate) redirect_uri: Option<String>,
     #[serde(default)]
-    scopes: Option<Vec<String>>,
+    pub(crate) scopes: Option<Vec<String>>,
     #[serde(default, alias = "listMerge")]
-    list_merge: Option<ListMerge>,
+    pub(crate) list_merge: Option<ListMerge>,
     #[serde(default)]
-    pkce: Option<bool>,
+    pub(crate) pkce: Option<bool>,
     #[serde(default, alias = "refreshGrant")]
-    refresh_grant: Option<String>,
+    pub(crate) refresh_grant: Option<String>,
     #[serde(default, alias = "refreshBody")]
-    refresh_body: Option<BTreeMap<String, String>>,
+    pub(crate) refresh_body: Option<BTreeMap<String, String>>,
     #[serde(default, alias = "tokenRequestFormat")]
-    token_request_format: Option<TokenRequestFormat>,
+    pub(crate) token_request_format: Option<TokenRequestFormat>,
     #[serde(default, alias = "tokenHeaders")]
-    token_headers: Option<BTreeMap<String, String>>,
+    pub(crate) token_headers: Option<BTreeMap<String, String>>,
     #[serde(default, alias = "credsPath")]
-    creds_path: Option<String>,
+    pub(crate) creds_path: Option<String>,
     #[serde(default, alias = "credsFormat")]
-    creds_format: Option<CredsFormat>,
+    pub(crate) creds_format: Option<CredsFormat>,
     #[serde(default, alias = "accessTokenPtr")]
-    access_token_ptr: Option<String>,
+    pub(crate) access_token_ptr: Option<String>,
     #[serde(default, alias = "refreshTokenPtr")]
-    refresh_token_ptr: Option<String>,
+    pub(crate) refresh_token_ptr: Option<String>,
     #[serde(default, alias = "expiresPtr")]
-    expires_ptr: Option<String>,
+    pub(crate) expires_ptr: Option<String>,
     #[serde(default, alias = "expiresUnit")]
-    expires_unit: Option<ExpiresUnit>,
+    pub(crate) expires_unit: Option<ExpiresUnit>,
     #[serde(default, alias = "accessEnv")]
-    access_env: Option<String>,
+    pub(crate) access_env: Option<String>,
     #[serde(default)]
-    login: Option<Login>,
+    pub(crate) login: Option<Login>,
     #[serde(default, alias = "setupTokenHint")]
-    setup_token_hint: Option<String>,
+    pub(crate) setup_token_hint: Option<String>,
     #[serde(default, alias = "keychainService")]
-    keychain_service: Option<String>,
+    pub(crate) keychain_service: Option<String>,
     #[serde(default, alias = "keychainAccounts")]
-    keychain_accounts: Option<Vec<String>>,
+    pub(crate) keychain_accounts: Option<Vec<String>>,
     #[serde(default, alias = "tokenResponse")]
-    token_response: Option<RawTokenResponse>,
+    pub(crate) token_response: Option<RawTokenResponse>,
 }
 
 #[derive(Debug, Deserialize)]
-struct RawTokenResponse {
+pub(crate) struct RawTokenResponse {
     #[serde(default, alias = "accessTokenPtr")]
-    access_token_ptr: Option<String>,
+    pub(crate) access_token_ptr: Option<String>,
     #[serde(default, alias = "refreshTokenPtr")]
-    refresh_token_ptr: Option<String>,
+    pub(crate) refresh_token_ptr: Option<String>,
     #[serde(default, alias = "expiresPtr")]
-    expires_ptr: Option<String>,
+    pub(crate) expires_ptr: Option<String>,
     #[serde(default, alias = "expiresUnit")]
-    expires_unit: Option<ExpiresUnit>,
+    pub(crate) expires_unit: Option<ExpiresUnit>,
 }
 
 #[derive(Debug, Deserialize)]
-struct RawFingerprint {
+pub(crate) struct RawFingerprint {
     #[serde(default, alias = "userAgent")]
-    user_agent: Option<String>,
+    pub(crate) user_agent: Option<String>,
     #[serde(default, alias = "xApp")]
-    x_app: Option<String>,
+    pub(crate) x_app: Option<String>,
     #[serde(default, alias = "systemPromptPrefix")]
-    system_prompt_prefix: Option<String>,
+    pub(crate) system_prompt_prefix: Option<String>,
     #[serde(default, alias = "toolNameCase")]
-    tool_name_case: Option<ToolNameCase>,
+    pub(crate) tool_name_case: Option<ToolNameCase>,
     #[serde(default, alias = "forbiddenBodyFields")]
-    forbidden_body_fields: Option<Vec<String>>,
+    pub(crate) forbidden_body_fields: Option<Vec<String>>,
     #[serde(default, alias = "forbiddenFieldPolicy")]
-    forbidden_field_policy: Option<ForbiddenFieldPolicy>,
+    pub(crate) forbidden_field_policy: Option<ForbiddenFieldPolicy>,
     #[serde(default, alias = "extraBody")]
-    extra_body: Option<BTreeMap<String, Value>>,
+    pub(crate) extra_body: Option<BTreeMap<String, Value>>,
 }
 
-fn resolve(raw: RawProfile) -> Result<ResolvedProfile, ProfileError> {
+pub(crate) fn resolve(raw: RawProfile) -> Result<ResolvedProfile, ProfileError> {
     let schema_version = raw
         .schema_version
         .ok_or(ProfileError::MissingField("schema_version"))?;
