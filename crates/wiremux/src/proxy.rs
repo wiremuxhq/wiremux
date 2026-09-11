@@ -129,7 +129,11 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         eprintln!("loss.encode: {enc_loss:?}");
     }
 
-    let url = match upstream_url_for_model(&state.profile, Some(ir.model.as_str())) {
+    let url = match upstream_url_for_model(
+        &state.profile,
+        Some(ir.model.as_str()),
+        ir.sampling.stream == Some(true),
+    ) {
         Ok(u) => u,
         Err(err) => return text(StatusCode::BAD_GATEWAY, format!("{err}\n")),
     };
