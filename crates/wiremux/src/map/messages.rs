@@ -9,7 +9,7 @@ use crate::ir::{
 };
 
 pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError> {
-    let report = LossReport::default();
+    let mut report = LossReport::default();
     let mut items = Vec::new();
     decode_system(value.get("system"), &mut items);
 
@@ -25,7 +25,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         .map(|arr| arr.iter().map(decode_tool).collect())
         .unwrap_or_default();
 
-    let mut sampling = decode_sampling(value);
+    let mut sampling = decode_sampling(value, &mut report);
     sampling.cache = cache_from(value);
 
     let ir = IrRequest {
@@ -206,7 +206,10 @@ fn tool_result_output(block: &Value) -> String {
         .unwrap_or_default()
 }
 
-fn decode_sampling(value: &Value) -> IrSampling {
+fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
+    if messages_source_has_json_schema(value) {
+        report.record("sampling.json_schema", LossAction::Drop, "no slot");
+    }
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
@@ -222,7 +225,16 @@ fn decode_sampling(value: &Value) -> IrSampling {
         thinking_budget: None,
         reasoning_effort: None,
         max_reasoning_tokens: None,
+        json_schema: None,
+        json_schema_name: None,
     }
+}
+
+fn messages_source_has_json_schema(value: &Value) -> bool {
+    value.get("output_format").is_some()
+        || value.get("response_format").is_some()
+        || value.get("json_schema").is_some()
+        || value.pointer("/text/format/type").and_then(Value::as_str) == Some("json_schema")
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -928,6 +940,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.thinking_budget.is_some() {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
+    }
+    if s.json_schema.is_some() {
+        report.record("sampling.json_schema", LossAction::Drop, "no slot");
     }
 }
 

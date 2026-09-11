@@ -1985,3 +1985,108 @@ fn messages_sanitizes_gemini_shaped_tool_use_id() {
         "rewritten tool_result.tool_use_id must record Degrade on the original path, got {report:?}"
     );
 }
+
+#[test]
+fn chat_json_schema_round_trips() {
+    let req = br#"{
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+            }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.json_schema_name.as_deref(), Some("answer"));
+    assert_eq!(
+        ir.sampling.json_schema,
+        Some(serde_json::json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/response_format/type")
+            .and_then(Value::as_str),
+        Some("json_schema"),
+        "Chat must emit response_format.type, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/response_format/json_schema/name")
+            .and_then(Value::as_str),
+        Some("answer"),
+        "Chat must emit json_schema.name, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/response_format/json_schema/schema"),
+        Some(&serde_json::json!({"type": "object", "properties": {"ok": {"type": "boolean"}}})),
+        "Chat must emit json_schema.schema, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema"),
+        "Chat has a slot and must not Drop json_schema, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_json_schema_round_trips() {
+    let req = br#"{
+        "model": "gpt-4",
+        "input": "hi",
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "answer",
+                "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+            }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(ir.sampling.json_schema_name.as_deref(), Some("answer"));
+    assert_eq!(
+        ir.sampling.json_schema,
+        Some(serde_json::json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
+    );
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/text/format/type").and_then(Value::as_str),
+        Some("json_schema"),
+        "Responses must emit text.format.type, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/text/format/name").and_then(Value::as_str),
+        Some("answer"),
+        "Responses must emit text.format.name, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/text/format/schema"),
+        Some(&serde_json::json!({"type": "object", "properties": {"ok": {"type": "boolean"}}})),
+        "Responses must emit text.format.schema, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema"),
+        "Responses has a slot and must not Drop json_schema, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_json_schema_is_dropped() {
+    let ir = user_ir(IrSampling {
+        json_schema: Some(serde_json::json!({"type": "object"})),
+        json_schema_name: Some("answer".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("response_format").is_none() && body.get("output_format").is_none(),
+        "Messages must not invent a structured-output slot, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "Messages must Drop json_schema with no slot, got {report:?}"
+    );
+}

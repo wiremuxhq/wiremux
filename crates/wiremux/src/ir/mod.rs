@@ -30,6 +30,10 @@ pub struct IrSampling {
     pub reasoning_effort: Option<String>,
     /// Host cap on reasoning tokens. Only dialects with a slot emit it.
     pub max_reasoning_tokens: Option<u32>,
+    /// JSON schema for structured output when the dialect has a slot.
+    pub json_schema: Option<serde_json::Value>,
+    /// Optional schema name (Responses `text.format.name` / Chat json_schema.name).
+    pub json_schema_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

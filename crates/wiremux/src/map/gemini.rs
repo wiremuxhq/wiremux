@@ -150,6 +150,9 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     if gemini_source_has_tool_choice(value) {
         report.record("sampling.tool_choice", LossAction::Drop, "no slot");
     }
+    if gemini_source_has_json_schema(value) {
+        report.record("sampling.json_schema", LossAction::Drop, "no slot");
+    }
     IrSampling {
         temperature: f32_field(cfg, "temperature"),
         top_p: f32_field(cfg, "topP").or_else(|| f32_field(cfg, "top_p")),
@@ -167,6 +170,8 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .or_else(|| u32_field(thinking, "thinking_budget")),
         reasoning_effort: None,
         max_reasoning_tokens: None,
+        json_schema: None,
+        json_schema_name: None,
     }
 }
 
@@ -179,6 +184,14 @@ fn thinking_config_obj(value: &Value) -> &Value {
 
 fn gemini_source_has_tool_choice(value: &Value) -> bool {
     value.get("tool_choice").is_some() || value.get("toolConfig").is_some()
+}
+
+fn gemini_source_has_json_schema(value: &Value) -> bool {
+    let cfg = value.get("generationConfig").unwrap_or(value);
+    cfg.get("responseSchema").is_some()
+        || cfg.get("responseJsonSchema").is_some()
+        || cfg.get("response_schema").is_some()
+        || cfg.get("response_json_schema").is_some()
 }
 
 pub(super) fn encode(
@@ -409,5 +422,8 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.parallel_tool_calls.is_some() {
         report.record("sampling.parallel_tool_calls", LossAction::Drop, "no slot");
+    }
+    if s.json_schema.is_some() {
+        report.record("sampling.json_schema", LossAction::Drop, "no slot");
     }
 }

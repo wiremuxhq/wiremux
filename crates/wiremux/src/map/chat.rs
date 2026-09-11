@@ -143,6 +143,7 @@ fn parts_text(parts: &[IrPart]) -> String {
 }
 
 fn decode_sampling(value: &Value) -> IrSampling {
+    let (json_schema, json_schema_name) = chat_json_schema(value);
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
@@ -158,7 +159,27 @@ fn decode_sampling(value: &Value) -> IrSampling {
         thinking_budget: None,
         reasoning_effort: str_field(value, "reasoning_effort").filter(|s| !s.trim().is_empty()),
         max_reasoning_tokens: u32_field(value, "max_reasoning_tokens"),
+        json_schema,
+        json_schema_name,
     }
+}
+
+fn chat_json_schema(value: &Value) -> (Option<Value>, Option<String>) {
+    let format = value.get("response_format");
+    let Some(format) = format else {
+        return (None, None);
+    };
+    if format.get("type").and_then(Value::as_str) != Some("json_schema") {
+        return (None, None);
+    }
+    let js = format.get("json_schema");
+    let schema = js.and_then(|js| js.get("schema")).cloned();
+    let name = js
+        .and_then(|js| js.get("name"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    (schema, name)
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -451,6 +472,16 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.thinking_budget.is_some() {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
+    }
+    if let Some(schema) = &s.json_schema {
+        let mut js = json!({ "schema": schema });
+        if let Some(name) = &s.json_schema_name {
+            js["name"] = json!(name);
+        }
+        body["response_format"] = json!({
+            "type": "json_schema",
+            "json_schema": js,
+        });
     }
 }
 

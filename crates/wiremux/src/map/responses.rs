@@ -206,6 +206,7 @@ fn parts_text(parts: &[IrPart]) -> String {
 }
 
 fn decode_sampling(value: &Value) -> IrSampling {
+    let (json_schema, json_schema_name) = responses_json_schema(value);
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
@@ -227,7 +228,26 @@ fn decode_sampling(value: &Value) -> IrSampling {
         max_reasoning_tokens: value
             .get("reasoning")
             .and_then(|r| u32_field(r, "max_tokens")),
+        json_schema,
+        json_schema_name,
     }
+}
+
+fn responses_json_schema(value: &Value) -> (Option<Value>, Option<String>) {
+    let format = value.get("text").and_then(|t| t.get("format"));
+    let Some(format) = format else {
+        return (None, None);
+    };
+    if format.get("type").and_then(Value::as_str) != Some("json_schema") {
+        return (None, None);
+    }
+    let schema = format.get("schema").cloned();
+    let name = format
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    (schema, name)
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -505,6 +525,16 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.thinking_budget.is_some() {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
+    }
+    if let Some(schema) = &s.json_schema {
+        let mut format = json!({
+            "type": "json_schema",
+            "schema": schema,
+        });
+        if let Some(name) = &s.json_schema_name {
+            format["name"] = json!(name);
+        }
+        body["text"] = json!({ "format": format });
     }
 }
 
