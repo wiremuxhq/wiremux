@@ -1140,6 +1140,44 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
+    #[test]
+    fn needs_refresh_at_eighty_percent() {
+        let mut tok = CachedToken {
+            access_token: "tok".into(),
+            refresh_token: Some("rt".into()),
+            acquired_at: Instant::now() - Duration::from_secs(81),
+            lifetime: Duration::from_secs(100),
+        };
+        assert!(tok.needs_refresh(), "81s of 100s must refresh");
+        tok.acquired_at = Instant::now() - Duration::from_secs(79);
+        assert!(!tok.needs_refresh(), "79s of 100s must keep cache");
+    }
+
+    #[tokio::test]
+    async fn mark_stale_forces_refresh_on_next_get() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth.json",
+            document: serde_json::json!({
+                "tokens": {
+                    "access": "first",
+                    "refresh": "rt",
+                    "expiry_unix": 4_102_444_800_i64
+                }
+            }),
+        });
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"second","refresh_token":"rt2","expires_in":3600}"#,
+        );
+        let oauth = pack_from_toml(&pointer_toml(&url, &path));
+        let p = provider(&oauth);
+        assert_eq!(p.get_token().await.expect("first"), "first");
+        p.mark_stale();
+        assert_eq!(p.get_token().await.expect("forced refresh"), "second");
+        let _ = handle.join();
+    }
+
     fn pack_from_toml(toml: &str) -> OauthPack {
         parse_profile_str(toml)
             .expect("parse test profile")
