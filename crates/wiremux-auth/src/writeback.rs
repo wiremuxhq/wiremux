@@ -250,6 +250,55 @@ pub async fn persist_login_tokens(
     write_secret_file(&path, updated.as_bytes()).await
 }
 
+/// Remove one `oidc-auth-json` profile entry. Deletes the file when empty.
+///
+/// Fail-closed on missing path, corrupt JSON, or a non-object root.
+/// Sibling entries stay. Missing entry is an error (do not invent).
+pub async fn remove_store_entry(oauth: &OauthPack) -> Result<(), AuthError> {
+    if oauth.creds_format != Some(CredsFormat::OidcAuthJson) {
+        return Err(AuthError::TokenProvider(
+            "remove_store_entry requires creds_format = oidc-auth-json".into(),
+        ));
+    }
+    let raw = oauth
+        .creds_path
+        .as_deref()
+        .ok_or_else(|| AuthError::MissingField("oauth.creds_path".into()))?;
+    let path = expand_tilde(raw);
+    if !path.is_file() {
+        return Err(AuthError::TokenProvider(
+            "credentials file is missing; nothing to remove".into(),
+        ));
+    }
+    let content = read_creds_string(&path).await?;
+    let mut doc: Value = serde_json::from_str(&content).map_err(|e| {
+        AuthError::TokenProvider(format!(
+            "parse credentials {}: {e}; refusing to remove",
+            path.display()
+        ))
+    })?;
+    if !doc.is_object() {
+        return Err(AuthError::TokenProvider(
+            "auth file is not a JSON object; refusing to remove".into(),
+        ));
+    }
+    let (issuer, client) = oidc_issuer_and_client(oauth)?;
+    let want = oidc_profile_key(&issuer, &client);
+    let key = select_oidc_entry_key(Some(&doc), &want);
+    let obj = doc.as_object_mut().expect("object");
+    if obj.remove(&key).is_none() {
+        return Err(AuthError::TokenProvider(format!(
+            "auth profile {want} not found; refusing to write"
+        )));
+    }
+    if obj.is_empty() {
+        std::fs::remove_file(&path).map_err(|e| AuthError::io(Some(path.clone()), e))?;
+        return Ok(());
+    }
+    let updated = serde_json::to_string_pretty(&doc)?;
+    write_secret_file(&path, updated.as_bytes()).await
+}
+
 /// Read-modify-write tokens into an existing JSON object via pointers.
 ///
 /// Refuses if the file is missing, not an object, parse fails, the new
@@ -837,6 +886,85 @@ login = "none"
             doc.get("access_token").is_none(),
             "must not use root /access_token"
         );
+        assert_eq!(
+            entry["token_url"].as_str(),
+            Some("https://auth.openai.com/oauth/token")
+        );
+    }
+
+    fn oidc_pack(path: &std::path::Path) -> crate::OauthPack {
+        crate::parse_profile_str(&format!(
+            r#"
+schema_version = 1
+id = "openai-codex-oauth"
+[oauth]
+token_url = "https://auth.openai.com/oauth/token"
+authorize_url = "https://auth.openai.com/oauth/authorize"
+client_id = "wiremux-cli"
+creds_format = "oidc-auth-json"
+creds_path = "{}"
+login = "none"
+"#,
+            path.display().to_string().replace('\\', "/")
+        ))
+        .unwrap()
+        .oauth
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn remove_auth_file_entry_leaves_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-openai.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string(&serde_json::json!({
+                "https://aaa.example::other": {"key": "keep-me", "refresh_token": "rt"},
+                "https://auth.openai.com::wiremux-cli": {"key": "drop-me", "refresh_token": "rt"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        remove_store_entry(&oidc_pack(&path)).await.expect("remove");
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            doc["https://aaa.example::other"]["key"].as_str(),
+            Some("keep-me")
+        );
+        assert!(doc.get("https://auth.openai.com::wiremux-cli").is_none());
+    }
+
+    #[tokio::test]
+    async fn remove_auth_file_entry_deletes_file_when_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-openai.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string(&serde_json::json!({
+                "https://auth.openai.com::wiremux-cli": {"key": "only", "refresh_token": "rt"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        remove_store_entry(&oidc_pack(&path))
+            .await
+            .expect("remove last");
+        assert!(!path.exists(), "empty store must be deleted");
+    }
+
+    #[tokio::test]
+    async fn remove_auth_file_entry_fails_closed_on_corrupt_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-openai.json");
+        std::fs::write(&path, "not-json").unwrap();
+        let err = remove_store_entry(&oidc_pack(&path))
+            .await
+            .expect_err("corrupt");
+        assert!(
+            err.to_string().contains("parse"),
+            "must mention parse, got {err}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not-json");
     }
 
     #[tokio::test]

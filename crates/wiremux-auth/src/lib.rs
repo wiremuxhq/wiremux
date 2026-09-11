@@ -28,7 +28,7 @@ pub use providers::oauth::{
     ProfileTokenProvider, provider_from_oauth, provider_from_oauth_opts, provider_from_profile,
 };
 pub use providers::static_token::StaticToken;
-pub use writeback::persist_login_tokens;
+pub use writeback::{persist_login_tokens, remove_store_entry};
 
 #[cfg(feature = "test-util")]
 pub use isolated_home::{IsolatedHome, PlantCredentials};
