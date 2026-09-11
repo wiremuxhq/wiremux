@@ -1026,6 +1026,47 @@ fn chat_data_url_becomes_image_base64_for_gemini() {
 }
 
 #[test]
+fn responses_data_url_becomes_image_base64_for_gemini() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "input": [{
+            "role": "user",
+            "content": [
+                { "type": "input_text", "text": "see" },
+                { "type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo=" }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::ImageBase64 { media_type, data }
+                    if media_type == "image/png" && data == "iVBORw0KGgo="
+            ))
+        )),
+        "Responses data URL must become ImageBase64 with payload, got {:?}",
+        ir.items
+    );
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/1/inlineData/mimeType")
+            .and_then(Value::as_str),
+        Some("image/png"),
+        "Gemini must get inlineData, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/1/inlineData/data")
+            .and_then(Value::as_str),
+        Some("iVBORw0KGgo="),
+        "Gemini must encode inlineData/data, got {body}"
+    );
+}
+
+#[test]
 fn gemini_https_image_url_degrades_to_text_placeholder() {
     let ir = IrRequest {
         model: "gemini-2.5-flash".into(),

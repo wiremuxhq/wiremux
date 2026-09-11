@@ -173,6 +173,12 @@ fn decode_image(part: &Value) -> Option<IrPart> {
         })
         .or_else(|| str_field(part, "url"))
     {
+        if let Some((media_type, data)) = super::split_data_url(&url) {
+            return Some(IrPart::ImageBase64 {
+                media_type: media_type.to_string(),
+                data: data.to_string(),
+            });
+        }
         return Some(IrPart::ImageUrl(url));
     }
     if let Some(data) =
