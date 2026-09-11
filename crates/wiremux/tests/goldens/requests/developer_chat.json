@@ -1,0 +1,14 @@
+{
+  "model": "gpt-4o",
+  "messages": [
+    {
+      "role": "developer",
+      "content": "Follow house style."
+    },
+    {
+      "role": "user",
+      "content": "Hello"
+    }
+  ],
+  "max_tokens": 64
+}

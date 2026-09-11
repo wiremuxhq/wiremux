@@ -1,0 +1,41 @@
+{
+  "model": "gpt-5",
+  "instructions": "Be concise.",
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "look up the customer then summarize"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "crm",
+      "description": "CRM tools",
+      "tools": [
+        {
+          "type": "function",
+          "name": "lookup",
+          "description": "Lookup a customer",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": ["id"]
+          }
+        }
+      ]
+    }
+  ],
+  "previous_response_id": "resp_redacted",
+  "max_output_tokens": 128,
+  "parallel_tool_calls": true
+}

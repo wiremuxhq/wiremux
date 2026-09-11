@@ -193,6 +193,7 @@ name = "wiremux"
 version = "0.0.1"
 dependencies = [
  "serde_json",
+ "thiserror",
  "wiremux-auth",
 ]
 
