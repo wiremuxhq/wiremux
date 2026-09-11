@@ -17,7 +17,7 @@ use wiremux_auth::{AuthScheme, ResolvedProfile, Wire};
 
 use serde_json::Value;
 
-use crate::cli::{parse_listen, proxy_token, upstream_url};
+use crate::cli::{parse_listen, proxy_token, upstream_url_for_model};
 use crate::ir::{IrStreamEvent, LossReport};
 use crate::map::{decode, encode};
 use crate::stream::{RawSse, SseFrameReader, decode_stream_event, encode_stream_event};
@@ -129,7 +129,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         eprintln!("loss.encode: {enc_loss:?}");
     }
 
-    let url = match upstream_url(&state.profile) {
+    let url = match upstream_url_for_model(&state.profile, Some(ir.model.as_str())) {
         Ok(u) => u,
         Err(err) => return text(StatusCode::BAD_GATEWAY, format!("{err}\n")),
     };
@@ -270,6 +270,17 @@ fn assistant_text(wire: Wire, value: &Value) -> Option<String> {
             let text: String = blocks
                 .iter()
                 .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("");
+            (!text.is_empty()).then_some(text)
+        }
+        Wire::Gemini => {
+            let parts = value
+                .pointer("/candidates/0/content/parts")
+                .and_then(Value::as_array)?;
+            let text: String = parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(Value::as_str))
                 .collect::<Vec<_>>()
                 .join("");
             (!text.is_empty()).then_some(text)

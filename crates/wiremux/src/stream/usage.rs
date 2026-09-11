@@ -56,6 +56,28 @@ pub(super) fn from_responses(usage: &Value) -> IrStreamEvent {
     }
 }
 
+pub(super) fn from_gemini(usage: &Value) -> IrStreamEvent {
+    let cache_read = u32_field(usage, "cachedContentTokenCount")
+        .or_else(|| u32_field(usage, "cached_content_token_count"))
+        .unwrap_or(0);
+    let reasoning = u32_field(usage, "thoughtsTokenCount")
+        .or_else(|| u32_field(usage, "thoughts_token_count"))
+        .unwrap_or(0);
+    let prompt = u32_field(usage, "promptTokenCount")
+        .or_else(|| u32_field(usage, "prompt_token_count"))
+        .unwrap_or(0);
+    let completion = u32_field(usage, "candidatesTokenCount")
+        .or_else(|| u32_field(usage, "candidates_token_count"))
+        .unwrap_or(0);
+    IrStreamEvent::Usage {
+        prompt_tokens: prompt.saturating_sub(cache_read),
+        completion_tokens: completion,
+        cache_read_tokens: cache_read,
+        cache_write_tokens: 0,
+        reasoning_tokens: reasoning,
+    }
+}
+
 pub(super) fn encode_chat(
     prompt_tokens: u32,
     completion_tokens: u32,
@@ -133,6 +155,25 @@ pub(super) fn encode_responses(
         "type": "response.completed",
         "response": { "status": "completed", "usage": usage },
     })
+}
+
+pub(super) fn encode_gemini(
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    cache_read_tokens: u32,
+    reasoning_tokens: u32,
+) -> Value {
+    let mut usage = json!({
+        "promptTokenCount": prompt_tokens.saturating_add(cache_read_tokens),
+        "candidatesTokenCount": completion_tokens,
+    });
+    if cache_read_tokens > 0 {
+        usage["cachedContentTokenCount"] = json!(cache_read_tokens);
+    }
+    if reasoning_tokens > 0 {
+        usage["thoughtsTokenCount"] = json!(reasoning_tokens);
+    }
+    json!({ "usageMetadata": usage })
 }
 
 fn nested_u32(value: &Value, object: &str, key: &str) -> Option<u32> {

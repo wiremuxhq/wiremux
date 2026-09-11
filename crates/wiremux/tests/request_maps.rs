@@ -425,6 +425,70 @@ fn stream_true_survives_chat_messages_responses() {
 }
 
 #[test]
+fn gemini_request_round_trip_text_and_function() {
+    let req = br#"{
+        "model": "gemini-2.5-flash",
+        "systemInstruction": { "parts": [{ "text": "Be brief." }] },
+        "contents": [
+            { "role": "user", "parts": [{ "text": "hi" }] },
+            { "role": "model", "parts": [{ "functionCall": { "name": "lookup", "args": { "q": "x" } } }] },
+            { "role": "user", "parts": [{ "functionResponse": { "name": "lookup", "response": { "ok": true } } }] }
+        ],
+        "tools": [{
+            "functionDeclarations": [{
+                "name": "lookup",
+                "description": "Look up",
+                "parameters": { "type": "object", "properties": { "q": { "type": "string" } } }
+            }]
+        }],
+        "generationConfig": { "temperature": 0.2, "maxOutputTokens": 64 }
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode gemini");
+    assert_eq!(ir.model, "gemini-2.5-flash");
+    assert!(
+        ir.items
+            .iter()
+            .any(|item| matches!(item, IrItem::System { text } if text == "Be brief.")),
+        "systemInstruction: {:?}",
+        ir.items
+    );
+    assert!(
+        ir.items
+            .iter()
+            .any(|item| matches!(item, IrItem::FunctionCall { name, .. } if name == "lookup")),
+        "functionCall: {:?}",
+        ir.items
+    );
+    assert_eq!(ir.sampling.temperature, Some(0.2));
+    assert_eq!(ir.sampling.max_tokens, Some(64));
+
+    let profile = profile(
+        r#"
+schema_version = 1
+id = "test-gemini"
+wire = "gemini"
+"#,
+    );
+    let (bytes, _) = encode(Wire::Gemini, &ir, &profile).expect("encode gemini");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/systemInstruction/parts/0/text")
+            .and_then(Value::as_str),
+        Some("Be brief.")
+    );
+    assert_eq!(
+        body.pointer("/tools/0/functionDeclarations/0/name")
+            .and_then(Value::as_str),
+        Some("lookup")
+    );
+    let temp = body
+        .pointer("/generationConfig/temperature")
+        .and_then(Value::as_f64)
+        .expect("temperature");
+    assert!((temp - 0.2).abs() < 1e-6, "temperature={temp}");
+}
+
+#[test]
 fn stream_absent_is_not_invented() {
     let chat_req = br#"{
         "model": "grok-4",
