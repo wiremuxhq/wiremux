@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 use wiremux::{
     IrStreamEvent, MapError, RawSse, ResolvedProfile, Wire, decode_stream_event,
-    encode_stream_event, parse_profile_str,
+    decode_stream_events, encode_stream_event, parse_profile_str,
 };
 
 fn golden(name: &str) -> String {
@@ -859,6 +859,18 @@ fn message_delta_stop_reason_wins_over_usage() {
     assert!(
         matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "tool_calls"),
         "stop_reason must not be dropped for usage, got {ev:?}"
+    );
+    let all = decode_stream_events(Wire::Messages, &both, &messages_profile()).expect("events");
+    assert!(
+        all.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "tool_calls")
+        ),
+        "finish must stay, got {all:?}"
+    );
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::Usage { .. })),
+        "usage on the same message_delta must not be dropped, got {all:?}"
     );
 
     let usage_only = RawSse {

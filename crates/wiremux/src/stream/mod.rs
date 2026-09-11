@@ -73,6 +73,31 @@ pub fn decode_stream_event(
     }
 }
 
+/// Decode one SSE frame into every IR event it carries.
+///
+/// Bline emits usage and finish from the same `message_delta`. A 1:1 map
+/// would drop one. Empty vec is a recognized no-op.
+pub fn decode_stream_events(
+    wire: Wire,
+    raw: &RawSse,
+    profile: &ResolvedProfile,
+) -> Result<Vec<IrStreamEvent>, MapError> {
+    let first = decode_stream_event(wire, raw, profile)?;
+    let Some(first) = first else {
+        return Ok(Vec::new());
+    };
+    let mut out = vec![first];
+    if matches!(wire, Wire::Messages)
+        && frame_event_name(wire, raw) == "message_delta"
+        && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
+        && matches!(out[0], IrStreamEvent::FinishReason { .. })
+        && let Some(usage) = value.get("usage").filter(|v| v.is_object())
+    {
+        out.push(usage::from_anthropic(usage));
+    }
+    Ok(out)
+}
+
 /// Encode one IR event into the target dialect's SSE shape.
 pub fn encode_stream_event(wire: Wire, ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     match ev {
