@@ -288,7 +288,9 @@ fn usage_cache_token_fields_are_accurate() {
         &chat_profile(),
     )
     .expect("decode chat cache usage");
-    assert_eq!(usage_tuple(&chat), (100, 20, 40, 0, 7));
+    // Exclusive buckets: Chat prompt/completion are inclusive on the wire.
+    // 100-40 cache, 20-7 reasoning. Matches Bline normalize_oai_usage.
+    assert_eq!(usage_tuple(&chat), (60, 13, 40, 0, 7));
 
     let messages = decode_all(
         Wire::Messages,
@@ -296,7 +298,9 @@ fn usage_cache_token_fields_are_accurate() {
         &messages_profile(),
     )
     .expect("decode messages cache usage");
-    assert_eq!(usage_tuple(&messages), (80, 12, 25, 9, 3));
+    // Anthropic input_tokens is already exclusive of cache. output includes
+    // thinking: 12-3. Matches Bline anthropic conversions.
+    assert_eq!(usage_tuple(&messages), (80, 9, 25, 9, 3));
 
     let responses = decode_all(
         Wire::Responses,
@@ -304,7 +308,8 @@ fn usage_cache_token_fields_are_accurate() {
         &responses_profile(),
     )
     .expect("decode responses cache usage");
-    assert_eq!(usage_tuple(&responses), (64, 8, 16, 0, 2));
+    // Responses input/output are inclusive like Chat: 64-16 cache, 8-2 reasoning.
+    assert_eq!(usage_tuple(&responses), (48, 6, 16, 0, 2));
 
     let ev = IrStreamEvent::Usage {
         prompt_tokens: 80,
@@ -321,8 +326,20 @@ fn usage_cache_token_fields_are_accurate() {
     )
     .unwrap();
     assert_eq!(
+        chat_json.pointer("/usage/prompt_tokens"),
+        Some(&Value::from(105))
+    );
+    assert_eq!(
+        chat_json.pointer("/usage/completion_tokens"),
+        Some(&Value::from(15))
+    );
+    assert_eq!(
         chat_json.pointer("/usage/prompt_tokens_details/cached_tokens"),
         Some(&Value::from(25))
+    );
+    assert_eq!(
+        chat_json.pointer("/usage/prompt_tokens_details/cache_write_tokens"),
+        Some(&Value::from(9))
     );
     assert_eq!(
         chat_json.pointer("/usage/completion_tokens_details/reasoning_tokens"),
@@ -334,15 +351,17 @@ fn usage_cache_token_fields_are_accurate() {
             .is_none(),
         "Chat must not emit Anthropic cache keys: {chat_json}"
     );
-    assert!(
-        chat_json
-            .pointer("/usage/cache_creation_input_tokens")
-            .is_none(),
-        "Chat has no cache-write slot: {chat_json}"
-    );
 
     let msg_json: Value =
         serde_json::from_str(&encode_stream_event(Wire::Messages, &ev).unwrap().data).unwrap();
+    assert_eq!(
+        msg_json.pointer("/usage/input_tokens"),
+        Some(&Value::from(80))
+    );
+    assert_eq!(
+        msg_json.pointer("/usage/output_tokens"),
+        Some(&Value::from(15))
+    );
     assert_eq!(
         msg_json.pointer("/usage/cache_read_input_tokens"),
         Some(&Value::from(25))
@@ -363,6 +382,14 @@ fn usage_cache_token_fields_are_accurate() {
     let resp_json: Value =
         serde_json::from_str(&encode_stream_event(Wire::Responses, &ev).unwrap().data).unwrap();
     assert_eq!(
+        resp_json.pointer("/response/usage/input_tokens"),
+        Some(&Value::from(105))
+    );
+    assert_eq!(
+        resp_json.pointer("/response/usage/output_tokens"),
+        Some(&Value::from(15))
+    );
+    assert_eq!(
         resp_json.pointer("/response/usage/input_tokens_details/cached_tokens"),
         Some(&Value::from(25))
     );
@@ -370,12 +397,33 @@ fn usage_cache_token_fields_are_accurate() {
         resp_json.pointer("/response/usage/output_tokens_details/reasoning_tokens"),
         Some(&Value::from(3))
     );
-    assert!(
-        resp_json
-            .pointer("/response/usage/cache_creation_input_tokens")
-            .is_none(),
-        "Responses has no cache-write slot: {resp_json}"
-    );
+}
+
+#[test]
+fn chat_usage_matches_bline_exclusive_buckets() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":800,"prompt_tokens_details":{"cached_tokens":300,"cache_write_tokens":10},"completion_tokens_details":{"reasoning_tokens":200}}}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode")
+        .expect("usage");
+    match ev {
+        IrStreamEvent::Usage {
+            prompt_tokens,
+            completion_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+        } => {
+            assert_eq!(prompt_tokens, 700);
+            assert_eq!(completion_tokens, 600);
+            assert_eq!(cache_read_tokens, 300);
+            assert_eq!(cache_write_tokens, 10);
+            assert_eq!(reasoning_tokens, 200);
+        }
+        other => panic!("expected Usage, got {other:?}"),
+    }
 }
 
 #[test]
@@ -391,8 +439,36 @@ fn chat_top_level_cached_tokens_alias_is_read() {
         .expect("usage");
     match ev {
         IrStreamEvent::Usage {
-            cache_read_tokens, ..
-        } => assert_eq!(cache_read_tokens, 4),
+            prompt_tokens,
+            cache_read_tokens,
+            ..
+        } => {
+            assert_eq!(cache_read_tokens, 4);
+            assert_eq!(prompt_tokens, 6);
+        }
+        other => panic!("expected Usage, got {other:?}"),
+    }
+}
+
+#[test]
+fn chat_prompt_cache_hit_tokens_alias_is_read() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[],"usage":{"prompt_tokens":50,"completion_tokens":1,"prompt_cache_hit_tokens":20}}"#
+            .into(),
+    };
+    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode prompt_cache_hit_tokens")
+        .expect("usage");
+    match ev {
+        IrStreamEvent::Usage {
+            prompt_tokens,
+            cache_read_tokens,
+            ..
+        } => {
+            assert_eq!(cache_read_tokens, 20);
+            assert_eq!(prompt_tokens, 30);
+        }
         other => panic!("expected Usage, got {other:?}"),
     }
 }

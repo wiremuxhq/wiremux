@@ -7,37 +7,52 @@ use crate::ir::IrStreamEvent;
 use super::u32_field;
 
 pub(super) fn from_chat(usage: &Value) -> IrStreamEvent {
+    let cache_read = nested_u32(usage, "prompt_tokens_details", "cached_tokens")
+        .filter(|&n| n > 0)
+        .or_else(|| u32_field(usage, "cached_tokens").filter(|&n| n > 0))
+        .or_else(|| u32_field(usage, "prompt_cache_hit_tokens"))
+        .unwrap_or(0);
+    let cache_write = nested_u32(usage, "prompt_tokens_details", "cache_write_tokens").unwrap_or(0);
+    let reasoning = nested_u32(usage, "completion_tokens_details", "reasoning_tokens").unwrap_or(0);
     IrStreamEvent::Usage {
-        prompt_tokens: u32_field(usage, "prompt_tokens").unwrap_or(0),
-        completion_tokens: u32_field(usage, "completion_tokens").unwrap_or(0),
-        cache_read_tokens: nested_u32(usage, "prompt_tokens_details", "cached_tokens")
-            .or_else(|| u32_field(usage, "cached_tokens"))
-            .unwrap_or(0),
-        cache_write_tokens: 0,
-        reasoning_tokens: nested_u32(usage, "completion_tokens_details", "reasoning_tokens")
-            .unwrap_or(0),
+        prompt_tokens: u32_field(usage, "prompt_tokens")
+            .unwrap_or(0)
+            .saturating_sub(cache_read),
+        completion_tokens: u32_field(usage, "completion_tokens")
+            .unwrap_or(0)
+            .saturating_sub(reasoning),
+        cache_read_tokens: cache_read,
+        cache_write_tokens: cache_write,
+        reasoning_tokens: reasoning,
     }
 }
 
 pub(super) fn from_anthropic(usage: &Value) -> IrStreamEvent {
+    let reasoning = nested_u32(usage, "output_tokens_details", "thinking_tokens").unwrap_or(0);
     IrStreamEvent::Usage {
         prompt_tokens: u32_field(usage, "input_tokens").unwrap_or(0),
-        completion_tokens: u32_field(usage, "output_tokens").unwrap_or(0),
+        completion_tokens: u32_field(usage, "output_tokens")
+            .unwrap_or(0)
+            .saturating_sub(reasoning),
         cache_read_tokens: u32_field(usage, "cache_read_input_tokens").unwrap_or(0),
         cache_write_tokens: u32_field(usage, "cache_creation_input_tokens").unwrap_or(0),
-        reasoning_tokens: nested_u32(usage, "output_tokens_details", "thinking_tokens")
-            .unwrap_or(0),
+        reasoning_tokens: reasoning,
     }
 }
 
 pub(super) fn from_responses(usage: &Value) -> IrStreamEvent {
+    let cache_read = nested_u32(usage, "input_tokens_details", "cached_tokens").unwrap_or(0);
+    let reasoning = nested_u32(usage, "output_tokens_details", "reasoning_tokens").unwrap_or(0);
     IrStreamEvent::Usage {
-        prompt_tokens: u32_field(usage, "input_tokens").unwrap_or(0),
-        completion_tokens: u32_field(usage, "output_tokens").unwrap_or(0),
-        cache_read_tokens: nested_u32(usage, "input_tokens_details", "cached_tokens").unwrap_or(0),
+        prompt_tokens: u32_field(usage, "input_tokens")
+            .unwrap_or(0)
+            .saturating_sub(cache_read),
+        completion_tokens: u32_field(usage, "output_tokens")
+            .unwrap_or(0)
+            .saturating_sub(reasoning),
+        cache_read_tokens: cache_read,
         cache_write_tokens: 0,
-        reasoning_tokens: nested_u32(usage, "output_tokens_details", "reasoning_tokens")
-            .unwrap_or(0),
+        reasoning_tokens: reasoning,
     }
 }
 
@@ -45,16 +60,25 @@ pub(super) fn encode_chat(
     prompt_tokens: u32,
     completion_tokens: u32,
     cache_read_tokens: u32,
+    cache_write_tokens: u32,
     reasoning_tokens: u32,
 ) -> Value {
+    let prompt_wire = prompt_tokens.saturating_add(cache_read_tokens);
+    let completion_wire = completion_tokens.saturating_add(reasoning_tokens);
     let mut usage = json!({
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": prompt_tokens.saturating_add(completion_tokens),
+        "prompt_tokens": prompt_wire,
+        "completion_tokens": completion_wire,
+        "total_tokens": prompt_wire.saturating_add(completion_wire),
     });
-    // Only emit cache/reasoning details when the IR actually has them.
-    if cache_read_tokens > 0 {
-        usage["prompt_tokens_details"] = json!({ "cached_tokens": cache_read_tokens });
+    if cache_read_tokens > 0 || cache_write_tokens > 0 {
+        let mut details = json!({});
+        if cache_read_tokens > 0 {
+            details["cached_tokens"] = json!(cache_read_tokens);
+        }
+        if cache_write_tokens > 0 {
+            details["cache_write_tokens"] = json!(cache_write_tokens);
+        }
+        usage["prompt_tokens_details"] = details;
     }
     if reasoning_tokens > 0 {
         usage["completion_tokens_details"] = json!({ "reasoning_tokens": reasoning_tokens });
@@ -71,7 +95,7 @@ pub(super) fn encode_anthropic(
 ) -> Value {
     let mut usage = json!({
         "input_tokens": prompt_tokens,
-        "output_tokens": completion_tokens,
+        "output_tokens": completion_tokens.saturating_add(reasoning_tokens),
     });
     if cache_read_tokens > 0 {
         usage["cache_read_input_tokens"] = json!(cache_read_tokens);
@@ -96,8 +120,8 @@ pub(super) fn encode_responses(
     reasoning_tokens: u32,
 ) -> Value {
     let mut usage = json!({
-        "input_tokens": prompt_tokens,
-        "output_tokens": completion_tokens,
+        "input_tokens": prompt_tokens.saturating_add(cache_read_tokens),
+        "output_tokens": completion_tokens.saturating_add(reasoning_tokens),
     });
     if cache_read_tokens > 0 {
         usage["input_tokens_details"] = json!({ "cached_tokens": cache_read_tokens });

@@ -155,12 +155,13 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             prompt_tokens,
             completion_tokens,
             cache_read_tokens,
+            cache_write_tokens,
             reasoning_tokens,
-            ..
         } => usage::encode_chat(
             *prompt_tokens,
             *completion_tokens,
             *cache_read_tokens,
+            *cache_write_tokens,
             *reasoning_tokens,
         ),
         IrStreamEvent::FinishReason { reason } => json!({
