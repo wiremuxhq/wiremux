@@ -138,6 +138,10 @@ fn auth_login_openai_exits_2_until_client_id() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
+        text.contains("oauth.login") && text.contains("pkce") && text.contains("device"),
+        "expected oauth.login with pkce/device, got: {text}"
+    );
+    assert!(
         text.to_ascii_lowercase().contains("client_id"),
         "expected client_id not-ready reason, got: {text}"
     );
