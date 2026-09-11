@@ -48,7 +48,9 @@ fn load_id(id: &str, dir: &Path) -> Result<ResolvedProfile, ProfileError> {
 #[test]
 fn exact_anthropic_oauth_toml_parses() {
     let path = fixtures_dir().join("anthropic-oauth.toml");
-    let text = fs::read_to_string(&path).expect("read anthropic-oauth.toml");
+    let text = fs::read_to_string(&path)
+        .expect("read anthropic-oauth.toml")
+        .replace("\r\n", "\n");
     assert!(
         text.starts_with("# presets/anthropic-oauth.toml\n"),
         "fixture must be the design's complete shipped example"
@@ -144,8 +146,7 @@ fn load_openai_codex_does_not_inherit_anthropic_fields() {
     assert_ne!(token_url, "https://platform.claude.com/v1/oauth/token");
     assert!(
         openai.betas.values.is_empty(),
-        "openai-codex-oauth must not inherit Anthropic betas, got {:?}",
-        openai.betas.values
+        "openai-codex-oauth must not inherit Anthropic betas"
     );
 
     let anthropic =
