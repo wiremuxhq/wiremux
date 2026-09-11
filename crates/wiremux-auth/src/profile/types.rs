@@ -351,7 +351,12 @@ pub enum CredsFormat {
     JsonPointer,
     /// Claude credentials.json alias map.
     ClaudeCredentials,
-    /// Named profile object inside an auth.json.
+    /// Named `{issuer}::{client_id}` object inside an auth.json.
+    ///
+    /// Pointers: `/{issuer}::{client_id}/key` (access), `/refresh_token`,
+    /// `/expires_at` (RFC 3339). `issuer` is the origin of `authorize_url`,
+    /// else `token_url`. A `{issuer}::{client_id}@{name}` suffix matches
+    /// when the exact key is absent.
     OidcAuthJson,
     /// GitHub Copilot hosts.json layout.
     CopilotHosts,
