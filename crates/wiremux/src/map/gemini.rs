@@ -202,12 +202,12 @@ pub(super) fn encode(
                 system_parts.push(json!({ "text": text }));
             }
             IrItem::User { parts } => {
-                for part in encode_parts(parts) {
+                for part in encode_parts(parts, report) {
                     push_role_part(&mut contents, "user", part);
                 }
             }
             IrItem::Assistant { parts } => {
-                for part in encode_parts(parts) {
+                for part in encode_parts(parts, report) {
                     push_role_part(&mut contents, "model", part);
                 }
             }
@@ -302,7 +302,7 @@ fn push_role_part(contents: &mut Vec<Value>, role: &str, part: Value) {
     contents.push(json!({ "role": role, "parts": [part] }));
 }
 
-fn encode_parts(parts: &[IrPart]) -> Vec<Value> {
+fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
     let mut out = Vec::new();
     for part in parts {
         match part {
@@ -319,7 +319,13 @@ fn encode_parts(parts: &[IrPart]) -> Vec<Value> {
                     "inlineData": { "mimeType": media_type, "data": data }
                 }));
             }
-            IrPart::Raw { .. } => {}
+            IrPart::Raw { .. } => {
+                report.record(
+                    "part.raw",
+                    LossAction::Drop,
+                    "raw part has no generateContent slot",
+                );
+            }
             IrPart::ImageUrl(url) => {
                 if let Some(rest) = url.strip_prefix("data:")
                     && let Some((mime, b64)) = rest.split_once(";base64,")
@@ -328,6 +334,11 @@ fn encode_parts(parts: &[IrPart]) -> Vec<Value> {
                         "inlineData": { "mimeType": mime, "data": b64 }
                     }));
                 } else {
+                    report.record(
+                        "part.image_url",
+                        LossAction::Degrade,
+                        "url to text placeholder",
+                    );
                     out.push(json!({ "text": format!("[image: {url}]") }));
                 }
             }

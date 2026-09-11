@@ -1025,6 +1025,79 @@ fn chat_data_url_becomes_image_base64_for_gemini() {
     );
 }
 
+#[test]
+fn gemini_https_image_url_degrades_to_text_placeholder() {
+    let ir = IrRequest {
+        model: "gemini-2.5-flash".into(),
+        items: vec![IrItem::User {
+            parts: vec![
+                IrPart::Text("see".into()),
+                IrPart::ImageUrl("https://example.com/cat.png".into()),
+            ],
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/1/text")
+            .and_then(Value::as_str),
+        Some("[image: https://example.com/cat.png]"),
+        "https ImageUrl must become a text placeholder, got {body}"
+    );
+    assert!(
+        body.pointer("/contents/0/parts/1/inlineData").is_none(),
+        "https ImageUrl must not become inlineData, got {body}"
+    );
+    assert!(
+        body.pointer("/contents/0/parts/1/fileData").is_none(),
+        "this pass must not invent fileData.fileUri, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "part.image_url"),
+        "ImageUrl degrade missing, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_raw_part_is_dropped_with_loss_report() {
+    let ir = IrRequest {
+        model: "gemini-2.5-flash".into(),
+        items: vec![IrItem::User {
+            parts: vec![
+                IrPart::Text("hi".into()),
+                IrPart::Raw {
+                    type_name: "redacted_thinking".into(),
+                    raw: serde_json::json!({"type": "redacted_thinking", "data": "enc"}),
+                },
+            ],
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let parts = body
+        .pointer("/contents/0/parts")
+        .and_then(Value::as_array)
+        .expect("parts");
+    assert_eq!(parts.len(), 1, "Raw must be omitted, got {body}");
+    assert_eq!(
+        parts[0].get("text").and_then(Value::as_str),
+        Some("hi"),
+        "visible text must stay, got {body}"
+    );
+    assert!(
+        !body.to_string().contains("redacted_thinking"),
+        "Raw must not be replayed, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.raw"),
+        "Raw drop missing, got {report:?}"
+    );
+}
+
 fn count_cache_control(value: &Value) -> usize {
     match value {
         Value::Object(map) => {
@@ -1415,6 +1488,13 @@ fn loss_dropped(report: &LossReport, path: &str) -> bool {
         .events
         .iter()
         .any(|event| event.path == path && event.action == LossAction::Drop)
+}
+
+fn loss_degraded(report: &LossReport, path: &str) -> bool {
+    report
+        .events
+        .iter()
+        .any(|event| event.path == path && event.action == LossAction::Degrade)
 }
 
 #[test]
