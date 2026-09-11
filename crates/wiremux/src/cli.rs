@@ -439,33 +439,35 @@ fn format_pkce_vendor_error(error: Option<&str>, description: Option<&str>) -> S
     }
 }
 
-fn url_decode(s: &str) -> String {
-    let mut out = String::new();
+pub(crate) fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
             b'+' => {
-                out.push(' ');
+                out.push(b' ');
                 i += 1;
             }
             b'%' if i + 2 < bytes.len() => {
-                let hex = &s[i + 1..i + 3];
-                if let Ok(v) = u8::from_str_radix(hex, 16) {
-                    out.push(v as char);
+                let hex = &bytes[i + 1..i + 3];
+                if let Ok(hex) = std::str::from_utf8(hex)
+                    && let Ok(v) = u8::from_str_radix(hex, 16)
+                {
+                    out.push(v);
                     i += 3;
                 } else {
-                    out.push('%');
+                    out.push(b'%');
                     i += 1;
                 }
             }
             c => {
-                out.push(c as char);
+                out.push(c);
                 i += 1;
             }
         }
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Whether a token can be loaded. Never includes the token value.
@@ -835,5 +837,19 @@ base_url = "http://127.0.0.1:9"
         let (code, state) = pkce_callback_from_query("code=abc&state=xyz").expect("code and state");
         assert_eq!(code, "abc");
         assert_eq!(state, "xyz");
+    }
+
+    #[test]
+    fn url_decode_percent_then_multibyte_utf8_does_not_panic() {
+        let decoded = url_decode("%完");
+        assert_eq!(decoded, "%完");
+        let callback = pkce_callback_from_query("code=%完&state=xyz");
+        assert!(
+            callback.is_ok(),
+            "hostile query must not abort: {callback:?}"
+        );
+        assert_eq!(url_decode("%FF"), "\u{FFFD}");
+        assert_eq!(url_decode("a+b%20c"), "a b c");
+        assert_eq!(url_decode("%E2%82%AC"), "€");
     }
 }
