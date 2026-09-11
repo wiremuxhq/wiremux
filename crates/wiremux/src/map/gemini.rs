@@ -271,7 +271,8 @@ pub(super) fn encode(
     }
     let decls: Vec<Value> = prepared
         .iter()
-        .filter_map(|tool| match tool {
+        .enumerate()
+        .filter_map(|(i, tool)| match tool {
             PreparedTool::Function {
                 name,
                 description,
@@ -281,7 +282,14 @@ pub(super) fn encode(
                 "description": description,
                 "parameters": parameters,
             })),
-            PreparedTool::Raw(_) => None,
+            PreparedTool::Raw(_) => {
+                report.record(
+                    format!("tools[{i}]"),
+                    LossAction::Drop,
+                    "raw tool has no generateContent slot",
+                );
+                None
+            }
         })
         .collect();
     if !decls.is_empty() {

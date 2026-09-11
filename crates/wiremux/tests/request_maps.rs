@@ -1139,6 +1139,66 @@ fn gemini_raw_part_is_dropped_with_loss_report() {
     );
 }
 
+#[test]
+fn gemini_raw_tool_is_dropped_with_loss_report() {
+    let ir = IrRequest {
+        model: "gemini-2.5-flash".into(),
+        items: vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+        tools: vec![
+            IrTool::Function {
+                name: "lookup".into(),
+                description: "Look up".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+            IrTool::Unknown {
+                type_name: "weird".into(),
+                raw: serde_json::json!({"type": "weird", "name": "do_thing"}),
+            },
+        ],
+        sampling: IrSampling::default(),
+    };
+    let passthrough = profile(
+        r#"
+schema_version = 1
+id = "test-gemini-passthrough"
+wire = "gemini"
+tool_type_policy = "passthrough"
+"#,
+    );
+    let (bytes, report) = encode(Wire::Gemini, &ir, &passthrough).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let decls = body
+        .pointer("/tools/0/functionDeclarations")
+        .and_then(Value::as_array)
+        .expect("functionDeclarations");
+    assert_eq!(decls.len(), 1, "Raw must be omitted from decls, got {body}");
+    assert_eq!(
+        decls[0].get("name").and_then(Value::as_str),
+        Some("lookup"),
+        "function tool must stay, got {body}"
+    );
+    assert!(
+        !body.to_string().contains("weird") && !body.to_string().contains("do_thing"),
+        "Raw tool must not appear in generateContent JSON, got {body}"
+    );
+    assert!(
+        body.pointer("/tools/0/fileData").is_none(),
+        "this pass must not invent fileData, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Drop
+                && (event.path == "tools[1]" || event.path == "tool.raw")
+                && event
+                    .detail
+                    .contains("raw tool has no generateContent slot")
+        }),
+        "Raw tool drop missing, got {report:?}"
+    );
+}
+
 fn count_cache_control(value: &Value) -> usize {
     match value {
         Value::Object(map) => {
