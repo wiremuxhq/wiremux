@@ -5,6 +5,7 @@ mod error;
 mod load;
 mod parse;
 mod refuse;
+mod shipped;
 mod types;
 
 pub use error::ProfileError;

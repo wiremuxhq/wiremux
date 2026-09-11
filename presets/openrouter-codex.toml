@@ -1,0 +1,18 @@
+schema_version = 1
+id = "openrouter-codex"
+display_name = "OpenRouter Codex (Responses, API key)"
+wire = "responses"
+tool_type_policy = "flatten-namespace"
+stream_unknown_policy = "hard-error"
+base_url = "https://openrouter.ai/api"
+chat_path = "/v1/responses"
+auth_scheme = "bearer"
+header_merge = "union"
+
+[headers]
+Authorization = "Bearer {env:OPENROUTER_API_KEY}"
+
+[fingerprint]
+# store: true is 400 on OpenRouter (stateless Responses).
+forbidden_body_fields = ["store"]
+forbidden_field_policy = "hard-error"

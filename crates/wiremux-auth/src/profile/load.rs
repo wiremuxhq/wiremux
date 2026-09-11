@@ -5,7 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::error::ProfileError;
-use super::parse::parse_profile_file;
+use super::parse::{parse_profile_file, parse_profile_str};
+use super::shipped;
 use super::types::{LoadOptions, ResolvedProfile};
 
 /// List document ids from shipped ∪ extra dirs ∪ explicit file.
@@ -62,7 +63,13 @@ struct Layer {
 fn collect_layers(opts: &LoadOptions<'_>) -> Result<Vec<Layer>, ProfileError> {
     let mut layers = Vec::new();
     if opts.include_shipped {
-        // Product presets ship in a later PR. Empty here on purpose.
+        for text in shipped::documents() {
+            let profile = parse_profile_str(text)?;
+            layers.push(Layer {
+                id: profile.id.clone(),
+                profile,
+            });
+        }
     }
     for dir in &opts.extra_profile_dirs {
         for path in list_profile_files(dir)? {
