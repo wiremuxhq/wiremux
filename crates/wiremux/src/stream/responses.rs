@@ -14,6 +14,10 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
         "response.output_text.delta" => {
             nonempty_delta(value, |text| IrStreamEvent::TextDelta { text })
         }
+        "response.reasoning_summary_text.delta" | "response.reasoning.delta" => {
+            nonempty_delta(value, |text| IrStreamEvent::ReasoningDelta { text })
+        }
+        "response.refusal.delta" => nonempty_delta(value, |text| IrStreamEvent::TextDelta { text }),
         "response.function_call_arguments.delta" => Ok(Some(IrStreamEvent::ToolCallArgDelta {
             delta: str_field(value, "delta").unwrap_or_default(),
         })),
