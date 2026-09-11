@@ -310,7 +310,7 @@ pub(crate) fn resolve(raw: RawProfile) -> Result<ResolvedProfile, ProfileError> 
 fn resolve_oauth(raw: RawOauth) -> Result<OauthPack, ProfileError> {
     let token_url = match raw.token_url {
         Some(url) if !url.is_empty() => url,
-        _ => return Err(ProfileError::MissingField("token_url")),
+        _ => return Err(ProfileError::MissingField("oauth.token_url")),
     };
 
     let mut access_token_ptr = raw.access_token_ptr;
@@ -473,7 +473,14 @@ mod tests {
     fn oauth_without_token_url_fails_closed() {
         let err = parse_profile_str("schema_version = 1\nid = \"x\"\n[oauth]\nclient_id = \"c\"\n")
             .unwrap_err();
-        assert!(matches!(err, ProfileError::MissingField("token_url")));
+        assert!(
+            matches!(err, ProfileError::MissingField("oauth.token_url")),
+            "missing token_url must name oauth.token_url, got {err}"
+        );
+        assert!(
+            err.to_string().contains("oauth.token_url"),
+            "display must name oauth.token_url, got {err}"
+        );
     }
 
     #[test]

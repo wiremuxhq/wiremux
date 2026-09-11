@@ -287,6 +287,28 @@ fn unknown_profile_id_lists_catalog_and_path_hint() {
 }
 
 #[test]
+fn missing_oauth_token_url_names_dotted_field() {
+    let err = parse_via_file(
+        "no-token-url.toml",
+        r#"
+schema_version = 1
+id = "no-token-url"
+[oauth]
+client_id = "c"
+"#,
+    )
+    .expect_err("oauth without token_url must fail");
+    assert!(
+        matches!(err, ProfileError::MissingField("oauth.token_url")),
+        "must name oauth.token_url, got {err}"
+    );
+    assert!(
+        err.to_string().contains("oauth.token_url"),
+        "display must name oauth.token_url, got {err}"
+    );
+}
+
+#[test]
 fn unknown_auth_scheme_lists_legal_values() {
     let err = parse_via_file(
         "bad-scheme.toml",
