@@ -394,3 +394,48 @@ fn collect_tool_names(tools: &[Value]) -> Vec<String> {
     }
     names
 }
+
+#[test]
+fn stream_true_survives_chat_messages_responses() {
+    let chat_req = br#"{
+        "model": "grok-4",
+        "stream": true,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, chat_req).expect("decode chat stream");
+    assert_eq!(
+        ir.sampling.stream,
+        Some(true),
+        "Grok always-SSE must not drop stream:true"
+    );
+
+    for (wire, profile) in [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Messages, messages_profile()),
+        (Wire::Responses, flatten_profile()),
+    ] {
+        let (bytes, _) = encode(wire, &ir, &profile).expect("encode keeps stream");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            body.get("stream"),
+            Some(&Value::Bool(true)),
+            "{wire:?} must send stream:true, got {body}"
+        );
+    }
+}
+
+#[test]
+fn stream_absent_is_not_invented() {
+    let chat_req = br#"{
+        "model": "grok-4",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, chat_req).expect("decode");
+    assert_eq!(ir.sampling.stream, None);
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("stream").is_none(),
+        "must not invent stream when the source omitted it: {body}"
+    );
+}

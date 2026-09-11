@@ -13,8 +13,10 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use wiremux_auth::{AuthScheme, ResolvedProfile, Wire};
 
+use serde_json::Value;
+
 use crate::cli::{parse_listen, proxy_token, upstream_url};
-use crate::ir::LossReport;
+use crate::ir::{IrStreamEvent, LossReport};
 use crate::map::{decode, encode};
 use crate::stream::{RawSse, decode_stream_event, encode_stream_event};
 
@@ -162,6 +164,11 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         // so a 4xx/5xx stream is not rewritten as 200.
         return map_sse(&state, target, status_from_reqwest(status), &body);
     }
+    if ir.sampling.stream == Some(true)
+        && let Some(sse) = json_completion_to_sse(state.from, &body)
+    {
+        return bytes_response(status_from_reqwest(status), "text/event-stream", sse);
+    }
     if target == state.from {
         return bytes_response(status_from_reqwest(status), &content_type, body);
     }
@@ -169,6 +176,73 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         StatusCode::NOT_IMPLEMENTED,
         "non-stream cross-dialect responses are not mapped\n",
     )
+}
+
+/// Grok (and other always-SSE clients) still get SSE when the upstream
+/// ignored `stream: true` and returned a JSON completion.
+fn json_completion_to_sse(from: Wire, body: &Bytes) -> Option<Bytes> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    let text = assistant_text(from, &value)?;
+    let mut out = String::new();
+    let events = [
+        IrStreamEvent::TextDelta { text },
+        IrStreamEvent::FinishReason {
+            reason: "stop".into(),
+        },
+        IrStreamEvent::Done,
+    ];
+    for ev in events {
+        let raw = encode_stream_event(from, &ev).ok()?;
+        out.push_str(&format_sse(&raw));
+    }
+    Some(Bytes::from(out))
+}
+
+fn assistant_text(wire: Wire, value: &Value) -> Option<String> {
+    match wire {
+        Wire::ChatCompletions => value
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        Wire::Messages => {
+            if let Some(s) = value.get("content").and_then(Value::as_str) {
+                return Some(s.to_owned()).filter(|t| !t.is_empty());
+            }
+            let blocks = value.get("content").and_then(Value::as_array)?;
+            let text: String = blocks
+                .iter()
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("");
+            (!text.is_empty()).then_some(text)
+        }
+        Wire::Responses => {
+            if let Some(s) = value
+                .pointer("/output_text")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                return Some(s.to_owned());
+            }
+            let output = value.get("output").and_then(Value::as_array)?;
+            let mut text = String::new();
+            for item in output {
+                if let Some(s) = item.get("text").and_then(Value::as_str) {
+                    text.push_str(s);
+                    continue;
+                }
+                if let Some(parts) = item.get("content").and_then(Value::as_array) {
+                    for part in parts {
+                        if let Some(s) = part.get("text").and_then(Value::as_str) {
+                            text.push_str(s);
+                        }
+                    }
+                }
+            }
+            (!text.is_empty()).then_some(text)
+        }
+    }
 }
 
 fn apply_profile_headers(
