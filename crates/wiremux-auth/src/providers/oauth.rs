@@ -995,7 +995,14 @@ fn token_url_allowed(url: &str) -> bool {
     if https_token_url(url).is_some() {
         return true;
     }
-    crate::profile::is_loopback_http(url)
+    #[cfg(any(test, feature = "test-util"))]
+    {
+        crate::profile::is_loopback_http(url)
+    }
+    #[cfg(not(any(test, feature = "test-util")))]
+    {
+        false
+    }
 }
 
 fn adopt_from_store(
