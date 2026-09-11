@@ -123,6 +123,7 @@ fn is_reserved_authorize_param(key: &str) -> bool {
             | "state"
             | "code_verifier"
             | "grant_type"
+            | "scope"
     )
 }
 
@@ -320,6 +321,42 @@ mod tests {
         assert!(url.contains("audience=inference"), "{url}");
         assert!(url.contains("resource=api"), "{url}");
         assert!(url.contains("prompt=consent"), "{url}");
+    }
+
+    #[test]
+    fn build_auth_url_drops_reserved_scope() {
+        let pkce = PkceChallenge {
+            code_verifier: "v".into(),
+            code_challenge: "c".into(),
+            state: "s".into(),
+        };
+        let mut extra = BTreeMap::new();
+        extra.insert("scope".into(), "evil-scope".into());
+        extra.insert("SCOPE".into(), "EVIL".into());
+        extra.insert("audience".into(), "inference".into());
+        let url = build_auth_url(
+            "https://auth.example.invalid/authorize",
+            "client-1",
+            "http://localhost:9/cb",
+            Some("openid profile"),
+            &pkce,
+            &extra,
+        );
+        assert!(
+            !url.contains("evil-scope"),
+            "reserved overlay scope must be dropped: {url}"
+        );
+        assert!(!url.contains("EVIL"), "{url}");
+        assert_eq!(
+            url.matches("scope=").count(),
+            1,
+            "engine scope must appear exactly once: {url}"
+        );
+        assert!(
+            url.contains("scope=openid%20profile") || url.contains("scope=openid+profile"),
+            "engine scope missing: {url}"
+        );
+        assert!(url.contains("audience=inference"), "{url}");
     }
 
     #[test]
