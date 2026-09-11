@@ -552,6 +552,31 @@ fn stream_function_call_thought_signature_round_trips_on_next_request() {
 }
 
 #[test]
+fn stream_signed_function_call_keeps_nonempty_args() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{"q":"x"}},"thoughtSignature":"sig_args"}]}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode")
+        .expect("event");
+    let encoded = encode_stream_event(Wire::Gemini, &ev).expect("encode");
+    let json: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(
+        json.pointer("/candidates/0/content/parts/0/thoughtSignature")
+            .and_then(Value::as_str),
+        Some("sig_args"),
+        "signature must survive, got {json}"
+    );
+    assert_eq!(
+        json.pointer("/candidates/0/content/parts/0/functionCall/args/q")
+            .and_then(Value::as_str),
+        Some("x"),
+        "nonempty args must not be dropped when thoughtSignature is present, got {json}"
+    );
+}
+
+#[test]
 fn gemini_safety_finish_reasons_are_content_filter() {
     for reason in ["RECITATION", "SPII", "OTHER", "SAFETY"] {
         let raw = RawSse {

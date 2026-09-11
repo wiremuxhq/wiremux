@@ -66,9 +66,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
                 let args = fc.get("args");
-                if args.is_some_and(|a| !a.as_object().is_some_and(serde_json::Map::is_empty))
-                    && thought_signature.is_none()
-                {
+                if args.is_some_and(|a| !a.as_object().is_some_and(serde_json::Map::is_empty)) {
                     return Ok(Some(IrStreamEvent::Protocol {
                         item_type: "chunk".into(),
                         payload: value.clone(),
