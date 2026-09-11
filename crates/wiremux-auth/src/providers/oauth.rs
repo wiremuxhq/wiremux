@@ -60,13 +60,21 @@ impl CachedToken {
 #[derive(Clone, Debug)]
 enum CredSource {
     File(PathBuf),
-    Keychain { service: String, account: String },
+    #[cfg(target_os = "macos")]
+    Keychain {
+        service: String,
+        account: String,
+    },
     Env,
 }
 
 enum WriteBack {
     File(PathBuf),
-    Keychain { service: String, account: String },
+    #[cfg(target_os = "macos")]
+    Keychain {
+        service: String,
+        account: String,
+    },
     None,
 }
 
@@ -74,6 +82,7 @@ impl std::fmt::Debug for WriteBack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::File(path) => f.debug_tuple("File").field(path).finish(),
+            #[cfg(target_os = "macos")]
             Self::Keychain { service, account } => f
                 .debug_struct("Keychain")
                 .field("service", service)
@@ -166,6 +175,7 @@ impl ProfileTokenProvider {
             CredSource::File(path) => absolute_write_back_path(path)
                 .map(WriteBack::File)
                 .unwrap_or(WriteBack::None),
+            #[cfg(target_os = "macos")]
             CredSource::Keychain { service, account } => WriteBack::Keychain {
                 service: service.clone(),
                 account: account.clone(),
@@ -206,6 +216,7 @@ impl ProfileTokenProvider {
                 let content = read_creds_string(path).await?;
                 store_tokens_from_json(&content, &self.inner.oauth, &self.inner.layout)
             }
+            #[cfg(target_os = "macos")]
             WriteBack::Keychain { service, account } => {
                 if keychain_disabled() {
                     return Ok(None);
@@ -291,6 +302,7 @@ impl ProfileTokenProvider {
                 )
                 .await
             }
+            #[cfg(target_os = "macos")]
             WriteBack::Keychain { service, account } => {
                 if keychain_disabled() {
                     return Ok(());
@@ -487,6 +499,14 @@ fn refresh_request_body(oauth: &OauthPack, refresh_token: &str) -> BTreeMap<Stri
     body
 }
 
+fn token_endpoint_allowed(url: &str) -> bool {
+    let url = url.trim();
+    if url.len() >= 8 && url[..8].eq_ignore_ascii_case("https://") {
+        return true;
+    }
+    crate::profile::is_loopback_http(url)
+}
+
 async fn token_post(
     http: &reqwest::Client,
     oauth: &OauthPack,
@@ -494,6 +514,14 @@ async fn token_post(
     body: &BTreeMap<String, String>,
     format: TokenRequestFormat,
 ) -> Result<reqwest::Response, AuthError> {
+    if !token_endpoint_allowed(url) {
+        return Err(AuthError::TokenProvider(
+            "token_url must be https (or loopback http)".into(),
+        ));
+    }
+    // IsolatedHome mocks speak HTTP on 127.0.0.1. refuse.rs already
+    // rejected non-loopback http token_url at profile load.
+    // codeql[rust/cleartext-transmission]
     let mut req = http.post(url);
     for (k, v) in &oauth.token_headers {
         req = req.header(k.as_str(), v.as_str());
@@ -635,7 +663,7 @@ fn load_from_keychain(oauth: &OauthPack) -> Result<Option<Loaded>, AuthError> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = service;
-        return Ok(None);
+        Ok(None)
     }
     #[cfg(target_os = "macos")]
     {
@@ -843,6 +871,7 @@ fn adopt_from_store(
 fn refresh_lock_path(write_back: &WriteBack) -> Option<PathBuf> {
     match write_back {
         WriteBack::File(path) => Some(path.clone()),
+        #[cfg(target_os = "macos")]
         WriteBack::Keychain { service, account } => {
             Some(keychain_refresh_lock_path(service, account))
         }
@@ -850,6 +879,7 @@ fn refresh_lock_path(write_back: &WriteBack) -> Option<PathBuf> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn keychain_refresh_lock_path(service: &str, account: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "wiremux-auth-{}-{}",
@@ -858,6 +888,7 @@ fn keychain_refresh_lock_path(service: &str, account: &str) -> PathBuf {
     ))
 }
 
+#[cfg(target_os = "macos")]
 fn sanitize_lock_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -928,36 +959,22 @@ fn missing_creds(oauth: &OauthPack) -> AuthError {
     ))
 }
 
+#[cfg(target_os = "macos")]
 fn read_keychain(service: &str, account: &str) -> Result<String, AuthError> {
-    #[cfg(target_os = "macos")]
-    {
-        let entry = keyring::Entry::new(service, account)
-            .map_err(|e| AuthError::TokenProvider(format!("keychain: {e}")))?;
-        entry
-            .get_password()
-            .map_err(|e| AuthError::TokenProvider(format!("keychain read: {e}")))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (service, account);
-        Err(AuthError::TokenProvider("keychain not available".into()))
-    }
+    let entry = keyring::Entry::new(service, account)
+        .map_err(|e| AuthError::TokenProvider(format!("keychain: {e}")))?;
+    entry
+        .get_password()
+        .map_err(|e| AuthError::TokenProvider(format!("keychain read: {e}")))
 }
 
+#[cfg(target_os = "macos")]
 fn write_keychain(service: &str, account: &str, secret: &str) -> Result<(), AuthError> {
-    #[cfg(target_os = "macos")]
-    {
-        let entry = keyring::Entry::new(service, account)
-            .map_err(|e| AuthError::TokenProvider(format!("keychain: {e}")))?;
-        entry
-            .set_password(secret)
-            .map_err(|e| AuthError::TokenProvider(format!("keychain write: {e}")))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (service, account, secret);
-        Err(AuthError::TokenProvider("keychain not available".into()))
-    }
+    let entry = keyring::Entry::new(service, account)
+        .map_err(|e| AuthError::TokenProvider(format!("keychain: {e}")))?;
+    entry
+        .set_password(secret)
+        .map_err(|e| AuthError::TokenProvider(format!("keychain write: {e}")))
 }
 
 #[cfg(test)]
@@ -1103,7 +1120,7 @@ expires_unit = "s"
     fn provider(oauth: &OauthPack) -> ProfileTokenProvider {
         match provider_from_oauth(oauth).expect("provider") {
             AnyTokenProvider::Profile(p) => p,
-            other => panic!("expected Profile, got {other:?}"),
+            AnyTokenProvider::Static(_) => panic!("expected Profile"),
         }
     }
 
@@ -1385,9 +1402,18 @@ access_env = "WIREMUX_TEST_ACCESS"
         assert_eq!(p.get_token().await.unwrap(), "env-access-token");
         assert!(
             matches!(p.inner.write_back, WriteBack::None),
-            "env-only must not write, got {:?}",
-            p.inner.write_back
+            "env-only must not write"
         );
+    }
+
+    #[test]
+    fn token_endpoint_https_or_loopback_only() {
+        assert!(token_endpoint_allowed("https://auth.example.invalid/token"));
+        assert!(token_endpoint_allowed("HTTPS://auth.example.invalid/token"));
+        assert!(token_endpoint_allowed("http://127.0.0.1:9/token"));
+        assert!(token_endpoint_allowed("http://localhost/token"));
+        assert!(!token_endpoint_allowed("http://192.0.2.1/token"));
+        assert!(!token_endpoint_allowed("http://example.invalid/token"));
     }
 
     #[test]

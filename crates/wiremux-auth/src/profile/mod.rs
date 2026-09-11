@@ -10,6 +10,7 @@ mod types;
 pub use error::ProfileError;
 pub use load::{list_profiles, load_profile, load_profile_from_cli};
 pub use parse::parse_profile_str;
+pub(crate) use refuse::is_loopback_http;
 pub use types::{
     AuthScheme, Betas, CredsFormat, Dialect, ExpiresUnit, Fingerprint, ForbiddenFieldPolicy, Http,
     ListMerge, LoadOptions, Login, OauthPack, ResolvedProfile, SCHEMA_VERSION_MAX,
