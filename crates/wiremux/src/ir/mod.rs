@@ -20,6 +20,8 @@ pub struct IrSampling {
     pub store: Option<bool>,
     pub previous_response_id: Option<String>,
     pub cache: IrCache,
+    /// Client asked for SSE. Grok TUI always sets this.
+    pub stream: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

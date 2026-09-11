@@ -145,6 +145,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         store: bool_field(value, "store"),
         previous_response_id: str_field(value, "previous_response_id"),
         cache: IrCache::default(),
+        stream: bool_field(value, "stream"),
     }
 }
 
@@ -379,6 +380,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.cache.enabled {
         report.record("sampling.cache", LossAction::Drop, "no slot");
+    }
+    if let Some(stream) = s.stream {
+        body["stream"] = json!(stream);
     }
 }
 

@@ -382,6 +382,86 @@ chat_path = "/v1/responses"
     );
 }
 
+#[test]
+fn proxy_grok_stream_true_reaches_upstream_and_json_becomes_sse() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            req.contains("\"stream\":true") || req.contains("\"stream\": true"),
+            "upstream must see stream:true, got: {req}"
+        );
+        let body = r#"{"id":"chatcmpl-redacted","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        req.into_owned()
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "grok-ollama.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "grok-ollama"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat-completions",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"grok-4","stream":true,"messages":[{"role":"user","content":"ping"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _upstream_req = upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("text/event-stream"),
+        "Grok always-SSE must get event-stream, not JSON, got: {resp}"
+    );
+    assert!(
+        resp.contains("pong") && resp.contains("data:"),
+        "wrapped SSE must carry assistant text, got: {resp}"
+    );
+}
+
 fn read_listen_addr(stdout: &mut impl Read) -> std::net::SocketAddr {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut buf = Vec::new();
