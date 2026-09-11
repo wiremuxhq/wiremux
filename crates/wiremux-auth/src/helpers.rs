@@ -469,9 +469,16 @@ fn has_parent_dir(path: &Path) -> bool {
 }
 
 fn path_is_under_home(path: &Path, home: &Path) -> bool {
-    let path: Vec<Component<'_>> = path.components().collect();
-    let home: Vec<Component<'_>> = home.components().collect();
-    !home.is_empty() && path.starts_with(&home)
+    let home_canon = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return canon.starts_with(&home_canon);
+    }
+    // Missing file: map the logical HOME prefix through the same symlink
+    // (macOS /var/folders -> /private/var/folders).
+    if let Ok(rest) = path.strip_prefix(home) {
+        return home_canon.join(rest).starts_with(&home_canon);
+    }
+    path.strip_prefix(&home_canon).is_ok()
 }
 
 fn creds_path_escapes_home() -> AuthError {
@@ -712,5 +719,19 @@ mod tests {
             assert_eq!(expanded, home.join("foo/bar"));
         }
         drop(prev);
+    }
+
+    #[test]
+    fn jail_accepts_canonical_path_when_home_is_a_symlink() {
+        let home = crate::isolated_home::IsolatedHome::new();
+        let planted = home.plant_credentials(crate::isolated_home::PlantCredentials::JsonPointer {
+            relative_path: ".config/github-copilot/hosts.json",
+            document: serde_json::json!({"github.com": {"oauth_token": "ghu"}}),
+        });
+        let canon = std::fs::canonicalize(&planted).expect("canonicalize planted");
+        jail_creds_path(&planted).expect("logical plant path");
+        jail_creds_path(&canon).expect("canonical path under IsolatedHome");
+        let missing = home.path().join(".claude/.credentials.json");
+        jail_creds_path(&missing).expect("missing file still under IsolatedHome");
     }
 }
