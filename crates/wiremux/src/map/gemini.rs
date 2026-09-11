@@ -162,6 +162,8 @@ fn decode_sampling(value: &Value) -> IrSampling {
             .or_else(|| bool_field(thinking, "include_thoughts")),
         thinking_budget: u32_field(thinking, "thinkingBudget")
             .or_else(|| u32_field(thinking, "thinking_budget")),
+        reasoning_effort: None,
+        max_reasoning_tokens: None,
     }
 }
 
@@ -365,5 +367,11 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             tc["thinkingBudget"] = json!(budget);
         }
         body["thinkingConfig"] = tc;
+    }
+    if s.reasoning_effort.is_some() {
+        report.record("sampling.reasoning_effort", LossAction::Drop, "no slot");
+    }
+    if s.max_reasoning_tokens.is_some() {
+        report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
     }
 }

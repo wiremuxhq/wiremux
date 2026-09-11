@@ -26,6 +26,10 @@ pub struct IrSampling {
     pub include_thoughts: Option<bool>,
     /// Gemini `thinkingConfig.thinkingBudget` (and peers).
     pub thinking_budget: Option<u32>,
+    /// Dialect effort string (`low`, `high`, `xhigh`). Not a host enum.
+    pub reasoning_effort: Option<String>,
+    /// Host cap on reasoning tokens. Only dialects with a slot emit it.
+    pub max_reasoning_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
