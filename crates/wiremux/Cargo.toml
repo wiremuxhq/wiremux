@@ -16,4 +16,5 @@ path = "src/main.rs"
 
 [dependencies]
 serde_json = "1"
+thiserror = "2.0.20"
 wiremux-auth = { path = "../wiremux-auth" }

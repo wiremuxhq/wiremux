@@ -157,6 +157,22 @@ pub struct LossReport {
     pub events: Vec<LossEvent>,
 }
 
+impl LossReport {
+    /// Append a loss event.
+    pub fn record(
+        &mut self,
+        path: impl Into<String>,
+        action: LossAction,
+        detail: impl Into<String>,
+    ) {
+        self.events.push(LossEvent {
+            path: path.into(),
+            action,
+            detail: detail.into(),
+        });
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LossEvent {
     pub path: String,
