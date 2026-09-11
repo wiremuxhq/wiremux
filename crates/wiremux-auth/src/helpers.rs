@@ -2,7 +2,7 @@
 
 use std::future::Future;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -172,11 +172,13 @@ pub(crate) async fn read_oauth_body(mut resp: reqwest::Response) -> Result<Strin
         )));
     }
     let mut buf = Vec::new();
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| AuthError::TokenProvider(format!("failed to read OAuth response body: {e}")))?
-    {
+    while let Some(chunk) = resp.chunk().await.map_err(|e| {
+        AuthError::TokenProvider(format_oauth_transport_error(
+            "failed to read OAuth response body",
+            &e,
+            resp.url().as_str(),
+        ))
+    })? {
         append_oauth_body_chunk(&mut buf, &chunk)?;
     }
     Ok(String::from_utf8_lossy(&buf).into_owned())
@@ -224,6 +226,27 @@ pub fn sanitize_oauth_error_text(text: &str) -> String {
         summary = summary.chars().take(MAX_CHARS).collect();
     }
     summary
+}
+
+/// Short reason plus origin only. Never format a raw `reqwest` error.
+pub fn format_oauth_transport_error(context: &str, err: &reqwest::Error, url: &str) -> String {
+    format_oauth_transport_via(context, oauth_transport_reason(err), url)
+}
+
+pub(crate) fn format_oauth_transport_via(context: &str, reason: &str, url: &str) -> String {
+    format!("{context} ({reason}) via {}", redact_url_origin(url))
+}
+
+fn oauth_transport_reason(err: &reqwest::Error) -> &'static str {
+    if err.is_timeout() {
+        "timeout"
+    } else if err.is_connect() {
+        "connect"
+    } else if err.is_request() {
+        "request"
+    } else {
+        "transport"
+    }
 }
 
 pub(crate) fn format_oauth_http_error(
@@ -305,7 +328,7 @@ pub(crate) struct FileLockGuard {
 
 impl Drop for FileLockGuard {
     fn drop(&mut self) {
-        let _ = fs4::fs_std::FileExt::unlock(&self.file);
+        let _ = fs4::FileExt::unlock(&self.file);
     }
 }
 
@@ -346,7 +369,7 @@ pub(crate) fn lock_sibling(path: &Path) -> PathBuf {
 }
 
 fn lock_exclusive_timeout(lock_path: &Path, timeout: Duration) -> Result<FileLockGuard, AuthError> {
-    use fs4::fs_std::FileExt;
+    use fs4::TryLockError;
     use std::fs::OpenOptions;
 
     if let Some(parent) = lock_path.parent() {
@@ -364,21 +387,24 @@ fn lock_exclusive_timeout(lock_path: &Path, timeout: Duration) -> Result<FileLoc
 
     let start = std::time::Instant::now();
     loop {
-        match file.try_lock_exclusive() {
-            Ok(true) => return Ok(FileLockGuard { file }),
-            Ok(false) => {
+        // UFCS: std::fs::File::try_lock (1.89+) would otherwise shadow FileExt.
+        match fs4::FileExt::try_lock(&file) {
+            Ok(()) => return Ok(FileLockGuard { file }),
+            Err(TryLockError::WouldBlock) => {
                 if start.elapsed() >= timeout {
                     return Err(AuthError::LockTimeout);
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            Err(e) if is_lock_busy(&e) => {
+            Err(TryLockError::Error(e)) if is_lock_busy(&e) => {
                 if start.elapsed() >= timeout {
                     return Err(AuthError::LockTimeout);
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            Err(e) => return Err(AuthError::io(Some(lock_path.to_path_buf()), e)),
+            Err(TryLockError::Error(e)) => {
+                return Err(AuthError::io(Some(lock_path.to_path_buf()), e));
+            }
         }
     }
 }
@@ -411,6 +437,52 @@ pub(crate) fn expand_tilde(path: &str) -> PathBuf {
         return home.join(rest);
     }
     PathBuf::from(path)
+}
+
+/// Expand `~` / relative paths, then refuse anything that leaves `$HOME`.
+pub(crate) fn resolve_creds_path(raw: &str) -> Result<PathBuf, AuthError> {
+    jail_creds_path(&expand_tilde(raw))
+}
+
+/// Refuse `..` and any path that is not under `$HOME` / IsolatedHome.
+pub(crate) fn jail_creds_path(path: &Path) -> Result<PathBuf, AuthError> {
+    if path.as_os_str().is_empty() || has_parent_dir(path) {
+        return Err(creds_path_escapes_home());
+    }
+    let home = home_dir().filter(|h| !h.as_os_str().is_empty());
+    let Some(home) = home else {
+        return Err(creds_path_escapes_home());
+    };
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        home.join(path)
+    };
+    if has_parent_dir(&resolved) || !path_is_under_home(&resolved, &home) {
+        return Err(creds_path_escapes_home());
+    }
+    Ok(resolved)
+}
+
+fn has_parent_dir(path: &Path) -> bool {
+    path.components().any(|c| matches!(c, Component::ParentDir))
+}
+
+fn path_is_under_home(path: &Path, home: &Path) -> bool {
+    let home_canon = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return canon.starts_with(&home_canon);
+    }
+    // Missing file: map the logical HOME prefix through the same symlink
+    // (macOS /var/folders -> /private/var/folders).
+    if let Ok(rest) = path.strip_prefix(home) {
+        return home_canon.join(rest).starts_with(&home_canon);
+    }
+    path.strip_prefix(&home_canon).is_ok()
+}
+
+fn creds_path_escapes_home() -> AuthError {
+    AuthError::TokenProvider("oauth.creds_path must stay under home".into())
 }
 
 pub(crate) fn home_dir() -> Option<PathBuf> {
@@ -587,6 +659,24 @@ mod tests {
     }
 
     #[test]
+    fn format_oauth_transport_error_redacts_userinfo_and_client_secret() {
+        let msg = format_oauth_transport_via(
+            "auth code exchange failed",
+            "connect",
+            "https://user:s3cret@auth.example.invalid/oauth/token?client_secret=supersecret",
+        );
+        assert!(
+            msg.contains("via https://auth.example.invalid"),
+            "transport error must name the redacted origin, got {msg}"
+        );
+        assert!(!msg.contains("s3cret"), "{msg}");
+        assert!(!msg.contains("client_secret="), "{msg}");
+        assert!(!msg.contains("supersecret"), "{msg}");
+        assert!(!msg.contains("user:"), "{msg}");
+        assert!(!msg.contains("/oauth"), "{msg}");
+    }
+
+    #[test]
     fn format_oauth_http_error_includes_redacted_host() {
         let msg = format_oauth_http_error(
             "token refresh failed",
@@ -629,5 +719,19 @@ mod tests {
             assert_eq!(expanded, home.join("foo/bar"));
         }
         drop(prev);
+    }
+
+    #[test]
+    fn jail_accepts_canonical_path_when_home_is_a_symlink() {
+        let home = crate::isolated_home::IsolatedHome::new();
+        let planted = home.plant_credentials(crate::isolated_home::PlantCredentials::JsonPointer {
+            relative_path: ".config/github-copilot/hosts.json",
+            document: serde_json::json!({"github.com": {"oauth_token": "ghu"}}),
+        });
+        let canon = std::fs::canonicalize(&planted).expect("canonicalize planted");
+        jail_creds_path(&planted).expect("logical plant path");
+        jail_creds_path(&canon).expect("canonical path under IsolatedHome");
+        let missing = home.path().join(".claude/.credentials.json");
+        jail_creds_path(&missing).expect("missing file still under IsolatedHome");
     }
 }

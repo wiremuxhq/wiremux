@@ -3,7 +3,10 @@
 use std::collections::BTreeMap;
 
 use crate::error::AuthError;
-use crate::helpers::{format_oauth_http_error, oauth_http_client, percent_encode, read_oauth_body};
+use crate::helpers::{
+    format_oauth_http_error, format_oauth_transport_error, oauth_http_client, percent_encode,
+    read_oauth_body,
+};
 use crate::profile::OauthPack;
 
 pub use crate::exchange::TokenExchangeResponse;
@@ -97,12 +100,31 @@ pub fn build_auth_url(
         url.push_str(&format!("&scope={}", percent_encode(s)));
     }
     for (k, v) in extra_params {
+        if is_reserved_authorize_param(k) {
+            continue;
+        }
         url.push('&');
         url.push_str(&percent_encode(k));
         url.push('=');
         url.push_str(&percent_encode(v));
     }
     url
+}
+
+/// Overlay extras must not overwrite engine OAuth fields. Case-insensitive.
+fn is_reserved_authorize_param(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "redirect_uri"
+            | "response_type"
+            | "client_id"
+            | "code_challenge"
+            | "code_challenge_method"
+            | "state"
+            | "code_verifier"
+            | "grant_type"
+            | "scope"
+    )
 }
 
 /// Exchange an authorization code for tokens.
@@ -125,7 +147,13 @@ pub async fn exchange_auth_code(
         ])
         .send()
         .await
-        .map_err(|e| AuthError::TokenProvider(format!("auth code exchange failed: {e}")))?;
+        .map_err(|e| {
+            AuthError::TokenProvider(format_oauth_transport_error(
+                "auth code exchange failed",
+                &e,
+                token_url,
+            ))
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -251,6 +279,87 @@ mod tests {
     }
 
     #[test]
+    fn build_auth_url_drops_reserved_redirect_uri() {
+        let pkce = PkceChallenge {
+            code_verifier: "v".into(),
+            code_challenge: "c".into(),
+            state: "s".into(),
+        };
+        let mut extra = BTreeMap::new();
+        extra.insert("redirect_uri".into(), "https://evil.example".into());
+        extra.insert("Redirect_URI".into(), "https://evil.example/upper".into());
+        extra.insert("client_id".into(), "evil-client".into());
+        extra.insert("state".into(), "hijack".into());
+        extra.insert("code_verifier".into(), "leak-verifier".into());
+        extra.insert("audience".into(), "inference".into());
+        extra.insert("resource".into(), "api".into());
+        extra.insert("prompt".into(), "consent".into());
+        let url = build_auth_url(
+            "https://auth.example.invalid/authorize",
+            "client-1",
+            "http://localhost:9/cb",
+            Some("openid"),
+            &pkce,
+            &extra,
+        );
+        assert!(
+            !url.contains("evil.example"),
+            "reserved overlay redirect_uri must be dropped: {url}"
+        );
+        assert!(!url.contains("evil-client"), "{url}");
+        assert!(!url.contains("hijack"), "{url}");
+        assert!(!url.contains("leak-verifier"), "{url}");
+        assert_eq!(
+            url.matches("redirect_uri=").count(),
+            1,
+            "engine redirect_uri must appear exactly once: {url}"
+        );
+        assert!(
+            url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A9%2Fcb"),
+            "engine loopback redirect_uri missing: {url}"
+        );
+        assert!(url.contains("audience=inference"), "{url}");
+        assert!(url.contains("resource=api"), "{url}");
+        assert!(url.contains("prompt=consent"), "{url}");
+    }
+
+    #[test]
+    fn build_auth_url_drops_reserved_scope() {
+        let pkce = PkceChallenge {
+            code_verifier: "v".into(),
+            code_challenge: "c".into(),
+            state: "s".into(),
+        };
+        let mut extra = BTreeMap::new();
+        extra.insert("scope".into(), "evil-scope".into());
+        extra.insert("SCOPE".into(), "EVIL".into());
+        extra.insert("audience".into(), "inference".into());
+        let url = build_auth_url(
+            "https://auth.example.invalid/authorize",
+            "client-1",
+            "http://localhost:9/cb",
+            Some("openid profile"),
+            &pkce,
+            &extra,
+        );
+        assert!(
+            !url.contains("evil-scope"),
+            "reserved overlay scope must be dropped: {url}"
+        );
+        assert!(!url.contains("EVIL"), "{url}");
+        assert_eq!(
+            url.matches("scope=").count(),
+            1,
+            "engine scope must appear exactly once: {url}"
+        );
+        assert!(
+            url.contains("scope=openid%20profile") || url.contains("scope=openid+profile"),
+            "engine scope missing: {url}"
+        );
+        assert!(url.contains("audience=inference"), "{url}");
+    }
+
+    #[test]
     fn token_exchange_debug_redacts() {
         let resp = TokenExchangeResponse {
             access_token: "sk-secret".into(),
@@ -262,5 +371,30 @@ mod tests {
         let debug = format!("{resp:?}");
         assert!(!debug.contains("sk-secret"));
         assert!(!debug.contains("rt-secret"));
+    }
+
+    #[tokio::test]
+    async fn exchange_transport_error_redacts_userinfo_and_secret() {
+        let url = "https://user:s3cret@127.0.0.1:1/oauth/token?client_secret=supersecret";
+        let err = exchange_auth_code(url, "cid", "code", "http://127.0.0.1/cb", "ver")
+            .await
+            .expect_err("closed port must fail");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("client_secret="),
+            "transport error leaked query: {msg}"
+        );
+        assert!(
+            !msg.contains("s3cret"),
+            "transport error leaked userinfo: {msg}"
+        );
+        assert!(
+            !msg.contains("supersecret"),
+            "transport error leaked secret: {msg}"
+        );
+        assert!(
+            !msg.contains("user:"),
+            "transport error leaked userinfo: {msg}"
+        );
     }
 }

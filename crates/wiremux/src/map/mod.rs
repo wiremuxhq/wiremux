@@ -220,6 +220,26 @@ fn stop_values(value: &Value, keys: &[&str]) -> Vec<String> {
     Vec::new()
 }
 
+/// Official OpenAI json_schema needs a nonempty name and an object schema.
+fn official_json_schema<'a>(
+    schema: &'a Value,
+    name: Option<&'a str>,
+    report: &mut LossReport,
+) -> Option<(&'a Value, &'a str)> {
+    let name = name.map(str::trim).filter(|s| !s.is_empty());
+    match name {
+        Some(name) if schema.is_object() => Some((schema, name)),
+        _ => {
+            report.record(
+                "sampling.json_schema",
+                LossAction::Drop,
+                "json_schema requires nonempty name and object schema",
+            );
+            None
+        }
+    }
+}
+
 fn value_as_string(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),

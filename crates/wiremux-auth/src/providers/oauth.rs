@@ -14,9 +14,10 @@ use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
     AUTH_LOCK_TIMEOUT, InFlight, cached_token_on_lock_failure, duration_from_expires_in_secs,
-    expand_tilde, format_oauth_http_error, is_token_rotation_error, lead_or_follow,
-    oauth_http_client, parse_rfc3339, read_oauth_body, redact_url_origin,
-    remaining_from_system_time, sanitize_oauth_error_body, try_acquire_refresh_lock,
+    expand_tilde, format_oauth_http_error, format_oauth_transport_error, is_token_rotation_error,
+    jail_creds_path, lead_or_follow, oauth_http_client, parse_rfc3339, read_oauth_body,
+    redact_url_origin, remaining_from_system_time, resolve_creds_path, sanitize_oauth_error_body,
+    try_acquire_refresh_lock,
 };
 use crate::keychain_guard::keychain_disabled;
 use crate::profile::{
@@ -125,8 +126,16 @@ struct Inner {
 impl std::fmt::Debug for ProfileTokenProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProfileTokenProvider")
-            .field("token_url", &self.inner.oauth.token_url)
-            .field("token_url_fallback", &self.inner.oauth.token_url_fallback)
+            .field("token_url", &redact_url_origin(&self.inner.oauth.token_url))
+            .field(
+                "token_url_fallback",
+                &self
+                    .inner
+                    .oauth
+                    .token_url_fallback
+                    .as_deref()
+                    .map(redact_url_origin),
+            )
             .field("write_back", &self.inner.write_back)
             .finish()
     }
@@ -235,12 +244,12 @@ impl ProfileTokenProvider {
         match &self.inner.write_back {
             WriteBack::File(path) => {
                 let content = read_creds_string(path).await?;
-                store_tokens_from_json(&content, &self.inner.oauth, &self.inner.layout)
+                store_tokens_from_json(&content, &self.inner.oauth, &self.inner.layout, Some(path))
             }
             #[cfg(any(target_os = "macos", test, feature = "test-util"))]
             WriteBack::Keychain { service, account } => {
                 let secret = read_keychain(service, account)?;
-                store_tokens_from_json(&secret, &self.inner.oauth, &self.inner.layout)
+                store_tokens_from_json(&secret, &self.inner.oauth, &self.inner.layout, None)
             }
             WriteBack::None => Ok(None),
         }
@@ -595,9 +604,13 @@ async fn token_post(
         TokenRequestFormat::Json => req.json(body),
         TokenRequestFormat::Form => req.form(body),
     };
-    req.send()
-        .await
-        .map_err(|e| AuthError::TokenProvider(format!("token refresh request failed: {e}")))
+    req.send().await.map_err(|e| {
+        AuthError::TokenProvider(format_oauth_transport_error(
+            "token refresh request failed",
+            &e,
+            url,
+        ))
+    })
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -623,9 +636,13 @@ async fn token_post_non_https(
         TokenRequestFormat::Json => req.json(body),
         TokenRequestFormat::Form => req.form(body),
     };
-    req.send()
-        .await
-        .map_err(|e| AuthError::TokenProvider(format!("token refresh request failed: {e}")))
+    req.send().await.map_err(|e| {
+        AuthError::TokenProvider(format_oauth_transport_error(
+            "token refresh request failed",
+            &e,
+            url,
+        ))
+    })
 }
 
 #[cfg(not(any(test, feature = "test-util")))]
@@ -676,14 +693,15 @@ fn parse_token_response(
 
 fn load_credentials(oauth: &OauthPack, explicit: Option<&Path>) -> Result<Loaded, AuthError> {
     if let Some(path) = explicit {
+        let path = jail_creds_path(path)?;
         if path.is_file() {
-            return load_from_file(oauth, path);
+            return load_from_file(oauth, &path);
         }
         return load_from_env(oauth)?.ok_or_else(|| missing_creds(oauth));
     }
 
     if let Some(raw) = oauth.creds_path.as_deref() {
-        let path = expand_tilde(raw);
+        let path = resolve_creds_path(raw)?;
         if path.is_file() {
             return load_from_file(oauth, &path);
         }
@@ -699,6 +717,8 @@ fn load_credentials(oauth: &OauthPack, explicit: Option<&Path>) -> Result<Loaded
 }
 
 fn load_from_file(oauth: &OauthPack, path: &Path) -> Result<Loaded, AuthError> {
+    let path = jail_creds_path(path)?;
+    let path = path.as_path();
     let meta = std::fs::metadata(path).map_err(|e| AuthError::io(Some(path.to_path_buf()), e))?;
     if meta.len() > crate::helpers::MAX_CREDS_BYTES {
         return Err(AuthError::TokenProvider(format!(
@@ -807,8 +827,17 @@ fn store_tokens_from_json(
     secret: &str,
     oauth: &OauthPack,
     layout: &StoreLayout,
+    path: Option<&Path>,
 ) -> Result<Option<(String, Option<String>, Duration)>, AuthError> {
-    let doc: Value = serde_json::from_str(secret)?;
+    let doc: Value = match serde_json::from_str(secret) {
+        Ok(doc) => doc,
+        Err(e) => {
+            return Err(match path {
+                Some(path) => AuthError::json(path, e),
+                None => AuthError::from(e),
+            });
+        }
+    };
     let layout = resolve_layout(oauth, Some(&doc)).unwrap_or_else(|_| layout.clone());
     Ok(tokens_from_doc(&doc, &layout).filter(|(a, _, _)| !a.is_empty()))
 }
@@ -1054,6 +1083,7 @@ fn sanitize_lock_component(s: &str) -> String {
 }
 
 fn absolute_write_back_path(path: &Path) -> Option<PathBuf> {
+    let path = jail_creds_path(path).ok()?;
     if path.as_os_str().is_empty() {
         return None;
     }
@@ -1061,13 +1091,13 @@ fn absolute_write_back_path(path: &Path) -> Option<PathBuf> {
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir));
     if path.exists()
-        && let Ok(canon) = std::fs::canonicalize(path)
+        && let Ok(canon) = std::fs::canonicalize(&path)
     {
         return Some(canon);
     }
     let joined = match std::env::current_dir() {
-        Ok(cwd) => cwd.join(path),
-        Err(_) if path.is_absolute() && !has_parent => return Some(path.to_path_buf()),
+        Ok(cwd) => cwd.join(&path),
+        Err(_) if path.is_absolute() && !has_parent => return Some(path),
         Err(_) => return None,
     };
     if let Ok(canon) = std::fs::canonicalize(&joined) {
@@ -2156,10 +2186,7 @@ access_env = "WIREMUX_TEST_ACCESS"
             .truncate(false)
             .open(&lock_path)
             .unwrap();
-        assert!(
-            fs4::fs_std::FileExt::try_lock_exclusive(&lock_file).expect("try lock"),
-            "test must hold the sibling lock"
-        );
+        fs4::FileExt::try_lock(&lock_file).expect("try lock");
         let token = p.get_token().await.expect("cached on lock timeout");
         assert_eq!(token, "sk-ant-oat01-cached");
         p.mark_stale();
@@ -2188,5 +2215,34 @@ access_env = "WIREMUX_TEST_ACCESS"
         let debug = format!("{p:?}");
         assert!(!debug.contains("sk-ant-oat01-secret"));
         assert!(!debug.contains("rt-secret"));
+    }
+
+    #[test]
+    fn debug_redacts_token_url_userinfo_and_query() {
+        let home = IsolatedHome::new();
+        home.plant_credentials(PlantCredentials::Claude {
+            access: "sk-ant-oat01-secret",
+            refresh: Some("rt-secret"),
+            expires_at_ms: None,
+        });
+        let leaky =
+            "https://user:s3cret@auth.example.invalid/oauth/token?client_secret=supersecret";
+        let oauth = pack_from_toml(&claude_toml(leaky, Some(leaky)));
+        let p = provider(&oauth);
+        let debug = format!("{p:?}");
+        assert!(!debug.contains("s3cret"), "Debug leaked userinfo: {debug}");
+        assert!(
+            !debug.contains("client_secret="),
+            "Debug leaked query: {debug}"
+        );
+        assert!(
+            !debug.contains("supersecret"),
+            "Debug leaked secret: {debug}"
+        );
+        assert!(!debug.contains("/oauth"), "Debug leaked path: {debug}");
+        assert!(
+            debug.contains("https://auth.example.invalid"),
+            "Debug must keep redacted origin: {debug}"
+        );
     }
 }

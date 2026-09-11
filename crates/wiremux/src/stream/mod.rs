@@ -86,6 +86,12 @@ pub fn decode_stream_events(
     let Some(first) = first else {
         return Ok(Vec::new());
     };
+    if matches!(wire, Wire::Gemini)
+        && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
+        && let Some(events) = fan_out_gemini_parts(&value)
+    {
+        return Ok(events);
+    }
     if let Some(expanded) = expand_complete_tool_call(wire, &first, raw) {
         return Ok(expanded);
     }
@@ -99,6 +105,79 @@ pub fn decode_stream_events(
         out.push(usage::from_anthropic(usage));
     }
     Ok(out)
+}
+
+/// Walk every Gemini part. First-part-wins in `decode` would drop a later
+/// `functionCall` after thought or text.
+fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
+    let parts = value
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array)?;
+    if parts.len() < 2 {
+        return None;
+    }
+    let mut out = Vec::new();
+    for part in parts {
+        out.extend(gemini_part_events(part));
+    }
+    if out.len() < 2 {
+        return None;
+    }
+    Some(out)
+}
+
+fn gemini_part_events(part: &Value) -> Vec<IrStreamEvent> {
+    let mut out = Vec::new();
+    if part.get("thought").and_then(Value::as_bool) == Some(true)
+        && let Some(text) = part
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::ReasoningDelta {
+            text: text.to_string(),
+        });
+    } else if let Some(sig) = part
+        .get("thoughtSignature")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        && part.get("functionCall").is_none()
+    {
+        out.push(IrStreamEvent::ReasoningSignature {
+            signature: sig.to_string(),
+        });
+    }
+    if let Some(fc) = part.get("functionCall") {
+        let name = str_field(fc, "name").unwrap_or_default();
+        let thought_signature = part
+            .get("thoughtSignature")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        out.push(IrStreamEvent::ToolCallStart {
+            id: name.clone(),
+            name,
+            thought_signature,
+        });
+        if let Some(args) = fc
+            .get("args")
+            .filter(|a| a.as_object().is_none_or(|m| !m.is_empty()) && !a.is_null())
+        {
+            out.push(IrStreamEvent::ToolCallArgDelta {
+                delta: args.to_string(),
+            });
+        }
+    } else if out.is_empty()
+        && let Some(text) = part
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::TextDelta {
+            text: text.to_string(),
+        });
+    }
+    out
 }
 
 fn expand_complete_tool_call(

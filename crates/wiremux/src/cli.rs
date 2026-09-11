@@ -188,18 +188,20 @@ pub fn login_plan(profile: &ResolvedProfile) -> LoginPlan {
                 .unwrap_or_else(|| "run the vendor setup-token command".into()),
         },
         Login::None => {
-            let reason = if client_id.is_empty() {
-                "login is none and client_id is empty (set a wiremux client id and login=pkce)"
-                    .into()
-            } else {
-                "login is none".into()
-            };
+            let mut reason = String::from(
+                "oauth.login is none (set pkce or device; shipped openai-codex-oauth stays none until an overlay sets login)",
+            );
+            if client_id.is_empty() {
+                reason.push_str(" and client_id is empty (set a wiremux client id)");
+            }
             LoginPlan::NotReady { reason }
         }
         Login::Pkce | Login::Device => {
             if client_id.is_empty() {
                 LoginPlan::NotReady {
-                    reason: "client_id is empty after subst".into(),
+                    reason:
+                        "oauth.client_id is empty after subst (set it in the profile or overlay)"
+                            .into(),
                 }
             } else if matches!(login, Login::Device) {
                 LoginPlan::Device
@@ -719,7 +721,18 @@ mod tests {
             parse_profile_str(&std::fs::read_to_string(&path).expect("gist")).expect("parse");
         match login_plan(&profile) {
             LoginPlan::NotReady { reason } => {
-                assert!(reason.contains("client_id"), "{reason}");
+                assert!(
+                    reason.contains("oauth.client_id"),
+                    "device/pkce empty client_id must name oauth.client_id, got {reason}"
+                );
+                assert!(
+                    reason.contains("empty after subst"),
+                    "must say empty after subst, got {reason}"
+                );
+                assert!(
+                    reason.contains("profile") && reason.contains("overlay"),
+                    "must say set it in the profile or overlay, got {reason}"
+                );
             }
             other => panic!("empty client_id must be not-ready, got {other:?}"),
         }
@@ -739,10 +752,58 @@ mod tests {
         let profile = shipped("openai-codex-oauth");
         match login_plan(&profile) {
             LoginPlan::NotReady { reason } => {
-                assert!(reason.contains("client_id") || reason.contains("login"));
+                assert_login_none_names_field_and_values(&reason);
+                assert!(
+                    reason.contains("client_id"),
+                    "openai login plan must keep the empty-client_id hint, got {reason}"
+                );
             }
             other => panic!("expected not-ready, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn login_plan_none_with_client_id_names_oauth_login() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "x"
+[oauth]
+token_url = "https://auth.example.invalid/token"
+client_id = "already-set"
+login = "none"
+"#,
+        )
+        .expect("parse");
+        match login_plan(&profile) {
+            LoginPlan::NotReady { reason } => {
+                assert_login_none_names_field_and_values(&reason);
+                assert!(
+                    !reason.contains("client_id is empty"),
+                    "set client_id must not keep the empty-client_id hint, got {reason}"
+                );
+            }
+            other => panic!("expected not-ready, got {other:?}"),
+        }
+    }
+
+    fn assert_login_none_names_field_and_values(reason: &str) {
+        assert!(
+            reason.contains("oauth.login"),
+            "login=none must name oauth.login, got {reason}"
+        );
+        assert!(
+            reason.contains("pkce") && reason.contains("device"),
+            "login=none must list pkce and device, got {reason}"
+        );
+        assert!(
+            reason.contains("openai-codex-oauth"),
+            "must say shipped openai-codex-oauth stays none, got {reason}"
+        );
+        assert!(
+            reason.contains("overlay"),
+            "must say overlay sets login, got {reason}"
+        );
     }
 
     #[test]

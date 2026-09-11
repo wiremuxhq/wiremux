@@ -482,6 +482,29 @@ wire = "gemini"
             .and_then(Value::as_str),
         Some("lookup")
     );
+    assert_eq!(
+        body.pointer("/contents/1/parts/0/functionCall/name")
+            .and_then(Value::as_str),
+        Some("lookup"),
+        "encode must keep functionCall.name, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/1/parts/0/functionCall/args/q")
+            .and_then(Value::as_str),
+        Some("x"),
+        "encode must keep functionCall.args.q, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/2/parts/0/functionResponse/name")
+            .and_then(Value::as_str),
+        Some("lookup"),
+        "encode must keep functionResponse, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/2/parts/0/functionResponse/response/ok"),
+        Some(&Value::Bool(true)),
+        "encode must keep functionResponse.response, got {body}"
+    );
     let temp = body
         .pointer("/generationConfig/temperature")
         .and_then(Value::as_f64)
@@ -617,10 +640,14 @@ fn gemini_thinking_config_round_trips() {
     let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let tc = body
-        .get("thinkingConfig")
-        .expect("thinkingConfig should be present");
+        .pointer("/generationConfig/thinkingConfig")
+        .expect("thinkingConfig should be nested under generationConfig");
     assert_eq!(tc["includeThoughts"], true);
     assert_eq!(tc["thinkingBudget"], 24576);
+    assert!(
+        body.get("thinkingConfig").is_none(),
+        "must not emit top-level thinkingConfig: {body}"
+    );
 }
 
 #[test]
@@ -634,6 +661,10 @@ fn gemini_thinking_config_absent_is_not_invented() {
     assert!(
         body.get("thinkingConfig").is_none(),
         "must not invent thinkingConfig: {body}"
+    );
+    assert!(
+        body.pointer("/generationConfig/thinkingConfig").is_none(),
+        "must not invent nested thinkingConfig: {body}"
     );
 }
 
@@ -745,7 +776,7 @@ fn replay_thinking_and_signature_in_assistant_json() {
         }]
     }"#;
     let (ir, _) = decode(Wire::Messages, req).expect("decode");
-    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let content = body
         .pointer("/messages/0/content")
@@ -758,6 +789,10 @@ fn replay_thinking_and_signature_in_assistant_json() {
                 && block.get("signature").and_then(Value::as_str) == Some("sig_abc")
         }),
         "replay JSON must include thinking + signature, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "part.thinking"),
+        "signed thinking must not be recorded as dropped, got {report:?}"
     );
 }
 
@@ -777,7 +812,7 @@ fn unsigned_thinking_is_not_replayed_on_messages() {
         tools: vec![],
         sampling: IrSampling::default(),
     };
-    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let content = body
         .pointer("/messages/0/content")
@@ -794,6 +829,10 @@ fn unsigned_thinking_is_not_replayed_on_messages() {
             .iter()
             .any(|block| block.get("text").and_then(Value::as_str) == Some("Hello")),
         "visible text must stay, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.thinking"),
+        "unsigned thinking drop missing, got {report:?}"
     );
 }
 
@@ -835,18 +874,30 @@ fn chat_skips_thinking_and_protocol_parts() {
                     text: "plan".into(),
                     signature: Some("sig".into()),
                 },
+                IrPart::Raw {
+                    type_name: "redacted_thinking".into(),
+                    raw: serde_json::json!({"type": "redacted_thinking", "data": "enc"}),
+                },
                 IrPart::Text("Hello".into()),
             ],
         }],
         tools: vec![],
         sampling: IrSampling::default(),
     };
-    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let content = &body["messages"][0]["content"];
     assert_eq!(
         content, "Hello",
         "Chat must send only visible text, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.thinking"),
+        "thinking drop missing, got {report:?}"
+    );
+    assert!(
+        loss_dropped(&report, "part.raw"),
+        "raw drop missing, got {report:?}"
     );
 }
 
@@ -860,13 +911,17 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
                     text: "secret plan".into(),
                     signature: None,
                 },
+                IrPart::Raw {
+                    type_name: "redacted_thinking".into(),
+                    raw: serde_json::json!({"type": "redacted_thinking", "data": "enc"}),
+                },
                 IrPart::Text("Hello".into()),
             ],
         }],
         tools: vec![],
         sampling: IrSampling::default(),
     };
-    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
         body.get("include"),
@@ -877,6 +932,18 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
     assert!(
         !dumped.contains("secret plan"),
         "unsigned thinking must not become output_text, got {body}"
+    );
+    assert!(
+        !dumped.contains("redacted_thinking"),
+        "raw protocol part must not be replayed, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.thinking"),
+        "thinking drop missing, got {report:?}"
+    );
+    assert!(
+        loss_dropped(&report, "part.raw"),
+        "raw drop missing, got {report:?}"
     );
 }
 
@@ -933,9 +1000,13 @@ fn chat_data_url_becomes_image_base64_for_gemini() {
     assert!(
         ir.items.iter().any(|item| matches!(
             item,
-            IrItem::User { parts } if parts.iter().any(|p| matches!(p, IrPart::ImageBase64 { media_type, .. } if media_type == "image/png"))
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::ImageBase64 { media_type, data }
+                    if media_type == "image/png" && data == "iVBORw0KGgo="
+            ))
         )),
-        "data URL must become ImageBase64, got {:?}",
+        "data URL must become ImageBase64 with payload, got {:?}",
         ir.items
     );
     let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
@@ -945,6 +1016,186 @@ fn chat_data_url_becomes_image_base64_for_gemini() {
             .and_then(Value::as_str),
         Some("image/png"),
         "Gemini must get inlineData, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/1/inlineData/data")
+            .and_then(Value::as_str),
+        Some("iVBORw0KGgo="),
+        "Gemini must encode inlineData/data, got {body}"
+    );
+}
+
+#[test]
+fn responses_data_url_becomes_image_base64_for_gemini() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "input": [{
+            "role": "user",
+            "content": [
+                { "type": "input_text", "text": "see" },
+                { "type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo=" }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::ImageBase64 { media_type, data }
+                    if media_type == "image/png" && data == "iVBORw0KGgo="
+            ))
+        )),
+        "Responses data URL must become ImageBase64 with payload, got {:?}",
+        ir.items
+    );
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/1/inlineData/mimeType")
+            .and_then(Value::as_str),
+        Some("image/png"),
+        "Gemini must get inlineData, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/1/inlineData/data")
+            .and_then(Value::as_str),
+        Some("iVBORw0KGgo="),
+        "Gemini must encode inlineData/data, got {body}"
+    );
+}
+
+#[test]
+fn gemini_https_image_url_degrades_to_text_placeholder() {
+    let ir = IrRequest {
+        model: "gemini-2.5-flash".into(),
+        items: vec![IrItem::User {
+            parts: vec![
+                IrPart::Text("see".into()),
+                IrPart::ImageUrl("https://example.com/cat.png".into()),
+            ],
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/1/text")
+            .and_then(Value::as_str),
+        Some("[image: https://example.com/cat.png]"),
+        "https ImageUrl must become a text placeholder, got {body}"
+    );
+    assert!(
+        body.pointer("/contents/0/parts/1/inlineData").is_none(),
+        "https ImageUrl must not become inlineData, got {body}"
+    );
+    assert!(
+        body.pointer("/contents/0/parts/1/fileData").is_none(),
+        "this pass must not invent fileData.fileUri, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "part.image_url"),
+        "ImageUrl degrade missing, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_raw_part_is_dropped_with_loss_report() {
+    let ir = IrRequest {
+        model: "gemini-2.5-flash".into(),
+        items: vec![IrItem::User {
+            parts: vec![
+                IrPart::Text("hi".into()),
+                IrPart::Raw {
+                    type_name: "redacted_thinking".into(),
+                    raw: serde_json::json!({"type": "redacted_thinking", "data": "enc"}),
+                },
+            ],
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let parts = body
+        .pointer("/contents/0/parts")
+        .and_then(Value::as_array)
+        .expect("parts");
+    assert_eq!(parts.len(), 1, "Raw must be omitted, got {body}");
+    assert_eq!(
+        parts[0].get("text").and_then(Value::as_str),
+        Some("hi"),
+        "visible text must stay, got {body}"
+    );
+    assert!(
+        !body.to_string().contains("redacted_thinking"),
+        "Raw must not be replayed, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.raw"),
+        "Raw drop missing, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_raw_tool_is_dropped_with_loss_report() {
+    let ir = IrRequest {
+        model: "gemini-2.5-flash".into(),
+        items: vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+        tools: vec![
+            IrTool::Function {
+                name: "lookup".into(),
+                description: "Look up".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+            IrTool::Unknown {
+                type_name: "weird".into(),
+                raw: serde_json::json!({"type": "weird", "name": "do_thing"}),
+            },
+        ],
+        sampling: IrSampling::default(),
+    };
+    let passthrough = profile(
+        r#"
+schema_version = 1
+id = "test-gemini-passthrough"
+wire = "gemini"
+tool_type_policy = "passthrough"
+"#,
+    );
+    let (bytes, report) = encode(Wire::Gemini, &ir, &passthrough).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let decls = body
+        .pointer("/tools/0/functionDeclarations")
+        .and_then(Value::as_array)
+        .expect("functionDeclarations");
+    assert_eq!(decls.len(), 1, "Raw must be omitted from decls, got {body}");
+    assert_eq!(
+        decls[0].get("name").and_then(Value::as_str),
+        Some("lookup"),
+        "function tool must stay, got {body}"
+    );
+    assert!(
+        !body.to_string().contains("weird") && !body.to_string().contains("do_thing"),
+        "Raw tool must not appear in generateContent JSON, got {body}"
+    );
+    assert!(
+        body.pointer("/tools/0/fileData").is_none(),
+        "this pass must not invent fileData, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Drop
+                && (event.path == "tools[1]" || event.path == "tool.raw")
+                && event
+                    .detail
+                    .contains("raw tool has no generateContent slot")
+        }),
+        "Raw tool drop missing, got {report:?}"
     );
 }
 
@@ -1340,6 +1591,13 @@ fn loss_dropped(report: &LossReport, path: &str) -> bool {
         .any(|event| event.path == path && event.action == LossAction::Drop)
 }
 
+fn loss_degraded(report: &LossReport, path: &str) -> bool {
+    report
+        .events
+        .iter()
+        .any(|event| event.path == path && event.action == LossAction::Degrade)
+}
+
 #[test]
 fn chat_encode_emits_reasoning_effort_when_set() {
     let ir = user_ir(IrSampling {
@@ -1556,9 +1814,15 @@ fn gemini_thinking_config_survives_reasoning_sampling_fields() {
     });
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
-    let tc = body.get("thinkingConfig").expect("thinkingConfig");
+    let tc = body
+        .pointer("/generationConfig/thinkingConfig")
+        .expect("thinkingConfig should be nested under generationConfig");
     assert_eq!(tc.get("includeThoughts"), Some(&Value::Bool(true)));
     assert_eq!(tc.get("thinkingBudget"), Some(&serde_json::json!(24576)));
+    assert!(
+        body.get("thinkingConfig").is_none(),
+        "must not emit top-level thinkingConfig: {body}"
+    );
     assert!(
         loss_dropped(&report, "sampling.reasoning_effort"),
         "Gemini effort drop missing, got {report:?}"
@@ -1676,5 +1940,223 @@ fn gemini_encode_does_not_invent_empty_function_call_args() {
         args,
         Some(&Value::String("not-json".into())),
         "invalid JSON must stay a string, got {body}"
+    );
+}
+
+#[test]
+fn messages_sanitizes_gemini_shaped_tool_use_id() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![
+            IrItem::FunctionCall {
+                call_id: "lookup.v2".into(),
+                name: "lookup.v2".into(),
+                arguments: "{}".into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionOutput {
+                call_id: "lookup.v2".into(),
+                output: "ok".into(),
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/id")
+            .and_then(Value::as_str),
+        Some("lookup_v2"),
+        "tool_use.id must drop the Gemini dot, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/1/content/0/tool_use_id")
+            .and_then(Value::as_str),
+        Some("lookup_v2"),
+        "tool_result.tool_use_id must match the rewritten tool_use.id, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "items[0]"),
+        "rewritten tool_use.id must record Degrade on the original path, got {report:?}"
+    );
+    assert!(
+        loss_degraded(&report, "items[1]"),
+        "rewritten tool_result.tool_use_id must record Degrade on the original path, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_json_schema_round_trips() {
+    let req = br#"{
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+            }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.json_schema_name.as_deref(), Some("answer"));
+    assert_eq!(
+        ir.sampling.json_schema,
+        Some(serde_json::json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/response_format/type")
+            .and_then(Value::as_str),
+        Some("json_schema"),
+        "Chat must emit response_format.type, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/response_format/json_schema/name")
+            .and_then(Value::as_str),
+        Some("answer"),
+        "Chat must emit json_schema.name, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/response_format/json_schema/schema"),
+        Some(&serde_json::json!({"type": "object", "properties": {"ok": {"type": "boolean"}}})),
+        "Chat must emit json_schema.schema, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema"),
+        "Chat has a slot and must not Drop json_schema, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_json_schema_round_trips() {
+    let req = br#"{
+        "model": "gpt-4",
+        "input": "hi",
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "answer",
+                "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+            }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(ir.sampling.json_schema_name.as_deref(), Some("answer"));
+    assert_eq!(
+        ir.sampling.json_schema,
+        Some(serde_json::json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
+    );
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/text/format/type").and_then(Value::as_str),
+        Some("json_schema"),
+        "Responses must emit text.format.type, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/text/format/name").and_then(Value::as_str),
+        Some("answer"),
+        "Responses must emit text.format.name, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/text/format/schema"),
+        Some(&serde_json::json!({"type": "object", "properties": {"ok": {"type": "boolean"}}})),
+        "Responses must emit text.format.schema, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema"),
+        "Responses has a slot and must not Drop json_schema, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_json_schema_without_name_is_dropped() {
+    let ir = user_ir(IrSampling {
+        json_schema: Some(serde_json::json!({"type": "object"})),
+        json_schema_name: None,
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("response_format").is_none(),
+        "nameless json_schema must not emit response_format, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "nameless json_schema must Drop, got {report:?}"
+    );
+
+    let ir = user_ir(IrSampling {
+        json_schema: Some(serde_json::json!(["not", "object"])),
+        json_schema_name: Some("answer".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("response_format").is_none(),
+        "non-object json_schema must not emit response_format, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "non-object json_schema must Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_json_schema_without_name_is_dropped() {
+    let ir = user_ir(IrSampling {
+        json_schema: Some(serde_json::json!({"type": "object"})),
+        json_schema_name: None,
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("text").is_none(),
+        "nameless json_schema must not emit text.format, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "nameless json_schema must Drop, got {report:?}"
+    );
+
+    let ir = user_ir(IrSampling {
+        json_schema: Some(serde_json::json!("not-object")),
+        json_schema_name: Some("answer".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("text").is_none(),
+        "non-object json_schema must not emit text.format, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "non-object json_schema must Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_json_schema_is_dropped() {
+    let ir = user_ir(IrSampling {
+        json_schema: Some(serde_json::json!({"type": "object"})),
+        json_schema_name: Some("answer".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("response_format").is_none() && body.get("output_format").is_none(),
+        "Messages must not invent a structured-output slot, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "Messages must Drop json_schema with no slot, got {report:?}"
     );
 }

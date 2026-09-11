@@ -150,6 +150,9 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     if gemini_source_has_tool_choice(value) {
         report.record("sampling.tool_choice", LossAction::Drop, "no slot");
     }
+    if gemini_source_has_json_schema(value) {
+        report.record("sampling.json_schema", LossAction::Drop, "no slot");
+    }
     IrSampling {
         temperature: f32_field(cfg, "temperature"),
         top_p: f32_field(cfg, "topP").or_else(|| f32_field(cfg, "top_p")),
@@ -167,6 +170,8 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .or_else(|| u32_field(thinking, "thinking_budget")),
         reasoning_effort: None,
         max_reasoning_tokens: None,
+        json_schema: None,
+        json_schema_name: None,
     }
 }
 
@@ -179,6 +184,14 @@ fn thinking_config_obj(value: &Value) -> &Value {
 
 fn gemini_source_has_tool_choice(value: &Value) -> bool {
     value.get("tool_choice").is_some() || value.get("toolConfig").is_some()
+}
+
+fn gemini_source_has_json_schema(value: &Value) -> bool {
+    let cfg = value.get("generationConfig").unwrap_or(value);
+    cfg.get("responseSchema").is_some()
+        || cfg.get("responseJsonSchema").is_some()
+        || cfg.get("response_schema").is_some()
+        || cfg.get("response_json_schema").is_some()
 }
 
 pub(super) fn encode(
@@ -202,12 +215,12 @@ pub(super) fn encode(
                 system_parts.push(json!({ "text": text }));
             }
             IrItem::User { parts } => {
-                for part in encode_parts(parts) {
+                for part in encode_parts(parts, report) {
                     push_role_part(&mut contents, "user", part);
                 }
             }
             IrItem::Assistant { parts } => {
-                for part in encode_parts(parts) {
+                for part in encode_parts(parts, report) {
                     push_role_part(&mut contents, "model", part);
                 }
             }
@@ -271,7 +284,8 @@ pub(super) fn encode(
     }
     let decls: Vec<Value> = prepared
         .iter()
-        .filter_map(|tool| match tool {
+        .enumerate()
+        .filter_map(|(i, tool)| match tool {
             PreparedTool::Function {
                 name,
                 description,
@@ -281,7 +295,14 @@ pub(super) fn encode(
                 "description": description,
                 "parameters": parameters,
             })),
-            PreparedTool::Raw(_) => None,
+            PreparedTool::Raw(_) => {
+                report.record(
+                    format!("tools[{i}]"),
+                    LossAction::Drop,
+                    "raw tool has no generateContent slot",
+                );
+                None
+            }
         })
         .collect();
     if !decls.is_empty() {
@@ -302,7 +323,7 @@ fn push_role_part(contents: &mut Vec<Value>, role: &str, part: Value) {
     contents.push(json!({ "role": role, "parts": [part] }));
 }
 
-fn encode_parts(parts: &[IrPart]) -> Vec<Value> {
+fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
     let mut out = Vec::new();
     for part in parts {
         match part {
@@ -319,7 +340,13 @@ fn encode_parts(parts: &[IrPart]) -> Vec<Value> {
                     "inlineData": { "mimeType": media_type, "data": data }
                 }));
             }
-            IrPart::Raw { .. } => {}
+            IrPart::Raw { .. } => {
+                report.record(
+                    "part.raw",
+                    LossAction::Drop,
+                    "raw part has no generateContent slot",
+                );
+            }
             IrPart::ImageUrl(url) => {
                 if let Some(rest) = url.strip_prefix("data:")
                     && let Some((mime, b64)) = rest.split_once(";base64,")
@@ -328,6 +355,11 @@ fn encode_parts(parts: &[IrPart]) -> Vec<Value> {
                         "inlineData": { "mimeType": mime, "data": b64 }
                     }));
                 } else {
+                    report.record(
+                        "part.image_url",
+                        LossAction::Degrade,
+                        "url to text placeholder",
+                    );
                     out.push(json!({ "text": format!("[image: {url}]") }));
                 }
             }
@@ -351,6 +383,16 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if !s.stop.is_empty() {
         cfg["stopSequences"] = json!(s.stop);
     }
+    if s.include_thoughts.is_some() || s.thinking_budget.is_some() {
+        let mut tc = json!({});
+        if let Some(include) = s.include_thoughts {
+            tc["includeThoughts"] = json!(include);
+        }
+        if let Some(budget) = s.thinking_budget {
+            tc["thinkingBudget"] = json!(budget);
+        }
+        cfg["thinkingConfig"] = tc;
+    }
     if cfg.as_object().is_some_and(|o| !o.is_empty()) {
         body["generationConfig"] = cfg;
     }
@@ -366,16 +408,6 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if let Some(stream) = s.stream {
         body["stream"] = json!(stream);
     }
-    if s.include_thoughts.is_some() || s.thinking_budget.is_some() {
-        let mut tc = json!({});
-        if let Some(include) = s.include_thoughts {
-            tc["includeThoughts"] = json!(include);
-        }
-        if let Some(budget) = s.thinking_budget {
-            tc["thinkingBudget"] = json!(budget);
-        }
-        body["thinkingConfig"] = tc;
-    }
     if s.reasoning_effort
         .as_deref()
         .is_some_and(|s| !s.trim().is_empty())
@@ -390,5 +422,8 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.parallel_tool_calls.is_some() {
         report.record("sampling.parallel_tool_calls", LossAction::Drop, "no slot");
+    }
+    if s.json_schema.is_some() {
+        report.record("sampling.json_schema", LossAction::Drop, "no slot");
     }
 }

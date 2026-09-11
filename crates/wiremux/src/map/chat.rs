@@ -143,6 +143,7 @@ fn parts_text(parts: &[IrPart]) -> String {
 }
 
 fn decode_sampling(value: &Value) -> IrSampling {
+    let (json_schema, json_schema_name) = chat_json_schema(value);
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
@@ -158,7 +159,27 @@ fn decode_sampling(value: &Value) -> IrSampling {
         thinking_budget: None,
         reasoning_effort: str_field(value, "reasoning_effort").filter(|s| !s.trim().is_empty()),
         max_reasoning_tokens: u32_field(value, "max_reasoning_tokens"),
+        json_schema,
+        json_schema_name,
     }
+}
+
+fn chat_json_schema(value: &Value) -> (Option<Value>, Option<String>) {
+    let format = value.get("response_format");
+    let Some(format) = format else {
+        return (None, None);
+    };
+    if format.get("type").and_then(Value::as_str) != Some("json_schema") {
+        return (None, None);
+    }
+    let js = format.get("json_schema");
+    let schema = js.and_then(|js| js.get("schema")).cloned();
+    let name = js
+        .and_then(|js| js.get("name"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    (schema, name)
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -221,7 +242,7 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 idx += 1;
             }
             IrItem::User { parts } => {
-                messages.push(json!({"role": "user", "content": encode_parts(parts)}));
+                messages.push(json!({"role": "user", "content": encode_parts(parts, report)}));
                 idx += 1;
             }
             IrItem::Assistant { parts } => {
@@ -310,7 +331,7 @@ fn encode_assistant(
     }
     let mut msg = json!({
         "role": "assistant",
-        "content": encode_parts(parts),
+        "content": encode_parts(parts, report),
     });
     if !calls.is_empty() {
         msg["tool_calls"] = Value::Array(calls);
@@ -329,10 +350,28 @@ fn function_call_json(call_id: &str, name: &str, arguments: &str) -> Value {
     })
 }
 
-fn encode_parts(parts: &[IrPart]) -> Value {
+fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
     let visible: Vec<&IrPart> = parts
         .iter()
-        .filter(|part| !matches!(part, IrPart::Thinking { .. } | IrPart::Raw { .. }))
+        .filter(|part| match part {
+            IrPart::Thinking { .. } => {
+                report.record(
+                    "part.thinking",
+                    LossAction::Drop,
+                    "thinking has no Chat Completions slot",
+                );
+                false
+            }
+            IrPart::Raw { .. } => {
+                report.record(
+                    "part.raw",
+                    LossAction::Drop,
+                    "raw part has no Chat Completions slot",
+                );
+                false
+            }
+            _ => true,
+        })
         .collect();
     if visible.is_empty() {
         return Value::String(String::new());
@@ -433,6 +472,18 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.thinking_budget.is_some() {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
+    }
+    if let Some(schema) = &s.json_schema
+        && let Some((schema, name)) =
+            super::official_json_schema(schema, s.json_schema_name.as_deref(), report)
+    {
+        body["response_format"] = json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": name,
+                "schema": schema,
+            },
+        });
     }
 }
 

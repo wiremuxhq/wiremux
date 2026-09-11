@@ -9,7 +9,7 @@ use crate::ir::{
 };
 
 pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError> {
-    let report = LossReport::default();
+    let mut report = LossReport::default();
     let mut items = Vec::new();
     decode_system(value.get("system"), &mut items);
 
@@ -25,7 +25,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         .map(|arr| arr.iter().map(decode_tool).collect())
         .unwrap_or_default();
 
-    let mut sampling = decode_sampling(value);
+    let mut sampling = decode_sampling(value, &mut report);
     sampling.cache = cache_from(value);
 
     let ir = IrRequest {
@@ -206,7 +206,10 @@ fn tool_result_output(block: &Value) -> String {
         .unwrap_or_default()
 }
 
-fn decode_sampling(value: &Value) -> IrSampling {
+fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
+    if messages_source_has_json_schema(value) {
+        report.record("sampling.json_schema", LossAction::Drop, "no slot");
+    }
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
@@ -222,7 +225,16 @@ fn decode_sampling(value: &Value) -> IrSampling {
         thinking_budget: None,
         reasoning_effort: None,
         max_reasoning_tokens: None,
+        json_schema: None,
+        json_schema_name: None,
     }
+}
+
+fn messages_source_has_json_schema(value: &Value) -> bool {
+    value.get("output_format").is_some()
+        || value.get("response_format").is_some()
+        || value.get("json_schema").is_some()
+        || value.pointer("/text/format/type").and_then(Value::as_str) == Some("json_schema")
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -351,14 +363,14 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 }
                 messages.push(json!({
                     "role": "assistant",
-                    "content": [tool_use_block(call_id, name, arguments)],
+                    "content": [tool_use_block(call_id, name, arguments, format!("items[{idx}]"), report)],
                 }));
                 idx += 1;
             }
             IrItem::FunctionOutput { call_id, output } => {
                 messages.push(json!({
                     "role": "user",
-                    "content": [tool_result_block(call_id, output)],
+                    "content": [tool_result_block(call_id, output, format!("items[{idx}]"), report)],
                 }));
                 idx += 1;
             }
@@ -409,12 +421,17 @@ fn encode_user(
     ir: &IrRequest,
     start: usize,
     parts: &[IrPart],
-    _report: &mut LossReport,
+    report: &mut LossReport,
 ) -> (Value, usize) {
     let mut consumed = 1;
-    let mut content = encode_user_parts(parts);
+    let mut content = encode_user_parts(parts, report);
     while let Some(IrItem::FunctionOutput { call_id, output }) = ir.items.get(start + consumed) {
-        content.push(tool_result_block(call_id, output));
+        content.push(tool_result_block(
+            call_id,
+            output,
+            format!("items[{}]", start + consumed),
+            report,
+        ));
         consumed += 1;
     }
     (
@@ -433,7 +450,7 @@ fn encode_assistant(
     report: &mut LossReport,
 ) -> (Value, usize) {
     let mut consumed = 1;
-    let mut content = encode_assistant_parts(parts);
+    let mut content = encode_assistant_parts(parts, report);
     loop {
         match ir.items.get(start + consumed) {
             Some(IrItem::FunctionCall {
@@ -449,7 +466,13 @@ fn encode_assistant(
                         "thoughtSignature has no Messages slot",
                     );
                 }
-                content.push(tool_use_block(call_id, name, arguments));
+                content.push(tool_use_block(
+                    call_id,
+                    name,
+                    arguments,
+                    format!("items[{}]", start + consumed),
+                    report,
+                ));
                 consumed += 1;
             }
             Some(IrItem::Reasoning {
@@ -542,8 +565,11 @@ fn reasoning_block(
     Some(block)
 }
 
-fn encode_user_parts(parts: &[IrPart]) -> Vec<Value> {
-    let out: Vec<Value> = parts.iter().filter_map(encode_part).collect();
+fn encode_user_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
+    let out: Vec<Value> = parts
+        .iter()
+        .filter_map(|part| encode_part(part, report))
+        .collect();
     if out.is_empty() {
         vec![json!({"type": "text", "text": "."})]
     } else {
@@ -551,11 +577,14 @@ fn encode_user_parts(parts: &[IrPart]) -> Vec<Value> {
     }
 }
 
-fn encode_assistant_parts(parts: &[IrPart]) -> Vec<Value> {
-    parts.iter().filter_map(encode_part).collect()
+fn encode_assistant_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
+    parts
+        .iter()
+        .filter_map(|part| encode_part(part, report))
+        .collect()
 }
 
-fn encode_part(part: &IrPart) -> Option<Value> {
+fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
     match part {
         IrPart::Text(text) if text.trim().is_empty() => None,
         IrPart::Text(text) => Some(json!({"type": "text", "text": text})),
@@ -568,7 +597,14 @@ fn encode_part(part: &IrPart) -> Option<Value> {
             "source": {"type": "base64", "media_type": media_type, "data": data}
         })),
         IrPart::Thinking { text, signature } => {
-            let sig = signature.as_deref().filter(|s| !s.is_empty())?;
+            let Some(sig) = signature.as_deref().filter(|s| !s.is_empty()) else {
+                report.record(
+                    "part.thinking",
+                    LossAction::Drop,
+                    "unsigned thinking is not replayed",
+                );
+                return None;
+            };
             Some(json!({
                 "type": "thinking",
                 "thinking": text,
@@ -767,20 +803,72 @@ fn tag_first_user_text(body: &mut Value, ttl: Option<&str>) {
     }
 }
 
-fn tool_use_block(call_id: &str, name: &str, arguments: &str) -> Value {
+/// Anthropic `tool_use.id` must match `^[a-zA-Z0-9_-]+$`.
+fn sanitize_messages_tool_use_id(call_id: &str) -> String {
+    let mut out = String::with_capacity(call_id.len().max(1));
+    let mut last_underscore = false;
+    for c in call_id.chars() {
+        let legal = c.is_ascii_alphanumeric() || c == '_' || c == '-';
+        if legal {
+            if c == '_' && last_underscore {
+                continue;
+            }
+            last_underscore = c == '_';
+            out.push(c);
+        } else if !last_underscore {
+            out.push('_');
+            last_underscore = true;
+        }
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
+}
+
+fn rewrite_messages_tool_use_id(
+    call_id: &str,
+    path: impl Into<String>,
+    report: &mut LossReport,
+) -> String {
+    let sanitized = sanitize_messages_tool_use_id(call_id);
+    if sanitized != call_id {
+        report.record(
+            path,
+            LossAction::Degrade,
+            "sanitized to Anthropic tool_use.id charset",
+        );
+    }
+    sanitized
+}
+
+fn tool_use_block(
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+    path: impl Into<String>,
+    report: &mut LossReport,
+) -> Value {
+    let id = rewrite_messages_tool_use_id(call_id, path, report);
     let input = serde_json::from_str::<Value>(arguments).unwrap_or_else(|_| json!(arguments));
     json!({
         "type": "tool_use",
-        "id": call_id,
+        "id": id,
         "name": name,
         "input": input,
     })
 }
 
-fn tool_result_block(call_id: &str, output: &str) -> Value {
+fn tool_result_block(
+    call_id: &str,
+    output: &str,
+    path: impl Into<String>,
+    report: &mut LossReport,
+) -> Value {
+    let id = rewrite_messages_tool_use_id(call_id, path, report);
     json!({
         "type": "tool_result",
-        "tool_use_id": call_id,
+        "tool_use_id": id,
         "content": output,
     })
 }
@@ -852,6 +940,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.thinking_budget.is_some() {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
+    }
+    if s.json_schema.is_some() {
+        report.record("sampling.json_schema", LossAction::Drop, "no slot");
     }
 }
 

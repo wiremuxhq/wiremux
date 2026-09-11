@@ -18,7 +18,7 @@ mod isolated_home;
 
 pub use error::AuthError;
 pub use exchange::TokenExchangeResponse;
-pub use helpers::sanitize_oauth_error_text;
+pub use helpers::{format_oauth_transport_error, sanitize_oauth_error_text};
 pub use profile::{
     AuthScheme, Betas, CredsFormat, Dialect, ExpiresUnit, Fingerprint, ForbiddenFieldPolicy, Http,
     ListMerge, LoadOptions, Login, OauthPack, ProfileError, ResolvedProfile, SCHEMA_VERSION_MAX,

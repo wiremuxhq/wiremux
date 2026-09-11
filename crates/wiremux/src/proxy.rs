@@ -13,7 +13,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
-use wiremux_auth::{AuthScheme, ResolvedProfile, Wire};
+use wiremux_auth::{AuthScheme, ResolvedProfile, Wire, format_oauth_transport_error};
 
 use serde_json::Value;
 
@@ -149,7 +149,12 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
 
     let resp = match upstream.send().await {
         Ok(r) => r,
-        Err(err) => return text(StatusCode::BAD_GATEWAY, format!("upstream: {err}\n")),
+        Err(err) => {
+            return text(
+                StatusCode::BAD_GATEWAY,
+                format!("{}\n", format_oauth_transport_error("upstream", &err, &url)),
+            );
+        }
     };
     let status = resp.status();
     let content_type = resp
@@ -171,7 +176,15 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     }
     let body = match resp.bytes().await {
         Ok(b) => b,
-        Err(err) => return text(StatusCode::BAD_GATEWAY, format!("upstream body: {err}\n")),
+        Err(err) => {
+            return text(
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "{}\n",
+                    format_oauth_transport_error("upstream body", &err, &url)
+                ),
+            );
+        }
     };
     if ir.sampling.stream == Some(true)
         && status.is_success()

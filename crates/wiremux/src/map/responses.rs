@@ -173,6 +173,12 @@ fn decode_image(part: &Value) -> Option<IrPart> {
         })
         .or_else(|| str_field(part, "url"))
     {
+        if let Some((media_type, data)) = super::split_data_url(&url) {
+            return Some(IrPart::ImageBase64 {
+                media_type: media_type.to_string(),
+                data: data.to_string(),
+            });
+        }
         return Some(IrPart::ImageUrl(url));
     }
     if let Some(data) =
@@ -200,6 +206,7 @@ fn parts_text(parts: &[IrPart]) -> String {
 }
 
 fn decode_sampling(value: &Value) -> IrSampling {
+    let (json_schema, json_schema_name) = responses_json_schema(value);
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
@@ -221,7 +228,26 @@ fn decode_sampling(value: &Value) -> IrSampling {
         max_reasoning_tokens: value
             .get("reasoning")
             .and_then(|r| u32_field(r, "max_tokens")),
+        json_schema,
+        json_schema_name,
     }
+}
+
+fn responses_json_schema(value: &Value) -> (Option<Value>, Option<String>) {
+    let format = value.get("text").and_then(|t| t.get("format"));
+    let Some(format) = format else {
+        return (None, None);
+    };
+    if format.get("type").and_then(Value::as_str) != Some("json_schema") {
+        return (None, None);
+    }
+    let schema = format.get("schema").cloned();
+    let name = format
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    (schema, name)
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -294,12 +320,12 @@ fn encode_items(
             }
             IrItem::User { parts } => input.push(json!({
                 "role": "user",
-                "content": encode_parts(parts, true),
+                "content": encode_parts(parts, true, report),
             })),
             IrItem::Assistant { parts } => input.push(json!({
                 "type": "message",
                 "role": "assistant",
-                "content": encode_parts(parts, false),
+                "content": encode_parts(parts, false, report),
             })),
             IrItem::FunctionCall {
                 call_id,
@@ -380,11 +406,29 @@ fn encode_reasoning(encrypted: Option<&str>, summary: Option<&str>, raw: Option<
     obj
 }
 
-fn encode_parts(parts: &[IrPart], input: bool) -> Value {
+fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value {
     let text_ty = if input { "input_text" } else { "output_text" };
     let visible: Vec<&IrPart> = parts
         .iter()
-        .filter(|part| !matches!(part, IrPart::Thinking { .. } | IrPart::Raw { .. }))
+        .filter(|part| match part {
+            IrPart::Thinking { .. } => {
+                report.record(
+                    "part.thinking",
+                    LossAction::Drop,
+                    "thinking has no Responses slot",
+                );
+                false
+            }
+            IrPart::Raw { .. } => {
+                report.record(
+                    "part.raw",
+                    LossAction::Drop,
+                    "raw part has no Responses slot",
+                );
+                false
+            }
+            _ => true,
+        })
         .collect();
     if visible.len() == 1
         && let IrPart::Text(text) = visible[0]
@@ -481,6 +525,18 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.thinking_budget.is_some() {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
+    }
+    if let Some(schema) = &s.json_schema
+        && let Some((schema, name)) =
+            super::official_json_schema(schema, s.json_schema_name.as_deref(), report)
+    {
+        body["text"] = json!({
+            "format": {
+                "type": "json_schema",
+                "name": name,
+                "schema": schema,
+            }
+        });
     }
 }
 

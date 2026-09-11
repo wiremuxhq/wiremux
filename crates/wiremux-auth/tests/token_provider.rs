@@ -61,10 +61,39 @@ access_env = "WIREMUX_TEST_MISSING_ACCESS"
     let err = wiremux_auth::provider_from_profile(&profile)
         .expect_err("missing file and unset env must fail");
     let msg = err.to_string();
+    let names_path_and_env = (msg.contains(&creds_unix)
+        || msg.contains(creds.to_string_lossy().as_ref()))
+        && msg.contains("access_env=WIREMUX_TEST_MISSING_ACCESS");
+    let names_tried_stores =
+        msg.contains("tried creds_path=") && msg.contains("access_env=WIREMUX_TEST_MISSING_ACCESS");
     assert!(
-        msg.contains(creds.file_name().unwrap().to_str().unwrap())
-            || msg.contains("WIREMUX_TEST_MISSING_ACCESS")
-            || msg.contains("missing-store"),
-        "missing creds must name the configured path or env, got {msg}"
+        names_path_and_env || names_tried_stores,
+        "missing creds must name configured path and access_env=WIREMUX_TEST_MISSING_ACCESS, got {msg}"
+    );
+}
+
+#[test]
+fn creds_path_parent_dir_is_refused() {
+    let _home = IsolatedHome::new();
+    let profile = parse_profile_str(
+        r#"
+schema_version = 1
+id = "escape-home"
+[oauth]
+token_url = "https://auth.example.invalid/token"
+creds_path = "~/ok/../escaped.json"
+"#,
+    )
+    .expect("test profile");
+    let err = wiremux_auth::provider_from_profile(&profile)
+        .expect_err("parent-dir creds_path must fail closed");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("oauth.creds_path"),
+        "error must name oauth.creds_path, got {msg}"
+    );
+    assert!(
+        msg.to_ascii_lowercase().contains("home"),
+        "error must say path must stay under home, got {msg}"
     );
 }
