@@ -192,7 +192,6 @@ pub(crate) fn is_token_rotation_error(body: &str) -> bool {
 
 /// `error` + `error_description` only. Never echo raw bodies or tokens.
 pub(crate) fn sanitize_oauth_error_body(body: &str) -> String {
-    const MAX_CHARS: usize = 200;
     let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
         return String::new();
     };
@@ -207,13 +206,19 @@ pub(crate) fn sanitize_oauth_error_body(body: &str) -> String {
         .get("error_description")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
-    let mut summary = match (error.is_empty(), desc.is_empty()) {
+    let summary = match (error.is_empty(), desc.is_empty()) {
         (true, true) => return String::new(),
         (false, true) => error.to_owned(),
         (true, false) => desc.to_owned(),
         (false, false) => format!("{error}: {desc}"),
     };
-    summary = summary.chars().filter(|c| !c.is_control()).collect();
+    sanitize_oauth_error_text(&summary)
+}
+
+/// Strip controls, redact secret-looking tokens, and cap length.
+pub fn sanitize_oauth_error_text(text: &str) -> String {
+    const MAX_CHARS: usize = 200;
+    let mut summary: String = text.chars().filter(|c| !c.is_control()).collect();
     summary = redact_secret_looking(&summary);
     if summary.chars().count() > MAX_CHARS {
         summary = summary.chars().take(MAX_CHARS).collect();
@@ -234,7 +239,7 @@ pub(crate) fn format_oauth_http_error(
     }
 }
 
-fn redact_secret_looking(s: &str) -> String {
+pub(crate) fn redact_secret_looking(s: &str) -> String {
     let mut out = redact_prefix(s, "sk-ant-");
     out = redact_jwt(&out);
     redact_prefix(&out, "rt-")
@@ -254,6 +259,24 @@ fn redact_prefix(s: &str, prefix: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Scheme + host/port only. Drops userinfo, path, query, and fragment.
+pub(crate) fn redact_url_origin(raw: &str) -> String {
+    let (scheme, rest) = match raw.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, raw),
+    };
+    let cut = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..cut];
+    let host = match authority.find('@') {
+        Some(at) => &authority[at + 1..],
+        None => authority,
+    };
+    match scheme {
+        Some(scheme) => format!("{scheme}://{host}"),
+        None => host.to_string(),
+    }
 }
 
 fn redact_jwt(s: &str) -> String {
@@ -548,6 +571,17 @@ mod tests {
         assert!(!summary.contains("sk-ant-oat01-LEAK"));
         assert!(!summary.contains("rt-LEAK"));
         assert!(summary.contains("invalid_grant"));
+    }
+
+    #[test]
+    fn redact_url_origin_drops_userinfo_path_and_query() {
+        let redacted = redact_url_origin(
+            "https://user:s3cret@auth.example.invalid/oauth/token?client_secret=supersecret#frag",
+        );
+        assert_eq!(redacted, "https://auth.example.invalid");
+        assert!(!redacted.contains("s3cret"));
+        assert!(!redacted.contains("supersecret"));
+        assert!(!redacted.contains("/oauth"));
     }
 
     #[test]

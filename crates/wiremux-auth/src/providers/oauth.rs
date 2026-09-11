@@ -15,8 +15,8 @@ use crate::error::AuthError;
 use crate::helpers::{
     AUTH_LOCK_TIMEOUT, InFlight, cached_token_on_lock_failure, duration_from_expires_in_secs,
     expand_tilde, format_oauth_http_error, is_token_rotation_error, lead_or_follow,
-    oauth_http_client, parse_rfc3339, read_oauth_body, remaining_from_system_time,
-    sanitize_oauth_error_body, try_acquire_refresh_lock,
+    oauth_http_client, parse_rfc3339, read_oauth_body, redact_url_origin,
+    remaining_from_system_time, sanitize_oauth_error_body, try_acquire_refresh_lock,
 };
 use crate::keychain_guard::keychain_disabled;
 use crate::profile::{
@@ -257,7 +257,10 @@ impl ProfileTokenProvider {
             .token_request_format
             .unwrap_or(TokenRequestFormat::Form);
 
-        debug!("refreshing token via {}", self.inner.oauth.token_url);
+        debug!(
+            "refreshing token via {}",
+            redact_url_origin(&self.inner.oauth.token_url)
+        );
         let resp = token_post(
             &self.inner.http,
             &self.inner.oauth,

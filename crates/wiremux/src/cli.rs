@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use wiremux_auth::{
     AuthScheme, LoadOptions, Login, OauthPack, ProfileError, ResolvedProfile, TokenProvider, Wire,
-    load_profile_from_cli, persist_login_tokens, provider_from_profile,
+    load_profile_from_cli, persist_login_tokens, provider_from_profile, sanitize_oauth_error_text,
 };
 
 /// Process exit: success.
@@ -427,9 +427,15 @@ pub(crate) fn pkce_callback_from_query(query: &str) -> Result<(String, String), 
 
 fn format_pkce_vendor_error(error: Option<&str>, description: Option<&str>) -> String {
     let err = error.filter(|s| !s.is_empty()).unwrap_or("error");
-    match description.filter(|s| !s.is_empty()) {
-        Some(desc) => format!("callback error {err}: {desc}"),
-        None => format!("callback error {err}"),
+    let raw = match description.filter(|s| !s.is_empty()) {
+        Some(desc) => format!("{err}: {desc}"),
+        None => err.to_owned(),
+    };
+    let summary = sanitize_oauth_error_text(&raw);
+    if summary.is_empty() {
+        "callback error".into()
+    } else {
+        format!("callback error {summary}")
     }
 }
 
@@ -788,6 +794,26 @@ base_url = "http://127.0.0.1:9"
         assert!(status.available);
         let text = format_status(&status);
         assert!(!text.contains("http://"));
+    }
+
+    #[test]
+    fn format_pkce_vendor_error_redacts_secret_looking() {
+        let sk = format_pkce_vendor_error(
+            Some("invalid_request"),
+            Some("rejected token sk-ant-oat01-LEAKED"),
+        );
+        assert!(!sk.contains("sk-ant-oat01-LEAKED"), "API key leaked: {sk}");
+        assert!(sk.contains("invalid_request"), "{sk}");
+
+        let jwt = format_pkce_vendor_error(
+            Some("invalid_request"),
+            Some("bad jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig"),
+        );
+        assert!(
+            !jwt.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+            "{jwt}"
+        );
+        assert!(!jwt.contains("eyJzdWIiOiIxIn0"), "{jwt}");
     }
 
     #[test]
