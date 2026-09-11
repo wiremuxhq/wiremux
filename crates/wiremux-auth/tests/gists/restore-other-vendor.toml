@@ -1,0 +1,31 @@
+schema_version = 1
+id = "other-vendor-oauth"
+display_name = "Example official-app vendor (gist restore)"
+wire = "messages"
+auth_scheme = "bearer"
+base_url = "https://api.example.invalid"
+chat_path = "/v1/messages"
+
+[oauth]
+token_url = "https://auth.example.invalid/oauth/token"
+client_id = "example-public-client"
+token_request_format = "form"
+creds_format = "json-pointer"
+creds_path = "~/.config/wiremux/other-vendor.json"
+access_token_ptr = "/tokens/access"
+refresh_token_ptr = "/tokens/refresh"
+expires_ptr = "/tokens/expiry_unix"
+expires_unit = "s"
+login = "none"
+
+[oauth.token_headers]
+X-Client = "official-app"
+
+[oauth.token_response]
+access_token_ptr = "/access_token"
+refresh_token_ptr = "/refresh_token"
+expires_ptr = "/expires_in"
+expires_unit = "s"
+
+[oauth.authorize_params]
+audience = "inference"

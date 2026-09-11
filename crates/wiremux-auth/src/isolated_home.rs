@@ -12,6 +12,9 @@ use crate::keychain_guard::KeychainIsolation;
 static HOME_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 const COMMON_ENVS: &[&str] = &[
+    "WIREMUX_NO_SHIPPED_PRESETS",
+    "WIREMUX_PROFILE_DIR",
+    "XDG_CONFIG_HOME",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
