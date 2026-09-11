@@ -1,6 +1,7 @@
 //! SSE encode/decode for the three v1 dialects.
 
 mod chat;
+mod gemini;
 mod messages;
 mod responses;
 mod sse;
@@ -68,6 +69,7 @@ pub fn decode_stream_event(
         Wire::ChatCompletions => chat::decode(&value),
         Wire::Messages => messages::decode(&name, &value),
         Wire::Responses => responses::decode(&name, &value),
+        Wire::Gemini => gemini::decode(&value),
     }
 }
 
@@ -80,6 +82,7 @@ pub fn encode_stream_event(wire: Wire, ev: &IrStreamEvent) -> Result<RawSse, Map
             Wire::ChatCompletions => chat::encode(other),
             Wire::Messages => messages::encode(other),
             Wire::Responses => responses::encode(other),
+            Wire::Gemini => gemini::encode(other),
         },
     }
 }
@@ -110,7 +113,7 @@ fn frame_event_name(wire: Wire, raw: &RawSse) -> String {
     if trimmed == "[DONE]" {
         return "[DONE]".into();
     }
-    if matches!(wire, Wire::ChatCompletions) {
+    if matches!(wire, Wire::ChatCompletions | Wire::Gemini) {
         return "chunk".into();
     }
     if let Ok(value) = serde_json::from_str::<Value>(trimmed)

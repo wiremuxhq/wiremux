@@ -50,6 +50,16 @@ wire = "responses"
     )
 }
 
+fn gemini_profile() -> ResolvedProfile {
+    profile(
+        r#"
+schema_version = 1
+id = "test-gemini"
+wire = "gemini"
+"#,
+    )
+}
+
 fn decode_all(
     wire: Wire,
     text: &str,
@@ -451,6 +461,78 @@ fn chat_top_level_cached_tokens_alias_is_read() {
 }
 
 #[test]
+fn gemini_stream_text_usage_and_thought() {
+    let profile = profile(
+        r#"
+schema_version = 1
+id = "test-gemini"
+wire = "gemini"
+"#,
+    );
+    let text = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Gemini, &text, &profile)
+        .expect("decode text")
+        .expect("text");
+    assert!(matches!(ev, IrStreamEvent::TextDelta { ref text } if text == "hello"));
+
+    let thought = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"text":"plan","thought":true}]}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Gemini, &thought, &profile)
+        .expect("decode thought")
+        .expect("thought");
+    assert!(matches!(ev, IrStreamEvent::ReasoningDelta { ref text } if text == "plan"));
+
+    let usage = RawSse {
+        event: None,
+        data: r#"{"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"cachedContentTokenCount":40,"thoughtsTokenCount":5}}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Gemini, &usage, &profile)
+        .expect("decode usage")
+        .expect("usage");
+    match ev {
+        IrStreamEvent::Usage {
+            prompt_tokens,
+            completion_tokens,
+            cache_read_tokens,
+            reasoning_tokens,
+            ..
+        } => {
+            assert_eq!(prompt_tokens, 60);
+            assert_eq!(completion_tokens, 20);
+            assert_eq!(cache_read_tokens, 40);
+            assert_eq!(reasoning_tokens, 5);
+        }
+        other => panic!("expected Usage, got {other:?}"),
+    }
+
+    let encoded = encode_stream_event(
+        Wire::Gemini,
+        &IrStreamEvent::Usage {
+            prompt_tokens: 60,
+            completion_tokens: 20,
+            cache_read_tokens: 40,
+            cache_write_tokens: 0,
+            reasoning_tokens: 5,
+        },
+    )
+    .expect("encode usage");
+    let json: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(
+        json.pointer("/usageMetadata/promptTokenCount"),
+        Some(&Value::from(100))
+    );
+    assert_eq!(
+        json.pointer("/usageMetadata/cachedContentTokenCount"),
+        Some(&Value::from(40))
+    );
+}
+
+#[test]
 fn chat_prompt_cache_hit_tokens_alias_is_read() {
     let raw = RawSse {
         event: None,
@@ -609,11 +691,17 @@ fn encode_round_trip_text_and_tool_start() {
     let text = IrStreamEvent::TextDelta {
         text: "hello".into(),
     };
-    for wire in [Wire::ChatCompletions, Wire::Messages, Wire::Responses] {
+    for wire in [
+        Wire::ChatCompletions,
+        Wire::Messages,
+        Wire::Responses,
+        Wire::Gemini,
+    ] {
         let profile = match wire {
             Wire::ChatCompletions => chat_profile(),
             Wire::Messages => messages_profile(),
             Wire::Responses => responses_profile(),
+            Wire::Gemini => gemini_profile(),
         };
         let raw = encode_stream_event(wire, &text).expect("encode text");
         let back = decode_stream_event(wire, &raw, &profile)
@@ -631,6 +719,7 @@ fn encode_round_trip_text_and_tool_start() {
             Wire::ChatCompletions => chat_profile(),
             Wire::Messages => messages_profile(),
             Wire::Responses => responses_profile(),
+            Wire::Gemini => gemini_profile(),
         };
         let raw = encode_stream_event(wire, &start).expect("encode start");
         let back = decode_stream_event(wire, &raw, &profile)

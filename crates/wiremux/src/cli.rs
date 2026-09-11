@@ -519,8 +519,9 @@ pub fn parse_wire(s: &str) -> Result<Wire, String> {
         "responses" => Ok(Wire::Responses),
         "messages" => Ok(Wire::Messages),
         "chat-completions" | "chat" => Ok(Wire::ChatCompletions),
+        "gemini" => Ok(Wire::Gemini),
         other => Err(format!(
-            "unknown --from `{other}` (responses|messages|chat-completions)"
+            "unknown --from `{other}` (responses|messages|chat-completions|gemini)"
         )),
     }
 }
@@ -530,6 +531,7 @@ pub fn wire_name(wire: Wire) -> &'static str {
         Wire::ChatCompletions => "chat-completions",
         Wire::Messages => "messages",
         Wire::Responses => "responses",
+        Wire::Gemini => "gemini",
     }
 }
 
@@ -561,6 +563,14 @@ pub async fn proxy_token(profile: &ResolvedProfile) -> Result<Option<String>, St
 
 /// Join `base_url` + `chat_path` for the upstream request.
 pub fn upstream_url(profile: &ResolvedProfile) -> Result<String, String> {
+    upstream_url_for_model(profile, None)
+}
+
+/// Join `base_url` + `chat_path`, substituting `{model}` when present.
+pub fn upstream_url_for_model(
+    profile: &ResolvedProfile,
+    model: Option<&str>,
+) -> Result<String, String> {
     let base = profile
         .http
         .base_url
@@ -572,14 +582,19 @@ pub fn upstream_url(profile: &ResolvedProfile) -> Result<String, String> {
         .as_deref()
         .or_else(|| profile.dialect.wire.map(Wire::default_chat_path))
         .unwrap_or("/");
+    let path = if let Some(model) = model.filter(|m| !m.is_empty()) {
+        path.replace("{model}", model)
+    } else {
+        path.to_string()
+    };
     if path.starts_with("http://") || path.starts_with("https://") {
-        return Ok(path.to_string());
+        return Ok(path);
     }
     Ok(format!(
         "{}{}",
         base.trim_end_matches('/'),
         if path.starts_with('/') {
-            path.to_string()
+            path
         } else {
             format!("/{path}")
         }
@@ -676,6 +691,30 @@ mod tests {
             }
             other => panic!("expected not-ready, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_wire_accepts_gemini() {
+        assert_eq!(parse_wire("gemini").unwrap(), Wire::Gemini);
+        assert_eq!(wire_name(Wire::Gemini), "gemini");
+    }
+
+    #[test]
+    fn gemini_upstream_url_substitutes_model() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "g"
+wire = "gemini"
+base_url = "https://generativelanguage.googleapis.com"
+"#,
+        )
+        .expect("parse");
+        let url = upstream_url_for_model(&profile, Some("gemini-2.5-flash")).expect("url");
+        assert!(
+            url.ends_with("/v1beta/models/gemini-2.5-flash:generateContent"),
+            "{url}"
+        );
     }
 
     #[test]
