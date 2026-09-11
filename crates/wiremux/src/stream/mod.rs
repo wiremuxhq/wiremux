@@ -86,6 +86,9 @@ pub fn decode_stream_events(
     let Some(first) = first else {
         return Ok(Vec::new());
     };
+    if let Some(expanded) = expand_complete_tool_call(wire, &first, raw) {
+        return Ok(expanded);
+    }
     let mut out = vec![first];
     if matches!(wire, Wire::Messages)
         && frame_event_name(wire, raw) == "message_delta"
@@ -96,6 +99,106 @@ pub fn decode_stream_events(
         out.push(usage::from_anthropic(usage));
     }
     Ok(out)
+}
+
+fn expand_complete_tool_call(
+    wire: Wire,
+    first: &IrStreamEvent,
+    raw: &RawSse,
+) -> Option<Vec<IrStreamEvent>> {
+    let value: Value = serde_json::from_str(&raw.data).ok()?;
+    match wire {
+        Wire::ChatCompletions => expand_chat_tool_call(first, &value),
+        Wire::Gemini => expand_gemini_function_call(first, &value),
+        Wire::Responses => expand_responses_function_call(first, &value),
+        Wire::Messages => None,
+    }
+}
+
+fn expand_chat_tool_call(first: &IrStreamEvent, value: &Value) -> Option<Vec<IrStreamEvent>> {
+    let IrStreamEvent::Protocol { .. } = first else {
+        return None;
+    };
+    let call = value.pointer("/choices/0/delta/tool_calls/0")?;
+    if let Some(ty) = call.get("type").and_then(Value::as_str)
+        && ty != "function"
+    {
+        return None;
+    }
+    let func = call.get("function").unwrap_or(call);
+    let id = str_field(call, "id").unwrap_or_default();
+    let name = str_field(func, "name").unwrap_or_default();
+    let args = str_field(func, "arguments").filter(|s| !s.is_empty())?;
+    if id.is_empty() && name.is_empty() {
+        return None;
+    }
+    Some(vec![
+        IrStreamEvent::ToolCallStart {
+            id,
+            name,
+            thought_signature: None,
+        },
+        IrStreamEvent::ToolCallArgDelta { delta: args },
+    ])
+}
+
+fn expand_gemini_function_call(first: &IrStreamEvent, value: &Value) -> Option<Vec<IrStreamEvent>> {
+    let parts = value
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array)?;
+    let part = parts.iter().find(|p| p.get("functionCall").is_some())?;
+    let fc = part.get("functionCall")?;
+    let name = str_field(fc, "name").unwrap_or_default();
+    let args = fc
+        .get("args")
+        .filter(|a| a.as_object().is_none_or(|m| !m.is_empty()) && !a.is_null())?;
+    let thought_signature = part
+        .get("thoughtSignature")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    match first {
+        IrStreamEvent::Protocol { .. } | IrStreamEvent::ToolCallStart { .. } => {}
+        _ => return None,
+    }
+    Some(vec![
+        IrStreamEvent::ToolCallStart {
+            id: name.clone(),
+            name,
+            thought_signature,
+        },
+        IrStreamEvent::ToolCallArgDelta {
+            delta: args.to_string(),
+        },
+    ])
+}
+
+fn expand_responses_function_call(
+    first: &IrStreamEvent,
+    value: &Value,
+) -> Option<Vec<IrStreamEvent>> {
+    let IrStreamEvent::ToolCallStart {
+        id,
+        name,
+        thought_signature,
+    } = first
+    else {
+        return None;
+    };
+    let args = value
+        .pointer("/item/arguments")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    Some(vec![
+        IrStreamEvent::ToolCallStart {
+            id: id.clone(),
+            name: name.clone(),
+            thought_signature: thought_signature.clone(),
+        },
+        IrStreamEvent::ToolCallArgDelta {
+            delta: args.to_string(),
+        },
+    ])
 }
 
 /// Encode one IR event into the target dialect's SSE shape.

@@ -65,10 +65,11 @@ fn decode_all(
     text: &str,
     profile: &ResolvedProfile,
 ) -> Result<Vec<IrStreamEvent>, MapError> {
-    RawSse::parse_all(text)
-        .into_iter()
-        .filter_map(|raw| decode_stream_event(wire, &raw, profile).transpose())
-        .collect()
+    let mut out = Vec::new();
+    for raw in RawSse::parse_all(text) {
+        out.extend(decode_stream_events(wire, &raw, profile)?);
+    }
+    Ok(out)
 }
 
 #[test]
@@ -574,6 +575,28 @@ fn stream_signed_function_call_keeps_nonempty_args() {
         Some("x"),
         "nonempty args must not be dropped when thoughtSignature is present, got {json}"
     );
+
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("fan-out");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallStart {
+                name,
+                thought_signature: Some(sig),
+                ..
+            } if name == "lookup" && sig == "sig_args"
+        )),
+        "fan-out must emit signed ToolCallStart, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { delta } => {
+                delta.contains("\"q\"") && delta.contains("\"x\"")
+            }
+            _ => false,
+        }),
+        "fan-out must emit ArgDelta, got {all:?}"
+    );
 }
 
 #[test]
@@ -746,6 +769,29 @@ stream_unknown_policy = "passthrough"
     assert!(
         matches!(ev, IrStreamEvent::Unknown { ref event, .. } if event == "vendor.tool_blast"),
         "passthrough must forward the frame, got {ev:?}"
+    );
+}
+
+#[test]
+fn responses_added_with_arguments_fans_out() {
+    let raw = RawSse {
+        event: Some("response.output_item.added".into()),
+        data: r#"{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"q\":\"x\"}"}}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Responses, &raw, &responses_profile())
+        .expect("decode")
+        .expect("start");
+    assert!(
+        matches!(ev, IrStreamEvent::ToolCallStart { ref id, ref name, .. } if id == "call_1" && name == "lookup"),
+        "1:1 keeps start, got {ev:?}"
+    );
+    let all = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("fan-out");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+        )),
+        "fan-out must emit arguments from output_item.added, got {all:?}"
     );
 }
 
@@ -939,6 +985,23 @@ fn chat_tool_start_with_args_keeps_bytes() {
         }
         other => panic!("expected Protocol keeping arg bytes, got {other:?}"),
     }
+
+    let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("fan-out start+args");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallStart { id, name, .. } if id == "call_1" && name == "lookup"
+        )),
+        "fan-out must emit ToolCallStart, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"#
+        )),
+        "fan-out must emit ArgDelta, got {all:?}"
+    );
 }
 
 #[test]
