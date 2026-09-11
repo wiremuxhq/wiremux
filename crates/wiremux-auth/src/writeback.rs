@@ -21,6 +21,8 @@ pub(crate) struct TokenWrite<'a> {
     pub expires_in_secs: u64,
     /// When true, write `expires_at` as RFC 3339 even if the slot is new.
     pub expires_rfc3339: bool,
+    pub token_url_ptr: Option<&'a str>,
+    pub token_url: Option<&'a str>,
 }
 
 /// `{issuer}::{client_id}` store key. Trailing slash on the issuer is stripped.
@@ -219,6 +221,7 @@ pub async fn persist_login_tokens(
         None
     };
     let ptrs = persist_store_pointers(oauth, existing.as_ref())?;
+    let token_url_ptr = oidc_token_url_ptr(oauth, &ptrs.access);
     let write = TokenWrite {
         access_ptr: &ptrs.access,
         refresh_ptr: ptrs.refresh.as_deref(),
@@ -228,6 +231,8 @@ pub async fn persist_login_tokens(
         refresh_token: tokens.refresh_token.as_deref(),
         expires_in_secs: tokens.expires_in.unwrap_or(3600),
         expires_rfc3339: ptrs.expires_rfc3339,
+        token_url_ptr: token_url_ptr.as_deref(),
+        token_url: oidc_token_url_value(oauth),
     };
     if path.is_file() {
         return write_tokens(&path, &write).await;
@@ -264,6 +269,19 @@ pub(crate) async fn write_tokens(path: &Path, write: &TokenWrite<'_>) -> Result<
     write_secret_file(path, updated.as_bytes()).await
 }
 
+pub(crate) fn oidc_token_url_ptr(oauth: &OauthPack, access_ptr: &str) -> Option<String> {
+    if oauth.creds_format != Some(CredsFormat::OidcAuthJson) {
+        return None;
+    }
+    access_ptr
+        .strip_suffix("/key")
+        .map(|entry| format!("{entry}/token_url"))
+}
+
+pub(crate) fn oidc_token_url_value(oauth: &OauthPack) -> Option<&str> {
+    (oauth.creds_format == Some(CredsFormat::OidcAuthJson)).then_some(oauth.token_url.as_str())
+}
+
 pub(crate) fn apply_tokens(doc: &mut Value, write: &TokenWrite<'_>) -> Result<(), AuthError> {
     if write.access_token.trim().is_empty() {
         return Err(AuthError::EmptyWriteRefused);
@@ -278,6 +296,9 @@ pub(crate) fn apply_tokens(doc: &mut Value, write: &TokenWrite<'_>) -> Result<()
         refuse_root_pointer(ptr)?;
     }
     if let Some(ptr) = write.expires_ptr {
+        refuse_root_pointer(ptr)?;
+    }
+    if let Some(ptr) = write.token_url_ptr {
         refuse_root_pointer(ptr)?;
     }
     pointer_set(
@@ -300,6 +321,11 @@ pub(crate) fn apply_tokens(doc: &mut Value, write: &TokenWrite<'_>) -> Result<()
                 write.expires_rfc3339,
             ),
         )?;
+    }
+    if let (Some(ptr), Some(url)) = (write.token_url_ptr, write.token_url)
+        && !url.is_empty()
+    {
+        pointer_set(doc, ptr, Value::String(url.to_owned()))?;
     }
     Ok(())
 }
@@ -621,6 +647,8 @@ mod tests {
                 refresh_token: None,
                 expires_in_secs: 60,
                 expires_rfc3339: false,
+                token_url_ptr: None,
+                token_url: None,
             },
         )
         .unwrap_err();
@@ -646,6 +674,8 @@ mod tests {
                 refresh_token: Some("rt-new"),
                 expires_in_secs: 60,
                 expires_rfc3339: false,
+                token_url_ptr: None,
+                token_url: None,
             },
         )
         .unwrap_err();
@@ -675,6 +705,8 @@ mod tests {
                 refresh_token: None,
                 expires_in_secs: 60,
                 expires_rfc3339: false,
+                token_url_ptr: None,
+                token_url: None,
             },
         )
         .unwrap_err();
