@@ -2,10 +2,10 @@
 # Maps-only wiremux must not depend on clap, tokio, reqwest, or hyper.
 # wiremux-auth may still use reqwest/tokio for TokenProvider.
 set -euo pipefail
-tree=$(cargo tree -p wiremux --no-default-features --edges normal --depth 1)
+tree=$(cargo tree -p wiremux --no-default-features --edges normal --prefix none --depth 1)
 fail=0
 for pkg in clap tokio reqwest hyper; do
-  if printf '%s\n' "$tree" | grep -E "^${pkg} " >/dev/null; then
+  if printf '%s\n' "$tree" | grep -E "^${pkg} v" >/dev/null; then
     printf 'wiremux --no-default-features must not depend on %s\n' "$pkg" >&2
     fail=1
   fi
