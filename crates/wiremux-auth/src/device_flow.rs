@@ -10,7 +10,7 @@ use crate::helpers::{format_oauth_http_error, oauth_http_client, read_oauth_body
 use crate::profile::OauthPack;
 
 /// Response from the device authorization endpoint.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct DeviceAuthResponse {
     /// Device verification code (poll secret).
     pub device_code: String,
@@ -27,6 +27,19 @@ pub struct DeviceAuthResponse {
     /// Suggested poll interval in seconds.
     #[serde(default = "default_device_interval")]
     pub interval: u64,
+}
+
+impl std::fmt::Debug for DeviceAuthResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceAuthResponse")
+            .field("device_code", &"[REDACTED]")
+            .field("user_code", &self.user_code)
+            .field("verification_uri", &self.verification_uri)
+            .field("verification_uri_complete", &self.verification_uri_complete)
+            .field("expires_in", &self.expires_in)
+            .field("interval", &self.interval)
+            .finish()
+    }
 }
 
 fn default_device_expires() -> u64 {
@@ -124,6 +137,7 @@ pub async fn start_device_flow(
             "device authorization failed",
             status,
             &body,
+            device_auth_url,
         )));
     }
 
@@ -204,6 +218,7 @@ pub async fn poll_device_token(
                         "device token error",
                         status,
                         &body,
+                        token_url,
                     )));
                 }
             }
@@ -213,6 +228,7 @@ pub async fn poll_device_token(
             "device token: unexpected response",
             status,
             &body,
+            token_url,
         )));
     }
 }
@@ -220,6 +236,25 @@ pub async fn poll_device_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_auth_response_debug_redacts_device_code() {
+        let resp = DeviceAuthResponse {
+            device_code: "dc-secret-should-not-appear".into(),
+            user_code: "ABCD-1234".into(),
+            verification_uri: "https://auth.example.invalid/device".into(),
+            verification_uri_complete: None,
+            expires_in: 900,
+            interval: 5,
+        };
+        let debug = format!("{resp:?}");
+        assert!(
+            !debug.contains("dc-secret-should-not-appear"),
+            "device_code leaked: {debug}"
+        );
+        assert!(debug.contains("[REDACTED]"), "{debug}");
+        assert!(debug.contains("ABCD-1234"), "{debug}");
+    }
 
     #[test]
     fn device_auth_response_deserialize() {

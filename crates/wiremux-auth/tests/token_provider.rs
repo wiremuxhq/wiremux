@@ -5,7 +5,7 @@ use wiremux_auth::device_flow::{
     device_poll_timeout,
 };
 use wiremux_auth::pkce::generate_pkce;
-use wiremux_auth::{AnyTokenProvider, StaticToken, TokenProvider, parse_profile_str};
+use wiremux_auth::{AnyTokenProvider, IsolatedHome, StaticToken, TokenProvider, parse_profile_str};
 
 #[tokio::test]
 async fn static_token_via_any_provider() {
@@ -40,4 +40,31 @@ fn provider_from_profile_requires_oauth_table() {
     let profile = parse_profile_str("schema_version = 1\nid = \"x\"\n").unwrap();
     let err = wiremux_auth::provider_from_profile(&profile).unwrap_err();
     assert!(err.to_string().contains("[oauth]"));
+}
+
+#[test]
+fn missing_creds_names_configured_path_or_env() {
+    let home = IsolatedHome::with_extra_envs(&["WIREMUX_TEST_MISSING_ACCESS"]);
+    let creds = home.path().join("missing-store").join("creds.json");
+    let creds_unix = creds.to_string_lossy().replace('\\', "/");
+    let profile = parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "missing-store"
+[oauth]
+token_url = "https://auth.example.invalid/token"
+creds_path = "{creds_unix}"
+access_env = "WIREMUX_TEST_MISSING_ACCESS"
+"#
+    ))
+    .expect("test profile");
+    let err = wiremux_auth::provider_from_profile(&profile)
+        .expect_err("missing file and unset env must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains(creds.file_name().unwrap().to_str().unwrap())
+            || msg.contains("WIREMUX_TEST_MISSING_ACCESS")
+            || msg.contains("missing-store"),
+        "missing creds must name the configured path or env, got {msg}"
+    );
 }

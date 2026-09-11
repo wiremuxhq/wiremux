@@ -9,7 +9,7 @@ use crate::ir::{
 };
 
 pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError> {
-    let report = LossReport::default();
+    let mut report = LossReport::default();
     let mut items = Vec::new();
     if let Some(sys) = system_text(value.get("systemInstruction")) {
         items.push(IrItem::System { text: sys });
@@ -24,7 +24,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         model: str_field(value, "model").unwrap_or_default(),
         items,
         tools,
-        sampling: decode_sampling(value),
+        sampling: decode_sampling(value, &mut report),
     };
     Ok((ir, report))
 }
@@ -144,9 +144,12 @@ fn decode_tools(value: &Value) -> Vec<crate::ir::IrTool> {
     out
 }
 
-fn decode_sampling(value: &Value) -> IrSampling {
+fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     let cfg = value.get("generationConfig").unwrap_or(value);
     let thinking = thinking_config_obj(value);
+    if gemini_source_has_tool_choice(value) {
+        report.record("sampling.tool_choice", LossAction::Drop, "no slot");
+    }
     IrSampling {
         temperature: f32_field(cfg, "temperature"),
         top_p: f32_field(cfg, "topP").or_else(|| f32_field(cfg, "top_p")),
@@ -172,6 +175,10 @@ fn thinking_config_obj(value: &Value) -> &Value {
         .get("thinkingConfig")
         .or_else(|| value.pointer("/generationConfig/thinkingConfig"))
         .unwrap_or(&Value::Null)
+}
+
+fn gemini_source_has_tool_choice(value: &Value) -> bool {
+    value.get("tool_choice").is_some() || value.get("toolConfig").is_some()
 }
 
 pub(super) fn encode(
@@ -211,7 +218,8 @@ pub(super) fn encode(
                 thought_signature,
             } => {
                 call_names.push((call_id.as_str(), name.as_str()));
-                let args: Value = serde_json::from_str(arguments).unwrap_or_else(|_| json!({}));
+                let args: Value =
+                    serde_json::from_str(arguments).unwrap_or_else(|_| json!(arguments));
                 let mut part = json!({ "functionCall": { "name": name, "args": args } });
                 if let Some(sig) = thought_signature.as_deref().filter(|s| !s.is_empty()) {
                     part["thoughtSignature"] = json!(sig);
@@ -368,10 +376,19 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         }
         body["thinkingConfig"] = tc;
     }
-    if s.reasoning_effort.is_some() {
+    if s.reasoning_effort
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
         report.record("sampling.reasoning_effort", LossAction::Drop, "no slot");
     }
     if s.max_reasoning_tokens.is_some() {
         report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
+    }
+    if !matches!(s.tool_choice, IrToolChoice::Auto) {
+        report.record("sampling.tool_choice", LossAction::Drop, "no slot");
+    }
+    if s.parallel_tool_calls.is_some() {
+        report.record("sampling.parallel_tool_calls", LossAction::Drop, "no slot");
     }
 }

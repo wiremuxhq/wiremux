@@ -156,7 +156,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         stream: bool_field(value, "stream"),
         include_thoughts: None,
         thinking_budget: None,
-        reasoning_effort: str_field(value, "reasoning_effort"),
+        reasoning_effort: str_field(value, "reasoning_effort").filter(|s| !s.trim().is_empty()),
         max_reasoning_tokens: u32_field(value, "max_reasoning_tokens"),
     }
 }
@@ -225,7 +225,7 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 idx += 1;
             }
             IrItem::Assistant { parts } => {
-                let (msg, consumed) = encode_assistant(ir, idx, parts);
+                let (msg, consumed) = encode_assistant(ir, idx, parts, report);
                 messages.push(msg);
                 idx += consumed;
             }
@@ -283,16 +283,28 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
     Value::Array(messages)
 }
 
-fn encode_assistant(ir: &IrRequest, start: usize, parts: &[IrPart]) -> (Value, usize) {
+fn encode_assistant(
+    ir: &IrRequest,
+    start: usize,
+    parts: &[IrPart],
+    report: &mut LossReport,
+) -> (Value, usize) {
     let mut consumed = 1;
     let mut calls = Vec::new();
     while let Some(IrItem::FunctionCall {
         call_id,
         name,
         arguments,
-        ..
+        thought_signature,
     }) = ir.items.get(start + consumed)
     {
+        if thought_signature.is_some() {
+            report.record(
+                format!("items[{}]", start + consumed),
+                LossAction::Drop,
+                "thoughtSignature has no Chat Completions slot",
+            );
+        }
         calls.push(function_call_json(call_id, name, arguments));
         consumed += 1;
     }
@@ -406,11 +418,21 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             body["stream_options"] = json!({ "include_usage": true });
         }
     }
-    if let Some(effort) = &s.reasoning_effort {
+    if let Some(effort) = s
+        .reasoning_effort
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
         body["reasoning_effort"] = json!(effort);
     }
     if s.max_reasoning_tokens.is_some() {
         report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
+    }
+    if s.include_thoughts.is_some() {
+        report.record("sampling.include_thoughts", LossAction::Drop, "no slot");
+    }
+    if s.thinking_budget.is_some() {
+        report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
     }
 }
 

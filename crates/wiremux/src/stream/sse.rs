@@ -3,6 +3,7 @@
 use super::RawSse;
 
 /// Hostile or buggy stream with no newline must not grow unbounded.
+/// Joined `data:` payload for one frame uses the same cap.
 pub const MAX_SSE_PENDING: usize = 16 * 1024 * 1024;
 
 /// Incremental parser for `event:` / `data:` frames.
@@ -14,6 +15,7 @@ pub struct SseFrameReader {
     buffer: Vec<u8>,
     event: Option<String>,
     data: Vec<String>,
+    data_bytes: usize,
     has_fields: bool,
 }
 
@@ -46,7 +48,7 @@ impl SseFrameReader {
                 line_bytes.pop();
             }
             let line = String::from_utf8_lossy(&line_bytes);
-            if let Some(frame) = self.push_line(&line) {
+            if let Some(frame) = self.push_line(&line)? {
                 out.push(frame);
             }
         }
@@ -62,19 +64,21 @@ impl SseFrameReader {
         if !self.buffer.is_empty() {
             let line = String::from_utf8_lossy(&self.buffer).into_owned();
             self.buffer.clear();
-            if let Some(frame) = self.push_line(line.trim_end_matches('\r')) {
-                return Some(frame);
+            match self.push_line(line.trim_end_matches('\r')) {
+                Ok(Some(frame)) => return Some(frame),
+                Ok(None) => {}
+                Err(_) => return None,
             }
         }
         self.take_frame()
     }
 
-    fn push_line(&mut self, line: &str) -> Option<RawSse> {
+    fn push_line(&mut self, line: &str) -> Result<Option<RawSse>, String> {
         if line.is_empty() {
-            return self.take_frame();
+            return Ok(self.take_frame());
         }
         if line.starts_with(':') {
-            return None;
+            return Ok(None);
         }
         let (name, value) = match line.split_once(':') {
             Some((name, value)) => (name, value.strip_prefix(' ').unwrap_or(value)),
@@ -86,13 +90,23 @@ impl SseFrameReader {
                 self.has_fields = true;
             }
             "data" => {
+                let extra = if self.data.is_empty() {
+                    value.len()
+                } else {
+                    value.len().saturating_add(1)
+                };
+                if self.data_bytes.saturating_add(extra) > MAX_SSE_PENDING {
+                    self.reset();
+                    return Err(format!("SSE data exceeds {MAX_SSE_PENDING} bytes"));
+                }
+                self.data_bytes = self.data_bytes.saturating_add(extra);
                 self.data.push(value.to_string());
                 self.has_fields = true;
             }
             "id" | "retry" => self.has_fields = true,
             _ => {}
         }
-        None
+        Ok(None)
     }
 
     fn take_frame(&mut self) -> Option<RawSse> {
@@ -104,6 +118,7 @@ impl SseFrameReader {
             data: self.data.join("\n"),
         };
         self.data.clear();
+        self.data_bytes = 0;
         self.has_fields = false;
         Some(frame)
     }
@@ -112,6 +127,7 @@ impl SseFrameReader {
         self.buffer.clear();
         self.event = None;
         self.data.clear();
+        self.data_bytes = 0;
         self.has_fields = false;
     }
 }
@@ -170,6 +186,28 @@ mod tests {
         let mut chunk = b"data: ".to_vec();
         chunk.resize(MAX_SSE_PENDING + 8, b'x');
         assert!(reader.feed(&chunk).is_err());
+        assert!(reader.drain().is_none());
+    }
+
+    #[test]
+    fn data_lines_over_cap_fails_closed() {
+        let mut reader = SseFrameReader::new();
+        let payload = "x".repeat(64 * 1024);
+        let line = format!("data: {payload}\n");
+        let mut saw_err = false;
+        for _ in 0..(MAX_SSE_PENDING / payload.len() + 2) {
+            match reader.feed(line.as_bytes()) {
+                Ok(_) => {}
+                Err(_) => {
+                    saw_err = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            saw_err,
+            "joined data: lines must fail closed at {MAX_SSE_PENDING} bytes"
+        );
         assert!(reader.drain().is_none());
     }
 }

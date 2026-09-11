@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use wiremux_auth::{
     AuthScheme, LoadOptions, Login, OauthPack, ProfileError, ResolvedProfile, TokenProvider, Wire,
-    load_profile_from_cli, persist_login_tokens, provider_from_profile,
+    load_profile_from_cli, persist_login_tokens, provider_from_profile, sanitize_oauth_error_text,
 };
 
 /// Process exit: success.
@@ -312,22 +312,11 @@ async fn run_pkce(oauth: &OauthPack, listener: TcpListener) -> Result<(), String
     let first = req.lines().next().unwrap_or("");
     let target = first.split_whitespace().nth(1).unwrap_or("");
     let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
-    let mut code = None;
-    let mut state = None;
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            match k {
-                "code" => code = Some(url_decode(v)),
-                "state" => state = Some(url_decode(v)),
-                _ => {}
-            }
-        }
-    }
+    let parsed = pkce_callback_from_query(query);
     let _ = stream.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nok, you can close this tab\n",
     );
-    let code = code.ok_or("callback missing code")?;
-    let state = state.ok_or("callback missing state")?;
+    let (code, state) = parsed?;
     if state != pkce.state {
         return Err("callback state mismatch".into());
     }
@@ -399,33 +388,86 @@ async fn run_device(profile: &ResolvedProfile) -> Result<(), String> {
     Ok(())
 }
 
-fn url_decode(s: &str) -> String {
-    let mut out = String::new();
+/// Read `code`/`state` from a PKCE loopback query. Surfaces vendor `error`.
+pub(crate) fn pkce_callback_from_query(query: &str) -> Result<(String, String), String> {
+    let mut code = None;
+    let mut state = None;
+    let mut error = None;
+    let mut error_description = None;
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = pair.split_once('=') {
+            match k {
+                "code" => code = Some(url_decode(v)),
+                "state" => state = Some(url_decode(v)),
+                "error" => error = Some(url_decode(v)),
+                "error_description" => error_description = Some(url_decode(v)),
+                _ => {}
+            }
+        }
+    }
+    let code_ok = code.as_ref().is_some_and(|c| !c.is_empty());
+    let state_ok = state.as_ref().is_some_and(|s| !s.is_empty());
+    if code_ok && state_ok {
+        return Ok((code.unwrap(), state.unwrap()));
+    }
+    if error.is_some() || error_description.is_some() {
+        return Err(format_pkce_vendor_error(
+            error.as_deref(),
+            error_description.as_deref(),
+        ));
+    }
+    if !code_ok {
+        return Err("callback missing code".into());
+    }
+    Err("callback missing state".into())
+}
+
+fn format_pkce_vendor_error(error: Option<&str>, description: Option<&str>) -> String {
+    let err = error.filter(|s| !s.is_empty()).unwrap_or("error");
+    let raw = match description.filter(|s| !s.is_empty()) {
+        Some(desc) => format!("{err}: {desc}"),
+        None => err.to_owned(),
+    };
+    let summary = sanitize_oauth_error_text(&raw);
+    if summary.is_empty() {
+        "callback error".into()
+    } else {
+        format!("callback error {summary}")
+    }
+}
+
+pub(crate) fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
             b'+' => {
-                out.push(' ');
+                out.push(b' ');
                 i += 1;
             }
             b'%' if i + 2 < bytes.len() => {
-                let hex = &s[i + 1..i + 3];
-                if let Ok(v) = u8::from_str_radix(hex, 16) {
-                    out.push(v as char);
+                let hex = &bytes[i + 1..i + 3];
+                if let Ok(hex) = std::str::from_utf8(hex)
+                    && let Ok(v) = u8::from_str_radix(hex, 16)
+                {
+                    out.push(v);
                     i += 3;
                 } else {
-                    out.push('%');
+                    out.push(b'%');
                     i += 1;
                 }
             }
             c => {
-                out.push(c as char);
+                out.push(c);
                 i += 1;
             }
         }
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Whether a token can be loaded. Never includes the token value.
@@ -754,5 +796,60 @@ base_url = "http://127.0.0.1:9"
         assert!(status.available);
         let text = format_status(&status);
         assert!(!text.contains("http://"));
+    }
+
+    #[test]
+    fn format_pkce_vendor_error_redacts_secret_looking() {
+        let sk = format_pkce_vendor_error(
+            Some("invalid_request"),
+            Some("rejected token sk-ant-oat01-LEAKED"),
+        );
+        assert!(!sk.contains("sk-ant-oat01-LEAKED"), "API key leaked: {sk}");
+        assert!(sk.contains("invalid_request"), "{sk}");
+
+        let jwt = format_pkce_vendor_error(
+            Some("invalid_request"),
+            Some("bad jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig"),
+        );
+        assert!(
+            !jwt.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+            "{jwt}"
+        );
+        assert!(!jwt.contains("eyJzdWIiOiIxIn0"), "{jwt}");
+    }
+
+    #[test]
+    fn pkce_callback_surfaces_vendor_error_and_description() {
+        let err = pkce_callback_from_query("error=access_denied&error_description=user+denied")
+            .expect_err("vendor error query");
+        assert!(
+            err.contains("access_denied"),
+            "callback should surface vendor error, got {err}"
+        );
+        assert!(
+            err.contains("user denied"),
+            "callback should surface error_description, got {err}"
+        );
+    }
+
+    #[test]
+    fn pkce_callback_accepts_code_and_state() {
+        let (code, state) = pkce_callback_from_query("code=abc&state=xyz").expect("code and state");
+        assert_eq!(code, "abc");
+        assert_eq!(state, "xyz");
+    }
+
+    #[test]
+    fn url_decode_percent_then_multibyte_utf8_does_not_panic() {
+        let decoded = url_decode("%完");
+        assert_eq!(decoded, "%完");
+        let callback = pkce_callback_from_query("code=%完&state=xyz");
+        assert!(
+            callback.is_ok(),
+            "hostile query must not abort: {callback:?}"
+        );
+        assert_eq!(url_decode("%FF"), "\u{FFFD}");
+        assert_eq!(url_decode("a+b%20c"), "a b c");
+        assert_eq!(url_decode("%E2%82%AC"), "€");
     }
 }

@@ -152,12 +152,23 @@ pub(crate) fn is_loopback_http(url: &str) -> bool {
 
 fn refuse_interpolation(s: &str, path: &str) -> Result<(), ProfileError> {
     let trimmed = s.trim_start();
-    let command = trimmed.starts_with('!') || has_dollar_paren(s);
+    let bang = trimmed.starts_with('!');
+    let dollar = has_dollar_paren(s);
     let backtick = s.contains('`');
     // Hint fields may contain backticks. `!command` and `$(...)` are still refuse.
-    if command || (backtick && !is_hint_path(path)) {
+    let trigger = if bang {
+        Some("!")
+    } else if dollar {
+        Some("$(...)")
+    } else if backtick && !is_hint_path(path) {
+        Some("backticks")
+    } else {
+        None
+    };
+    if let Some(trigger) = trigger {
         return Err(ProfileError::Interpolation {
             field: path.to_string(),
+            trigger,
         });
     }
     Ok(())
