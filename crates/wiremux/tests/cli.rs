@@ -383,6 +383,110 @@ chat_path = "/v1/responses"
 }
 
 #[test]
+fn proxy_forwards_sse_frames_before_upstream_closes() {
+    let (go, wait) = std::sync::mpsc::sync_channel::<()>(0);
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let first = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "Content-Type: text/event-stream\r\n",
+            "Connection: close\r\n\r\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n",
+        );
+        let _ = stream.write_all(first.as_bytes());
+        let _ = stream.flush();
+        let _ = wait.recv_timeout(Duration::from_secs(5));
+        let _ = stream.write_all(b"data: [DONE]\n\n");
+        let _ = stream.flush();
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "sse-inc.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "sse-inc"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat-completions",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"grok-4","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+
+    let mut got = String::new();
+    let mut buf = [0u8; 2048];
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && !got.contains("hello") {
+        match client.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => got.push_str(&String::from_utf8_lossy(&buf[..n])),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(err) => panic!("read first frame: {err}"),
+        }
+    }
+    assert!(
+        got.contains("hello"),
+        "first SSE frame must arrive before upstream closes, got: {got}"
+    );
+    let _ = go.send(());
+
+    while Instant::now() < deadline + Duration::from_secs(2) && !got.contains("[DONE]") {
+        match client.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => got.push_str(&String::from_utf8_lossy(&buf[..n])),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(err) => panic!("read rest: {err}"),
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = upstream_thread.join();
+    assert!(
+        got.contains("[DONE]"),
+        "stream must continue after the first frame, got: {got}"
+    );
+}
+
+#[test]
 fn proxy_grok_stream_true_reaches_upstream_and_json_becomes_sse() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");

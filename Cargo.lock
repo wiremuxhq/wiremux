@@ -1638,6 +1638,7 @@ version = "0.0.1"
 dependencies = [
  "bytes",
  "clap",
+ "futures-util",
  "http",
  "http-body-util",
  "hyper",

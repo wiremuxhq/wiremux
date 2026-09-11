@@ -3,6 +3,7 @@
 mod chat;
 mod messages;
 mod responses;
+mod sse;
 mod usage;
 
 use serde_json::Value;
@@ -29,58 +30,16 @@ impl RawSse {
     /// Parse a document of SSE frames. Comments and blank lines are skipped.
     #[must_use]
     pub fn parse_all(text: &str) -> Vec<Self> {
-        let mut out = Vec::new();
-        let mut event = None;
-        let mut data: Vec<String> = Vec::new();
-        let mut has_fields = false;
-
-        for line in text.split('\n') {
-            let line = line.strip_suffix('\r').unwrap_or(line);
-            if line.is_empty() {
-                dispatch(&mut event, &mut data, &mut has_fields, &mut out);
-                continue;
-            }
-            if line.starts_with(':') {
-                continue;
-            }
-            let (name, value) = match line.split_once(':') {
-                Some((name, value)) => (name, value.strip_prefix(' ').unwrap_or(value)),
-                None => (line, ""),
-            };
-            match name {
-                "event" => {
-                    event = Some(value.to_string());
-                    has_fields = true;
-                }
-                "data" => {
-                    data.push(value.to_string());
-                    has_fields = true;
-                }
-                "id" | "retry" => has_fields = true,
-                _ => {}
-            }
+        let mut reader = sse::SseFrameReader::new();
+        let mut out = reader.feed(text.as_bytes()).unwrap_or_default();
+        if let Some(last) = reader.drain() {
+            out.push(last);
         }
-        dispatch(&mut event, &mut data, &mut has_fields, &mut out);
         out
     }
 }
 
-fn dispatch(
-    event: &mut Option<String>,
-    data: &mut Vec<String>,
-    has_fields: &mut bool,
-    out: &mut Vec<RawSse>,
-) {
-    if !*has_fields {
-        return;
-    }
-    out.push(RawSse {
-        event: event.take(),
-        data: data.join("\n"),
-    });
-    data.clear();
-    *has_fields = false;
-}
+pub use sse::{MAX_SSE_PENDING, SseFrameReader};
 
 /// Decode one SSE frame. `None` is a recognized no-op (ping, empty delta).
 ///

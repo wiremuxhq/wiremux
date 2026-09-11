@@ -5,8 +5,10 @@ use std::io::Write;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
+use futures_util::StreamExt;
+use http_body_util::combinators::UnsyncBoxBody;
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::body::{Frame, Incoming};
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -18,7 +20,9 @@ use serde_json::Value;
 use crate::cli::{parse_listen, proxy_token, upstream_url};
 use crate::ir::{IrStreamEvent, LossReport};
 use crate::map::{decode, encode};
-use crate::stream::{RawSse, decode_stream_event, encode_stream_event};
+use crate::stream::{RawSse, SseFrameReader, decode_stream_event, encode_stream_event};
+
+type ProxyBody = UnsyncBoxBody<Bytes, Infallible>;
 
 const MAX_BODY: usize = 8 * 1024 * 1024;
 
@@ -46,7 +50,8 @@ pub async fn run(
         dump_loss,
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|e| e.to_string())?,
     });
@@ -80,11 +85,11 @@ struct ProxyState {
 async fn handle(
     state: Arc<ProxyState>,
     req: Request<Incoming>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
+) -> Result<Response<ProxyBody>, Infallible> {
     Ok(handle_inner(state, req).await)
 }
 
-async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Response<Full<Bytes>> {
+async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Response<ProxyBody> {
     if req.method() == Method::GET && matches!(req.uri().path(), "/" | "/health" | "/healthz") {
         return text(StatusCode::OK, "ok\n");
     }
@@ -147,10 +152,6 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let body = match resp.bytes().await {
-        Ok(b) => b,
-        Err(err) => return text(StatusCode::BAD_GATEWAY, format!("upstream body: {err}\n")),
-    };
 
     let loss_summary = loss_summary(&dec_loss, &enc_loss);
     eprintln!(
@@ -160,10 +161,12 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     );
 
     if content_type.contains("text/event-stream") {
-        // Thin proxy buffers the upstream SSE then remaps. Forward status
-        // so a 4xx/5xx stream is not rewritten as 200.
-        return map_sse(&state, target, status_from_reqwest(status), &body);
+        return map_sse_stream(state, target, status_from_reqwest(status), resp);
     }
+    let body = match resp.bytes().await {
+        Ok(b) => b,
+        Err(err) => return text(StatusCode::BAD_GATEWAY, format!("upstream body: {err}\n")),
+    };
     if ir.sampling.stream == Some(true)
         && status.is_success()
         && let Some(sse) = json_completion_to_sse(state.from, &body)
@@ -343,30 +346,100 @@ fn apply_profile_headers(
     req
 }
 
-fn map_sse(
-    state: &ProxyState,
+fn map_sse_stream(
+    state: Arc<ProxyState>,
     target: Wire,
     status: StatusCode,
-    body: &Bytes,
-) -> Response<Full<Bytes>> {
-    let payload = String::from_utf8_lossy(body);
-    let frames = RawSse::parse_all(&payload);
-    let mut out = String::new();
+    resp: reqwest::Response,
+) -> Response<ProxyBody> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(16);
+    tokio::spawn(async move {
+        let mut stream = resp.bytes_stream();
+        let mut reader = SseFrameReader::new();
+        while let Some(item) = stream.next().await {
+            let bytes = match item {
+                Ok(b) => b,
+                Err(err) => {
+                    let _ = tx
+                        .send(Ok(Frame::data(Bytes::from(format!(
+                            "upstream stream: {err}\n"
+                        )))))
+                        .await;
+                    return;
+                }
+            };
+            let frames = match reader.feed(&bytes) {
+                Ok(f) => f,
+                Err(err) => {
+                    let _ = tx
+                        .send(Ok(Frame::data(Bytes::from(format!("{err}\n")))))
+                        .await;
+                    return;
+                }
+            };
+            if !push_mapped_frames(&state, target, &tx, frames).await {
+                return;
+            }
+        }
+        if let Some(last) = reader.drain() {
+            let _ = push_mapped_frames(&state, target, &tx, vec![last]).await;
+        }
+    });
+    let body_stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
+    Response::builder()
+        .status(status)
+        .header("content-type", "text/event-stream")
+        .body(StreamBody::new(body_stream).boxed_unsync())
+        .unwrap_or_else(|_| Response::new(boxed_full("{}\n")))
+}
+
+async fn push_mapped_frames(
+    state: &ProxyState,
+    target: Wire,
+    tx: &tokio::sync::mpsc::Sender<Result<Frame<Bytes>, Infallible>>,
+    frames: Vec<RawSse>,
+) -> bool {
     for raw in frames {
         match decode_stream_event(target, &raw, &state.profile) {
             Ok(Some(ev)) => match encode_stream_event(state.from, &ev) {
-                Ok(mapped) => out.push_str(&format_sse(&mapped)),
+                Ok(mapped) => {
+                    if tx
+                        .send(Ok(Frame::data(Bytes::from(format_sse(&mapped)))))
+                        .await
+                        .is_err()
+                    {
+                        return false;
+                    }
+                }
                 Err(err) => {
-                    return text(StatusCode::BAD_GATEWAY, format!("encode stream: {err}\n"));
+                    let _ = tx
+                        .send(Ok(Frame::data(Bytes::from(format!(
+                            "encode stream: {err}\n"
+                        )))))
+                        .await;
+                    return false;
                 }
             },
             Ok(None) => {}
             Err(err) => {
-                return text(StatusCode::BAD_GATEWAY, format!("decode stream: {err}\n"));
+                let _ = tx
+                    .send(Ok(Frame::data(Bytes::from(format!(
+                        "decode stream: {err}\n"
+                    )))))
+                    .await;
+                return false;
             }
         }
     }
-    bytes_response(status, "text/event-stream", Bytes::from(out))
+    true
+}
+
+fn boxed_full(bytes: impl Into<Bytes>) -> ProxyBody {
+    Full::new(bytes.into())
+        .map_err(|never| match never {})
+        .boxed_unsync()
 }
 
 fn format_sse(raw: &RawSse) -> String {
@@ -389,16 +462,16 @@ fn loss_summary(decode: &LossReport, encode: &LossReport) -> String {
     format!("dec={} enc={}", decode.events.len(), encode.events.len())
 }
 
-fn text(status: StatusCode, body: impl Into<String>) -> Response<Full<Bytes>> {
+fn text(status: StatusCode, body: impl Into<String>) -> Response<ProxyBody> {
     let body = body.into();
     Response::builder()
         .status(status)
         .header("content-type", "text/plain; charset=utf-8")
-        .body(Full::new(Bytes::from(body)))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::from_static(b"error\n"))))
+        .body(boxed_full(body))
+        .unwrap_or_else(|_| Response::new(boxed_full("error\n")))
 }
 
-fn bytes_response(status: StatusCode, content_type: &str, body: Bytes) -> Response<Full<Bytes>> {
+fn bytes_response(status: StatusCode, content_type: &str, body: Bytes) -> Response<ProxyBody> {
     let ct = if content_type.is_empty() {
         "application/json"
     } else {
@@ -407,8 +480,8 @@ fn bytes_response(status: StatusCode, content_type: &str, body: Bytes) -> Respon
     Response::builder()
         .status(status)
         .header("content-type", ct)
-        .body(Full::new(body))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::from_static(b"{}\n"))))
+        .body(boxed_full(body))
+        .unwrap_or_else(|_| Response::new(boxed_full("{}\n")))
 }
 
 fn status_from_reqwest(status: reqwest::StatusCode) -> StatusCode {
