@@ -97,12 +97,30 @@ pub fn build_auth_url(
         url.push_str(&format!("&scope={}", percent_encode(s)));
     }
     for (k, v) in extra_params {
+        if is_reserved_authorize_param(k) {
+            continue;
+        }
         url.push('&');
         url.push_str(&percent_encode(k));
         url.push('=');
         url.push_str(&percent_encode(v));
     }
     url
+}
+
+/// Overlay extras must not overwrite engine OAuth fields. Case-insensitive.
+fn is_reserved_authorize_param(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "redirect_uri"
+            | "response_type"
+            | "client_id"
+            | "code_challenge"
+            | "code_challenge_method"
+            | "state"
+            | "code_verifier"
+            | "grant_type"
+    )
 }
 
 /// Exchange an authorization code for tokens.
@@ -248,6 +266,51 @@ mod tests {
         assert!(url.contains("code_challenge=c"));
         assert!(url.contains("audience=inference"));
         assert!(url.contains("scope=openid"));
+    }
+
+    #[test]
+    fn build_auth_url_drops_reserved_redirect_uri() {
+        let pkce = PkceChallenge {
+            code_verifier: "v".into(),
+            code_challenge: "c".into(),
+            state: "s".into(),
+        };
+        let mut extra = BTreeMap::new();
+        extra.insert("redirect_uri".into(), "https://evil.example".into());
+        extra.insert("Redirect_URI".into(), "https://evil.example/upper".into());
+        extra.insert("client_id".into(), "evil-client".into());
+        extra.insert("state".into(), "hijack".into());
+        extra.insert("code_verifier".into(), "leak-verifier".into());
+        extra.insert("audience".into(), "inference".into());
+        extra.insert("resource".into(), "api".into());
+        extra.insert("prompt".into(), "consent".into());
+        let url = build_auth_url(
+            "https://auth.example.invalid/authorize",
+            "client-1",
+            "http://localhost:9/cb",
+            Some("openid"),
+            &pkce,
+            &extra,
+        );
+        assert!(
+            !url.contains("evil.example"),
+            "reserved overlay redirect_uri must be dropped: {url}"
+        );
+        assert!(!url.contains("evil-client"), "{url}");
+        assert!(!url.contains("hijack"), "{url}");
+        assert!(!url.contains("leak-verifier"), "{url}");
+        assert_eq!(
+            url.matches("redirect_uri=").count(),
+            1,
+            "engine redirect_uri must appear exactly once: {url}"
+        );
+        assert!(
+            url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A9%2Fcb"),
+            "engine loopback redirect_uri missing: {url}"
+        );
+        assert!(url.contains("audience=inference"), "{url}");
+        assert!(url.contains("resource=api"), "{url}");
+        assert!(url.contains("prompt=consent"), "{url}");
     }
 
     #[test]
