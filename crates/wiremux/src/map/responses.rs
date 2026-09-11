@@ -62,6 +62,7 @@ fn decode_input_item(item: &Value) -> Vec<IrItem> {
                 .get("arguments")
                 .map(value_as_string)
                 .unwrap_or_else(|| "{}".into()),
+            thought_signature: None,
         }],
         "function_call_output" => vec![IrItem::FunctionOutput {
             call_id: str_field(item, "call_id").unwrap_or_default(),
@@ -211,6 +212,8 @@ fn decode_sampling(value: &Value) -> IrSampling {
         previous_response_id: str_field(value, "previous_response_id"),
         cache: IrCache::default(),
         stream: bool_field(value, "stream"),
+        include_thoughts: None,
+        thinking_budget: None,
     }
 }
 
@@ -295,12 +298,22 @@ fn encode_items(
                 call_id,
                 name,
                 arguments,
-            } => input.push(encode_function_call(
-                call_id,
-                name,
-                arguments,
-                restore_calls,
-            )),
+                thought_signature,
+            } => {
+                if thought_signature.is_some() {
+                    report.record(
+                        "item.function_call",
+                        LossAction::Drop,
+                        "thoughtSignature has no Responses slot",
+                    );
+                }
+                input.push(encode_function_call(
+                    call_id,
+                    name,
+                    arguments,
+                    restore_calls,
+                ));
+            }
             IrItem::FunctionOutput { call_id, output } => input.push(json!({
                 "type": "function_call_output",
                 "call_id": call_id,

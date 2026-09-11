@@ -22,6 +22,10 @@ pub struct IrSampling {
     pub cache: IrCache,
     /// Client asked for SSE. Grok TUI always sets this.
     pub stream: Option<bool>,
+    /// Gemini `thinkingConfig.includeThoughts` (and peers).
+    pub include_thoughts: Option<bool>,
+    /// Gemini `thinkingConfig.thinkingBudget` (and peers).
+    pub thinking_budget: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -59,6 +63,8 @@ pub enum IrItem {
         call_id: String,
         name: String,
         arguments: String,
+        /// Gemini `thoughtSignature` on the same functionCall part.
+        thought_signature: Option<String>,
     },
     FunctionOutput {
         call_id: String,
@@ -128,6 +134,8 @@ pub enum IrStreamEvent {
     ToolCallStart {
         id: String,
         name: String,
+        /// Gemini `thoughtSignature` bound to this function call.
+        thought_signature: Option<String>,
     },
     ToolCallArgDelta {
         delta: String,

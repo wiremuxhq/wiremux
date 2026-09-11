@@ -60,8 +60,15 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             }
             if let Some(fc) = part.get("functionCall") {
                 let name = str_field(fc, "name").unwrap_or_default();
+                let thought_signature = part
+                    .get("thoughtSignature")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
                 let args = fc.get("args");
-                if args.is_some_and(|a| !a.as_object().is_some_and(serde_json::Map::is_empty)) {
+                if args.is_some_and(|a| !a.as_object().is_some_and(serde_json::Map::is_empty))
+                    && thought_signature.is_none()
+                {
                     return Ok(Some(IrStreamEvent::Protocol {
                         item_type: "chunk".into(),
                         payload: value.clone(),
@@ -70,6 +77,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                 return Ok(Some(IrStreamEvent::ToolCallStart {
                     id: name.clone(),
                     name,
+                    thought_signature,
                 }));
             }
             if let Some(text) = part
@@ -130,13 +138,21 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "content": { "role": "model", "parts": [{ "thoughtSignature": signature }] }
             }]
         }),
-        IrStreamEvent::ToolCallStart { id, name } => {
+        IrStreamEvent::ToolCallStart {
+            id,
+            name,
+            thought_signature,
+        } => {
             let n = if name.is_empty() { id } else { name };
+            let mut part = json!({ "functionCall": { "name": n, "args": {} } });
+            if let Some(sig) = thought_signature.as_deref().filter(|s| !s.is_empty()) {
+                part["thoughtSignature"] = json!(sig);
+            }
             json!({
                 "candidates": [{
                     "content": {
                         "role": "model",
-                        "parts": [{ "functionCall": { "name": n, "args": {} } }]
+                        "parts": [part]
                     }
                 }]
             })

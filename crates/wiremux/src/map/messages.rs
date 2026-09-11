@@ -90,6 +90,7 @@ fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) {
                         .get("input")
                         .map(value_as_string)
                         .unwrap_or_else(|| "{}".into()),
+                    thought_signature: None,
                 });
             }
             "thinking" => parts.push(IrPart::Thinking {
@@ -213,6 +214,8 @@ fn decode_sampling(value: &Value) -> IrSampling {
         previous_response_id: str_field(value, "previous_response_id"),
         cache: IrCache::default(),
         stream: bool_field(value, "stream"),
+        include_thoughts: None,
+        thinking_budget: None,
     }
 }
 
@@ -335,7 +338,15 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 call_id,
                 name,
                 arguments,
+                thought_signature,
             } => {
+                if thought_signature.is_some() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Drop,
+                        "thoughtSignature has no Messages slot",
+                    );
+                }
                 messages.push(json!({
                     "role": "assistant",
                     "content": [tool_use_block(call_id, name, arguments)],
@@ -428,6 +439,7 @@ fn encode_assistant(
                 call_id,
                 name,
                 arguments,
+                ..
             }) => {
                 content.push(tool_use_block(call_id, name, arguments));
                 consumed += 1;

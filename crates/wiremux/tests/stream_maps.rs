@@ -96,7 +96,7 @@ fn anthropic_tool_use_and_thinking_golden() {
     assert_eq!(signature, Some("sig_redacted"));
 
     let start = events.iter().find_map(|ev| match ev {
-        IrStreamEvent::ToolCallStart { id, name } => Some((id.as_str(), name.as_str())),
+        IrStreamEvent::ToolCallStart { id, name, .. } => Some((id.as_str(), name.as_str())),
         _ => None,
     });
     assert_eq!(start, Some(("toolu_redacted", "get_weather")));
@@ -132,7 +132,7 @@ fn chat_tool_call_delta_golden() {
     .expect("decode Chat Completions stream");
 
     let start = events.iter().find_map(|ev| match ev {
-        IrStreamEvent::ToolCallStart { id, name } => Some((id.as_str(), name.as_str())),
+        IrStreamEvent::ToolCallStart { id, name, .. } => Some((id.as_str(), name.as_str())),
         _ => None,
     });
     assert_eq!(start, Some(("call_redacted", "get_weather")));
@@ -533,6 +533,25 @@ wire = "gemini"
 }
 
 #[test]
+fn stream_function_call_thought_signature_round_trips_on_next_request() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{}},"thoughtSignature":"sig_stream_abc"}]}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode")
+        .expect("event");
+    let encoded = encode_stream_event(Wire::Gemini, &ev).expect("encode");
+    let json: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(
+        json.pointer("/candidates/0/content/parts/0/thoughtSignature")
+            .and_then(Value::as_str),
+        Some("sig_stream_abc"),
+        "streamed function-call thoughtSignature must surface, got event={ev:?} json={json}"
+    );
+}
+
+#[test]
 fn chat_prompt_cache_hit_tokens_alias_is_read() {
     let raw = RawSse {
         event: None,
@@ -650,7 +669,7 @@ data: {"type":"response.completed","response":{"id":"resp_redacted","status":"co
     let events = decode_all(Wire::Responses, text, &responses_profile()).expect("decode Responses");
     assert!(
         events.iter().any(
-            |ev| matches!(ev, IrStreamEvent::ToolCallStart { id, name } if id == "call_redacted" && name == "get_weather")
+            |ev| matches!(ev, IrStreamEvent::ToolCallStart { id, name, .. } if id == "call_redacted" && name == "get_weather")
         ),
         "function_call start missing: {events:?}"
     );
@@ -713,6 +732,7 @@ fn encode_round_trip_text_and_tool_start() {
     let start = IrStreamEvent::ToolCallStart {
         id: "call_1".into(),
         name: "lookup".into(),
+        thought_signature: None,
     };
     for wire in [Wire::ChatCompletions, Wire::Messages, Wire::Responses] {
         let profile = match wire {

@@ -105,6 +105,7 @@ fn decode_tool_call(call: &Value, chunk: &Value) -> IrStreamEvent {
         return IrStreamEvent::ToolCallStart {
             id: id.unwrap_or_default(),
             name: name.unwrap_or_default(),
+            thought_signature: None,
         };
     }
     match args {
@@ -124,7 +125,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         IrStreamEvent::ReasoningSignature { signature } => json!({
             "choices": [{ "index": 0, "delta": { "reasoning_signature": signature } }]
         }),
-        IrStreamEvent::ToolCallStart { id, name } => json!({
+        IrStreamEvent::ToolCallStart { id, name, .. } => json!({
             "choices": [{
                 "index": 0,
                 "delta": {

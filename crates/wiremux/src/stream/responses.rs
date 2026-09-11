@@ -25,6 +25,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                         .or_else(|| str_field(item, "id"))
                         .unwrap_or_default(),
                     name: str_field(item, "name").unwrap_or_default(),
+                    thought_signature: None,
                 }))
             }
             Some("reasoning") => Ok(Some(decode_reasoning_item(name, value))),
@@ -110,7 +111,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "item": { "type": "reasoning", "signature": signature }
             }),
         ),
-        IrStreamEvent::ToolCallStart { id, name } => (
+        IrStreamEvent::ToolCallStart { id, name, .. } => (
             "response.output_item.added",
             json!({
                 "type": "response.output_item.added",

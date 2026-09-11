@@ -73,6 +73,7 @@ fn decode_tool_call(call: &Value) -> IrItem {
             .get("arguments")
             .map(value_as_string)
             .unwrap_or_else(|| "{}".into()),
+        thought_signature: None,
     }
 }
 
@@ -146,6 +147,8 @@ fn decode_sampling(value: &Value) -> IrSampling {
         previous_response_id: str_field(value, "previous_response_id"),
         cache: IrCache::default(),
         stream: bool_field(value, "stream"),
+        include_thoughts: None,
+        thinking_budget: None,
     }
 }
 
@@ -221,7 +224,15 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 call_id,
                 name,
                 arguments,
+                thought_signature,
             } => {
+                if thought_signature.is_some() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Drop,
+                        "thoughtSignature has no Chat Completions slot",
+                    );
+                }
                 messages.push(json!({
                     "role": "assistant",
                     "content": null,
@@ -270,6 +281,7 @@ fn encode_assistant(ir: &IrRequest, start: usize, parts: &[IrPart]) -> (Value, u
         call_id,
         name,
         arguments,
+        ..
     }) = ir.items.get(start + consumed)
     {
         calls.push(function_call_json(call_id, name, arguments));
