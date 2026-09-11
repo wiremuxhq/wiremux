@@ -85,7 +85,7 @@ pub enum IrItem {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum IrPart {
     Text(String),
     ImageUrl(String),
@@ -96,6 +96,11 @@ pub enum IrPart {
     Thinking {
         text: String,
         signature: Option<String>,
+    },
+    /// Dialect-native block (Anthropic `redacted_thinking`).
+    Raw {
+        type_name: String,
+        raw: serde_json::Value,
     },
 }
 

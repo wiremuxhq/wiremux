@@ -74,13 +74,22 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         .filter(|s| !s.is_empty())
     {
         return Ok(Some(IrStreamEvent::FinishReason {
-            reason: reason.to_string(),
+            reason: map_finish(reason).to_string(),
         }));
     }
     if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
         return Ok(Some(usage::from_chat(usage)));
     }
     Ok(None)
+}
+
+fn map_finish(reason: &str) -> &str {
+    match reason {
+        "eos" => "stop",
+        "function_call" => "tool_calls",
+        "content_filter" | "content-filter" => "content_filter",
+        other => other,
+    }
 }
 
 fn decode_tool_call(call: &Value, chunk: &Value) -> IrStreamEvent {

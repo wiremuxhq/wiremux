@@ -375,14 +375,18 @@ fn encode_reasoning(encrypted: Option<&str>, summary: Option<&str>, raw: Option<
 
 fn encode_parts(parts: &[IrPart], input: bool) -> Value {
     let text_ty = if input { "input_text" } else { "output_text" };
-    if parts.len() == 1
-        && let IrPart::Text(text) = &parts[0]
+    let visible: Vec<&IrPart> = parts
+        .iter()
+        .filter(|part| !matches!(part, IrPart::Thinking { .. } | IrPart::Raw { .. }))
+        .collect();
+    if visible.len() == 1
+        && let IrPart::Text(text) = visible[0]
         && input
     {
         return Value::Array(vec![json!({"type": text_ty, "text": text})]);
     }
     Value::Array(
-        parts
+        visible
             .iter()
             .map(|part| match part {
                 IrPart::Text(text) => json!({"type": text_ty, "text": text}),
@@ -391,13 +395,7 @@ fn encode_parts(parts: &[IrPart], input: bool) -> Value {
                     "type": "input_image",
                     "image_url": format!("data:{media_type};base64,{data}")
                 }),
-                IrPart::Thinking { text, signature } => {
-                    let mut obj = json!({"type": "output_text", "text": text});
-                    if let Some(sig) = signature {
-                        obj["signature"] = json!(sig);
-                    }
-                    obj
-                }
+                IrPart::Thinking { .. } | IrPart::Raw { .. } => unreachable!("filtered"),
             })
             .collect(),
     )
@@ -460,6 +458,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if let Some(stream) = s.stream {
         body["stream"] = json!(stream);
     }
+    body["include"] = json!(["reasoning.encrypted_content"]);
 }
 
 fn encode_tool_choice(choice: &IrToolChoice, body: &mut Value) {

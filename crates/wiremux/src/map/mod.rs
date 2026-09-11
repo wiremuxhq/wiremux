@@ -186,6 +186,10 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
     value.get(key)?.as_str().map(str::to_string)
 }
 
+fn split_data_url(url: &str) -> Option<(&str, &str)> {
+    url.strip_prefix("data:")?.split_once(";base64,")
+}
+
 fn f32_field(value: &Value, key: &str) -> Option<f32> {
     value.get(key)?.as_f64().map(|n| n as f32)
 }
