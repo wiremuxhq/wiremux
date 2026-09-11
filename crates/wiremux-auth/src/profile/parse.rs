@@ -38,8 +38,7 @@ fn parse_layer_text(text: &str, path: Option<&Path>) -> Result<RawProfile, Profi
     refuse::scan(&value)?;
     let value = envsubst::walk(value);
     refuse::scan(&value)?;
-    let raw: RawProfile =
-        serde_json::from_value(value).map_err(|e| ProfileError::Parse(e.to_string()))?;
+    let raw: RawProfile = serde_json::from_value(value).map_err(|e| parse_error(path, e))?;
     if let Some(found) = raw.schema_version
         && found > SCHEMA_VERSION_MAX
     {
@@ -64,9 +63,16 @@ fn looks_like_json(text: &str, path: Option<&Path>) -> bool {
 
 fn parse_to_value(text: &str, path: Option<&Path>) -> Result<Value, ProfileError> {
     if looks_like_json(text, path) {
-        serde_json::from_str(text).map_err(|e| ProfileError::Parse(e.to_string()))
+        serde_json::from_str(text).map_err(|e| parse_error(path, e))
     } else {
-        toml::from_str(text).map_err(|e| ProfileError::Parse(e.to_string()))
+        toml::from_str(text).map_err(|e| parse_error(path, e))
+    }
+}
+
+fn parse_error(path: Option<&Path>, err: impl std::fmt::Display) -> ProfileError {
+    match path {
+        Some(path) => ProfileError::Parse(format!("{}: {err}", path.display())),
+        None => ProfileError::Parse(err.to_string()),
     }
 }
 

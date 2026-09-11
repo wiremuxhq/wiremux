@@ -249,7 +249,7 @@ impl ProfileTokenProvider {
     async fn do_refresh(
         &self,
         refresh_token: &str,
-    ) -> Result<Result<ParsedTokenResponse, (u16, String)>, AuthError> {
+    ) -> Result<Result<ParsedTokenResponse, (u16, String, String)>, AuthError> {
         let body = refresh_request_body(&self.inner.oauth, refresh_token);
         let format = self
             .inner
@@ -257,14 +257,12 @@ impl ProfileTokenProvider {
             .token_request_format
             .unwrap_or(TokenRequestFormat::Form);
 
-        debug!(
-            "refreshing token via {}",
-            redact_url_origin(&self.inner.oauth.token_url)
-        );
+        let mut used_url = self.inner.oauth.token_url.clone();
+        debug!("refreshing token via {}", redact_url_origin(&used_url));
         let resp = token_post(
             &self.inner.http,
             &self.inner.oauth,
-            &self.inner.oauth.token_url,
+            &used_url,
             &body,
             format,
         )
@@ -273,7 +271,15 @@ impl ProfileTokenProvider {
         let resp = if resp.status() == reqwest::StatusCode::NOT_FOUND {
             if let Some(fallback) = &self.inner.oauth.token_url_fallback {
                 debug!("primary token URL returned 404, trying fallback");
-                token_post(&self.inner.http, &self.inner.oauth, fallback, &body, format).await?
+                used_url = fallback.clone();
+                token_post(
+                    &self.inner.http,
+                    &self.inner.oauth,
+                    &used_url,
+                    &body,
+                    format,
+                )
+                .await?
             } else {
                 resp
             }
@@ -284,7 +290,7 @@ impl ProfileTokenProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let raw = read_oauth_body(resp).await.unwrap_or_default();
-            return Ok(Err((status.as_u16(), raw)));
+            return Ok(Err((status.as_u16(), raw, used_url)));
         }
 
         let raw = read_oauth_body(resp).await?;
@@ -417,7 +423,7 @@ impl ProfileTokenProvider {
 
         let token_resp = match self.do_refresh(&refresh_token).await? {
             Ok(resp) => resp,
-            Err((status, body)) => {
+            Err((status, body, url)) => {
                 if is_token_rotation_error(&body) {
                     match self.reload_from_store().await {
                         Ok(Some((store_token, store_rt, store_lifetime))) => {
@@ -440,7 +446,7 @@ impl ProfileTokenProvider {
                     }
                 }
                 let summary = sanitize_oauth_error_body(&body);
-                let msg = format_oauth_http_error("token refresh failed", status, &body);
+                let msg = format_oauth_http_error("token refresh failed", status, &body, &url);
                 let hint = setup_hint(&self.inner.oauth);
                 return Err(AuthError::VendorRejected {
                     status,
@@ -1097,9 +1103,56 @@ fn empty_access_error(oauth: &OauthPack) -> AuthError {
 
 fn missing_creds(oauth: &OauthPack) -> AuthError {
     AuthError::MissingField(format!(
-        "no credentials (creds_path / keychain / access_env); {}",
+        "no credentials ({}); {}",
+        attempted_cred_stores(oauth),
         setup_hint(oauth)
     ))
+}
+
+fn attempted_cred_stores(oauth: &OauthPack) -> String {
+    let mut tried = Vec::new();
+    if let Some(raw) = oauth
+        .creds_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        tried.push(format!("creds_path={}", expand_tilde(raw).display()));
+    }
+    if let Some(service) = oauth
+        .keychain_service
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let accounts: Vec<&str> = oauth
+            .keychain_accounts
+            .iter()
+            .map(|s| s.as_str().trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if accounts.is_empty() {
+            tried.push(format!("keychain service={service}"));
+        } else {
+            tried.push(format!(
+                "keychain service={service} accounts={}",
+                accounts.join(",")
+            ));
+        }
+    }
+    if let Some(env) = oauth
+        .access_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        tried.push(format!("access_env={env}"));
+    }
+    if tried.is_empty() {
+        "no creds_path, keychain, or access_env configured".into()
+    } else {
+        format!("tried {}", tried.join(", "))
+    }
 }
 
 fn read_keychain(service: &str, account: &str) -> Result<String, AuthError> {

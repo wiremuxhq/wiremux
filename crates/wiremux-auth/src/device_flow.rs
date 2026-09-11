@@ -137,6 +137,7 @@ pub async fn start_device_flow(
             "device authorization failed",
             status,
             &body,
+            device_auth_url,
         )));
     }
 
@@ -217,6 +218,7 @@ pub async fn poll_device_token(
                         "device token error",
                         status,
                         &body,
+                        token_url,
                     )));
                 }
             }
@@ -226,6 +228,7 @@ pub async fn poll_device_token(
             "device token: unexpected response",
             status,
             &body,
+            token_url,
         )));
     }
 }

@@ -249,6 +249,24 @@ base_url = "javascript:alert(1)"
 }
 
 #[test]
+fn extra_profile_parse_error_names_the_file() {
+    let dir = std::env::temp_dir().join(format!(
+        "wiremux-auth-pr2-{}-{}",
+        std::process::id(),
+        TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&dir).expect("temp dir");
+    let name = "broken-extra.toml";
+    fs::write(dir.join(name), "[[[not valid toml").expect("write bad extra profile");
+    let err = load_id("anything", &dir).expect_err("bad extra file must fail parse");
+    let text = err.to_string();
+    assert!(
+        text.contains(name),
+        "parse error must name the extra profile file, got {text}"
+    );
+}
+
+#[test]
 fn unknown_profile_id_lists_catalog_and_path_hint() {
     let _home = IsolatedHome::new();
     let opts = LoadOptions {

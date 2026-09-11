@@ -134,6 +134,7 @@ pub async fn exchange_auth_code(
             "auth code exchange failed",
             status,
             &body,
+            token_url,
         )));
     }
 

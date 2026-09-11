@@ -230,12 +230,14 @@ pub(crate) fn format_oauth_http_error(
     context: &str,
     status: impl std::fmt::Display,
     body: &str,
+    url: &str,
 ) -> String {
     let summary = sanitize_oauth_error_body(body);
+    let via = redact_url_origin(url);
     if summary.is_empty() {
-        format!("{context} (HTTP {status})")
+        format!("{context} (HTTP {status}) via {via}")
     } else {
-        format!("{context} (HTTP {status}): {summary}")
+        format!("{context} (HTTP {status}): {summary} via {via}")
     }
 }
 
@@ -582,6 +584,33 @@ mod tests {
         assert!(!redacted.contains("s3cret"));
         assert!(!redacted.contains("supersecret"));
         assert!(!redacted.contains("/oauth"));
+    }
+
+    #[test]
+    fn format_oauth_http_error_includes_redacted_host() {
+        let msg = format_oauth_http_error(
+            "token refresh failed",
+            401,
+            r#"{"error":"invalid_grant"}"#,
+            "https://user:s3cret@auth.example.invalid/oauth/token?client_secret=supersecret",
+        );
+        assert!(
+            msg.contains("via https://auth.example.invalid"),
+            "HTTP error must name the redacted origin, got {msg}"
+        );
+        assert!(!msg.contains("s3cret"), "{msg}");
+        assert!(!msg.contains("supersecret"), "{msg}");
+        assert!(!msg.contains("/oauth"), "{msg}");
+        let fallback = format_oauth_http_error(
+            "token refresh failed",
+            404,
+            "",
+            "https://fallback.example.invalid/v1/oauth/token",
+        );
+        assert!(
+            fallback.contains("via https://fallback.example.invalid"),
+            "fallback host must be distinguishable, got {fallback}"
+        );
     }
 
     #[test]
