@@ -433,9 +433,7 @@ impl ProfileTokenProvider {
             .await
         {
             warn!("failed to write refreshed token: {e}");
-            if matches!(e, AuthError::EmptyWriteRefused) {
-                return Err(e);
-            }
+            return Err(e);
         }
 
         Ok(token_resp.access_token)
@@ -1208,6 +1206,41 @@ expires_unit = "s"
         let _ = handle.join();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "got {mode:o}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn persist_io_failure_fails_closed_and_keeps_store() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::Claude {
+            access: "sk-ant-oat01-old",
+            refresh: Some("rt-old"),
+            expires_at_ms: Some(1),
+        });
+        let before = std::fs::read(&path).unwrap();
+        let parent = path.parent().expect("creds parent").to_path_buf();
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"sk-ant-oat01-new","refresh_token":"rt-new","expires_in":3600}"#,
+        );
+        let oauth = pack_from_toml(&claude_toml(&url, None));
+        let p = provider(&oauth);
+        // Pre-create the lock sibling so 0555 still lets us lock, but not
+        // create `{creds}.tmp`. Otherwise lock-file create fails first and
+        // we never reach write-back (and the mock accept hangs).
+        let lock_path = crate::helpers::lock_sibling(&path);
+        std::fs::write(&lock_path, b"").unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = p.get_token().await;
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = handle.join();
+        result.expect_err("persist I/O must fail closed");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "live credentials must stay intact when the sibling write cannot be created"
+        );
     }
 
     #[tokio::test]

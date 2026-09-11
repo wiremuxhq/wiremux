@@ -46,6 +46,15 @@ pub(crate) fn apply_tokens(doc: &mut Value, write: &TokenWrite<'_>) -> Result<()
     if !doc.is_object() {
         return Err(AuthError::EmptyWriteRefused);
     }
+    // Validate every pointer before mutating so a root pointer cannot
+    // replace a rich object with a bare string or number.
+    refuse_root_pointer(write.access_ptr)?;
+    if let Some(ptr) = write.refresh_ptr {
+        refuse_root_pointer(ptr)?;
+    }
+    if let Some(ptr) = write.expires_ptr {
+        refuse_root_pointer(ptr)?;
+    }
     pointer_set(
         doc,
         write.access_ptr,
@@ -62,6 +71,17 @@ pub(crate) fn apply_tokens(doc: &mut Value, write: &TokenWrite<'_>) -> Result<()
         )?;
     }
     Ok(())
+}
+
+fn refuse_root_pointer(pointer: &str) -> Result<(), AuthError> {
+    if is_root_pointer(pointer) {
+        return Err(AuthError::EmptyWriteRefused);
+    }
+    Ok(())
+}
+
+fn is_root_pointer(pointer: &str) -> bool {
+    pointer.is_empty()
 }
 
 fn expires_value(doc: &Value, ptr: &str, unit: ExpiresUnit, expires_in_secs: u64) -> Value {
@@ -104,8 +124,33 @@ pub(crate) async fn read_creds_string(path: &Path) -> Result<String, AuthError> 
         .map_err(|e| AuthError::io(Some(path.to_path_buf()), e))
 }
 
-/// Create or replace `path` with mode 0600. Chmod happens before secret bytes.
+/// Replace `path` with `contents` at mode 0600 without truncating the live file.
+///
+/// Bytes go to a sibling temp file (created 0600). The live path is replaced
+/// only after that write and chmod succeed.
 pub(crate) async fn write_secret_file(path: &Path, contents: &[u8]) -> Result<(), AuthError> {
+    let tmp = secret_tmp_path(path);
+    if let Err(e) = write_secret_tmp(&tmp, contents).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e);
+    }
+    if let Err(e) = replace_secret_file(&tmp, path).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e);
+    }
+    Ok(())
+}
+
+fn secret_tmp_path(path: &Path) -> std::path::PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| "creds".into());
+    name.push(".tmp");
+    path.with_file_name(name)
+}
+
+async fn write_secret_tmp(tmp: &Path, contents: &[u8]) -> Result<(), AuthError> {
     let mut opts = tokio::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -113,9 +158,9 @@ pub(crate) async fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()
         opts.mode(0o600);
     }
     let mut file = opts
-        .open(path)
+        .open(tmp)
         .await
-        .map_err(|e| AuthError::io(Some(path.to_path_buf()), e))?;
+        .map_err(|e| AuthError::io(Some(tmp.to_path_buf()), e))?;
 
     #[cfg(unix)]
     {
@@ -123,15 +168,47 @@ pub(crate) async fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()
         let perms = std::fs::Permissions::from_mode(0o600);
         file.set_permissions(perms)
             .await
-            .map_err(|e| AuthError::io(Some(path.to_path_buf()), e))?;
+            .map_err(|e| AuthError::io(Some(tmp.to_path_buf()), e))?;
     }
 
     file.write_all(contents)
         .await
-        .map_err(|e| AuthError::io(Some(path.to_path_buf()), e))?;
+        .map_err(|e| AuthError::io(Some(tmp.to_path_buf()), e))?;
     file.flush()
         .await
-        .map_err(|e| AuthError::io(Some(path.to_path_buf()), e))?;
+        .map_err(|e| AuthError::io(Some(tmp.to_path_buf()), e))?;
+    file.sync_all()
+        .await
+        .map_err(|e| AuthError::io(Some(tmp.to_path_buf()), e))?;
+    Ok(())
+}
+
+async fn replace_secret_file(tmp: &Path, dest: &Path) -> Result<(), AuthError> {
+    #[cfg(unix)]
+    {
+        tokio::fs::rename(tmp, dest)
+            .await
+            .map_err(|e| AuthError::io(Some(dest.to_path_buf()), e))
+    }
+    #[cfg(not(unix))]
+    {
+        persist_over_existing(tmp, dest).await
+    }
+}
+
+/// Dest is only touched after the sibling write finished.
+#[cfg(not(unix))]
+async fn persist_over_existing(tmp: &Path, dest: &Path) -> Result<(), AuthError> {
+    if tokio::fs::rename(tmp, dest).await.is_ok() {
+        return Ok(());
+    }
+    let contents = tokio::fs::read(tmp)
+        .await
+        .map_err(|e| AuthError::io(Some(tmp.to_path_buf()), e))?;
+    tokio::fs::write(dest, contents)
+        .await
+        .map_err(|e| AuthError::io(Some(dest.to_path_buf()), e))?;
+    let _ = tokio::fs::remove_file(tmp).await;
     Ok(())
 }
 
@@ -159,10 +236,12 @@ pub(crate) fn pointer_get<'a>(doc: &'a Value, pointer: &str) -> Option<&'a Value
 }
 
 /// RFC 6901 set. Creates missing object parents. Refuses a non-object parent.
+///
+/// The empty / root pointer is refused so write-back cannot replace a rich
+/// object with a bare token string.
 pub(crate) fn pointer_set(doc: &mut Value, pointer: &str, value: Value) -> Result<(), AuthError> {
-    if pointer.is_empty() {
-        *doc = value;
-        return Ok(());
+    if is_root_pointer(pointer) {
+        return Err(AuthError::EmptyWriteRefused);
     }
     if !pointer.starts_with('/') {
         return Err(AuthError::TokenProvider(format!(
@@ -174,8 +253,7 @@ pub(crate) fn pointer_set(doc: &mut Value, pointer: &str, value: Value) -> Resul
         .map(unescape_pointer_token)
         .collect();
     if tokens.is_empty() {
-        *doc = value;
-        return Ok(());
+        return Err(AuthError::EmptyWriteRefused);
     }
     let mut cur = doc;
     for token in &tokens[..tokens.len() - 1] {
@@ -287,6 +365,38 @@ mod tests {
     }
 
     #[test]
+    fn apply_tokens_refuses_empty_pointer_without_mutating() {
+        let original = serde_json::json!({
+            "claudeAiOauth": {"accessToken": "old", "keep": true},
+            "otherField": "keep-me"
+        });
+        let mut doc = original.clone();
+        let err = apply_tokens(
+            &mut doc,
+            &TokenWrite {
+                access_ptr: "",
+                refresh_ptr: Some("/claudeAiOauth/refreshToken"),
+                expires_ptr: None,
+                expires_unit: ExpiresUnit::Ms,
+                access_token: "new-token",
+                refresh_token: Some("rt-new"),
+                expires_in_secs: 60,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AuthError::EmptyWriteRefused));
+        assert_eq!(doc, original);
+    }
+
+    #[test]
+    fn pointer_set_refuses_root_pointer() {
+        let mut doc = serde_json::json!({"keep": true});
+        let err = pointer_set(&mut doc, "", Value::String("bare".into())).unwrap_err();
+        assert!(matches!(err, AuthError::EmptyWriteRefused));
+        assert_eq!(doc, serde_json::json!({"keep": true}));
+    }
+
+    #[test]
     fn apply_tokens_refuses_non_object() {
         let mut doc = serde_json::json!(["not", "object"]);
         let err = apply_tokens(
@@ -320,5 +430,24 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "expected 0600 after write, got {mode:o}");
         assert_eq!(std::fs::read(&path).unwrap(), b"new-secret");
+        assert!(
+            !secret_tmp_path(&path).exists(),
+            "sibling tmp must be gone after a successful replace"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_secret_file_leaves_dest_untouched_when_tmp_cannot_be_created() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.json");
+        std::fs::write(&path, b"keep-me").unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let err = write_secret_file(&path, b"new-secret").await;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(err.is_err(), "create tmp in a 0555 dir must fail");
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep-me");
     }
 }
