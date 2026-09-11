@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use wiremux::{
-    IrCache, IrItem, IrPart, IrRequest, IrSampling, IrTool, LossAction, MapError, ResolvedProfile,
-    Wire, decode, encode, parse_profile_str,
+    IrCache, IrItem, IrPart, IrRequest, IrSampling, IrTool, LossAction, LossReport, MapError,
+    ResolvedProfile, Wire, decode, encode, parse_profile_str,
 };
 
 fn golden(name: &str) -> Vec<u8> {
@@ -1319,5 +1319,176 @@ fn encode_after_decode_strips_six_cache_markers_to_preferred_pair() {
         body.pointer("/messages/0/content/0/cache_control")
             .is_some(),
         "first user kept, got {body}"
+    );
+}
+
+fn user_ir(sampling: IrSampling) -> IrRequest {
+    IrRequest {
+        model: "gpt-4".into(),
+        items: vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+        tools: vec![],
+        sampling,
+    }
+}
+
+fn loss_dropped(report: &LossReport, path: &str) -> bool {
+    report
+        .events
+        .iter()
+        .any(|event| event.path == path && event.action == LossAction::Drop)
+}
+
+#[test]
+fn chat_encode_emits_reasoning_effort_when_set() {
+    let ir = user_ir(IrSampling {
+        reasoning_effort: Some("high".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("reasoning_effort").and_then(Value::as_str),
+        Some("high"),
+        "Chat must emit reasoning_effort, got {body}"
+    );
+    assert!(
+        body.get("reasoning").is_none(),
+        "Chat must not invent a reasoning object, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.reasoning_effort"),
+        "effort has a Chat slot, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_encode_does_not_invent_reasoning_when_unset() {
+    let ir = user_ir(IrSampling::default());
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("reasoning_effort").is_none(),
+        "unset effort must omit the field, got {body}"
+    );
+    assert!(
+        body.get("reasoning").is_none(),
+        "unset effort must not invent reasoning, got {body}"
+    );
+}
+
+#[test]
+fn chat_decode_reads_reasoning_effort() {
+    let req = br#"{
+        "model": "o4-mini",
+        "reasoning_effort": "low",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.reasoning_effort.as_deref(), Some("low"));
+}
+
+#[test]
+fn chat_drops_max_reasoning_tokens() {
+    let ir = user_ir(IrSampling {
+        max_reasoning_tokens: Some(2048),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("max_reasoning_tokens").is_none(),
+        "Chat has no max_reasoning_tokens slot, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.max_reasoning_tokens"),
+        "must record drop, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_encode_folds_effort_into_reasoning() {
+    let ir = user_ir(IrSampling {
+        reasoning_effort: Some("high".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/reasoning/effort").and_then(Value::as_str),
+        Some("high"),
+        "Responses must fold effort into reasoning, got {body}"
+    );
+    assert_eq!(
+        body.get("include"),
+        Some(&serde_json::json!(["reasoning.encrypted_content"])),
+        "include must stay, got {body}"
+    );
+}
+
+#[test]
+fn responses_encode_does_not_invent_reasoning_object_when_unset() {
+    let ir = user_ir(IrSampling::default());
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("reasoning").is_none(),
+        "unset effort must not invent reasoning, got {body}"
+    );
+}
+
+#[test]
+fn messages_encode_records_loss_for_reasoning_sampling() {
+    let ir = user_ir(IrSampling {
+        reasoning_effort: Some("high".into()),
+        max_reasoning_tokens: Some(4096),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("reasoning_effort").is_none(),
+        "Messages must not emit Chat-only effort, got {body}"
+    );
+    assert!(
+        body.get("reasoning").is_none(),
+        "Messages must not invent reasoning, got {body}"
+    );
+    assert!(
+        body.get("thinking").is_none(),
+        "must not invent thinking from effort, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.reasoning_effort"),
+        "effort drop missing, got {report:?}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.max_reasoning_tokens"),
+        "max drop missing, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_thinking_config_survives_reasoning_sampling_fields() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(true),
+        thinking_budget: Some(24576),
+        reasoning_effort: Some("high".into()),
+        max_reasoning_tokens: Some(1024),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let tc = body.get("thinkingConfig").expect("thinkingConfig");
+    assert_eq!(tc.get("includeThoughts"), Some(&Value::Bool(true)));
+    assert_eq!(tc.get("thinkingBudget"), Some(&serde_json::json!(24576)));
+    assert!(
+        loss_dropped(&report, "sampling.reasoning_effort"),
+        "Gemini effort drop missing, got {report:?}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.max_reasoning_tokens"),
+        "Gemini max drop missing, got {report:?}"
     );
 }

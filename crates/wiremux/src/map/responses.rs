@@ -214,6 +214,10 @@ fn decode_sampling(value: &Value) -> IrSampling {
         stream: bool_field(value, "stream"),
         include_thoughts: None,
         thinking_budget: None,
+        reasoning_effort: value.get("reasoning").and_then(|r| str_field(r, "effort")),
+        max_reasoning_tokens: value
+            .get("reasoning")
+            .and_then(|r| u32_field(r, "max_tokens")),
     }
 }
 
@@ -459,6 +463,12 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         body["stream"] = json!(stream);
     }
     body["include"] = json!(["reasoning.encrypted_content"]);
+    if let Some(effort) = &s.reasoning_effort {
+        body["reasoning"] = json!({ "effort": effort });
+    }
+    if s.max_reasoning_tokens.is_some() {
+        report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
+    }
 }
 
 fn encode_tool_choice(choice: &IrToolChoice, body: &mut Value) {

@@ -1,12 +1,13 @@
 # Bline consume spike notes
 
-Written plan only. No Bline code lands in this repository. The consume
-work is a later Bline PR against `blineai/bline`.
+Written plan only. No Bline code lands in this repository. The first
+leftover prove already landed in Bline. Adapter swap is a later Bline
+PR against `blineai/bline`.
 
 ## Status
 
 This is the extract-side plan for design K13. It does not add a path
-dependency, a wrapper, or a request map in either repo.
+dependency, a wrapper, or a request map in this repository.
 
 `wiremux-auth` is ready to pin (`Static` + `Profile`, IsolatedHome
 behind `test-util`, shipped `anthropic-oauth` and
@@ -18,8 +19,12 @@ and a Chat id-then-name assembler.
 Auth-only is still a valid first attach (`wiremux-auth` alone). Maps
 no longer have to wait.
 
-Bline consume is not started. `blineai/bline` `Cargo.toml` has no
-`wiremux` dep.
+The first leftover prove is in Bline, not in this tree.
+[blineai/bline#3939](https://github.com/blineai/bline/pull/3939) pins
+both crates at
+[`4d939fe87cdf0a3ce9eba599810520eeaf55b6b9`](https://github.com/wiremuxhq/wiremux/commit/4d939fe87cdf0a3ce9eba599810520eeaf55b6b9)
+with `wiremux` `default-features = false`. Adapter swap of
+`to_resp_message` / Anthropic conversions is still later.
 
 The wiremux README stays:
 
@@ -54,33 +59,26 @@ independent of `LlmError`.
 Path-dep `wiremux-auth` first, then maps at the adapter boundary.
 
 1. Bline path-deps `wiremux-auth` (local path for dogfood, then a
-   pinned git SHA).
+   pinned git SHA). Done in Bline #3939.
 2. Wrap `wiremux_auth::TokenProvider` inside `bline_auth::TokenProvider`.
-3. Map `AuthError` to `LlmError::Auth`.
+   Done in Bline #3939.
+3. Map `AuthError` to `LlmError::Auth`. Done in Bline #3939.
 4. Map `ChatRequest` at the `bline-llm` adapter boundary
    (`wiremux::{decode,encode}`). Use `default-features = false` so
-   clap, tokio, and reqwest stay off the maps crate.
+   clap, tokio, and reqwest stay off the maps crate. Still later.
 5. Ship the Bline change behind a feature flag or a single adapter
-   call site so rollback is one Bline revert.
+   call site so rollback is one Bline revert. Still later.
 
 This workspace has `publish = false`. crates.io is not the attach path.
 
 ## Suggested attach (Bline crate, not this repo)
 
-Auth-only (valid from
-[`8630a7f`](https://github.com/wiremuxhq/wiremux/commit/8630a7f0aa82d2343bfc4ff930ee2f3b52ceb4a3)):
+First leftover prove (both crates, or later `main`):
 
 ```toml
 [dependencies]
-wiremux-auth = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux-auth", rev = "8630a7f0aa82d2343bfc4ff930ee2f3b52ceb4a3" }
-```
-
-Maps (optional clap/tokio/reqwest;
-[`0977970a33e1`](https://github.com/wiremuxhq/wiremux/commit/0977970a33e1cba2869589bce35fa484c45c6a48)
-or later on `main`):
-
-```toml
-wiremux = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux", rev = "0977970a33e1cba2869589bce35fa484c45c6a48", default-features = false }
+wiremux-auth = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux-auth", rev = "4d939fe87cdf0a3ce9eba599810520eeaf55b6b9" }
+wiremux = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux", rev = "4d939fe87cdf0a3ce9eba599810520eeaf55b6b9", default-features = false }
 ```
 
 `default-features = false` is maps plus re-exported profile types.
