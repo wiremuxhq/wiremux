@@ -1,0 +1,27 @@
+# Gist-complete Copilot device-flow profile. Not a shipped preset.
+# GitHub Copilot product terms apply to any token this flow obtains.
+schema_version = 1
+id = "github-copilot-device"
+display_name = "GitHub Copilot device flow (user gist)"
+wire = "chat-completions"
+tool_type_policy = "hard-error"
+stream_unknown_policy = "passthrough"
+base_url = "https://api.githubcopilot.com"
+chat_path = "/chat/completions"
+auth_scheme = "bearer"
+
+[oauth]
+authorize_url = "https://github.com/login/device"
+device_auth_url = "https://github.com/login/device/code"
+token_url = "https://github.com/login/oauth/access_token"
+# Empty until a legal pass or the user fills a public client id.
+client_id = ""
+scopes = ["read:user"]
+list_merge = "union"
+pkce = false
+refresh_grant = "refresh_token"
+token_request_format = "form"
+creds_format = "copilot-hosts"
+creds_path = "~/.config/github-copilot/hosts.json"
+login = "device"
+setup_token_hint = "GitHub Copilot product terms apply. Fill client_id, then wiremux auth login."
