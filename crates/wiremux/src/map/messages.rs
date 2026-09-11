@@ -298,14 +298,10 @@ pub(super) fn encode(
         body["system"] = system;
     }
     if !tools.is_empty() {
-        body["tools"] = Value::Array(
-            tools
-                .iter()
-                .map(|tool| encode_tool(tool, ir.sampling.cache.enabled, &ir.sampling.cache))
-                .collect(),
-        );
+        body["tools"] = Value::Array(tools.iter().map(encode_tool).collect());
     }
     encode_sampling(ir, &mut body, report);
+    apply_cache_breakpoints(&mut body, &ir.sampling.cache, report);
     Ok(body)
 }
 
@@ -394,7 +390,6 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
         }
     }
 
-    apply_cache_to_last_system(&mut system_blocks, &ir.sampling.cache, report);
     let system = if system_blocks.is_empty() {
         None
     } else if system_blocks.len() == 1
@@ -587,17 +582,119 @@ fn text_block(text: &str, cache: bool, retention: Option<&str>) -> Value {
     block
 }
 
-fn apply_cache_to_last_system(blocks: &mut [Value], cache: &IrCache, report: &mut LossReport) {
-    if !cache.enabled {
+fn apply_cache_breakpoints(body: &mut Value, cache: &IrCache, report: &mut LossReport) {
+    if !cache.enabled || cache.retention.as_deref() == Some("none") {
         return;
     }
     report.record("sampling.cache", LossAction::Preserve, "messages cache");
-    if let Some(last) = blocks.last_mut() {
-        let mut cc = json!({"type": "ephemeral"});
-        if let Some(ttl) = &cache.retention {
-            cc["ttl"] = json!(ttl);
+    let ttl = match cache.retention.as_deref() {
+        Some("1h") | Some("long") => Some("1h"),
+        Some("5m") | Some("short") | None => None,
+        Some(other) => Some(other),
+    };
+    let has_tools = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|t| !t.is_empty());
+    if ttl.is_some() && has_tools {
+        tag_last_tool(body, ttl);
+        if !tag_first_system(body, ttl) {
+            tag_first_user_text(body, ttl);
         }
-        last["cache_control"] = cc;
+        return;
+    }
+    if !tag_last_system(body, ttl) {
+        tag_first_system(body, ttl);
+    }
+    tag_first_user_text(body, ttl);
+}
+
+fn ephemeral_cache_control(ttl: Option<&str>) -> Value {
+    let mut cc = json!({"type": "ephemeral"});
+    if let Some(ttl) = ttl {
+        cc["ttl"] = json!(ttl);
+    }
+    cc
+}
+
+fn tag_last_tool(body: &mut Value, ttl: Option<&str>) {
+    let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(last) = tools.last_mut() {
+        last["cache_control"] = ephemeral_cache_control(ttl);
+    }
+}
+
+fn tag_first_system(body: &mut Value, ttl: Option<&str>) -> bool {
+    tag_system_slot(body, ttl, true)
+}
+
+fn tag_last_system(body: &mut Value, ttl: Option<&str>) -> bool {
+    tag_system_slot(body, ttl, false)
+}
+
+fn tag_system_slot(body: &mut Value, ttl: Option<&str>, first: bool) -> bool {
+    match body.get_mut("system") {
+        Some(Value::Array(blocks)) => {
+            let slot = if first {
+                blocks.first_mut()
+            } else {
+                blocks.last_mut()
+            };
+            if let Some(block) = slot {
+                block["cache_control"] = ephemeral_cache_control(ttl);
+                return true;
+            }
+            false
+        }
+        Some(Value::String(text)) => {
+            let text = text.clone();
+            body["system"] = json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": ephemeral_cache_control(ttl),
+            }]);
+            true
+        }
+        Some(Value::Object(obj)) => {
+            obj.insert("cache_control".into(), ephemeral_cache_control(ttl));
+            true
+        }
+        _ => false,
+    }
+}
+
+fn tag_first_user_text(body: &mut Value, ttl: Option<&str>) {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let Some(user) = messages
+        .iter_mut()
+        .find(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+    else {
+        return;
+    };
+    match user.get_mut("content") {
+        Some(Value::Array(parts)) => {
+            if let Some(part) = parts.iter_mut().find(|p| {
+                p.get("type").and_then(Value::as_str) == Some("text")
+                    && p.get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| !t.trim().is_empty())
+            }) {
+                part["cache_control"] = ephemeral_cache_control(ttl);
+            }
+        }
+        Some(Value::String(text)) if !text.trim().is_empty() => {
+            let text = text.clone();
+            user["content"] = json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": ephemeral_cache_control(ttl),
+            }]);
+        }
+        _ => {}
     }
 }
 
@@ -619,27 +716,17 @@ fn tool_result_block(call_id: &str, output: &str) -> Value {
     })
 }
 
-fn encode_tool(tool: &PreparedTool, cache: bool, spec: &IrCache) -> Value {
+fn encode_tool(tool: &PreparedTool) -> Value {
     match tool {
         PreparedTool::Function {
             name,
             description,
             parameters,
-        } => {
-            let mut obj = json!({
-                "name": name,
-                "description": description,
-                "input_schema": parameters,
-            });
-            if cache {
-                let mut cc = json!({"type": "ephemeral"});
-                if let Some(ttl) = &spec.retention {
-                    cc["ttl"] = json!(ttl);
-                }
-                obj["cache_control"] = cc;
-            }
-            obj
-        }
+        } => json!({
+            "name": name,
+            "description": description,
+            "input_schema": parameters,
+        }),
         PreparedTool::Raw(raw) => raw.clone(),
     }
 }

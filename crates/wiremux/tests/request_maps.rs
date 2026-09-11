@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use wiremux::{
-    IrItem, IrPart, IrRequest, IrSampling, IrTool, LossAction, MapError, ResolvedProfile, Wire,
-    decode, encode, parse_profile_str,
+    IrCache, IrItem, IrPart, IrRequest, IrSampling, IrTool, LossAction, MapError, ResolvedProfile,
+    Wire, decode, encode, parse_profile_str,
 };
 
 fn golden(name: &str) -> Vec<u8> {
@@ -946,4 +946,160 @@ fn chat_data_url_becomes_image_base64_for_gemini() {
         Some("image/png"),
         "Gemini must get inlineData, got {body}"
     );
+}
+
+fn count_cache_control(value: &Value) -> usize {
+    match value {
+        Value::Object(map) => {
+            let here = usize::from(map.contains_key("cache_control"));
+            here + map.values().map(count_cache_control).sum::<usize>()
+        }
+        Value::Array(arr) => arr.iter().map(count_cache_control).sum(),
+        _ => 0,
+    }
+}
+
+#[test]
+fn prompt_caching_on_system_and_first_user() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![
+            IrItem::System {
+                text: "rules".into(),
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("hello world".into())],
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling {
+            cache: IrCache {
+                enabled: true,
+                retention: None,
+            },
+            ..IrSampling::default()
+        },
+    };
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.pointer("/system/cache_control").is_some()
+            || body.pointer("/system/0/cache_control").is_some(),
+        "system must have cache_control, got {body}"
+    );
+    assert!(
+        body.pointer("/messages/0/content/0/cache_control")
+            .is_some(),
+        "first user text must have cache_control, got {body}"
+    );
+    assert!(
+        count_cache_control(&body) <= 4,
+        "must stay under Anthropic cap, got {body}"
+    );
+}
+
+#[test]
+fn long_ttl_with_tools_tags_last_tool_before_system() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![
+            IrItem::System {
+                text: "rules".into(),
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("hello".into())],
+            },
+        ],
+        tools: vec![
+            IrTool::Function {
+                name: "one".into(),
+                description: "a".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            IrTool::Function {
+                name: "two".into(),
+                description: "b".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ],
+        sampling: IrSampling {
+            cache: IrCache {
+                enabled: true,
+                retention: Some("1h".into()),
+            },
+            ..IrSampling::default()
+        },
+    };
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let tools = body.get("tools").and_then(Value::as_array).expect("tools");
+    assert!(
+        tools[0].get("cache_control").is_none(),
+        "only last tool is tagged, got {body}"
+    );
+    assert_eq!(
+        tools[1]
+            .pointer("/cache_control/ttl")
+            .and_then(Value::as_str),
+        Some("1h"),
+        "last tool must carry 1h, got {body}"
+    );
+    let sys_ttl = body
+        .pointer("/system/cache_control/ttl")
+        .or_else(|| body.pointer("/system/0/cache_control/ttl"))
+        .and_then(Value::as_str);
+    assert_eq!(
+        sys_ttl,
+        Some("1h"),
+        "first system must carry 1h, got {body}"
+    );
+    assert!(
+        count_cache_control(&body) <= 2,
+        "preferred pair is two markers, got {body}"
+    );
+}
+
+#[test]
+fn cache_disabled_no_cache_control_blocks() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![
+            IrItem::System {
+                text: "rules".into(),
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("hello".into())],
+            },
+        ],
+        tools: vec![IrTool::Function {
+            name: "one".into(),
+            description: "a".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        }],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(count_cache_control(&body), 0, "got {body}");
+}
+
+#[test]
+fn cache_retention_none_skips_cache_control() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![IrItem::System {
+            text: "rules".into(),
+        }],
+        tools: vec![],
+        sampling: IrSampling {
+            cache: IrCache {
+                enabled: true,
+                retention: Some("none".into()),
+            },
+            ..IrSampling::default()
+        },
+    };
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(count_cache_control(&body), 0, "retention=none, got {body}");
 }
