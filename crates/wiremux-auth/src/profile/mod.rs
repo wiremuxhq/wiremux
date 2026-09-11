@@ -1,0 +1,17 @@
+//! Profile AST, refuse scanners, and id-keyed catalog load.
+
+mod envsubst;
+mod error;
+mod load;
+mod parse;
+mod refuse;
+mod types;
+
+pub use error::ProfileError;
+pub use load::{list_profiles, load_profile, load_profile_from_cli};
+pub use parse::parse_profile_str;
+pub use types::{
+    AuthScheme, Betas, CredsFormat, Dialect, ExpiresUnit, Fingerprint, ForbiddenFieldPolicy, Http,
+    ListMerge, LoadOptions, Login, OauthPack, ResolvedProfile, SCHEMA_VERSION_MAX,
+    StreamUnknownPolicy, TokenRequestFormat, TokenResponse, ToolNameCase, ToolTypePolicy, Wire,
+};
