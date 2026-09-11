@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use wiremux_auth::{
-    LoadOptions, ProfileError, ResolvedProfile, load_profile, load_profile_from_cli,
+    IsolatedHome, LoadOptions, ProfileError, ResolvedProfile, load_profile, load_profile_from_cli,
 };
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -221,6 +221,11 @@ base_url = "!command curl https://evil.example"
         matches!(interp_err, ProfileError::Interpolation { .. }),
         "expected interpolation refuse, got {interp_err}"
     );
+    let interp_text = interp_err.to_string();
+    assert!(
+        interp_text.contains('!') || interp_text.contains("$(") || interp_text.contains("backtick"),
+        "interpolation refuse should name the trigger, got {interp_text}"
+    );
 
     let js_err = parse_via_file(
         "javascript-url.toml",
@@ -234,5 +239,33 @@ base_url = "javascript:alert(1)"
     assert!(
         matches!(js_err, ProfileError::DisallowedUrl { .. }),
         "expected disallowed URL, got {js_err}"
+    );
+    let js_text = js_err.to_string();
+    let js_l = js_text.to_ascii_lowercase();
+    assert!(
+        js_l.contains("https") || js_l.contains("loopback") || js_text.contains("127.0.0.1"),
+        "javascript URL refuse should say https or loopback, got {js_text}"
+    );
+}
+
+#[test]
+fn unknown_profile_id_lists_catalog_and_path_hint() {
+    let _home = IsolatedHome::new();
+    let opts = LoadOptions {
+        id: None,
+        explicit_file: None,
+        extra_profile_dirs: Vec::new(),
+        include_shipped: true,
+        include_user_config: false,
+    };
+    let err = load_profile("anthropic", &opts).expect_err("typo id must miss");
+    let text = err.to_string();
+    assert!(
+        text.contains("anthropic-oauth"),
+        "unknown id should list shipped catalog, got {text}"
+    );
+    assert!(
+        text.contains(".toml") || text.contains(".json"),
+        "unknown id should mention a .toml or .json path, got {text}"
     );
 }

@@ -428,7 +428,7 @@ fn wiremux_no_shipped_presets_hides_catalog() {
     )
     .expect_err("env must skip shipped");
     assert!(
-        matches!(err, ProfileError::NotFound(ref id) if id == "anthropic-oauth"),
+        matches!(err, ProfileError::NotFound { ref id, .. } if id == "anthropic-oauth"),
         "{err}"
     );
     let _ = home;

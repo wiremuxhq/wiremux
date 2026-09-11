@@ -155,7 +155,7 @@ fn include_shipped_false_hides_catalog() {
     ] {
         let err = load_profile(id, &no_shipped_opts()).expect_err(id);
         assert!(
-            matches!(err, ProfileError::NotFound(ref found) if found == id),
+            matches!(err, ProfileError::NotFound { id: ref found, .. } if found == id),
             "{id}: {err}"
         );
     }

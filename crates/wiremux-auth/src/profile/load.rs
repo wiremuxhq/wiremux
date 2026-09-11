@@ -25,8 +25,11 @@ pub fn list_profiles(opts: &LoadOptions<'_>) -> Result<Vec<String>, ProfileError
 /// Layers: shipped (unless skipped) < user-dir files (path-sorted) < explicit
 /// file. Only layers whose catalog key equals `id` merge, field-wise.
 pub fn load_profile(id: &str, opts: &LoadOptions<'_>) -> Result<ResolvedProfile, ProfileError> {
+    let layers = collect_layers(opts)?;
+    let mut known = BTreeSet::new();
     let mut acc: Option<RawProfile> = None;
-    for layer in collect_layers(opts)? {
+    for layer in layers {
+        known.insert(layer.id.clone());
         if layer.id != id {
             continue;
         }
@@ -37,7 +40,10 @@ pub fn load_profile(id: &str, opts: &LoadOptions<'_>) -> Result<ResolvedProfile,
     }
     match acc {
         Some(raw) => resolve(raw),
-        None => Err(ProfileError::NotFound(id.to_string())),
+        None => Err(ProfileError::NotFound {
+            id: id.to_string(),
+            known: known.into_iter().collect(),
+        }),
     }
 }
 

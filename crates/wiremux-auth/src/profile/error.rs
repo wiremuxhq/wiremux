@@ -35,13 +35,17 @@ pub enum ProfileError {
     #[error("refused: forbidden key name `{0}`")]
     ForbiddenKey(String),
     /// Command interpolation in a non-hint field value.
-    #[error("refused: command interpolation in {field}")]
+    #[error("refused: command interpolation in {field} ({trigger})")]
     Interpolation {
         /// Dotted field path.
         field: String,
+        /// Syntax that triggered the refuse (`!`, `$(...)`, or backticks).
+        trigger: &'static str,
     },
     /// Disallowed scheme or non-loopback `http://` URL.
-    #[error("refused: disallowed URL in {field}: {url}")]
+    #[error(
+        "refused: disallowed URL in {field}: {url} (https, or http only on 127.0.0.1 / localhost / ::1)"
+    )]
     DisallowedUrl {
         /// Dotted field path.
         field: String,
@@ -55,6 +59,18 @@ pub enum ProfileError {
         field: String,
     },
     /// No document in the catalog has this `id`.
-    #[error("profile `{0}` not found")]
-    NotFound(String),
+    #[error(
+        "profile `{id}` not found (known: {}); a .toml or .json path also works",
+        if known.is_empty() {
+            "(none)".to_string()
+        } else {
+            known.join(", ")
+        }
+    )]
+    NotFound {
+        /// Requested document id.
+        id: String,
+        /// Catalog ids from the same load (shipped ∪ user dir ∪ explicit file).
+        known: Vec<String>,
+    },
 }

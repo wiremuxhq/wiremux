@@ -312,22 +312,11 @@ async fn run_pkce(oauth: &OauthPack, listener: TcpListener) -> Result<(), String
     let first = req.lines().next().unwrap_or("");
     let target = first.split_whitespace().nth(1).unwrap_or("");
     let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
-    let mut code = None;
-    let mut state = None;
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            match k {
-                "code" => code = Some(url_decode(v)),
-                "state" => state = Some(url_decode(v)),
-                _ => {}
-            }
-        }
-    }
+    let parsed = pkce_callback_from_query(query);
     let _ = stream.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nok, you can close this tab\n",
     );
-    let code = code.ok_or("callback missing code")?;
-    let state = state.ok_or("callback missing state")?;
+    let (code, state) = parsed?;
     if state != pkce.state {
         return Err("callback state mismatch".into());
     }
@@ -397,6 +386,51 @@ async fn run_device(profile: &ResolvedProfile) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     println!("login saved");
     Ok(())
+}
+
+/// Read `code`/`state` from a PKCE loopback query. Surfaces vendor `error`.
+pub(crate) fn pkce_callback_from_query(query: &str) -> Result<(String, String), String> {
+    let mut code = None;
+    let mut state = None;
+    let mut error = None;
+    let mut error_description = None;
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = pair.split_once('=') {
+            match k {
+                "code" => code = Some(url_decode(v)),
+                "state" => state = Some(url_decode(v)),
+                "error" => error = Some(url_decode(v)),
+                "error_description" => error_description = Some(url_decode(v)),
+                _ => {}
+            }
+        }
+    }
+    let code_ok = code.as_ref().is_some_and(|c| !c.is_empty());
+    let state_ok = state.as_ref().is_some_and(|s| !s.is_empty());
+    if code_ok && state_ok {
+        return Ok((code.unwrap(), state.unwrap()));
+    }
+    if error.is_some() || error_description.is_some() {
+        return Err(format_pkce_vendor_error(
+            error.as_deref(),
+            error_description.as_deref(),
+        ));
+    }
+    if !code_ok {
+        return Err("callback missing code".into());
+    }
+    Err("callback missing state".into())
+}
+
+fn format_pkce_vendor_error(error: Option<&str>, description: Option<&str>) -> String {
+    let err = error.filter(|s| !s.is_empty()).unwrap_or("error");
+    match description.filter(|s| !s.is_empty()) {
+        Some(desc) => format!("callback error {err}: {desc}"),
+        None => format!("callback error {err}"),
+    }
 }
 
 fn url_decode(s: &str) -> String {
@@ -754,5 +788,26 @@ base_url = "http://127.0.0.1:9"
         assert!(status.available);
         let text = format_status(&status);
         assert!(!text.contains("http://"));
+    }
+
+    #[test]
+    fn pkce_callback_surfaces_vendor_error_and_description() {
+        let err = pkce_callback_from_query("error=access_denied&error_description=user+denied")
+            .expect_err("vendor error query");
+        assert!(
+            err.contains("access_denied"),
+            "callback should surface vendor error, got {err}"
+        );
+        assert!(
+            err.contains("user denied"),
+            "callback should surface error_description, got {err}"
+        );
+    }
+
+    #[test]
+    fn pkce_callback_accepts_code_and_state() {
+        let (code, state) = pkce_callback_from_query("code=abc&state=xyz").expect("code and state");
+        assert_eq!(code, "abc");
+        assert_eq!(state, "xyz");
     }
 }
