@@ -57,23 +57,17 @@ fn scan_string(s: &str, key: Option<&str>, path: &str) -> Result<(), ProfileErro
     }
     let key = key.unwrap_or("");
     if is_url_field(key) {
-        let should_check = !is_chat_path(key) || is_absolute_url(s);
-        if should_check {
-            check_url(path, s)?;
-        }
+        // `check_url` already accepts schemeless relative paths (`/v1/messages`).
+        check_url(path, s)?;
     }
-    if !is_hint_field(key) && has_interpolation(s) {
-        return Err(ProfileError::Interpolation {
-            field: path.to_string(),
-        });
-    }
+    refuse_interpolation(s, path)?;
     Ok(())
 }
 
-fn is_hint_field(key: &str) -> bool {
+fn is_hint_path(path: &str) -> bool {
     matches!(
-        key,
-        "display_name" | "displayName" | "setup_token_hint" | "setupTokenHint"
+        path,
+        "display_name" | "displayName" | "oauth.setup_token_hint" | "oauth.setupTokenHint"
     )
 }
 
@@ -97,10 +91,6 @@ fn is_url_field(key: &str) -> bool {
     )
 }
 
-fn is_chat_path(key: &str) -> bool {
-    matches!(key, "chat_path" | "chatPath")
-}
-
 fn scheme_of(s: &str) -> Option<&str> {
     let colon = s.find(':')?;
     let scheme = &s[..colon];
@@ -108,18 +98,6 @@ fn scheme_of(s: &str) -> Option<&str> {
         return None;
     }
     Some(scheme)
-}
-
-fn is_absolute_url(s: &str) -> bool {
-    let Some(scheme) = scheme_of(s) else {
-        return false;
-    };
-    let rest = &s[scheme.len() + 1..];
-    rest.starts_with("//")
-        || matches!(
-            scheme.to_ascii_lowercase().as_str(),
-            "javascript" | "data" | "file"
-        )
 }
 
 fn check_url(field: &str, raw: &str) -> Result<(), ProfileError> {
@@ -172,9 +150,17 @@ fn is_loopback_http(url: &str) -> bool {
         || host == "::1"
 }
 
-fn has_interpolation(s: &str) -> bool {
+fn refuse_interpolation(s: &str, path: &str) -> Result<(), ProfileError> {
     let trimmed = s.trim_start();
-    trimmed.starts_with('!') || has_dollar_paren(s) || s.contains('`')
+    let command = trimmed.starts_with('!') || has_dollar_paren(s);
+    let backtick = s.contains('`');
+    // Hint fields may contain backticks. `!command` and `$(...)` are still refuse.
+    if command || (backtick && !is_hint_path(path)) {
+        return Err(ProfileError::Interpolation {
+            field: path.to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn has_dollar_paren(s: &str) -> bool {
@@ -209,5 +195,13 @@ mod tests {
         assert!(is_loopback_http("http://[::1]:80/cb"));
         assert!(!is_loopback_http("http://192.0.2.1"));
         assert!(!is_loopback_http("http://127.0.0.1.example"));
+    }
+
+    #[test]
+    fn hint_path_is_document_fields_only() {
+        assert!(is_hint_path("display_name"));
+        assert!(is_hint_path("oauth.setup_token_hint"));
+        assert!(!is_hint_path("headers.setup_token_hint"));
+        assert!(!is_hint_path("setup_token_hint"));
     }
 }

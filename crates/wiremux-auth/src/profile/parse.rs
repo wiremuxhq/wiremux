@@ -33,6 +33,7 @@ fn parse_profile_text(text: &str, path: Option<&Path>) -> Result<ResolvedProfile
     let value = parse_to_value(text, path)?;
     refuse::scan(&value)?;
     let value = envsubst::walk(value);
+    refuse::scan(&value)?;
     let raw: RawProfile =
         serde_json::from_value(value).map_err(|e| ProfileError::Parse(e.to_string()))?;
     resolve(raw)
@@ -455,5 +456,106 @@ mod tests {
         let err = parse_profile_str("schema_version = 1\nid = \"x\"\n[oauth]\nclient_id = \"c\"\n")
             .unwrap_err();
         assert!(matches!(err, ProfileError::MissingField("token_url")));
+    }
+
+    #[test]
+    fn padded_chat_path_urls_are_refused() {
+        assert!(matches!(
+            parse_profile_str(
+                "schema_version = 1\nid = \"x\"\nchat_path = \" javascript:alert(1)\"\n"
+            ),
+            Err(ProfileError::DisallowedUrl { .. })
+        ));
+        assert!(matches!(
+            parse_profile_str(
+                "schema_version = 1\nid = \"x\"\nchat_path = \" http://192.0.2.1/v1\"\n"
+            ),
+            Err(ProfileError::DisallowedUrl { .. })
+        ));
+        let p = parse_profile_str("schema_version = 1\nid = \"x\"\nchat_path = \"/v1/messages\"\n")
+            .unwrap();
+        assert_eq!(p.http.chat_path.as_deref(), Some("/v1/messages"));
+    }
+
+    #[test]
+    fn env_injected_url_is_refused() {
+        let var = "WIREMUX_TEST_INJECT_URL_7b1a";
+        let err = with_env(var, "http://192.0.2.1", || {
+            parse_profile_str(&format!(
+                "schema_version = 1\nid = \"x\"\nbase_url = \"{{env:{var}}}\"\n"
+            ))
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, ProfileError::DisallowedUrl { .. }),
+            "env-injected non-loopback http must refuse, got {err}"
+        );
+    }
+
+    #[test]
+    fn hint_fields_allow_backticks_not_command() {
+        let ok = parse_profile_str(
+            "schema_version = 1\nid = \"x\"\ndisplay_name = \"run `tool`\"\n[oauth]\ntoken_url = \"https://auth.example.invalid/token\"\nsetup_token_hint = \"run `claude setup-token`\"\n",
+        )
+        .unwrap();
+        assert!(ok.display_name.as_deref().unwrap().contains('`'));
+        assert!(
+            ok.oauth
+                .as_ref()
+                .unwrap()
+                .setup_token_hint
+                .as_deref()
+                .unwrap()
+                .contains('`')
+        );
+
+        assert!(matches!(
+            parse_profile_str("schema_version = 1\nid = \"x\"\ndisplay_name = \"!command x\"\n"),
+            Err(ProfileError::Interpolation { .. })
+        ));
+        assert!(matches!(
+            parse_profile_str(
+                "schema_version = 1\nid = \"x\"\n[headers]\nsetup_token_hint = \"!command curl\"\n"
+            ),
+            Err(ProfileError::Interpolation { .. })
+        ));
+        assert!(matches!(
+            parse_profile_str(
+                "schema_version = 1\nid = \"x\"\n[headers]\nsetup_token_hint = \"run `x`\"\n"
+            ),
+            Err(ProfileError::Interpolation { .. })
+        ));
+    }
+
+    fn with_env<T>(key: &str, val: &str, f: impl FnOnce() -> T) -> T {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var(key).ok();
+        // SAFETY: process-global lock; restored by EnvRestore on all paths.
+        unsafe {
+            std::env::set_var(key, val);
+        }
+        let _restore = EnvRestore {
+            key: key.to_string(),
+            prev,
+        };
+        f()
+    }
+
+    struct EnvRestore {
+        key: String,
+        prev: Option<String>,
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            // SAFETY: same lock as with_env is still held by the caller.
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(&self.key, v),
+                    None => std::env::remove_var(&self.key),
+                }
+            }
+        }
     }
 }
