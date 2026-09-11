@@ -513,28 +513,10 @@ async fn token_post(
     body: &BTreeMap<String, String>,
     format: TokenRequestFormat,
 ) -> Result<reqwest::Response, AuthError> {
-    if let Some(https) = https_token_url(url) {
-        return send_token_post(http, oauth, https, body, format).await;
-    }
-    #[cfg(any(test, feature = "test-util"))]
-    if crate::profile::is_loopback_http(url) {
-        let parsed = reqwest::Url::parse(url.trim())
-            .map_err(|e| AuthError::TokenProvider(format!("token_url is not a valid URL: {e}")))?;
-        return send_token_post(http, oauth, parsed, body, format).await;
-    }
-    Err(AuthError::TokenProvider(
-        "token_url must be https (or loopback http)".into(),
-    ))
-}
-
-async fn send_token_post(
-    http: &reqwest::Client,
-    oauth: &OauthPack,
-    url: reqwest::Url,
-    body: &BTreeMap<String, String>,
-    format: TokenRequestFormat,
-) -> Result<reqwest::Response, AuthError> {
-    let mut req = http.post(url);
+    let Some(https) = https_token_url(url) else {
+        return token_post_non_https(http, oauth, url, body, format).await;
+    };
+    let mut req = http.post(https);
     for (k, v) in &oauth.token_headers {
         req = req.header(k.as_str(), v.as_str());
     }
@@ -545,6 +527,45 @@ async fn send_token_post(
     req.send()
         .await
         .map_err(|e| AuthError::TokenProvider(format!("token refresh request failed: {e}")))
+}
+
+#[cfg(any(test, feature = "test-util"))]
+async fn token_post_non_https(
+    http: &reqwest::Client,
+    oauth: &OauthPack,
+    url: &str,
+    body: &BTreeMap<String, String>,
+    format: TokenRequestFormat,
+) -> Result<reqwest::Response, AuthError> {
+    if !crate::profile::is_loopback_http(url) {
+        return Err(AuthError::TokenProvider(
+            "token_url must be https (or loopback http)".into(),
+        ));
+    }
+    let parsed = reqwest::Url::parse(url.trim())
+        .map_err(|e| AuthError::TokenProvider(format!("token_url is not a valid URL: {e}")))?;
+    let mut req = http.post(parsed);
+    for (k, v) in &oauth.token_headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let req = match format {
+        TokenRequestFormat::Json => req.json(body),
+        TokenRequestFormat::Form => req.form(body),
+    };
+    req.send()
+        .await
+        .map_err(|e| AuthError::TokenProvider(format!("token refresh request failed: {e}")))
+}
+
+#[cfg(not(any(test, feature = "test-util")))]
+async fn token_post_non_https(
+    _http: &reqwest::Client,
+    _oauth: &OauthPack,
+    _url: &str,
+    _body: &BTreeMap<String, String>,
+    _format: TokenRequestFormat,
+) -> Result<reqwest::Response, AuthError> {
+    Err(AuthError::TokenProvider("token_url must be https".into()))
 }
 
 fn parse_token_response(
@@ -1029,7 +1050,8 @@ grant_type = "refresh_token"
         )
     }
 
-    fn pointer_toml(token_url: &str, creds: &str) -> String {
+    fn pointer_toml(token_url: &str, creds: &std::path::Path) -> String {
+        let creds = creds.to_string_lossy().replace('\\', "/");
         format!(
             r#"
 schema_version = 1
@@ -1368,11 +1390,7 @@ expires_unit = "s"
             200,
             r#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}"#,
         );
-        let creds = format!(
-            "{}/.config/wiremux/other-vendor.json",
-            home.path().display()
-        );
-        let oauth = pack_from_toml(&pointer_toml(&url, &creds));
+        let oauth = pack_from_toml(&pointer_toml(&url, &path));
         let p = provider(&oauth);
         let token = p.get_token().await.expect("json-pointer refresh");
         assert_eq!(token, "new-access");
