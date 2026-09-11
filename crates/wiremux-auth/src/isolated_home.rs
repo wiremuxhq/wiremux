@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::keychain_guard::KeychainIsolation;
+use crate::keychain_guard::{KeychainIsolation, TestKeychain};
 
 /// Acquire before any `HOME` / `USERPROFILE` mutation.
 static HOME_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -41,6 +41,7 @@ pub struct IsolatedHome {
     dir: tempfile::TempDir,
     saved: Vec<(OsString, Option<OsString>)>,
     _keychain: KeychainIsolation,
+    _test_keychain: TestKeychain,
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -106,6 +107,7 @@ impl IsolatedHome {
             dir,
             saved,
             _keychain: KeychainIsolation::hold(),
+            _test_keychain: TestKeychain::hold(),
             _lock: lock,
         }
     }
@@ -165,6 +167,15 @@ impl IsolatedHome {
                 abs
             }
         }
+    }
+
+    /// Plant a JSON secret in the in-memory test keychain.
+    pub fn plant_keychain(&self, service: &str, account: &str, secret: &serde_json::Value) {
+        crate::keychain_guard::test_keychain_set(
+            service,
+            account,
+            &serde_json::to_string(secret).expect("keychain json"),
+        );
     }
 }
 

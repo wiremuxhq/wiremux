@@ -22,7 +22,7 @@ use crate::keychain_guard::keychain_disabled;
 use crate::profile::{
     CredsFormat, ExpiresUnit, OauthPack, ResolvedProfile, TokenRequestFormat, TokenResponse,
 };
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test, feature = "test-util"))]
 use crate::writeback::apply_tokens;
 use crate::writeback::{
     TokenWrite, copilot_store_pointers, json_string, json_u64, oidc_store_pointers,
@@ -63,7 +63,7 @@ impl CachedToken {
 #[derive(Clone, Debug)]
 enum CredSource {
     File(PathBuf),
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", test, feature = "test-util"))]
     Keychain {
         service: String,
         account: String,
@@ -73,7 +73,7 @@ enum CredSource {
 
 enum WriteBack {
     File(PathBuf),
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", test, feature = "test-util"))]
     Keychain {
         service: String,
         account: String,
@@ -85,7 +85,7 @@ impl std::fmt::Debug for WriteBack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::File(path) => f.debug_tuple("File").field(path).finish(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", test, feature = "test-util"))]
             Self::Keychain { service, account } => f
                 .debug_struct("Keychain")
                 .field("service", service)
@@ -196,7 +196,7 @@ impl ProfileTokenProvider {
             CredSource::File(path) => absolute_write_back_path(path)
                 .map(WriteBack::File)
                 .unwrap_or(WriteBack::None),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", test, feature = "test-util"))]
             CredSource::Keychain { service, account } => WriteBack::Keychain {
                 service: service.clone(),
                 account: account.clone(),
@@ -237,11 +237,8 @@ impl ProfileTokenProvider {
                 let content = read_creds_string(path).await?;
                 store_tokens_from_json(&content, &self.inner.oauth, &self.inner.layout)
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", test, feature = "test-util"))]
             WriteBack::Keychain { service, account } => {
-                if keychain_disabled() {
-                    return Ok(None);
-                }
                 let secret = read_keychain(service, account)?;
                 store_tokens_from_json(&secret, &self.inner.oauth, &self.inner.layout)
             }
@@ -329,11 +326,8 @@ impl ProfileTokenProvider {
                 )
                 .await
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", test, feature = "test-util"))]
             WriteBack::Keychain { service, account } => {
-                if keychain_disabled() {
-                    return Ok(());
-                }
                 let current = read_keychain(service, account)?;
                 let mut doc: Value = serde_json::from_str(&current)?;
                 let token_url_ptr =
@@ -752,9 +746,6 @@ fn load_from_env(oauth: &OauthPack) -> Result<Option<Loaded>, AuthError> {
 }
 
 fn load_from_keychain(oauth: &OauthPack) -> Result<Option<Loaded>, AuthError> {
-    if keychain_disabled() {
-        return Ok(None);
-    }
     let Some(service) = oauth
         .keychain_service
         .as_deref()
@@ -763,35 +754,30 @@ fn load_from_keychain(oauth: &OauthPack) -> Result<Option<Loaded>, AuthError> {
     else {
         return Ok(None);
     };
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = service;
-        Ok(None)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        for account in &oauth.keychain_accounts {
-            if account.is_empty() {
-                continue;
-            }
-            let Ok(secret) = read_keychain(service, account) else {
-                continue;
-            };
-            if secret.trim().is_empty() {
-                continue;
-            }
-            let Ok(doc) = serde_json::from_str::<Value>(&secret) else {
-                continue;
-            };
-            let Ok(layout) = resolve_layout(oauth, Some(&doc)) else {
-                continue;
-            };
-            let Some(parsed) = tokens_from_doc(&doc, &layout) else {
-                continue;
-            };
-            if parsed.0.is_empty() {
-                continue;
-            }
+    for account in &oauth.keychain_accounts {
+        if account.is_empty() {
+            continue;
+        }
+        let Ok(secret) = read_keychain(service, account) else {
+            continue;
+        };
+        if secret.trim().is_empty() {
+            continue;
+        }
+        let Ok(doc) = serde_json::from_str::<Value>(&secret) else {
+            continue;
+        };
+        let Ok(layout) = resolve_layout(oauth, Some(&doc)) else {
+            continue;
+        };
+        let Some(parsed) = tokens_from_doc(&doc, &layout) else {
+            continue;
+        };
+        if parsed.0.is_empty() {
+            continue;
+        }
+        #[cfg(any(target_os = "macos", test, feature = "test-util"))]
+        {
             return Ok(Some(Loaded {
                 access_token: parsed.0,
                 refresh_token: parsed.1,
@@ -804,8 +790,8 @@ fn load_from_keychain(oauth: &OauthPack) -> Result<Option<Loaded>, AuthError> {
                 store_token_url: stored_oidc_token_url(oauth, &doc),
             }));
         }
-        Ok(None)
     }
+    Ok(None)
 }
 
 fn store_tokens_from_json(
@@ -1025,7 +1011,7 @@ fn adopt_from_store(
 fn refresh_lock_path(write_back: &WriteBack) -> Option<PathBuf> {
     match write_back {
         WriteBack::File(path) => Some(path.clone()),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", test, feature = "test-util"))]
         WriteBack::Keychain { service, account } => {
             Some(keychain_refresh_lock_path(service, account))
         }
@@ -1033,7 +1019,7 @@ fn refresh_lock_path(write_back: &WriteBack) -> Option<PathBuf> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test, feature = "test-util"))]
 fn keychain_refresh_lock_path(service: &str, account: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "wiremux-auth-{}-{}",
@@ -1042,7 +1028,7 @@ fn keychain_refresh_lock_path(service: &str, account: &str) -> PathBuf {
     ))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test, feature = "test-util"))]
 fn sanitize_lock_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -1113,22 +1099,52 @@ fn missing_creds(oauth: &OauthPack) -> AuthError {
     ))
 }
 
-#[cfg(target_os = "macos")]
 fn read_keychain(service: &str, account: &str) -> Result<String, AuthError> {
-    let entry = keyring::Entry::new(service, account)
-        .map_err(|e| AuthError::TokenProvider(format!("keychain: {e}")))?;
-    entry
-        .get_password()
-        .map_err(|e| AuthError::TokenProvider(format!("keychain read: {e}")))
+    #[cfg(any(test, feature = "test-util"))]
+    if let Some(secret) = crate::keychain_guard::test_keychain_get(service, account) {
+        return Ok(secret);
+    }
+    if keychain_disabled() {
+        return Err(AuthError::TokenProvider("keychain disabled".into()));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let entry = keyring::Entry::new(service, account)
+            .map_err(|e| AuthError::TokenProvider(format!("keychain: {e}")))?;
+        entry
+            .get_password()
+            .map_err(|e| AuthError::TokenProvider(format!("keychain read: {e}")))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (service, account);
+        Err(AuthError::TokenProvider("keychain not available".into()))
+    }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test, feature = "test-util"))]
 fn write_keychain(service: &str, account: &str, secret: &str) -> Result<(), AuthError> {
-    let entry = keyring::Entry::new(service, account)
-        .map_err(|e| AuthError::TokenProvider(format!("keychain: {e}")))?;
-    entry
-        .set_password(secret)
-        .map_err(|e| AuthError::TokenProvider(format!("keychain write: {e}")))
+    #[cfg(any(test, feature = "test-util"))]
+    if crate::keychain_guard::test_keychain_active() {
+        crate::keychain_guard::test_keychain_set(service, account, secret);
+        return Ok(());
+    }
+    if keychain_disabled() {
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let entry = keyring::Entry::new(service, account)
+            .map_err(|e| AuthError::TokenProvider(format!("keychain: {e}")))?;
+        entry
+            .set_password(secret)
+            .map_err(|e| AuthError::TokenProvider(format!("keychain write: {e}")))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (service, account, secret);
+        Err(AuthError::TokenProvider("keychain not available".into()))
+    }
 }
 
 #[cfg(test)]
@@ -1176,6 +1192,138 @@ mod tests {
         p.mark_stale();
         assert_eq!(p.get_token().await.expect("forced refresh"), "second");
         let _ = handle.join();
+    }
+
+    fn keychain_toml(token_url: &str) -> String {
+        format!(
+            r#"
+schema_version = 1
+id = "kc-test"
+[oauth]
+token_url = "{token_url}"
+client_id = "test-client"
+token_request_format = "json"
+creds_format = "claude-credentials"
+keychain_service = "wiremux-test"
+keychain_accounts = ["acct"]
+login = "none"
+[oauth.refresh_body]
+grant_type = "refresh_token"
+"#
+        )
+    }
+
+    #[tokio::test]
+    async fn keychain_write_back_updates_test_store() {
+        let home = IsolatedHome::new();
+        home.plant_keychain(
+            "wiremux-test",
+            "acct",
+            &serde_json::json!({
+                "claudeAiOauth": {
+                    "accessToken": "kc-old",
+                    "refreshToken": "rt-old",
+                    "expiresAt": 1
+                }
+            }),
+        );
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"kc-new","refresh_token":"rt-new","expires_in":3600}"#,
+        );
+        let oauth = pack_from_toml(&keychain_toml(&url));
+        let p = provider(&oauth);
+        assert_eq!(
+            p.get_token().await.expect("refresh from keychain"),
+            "kc-new"
+        );
+        let _ = handle.join();
+        let stored = crate::keychain_guard::test_keychain_get("wiremux-test", "acct")
+            .expect("test keychain still planted");
+        let doc: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(
+            doc["claudeAiOauth"]["accessToken"].as_str(),
+            Some("kc-new"),
+            "write-back must update the keychain document, got {doc}"
+        );
+        assert_eq!(
+            doc["claudeAiOauth"]["refreshToken"].as_str(),
+            Some("rt-new")
+        );
+    }
+
+    fn spawn_counting_http_server(
+        status: u16,
+        body: &str,
+        window: Duration,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let addr = listener.local_addr().expect("local_addr");
+        let body = body.to_owned();
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let count_thread = count.clone();
+        let handle = std::thread::spawn(move || {
+            let start = Instant::now();
+            while start.elapsed() < window {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        count_thread.fetch_add(1, Ordering::SeqCst);
+                        stream.set_nonblocking(false).ok();
+                        let mut buf = [0u8; 4096];
+                        let _ = stream.read(&mut buf);
+                        let resp = format!(
+                            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (format!("http://{addr}/oauth/token"), count, handle)
+    }
+
+    #[tokio::test]
+    async fn parallel_get_token_issues_one_refresh_http() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth.json",
+            document: serde_json::json!({
+                "tokens": {
+                    "access": "stale",
+                    "refresh": "rt",
+                    "expiry_unix": 1
+                }
+            }),
+        });
+        let (url, count, handle) = spawn_counting_http_server(
+            200,
+            r#"{"access_token":"shared","refresh_token":"rt2","expires_in":3600}"#,
+            Duration::from_millis(800),
+        );
+        let oauth = pack_from_toml(&pointer_toml(&url, &path));
+        let p = provider(&oauth);
+        let a = p.clone();
+        let b = p.clone();
+        let (left, right) = tokio::join!(a.get_token(), b.get_token());
+        assert_eq!(left.expect("left"), "shared");
+        assert_eq!(right.expect("right"), "shared");
+        let _ = handle.join();
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "single-flight must POST once"
+        );
     }
 
     fn pack_from_toml(toml: &str) -> OauthPack {
