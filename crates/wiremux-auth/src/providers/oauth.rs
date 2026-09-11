@@ -1122,6 +1122,7 @@ fn read_keychain(service: &str, account: &str) -> Result<String, AuthError> {
     }
 }
 
+#[cfg(any(target_os = "macos", test, feature = "test-util"))]
 fn write_keychain(service: &str, account: &str, secret: &str) -> Result<(), AuthError> {
     #[cfg(any(test, feature = "test-util"))]
     if crate::keychain_guard::test_keychain_active() {
