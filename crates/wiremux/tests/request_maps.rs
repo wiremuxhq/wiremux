@@ -1942,3 +1942,46 @@ fn gemini_encode_does_not_invent_empty_function_call_args() {
         "invalid JSON must stay a string, got {body}"
     );
 }
+
+#[test]
+fn messages_sanitizes_gemini_shaped_tool_use_id() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![
+            IrItem::FunctionCall {
+                call_id: "lookup.v2".into(),
+                name: "lookup.v2".into(),
+                arguments: "{}".into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionOutput {
+                call_id: "lookup.v2".into(),
+                output: "ok".into(),
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/id")
+            .and_then(Value::as_str),
+        Some("lookup_v2"),
+        "tool_use.id must drop the Gemini dot, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/1/content/0/tool_use_id")
+            .and_then(Value::as_str),
+        Some("lookup_v2"),
+        "tool_result.tool_use_id must match the rewritten tool_use.id, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "items[0]"),
+        "rewritten tool_use.id must record Degrade on the original path, got {report:?}"
+    );
+    assert!(
+        loss_degraded(&report, "items[1]"),
+        "rewritten tool_result.tool_use_id must record Degrade on the original path, got {report:?}"
+    );
+}

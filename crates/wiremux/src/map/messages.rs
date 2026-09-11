@@ -351,14 +351,14 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 }
                 messages.push(json!({
                     "role": "assistant",
-                    "content": [tool_use_block(call_id, name, arguments)],
+                    "content": [tool_use_block(call_id, name, arguments, format!("items[{idx}]"), report)],
                 }));
                 idx += 1;
             }
             IrItem::FunctionOutput { call_id, output } => {
                 messages.push(json!({
                     "role": "user",
-                    "content": [tool_result_block(call_id, output)],
+                    "content": [tool_result_block(call_id, output, format!("items[{idx}]"), report)],
                 }));
                 idx += 1;
             }
@@ -414,7 +414,12 @@ fn encode_user(
     let mut consumed = 1;
     let mut content = encode_user_parts(parts, report);
     while let Some(IrItem::FunctionOutput { call_id, output }) = ir.items.get(start + consumed) {
-        content.push(tool_result_block(call_id, output));
+        content.push(tool_result_block(
+            call_id,
+            output,
+            format!("items[{}]", start + consumed),
+            report,
+        ));
         consumed += 1;
     }
     (
@@ -449,7 +454,13 @@ fn encode_assistant(
                         "thoughtSignature has no Messages slot",
                     );
                 }
-                content.push(tool_use_block(call_id, name, arguments));
+                content.push(tool_use_block(
+                    call_id,
+                    name,
+                    arguments,
+                    format!("items[{}]", start + consumed),
+                    report,
+                ));
                 consumed += 1;
             }
             Some(IrItem::Reasoning {
@@ -780,20 +791,72 @@ fn tag_first_user_text(body: &mut Value, ttl: Option<&str>) {
     }
 }
 
-fn tool_use_block(call_id: &str, name: &str, arguments: &str) -> Value {
+/// Anthropic `tool_use.id` must match `^[a-zA-Z0-9_-]+$`.
+fn sanitize_messages_tool_use_id(call_id: &str) -> String {
+    let mut out = String::with_capacity(call_id.len().max(1));
+    let mut last_underscore = false;
+    for c in call_id.chars() {
+        let legal = c.is_ascii_alphanumeric() || c == '_' || c == '-';
+        if legal {
+            if c == '_' && last_underscore {
+                continue;
+            }
+            last_underscore = c == '_';
+            out.push(c);
+        } else if !last_underscore {
+            out.push('_');
+            last_underscore = true;
+        }
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
+}
+
+fn rewrite_messages_tool_use_id(
+    call_id: &str,
+    path: impl Into<String>,
+    report: &mut LossReport,
+) -> String {
+    let sanitized = sanitize_messages_tool_use_id(call_id);
+    if sanitized != call_id {
+        report.record(
+            path,
+            LossAction::Degrade,
+            "sanitized to Anthropic tool_use.id charset",
+        );
+    }
+    sanitized
+}
+
+fn tool_use_block(
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+    path: impl Into<String>,
+    report: &mut LossReport,
+) -> Value {
+    let id = rewrite_messages_tool_use_id(call_id, path, report);
     let input = serde_json::from_str::<Value>(arguments).unwrap_or_else(|_| json!(arguments));
     json!({
         "type": "tool_use",
-        "id": call_id,
+        "id": id,
         "name": name,
         "input": input,
     })
 }
 
-fn tool_result_block(call_id: &str, output: &str) -> Value {
+fn tool_result_block(
+    call_id: &str,
+    output: &str,
+    path: impl Into<String>,
+    report: &mut LossReport,
+) -> Value {
+    let id = rewrite_messages_tool_use_id(call_id, path, report);
     json!({
         "type": "tool_result",
-        "tool_use_id": call_id,
+        "tool_use_id": id,
         "content": output,
     })
 }
