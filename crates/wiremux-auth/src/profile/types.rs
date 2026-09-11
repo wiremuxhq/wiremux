@@ -240,10 +240,25 @@ impl AuthScheme {
             "bearer" => Ok(Self::Bearer),
             "x-api-key" => Ok(Self::XApiKey),
             "none" => Ok(Self::None),
-            other => Err(ProfileError::Parse(format!(
-                "unknown auth_scheme `{other}`"
-            ))),
+            other => {
+                let listed = "bearer|x-api-key|none|header:<name>";
+                let mut msg = format!("unknown auth_scheme `{other}` ({listed})");
+                if let Some(suggest) = suggest_auth_scheme(other) {
+                    msg.push_str(&format!("; did you mean `{suggest}`"));
+                }
+                Err(ProfileError::Parse(msg))
+            }
         }
+    }
+}
+
+fn suggest_auth_scheme(s: &str) -> Option<&'static str> {
+    let folded = s.to_ascii_lowercase().replace('_', "-");
+    match folded.as_str() {
+        "bearer" => Some("bearer"),
+        "x-api-key" | "api-key" => Some("x-api-key"),
+        "none" => Some("none"),
+        _ => None,
     }
 }
 
@@ -461,6 +476,65 @@ impl Betas {
             values: Vec::new(),
             header: "anthropic-beta".into(),
             merge,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unknown_text(input: &str) -> String {
+        AuthScheme::parse(input)
+            .expect_err("must reject")
+            .to_string()
+    }
+
+    #[test]
+    fn unknown_auth_scheme_lists_legal_values() {
+        let text = unknown_text("oauth");
+        assert!(text.contains("unknown auth_scheme `oauth`"), "{text}");
+        assert!(
+            text.contains("bearer")
+                && text.contains("x-api-key")
+                && text.contains("none")
+                && text.contains("header:<name>"),
+            "must list legal auth_scheme values, got {text}"
+        );
+    }
+
+    #[test]
+    fn unknown_auth_scheme_suggests_close_matches() {
+        let bearer = unknown_text("Bearer");
+        assert!(
+            bearer.contains("bearer")
+                && bearer.contains("x-api-key")
+                && bearer.contains("none")
+                && bearer.contains("header:<name>"),
+            "must list legal values, got {bearer}"
+        );
+        assert!(
+            bearer.contains("bearer"),
+            "Bearer must point at bearer, got {bearer}"
+        );
+        assert!(
+            bearer.to_ascii_lowercase().contains("did you mean") && bearer.contains("`bearer`"),
+            "Bearer should suggest bearer, got {bearer}"
+        );
+
+        for input in ["api-key", "x_api_key", "X-Api-Key"] {
+            let text = unknown_text(input);
+            assert!(
+                text.contains("x-api-key")
+                    && text.contains("bearer")
+                    && text.contains("none")
+                    && text.contains("header:<name>"),
+                "{input} must list legal values, got {text}"
+            );
+            assert!(
+                text.to_ascii_lowercase().contains("did you mean") && text.contains("`x-api-key`"),
+                "{input} should suggest x-api-key, got {text}"
+            );
         }
     }
 }

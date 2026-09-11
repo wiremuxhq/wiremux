@@ -285,3 +285,32 @@ fn unknown_profile_id_lists_catalog_and_path_hint() {
         "unknown id should mention a .toml or .json path, got {text}"
     );
 }
+
+#[test]
+fn unknown_auth_scheme_lists_legal_values() {
+    let err = parse_via_file(
+        "bad-scheme.toml",
+        r#"
+schema_version = 1
+id = "bad-scheme"
+auth_scheme = "Bearer"
+"#,
+    )
+    .expect_err("unknown auth_scheme must fail parse");
+    let text = err.to_string();
+    assert!(
+        text.contains("unknown auth_scheme `Bearer`"),
+        "must echo the unknown value, got {text}"
+    );
+    assert!(
+        text.contains("bearer")
+            && text.contains("x-api-key")
+            && text.contains("none")
+            && text.contains("header:<name>"),
+        "must list legal auth_scheme values, got {text}"
+    );
+    assert!(
+        text.to_ascii_lowercase().contains("did you mean") && text.contains("`bearer`"),
+        "Bearer should suggest bearer, got {text}"
+    );
+}
