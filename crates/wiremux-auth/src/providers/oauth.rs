@@ -22,7 +22,7 @@ use crate::keychain_guard::keychain_disabled;
 use crate::profile::{
     CredsFormat, ExpiresUnit, OauthPack, ResolvedProfile, TokenRequestFormat, TokenResponse,
 };
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test, feature = "test-util"))]
 use crate::writeback::apply_tokens;
 use crate::writeback::{
     TokenWrite, copilot_store_pointers, json_string, json_u64, oidc_store_pointers,
