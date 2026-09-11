@@ -245,10 +245,9 @@ pub(super) fn encode(
     profile: &ResolvedProfile,
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
-    let restore_calls = matches!(
-        profile.dialect.tool_type_policy,
-        ToolTypePolicy::FlattenNamespace
-    );
+    // Split dotted IR names only when keeping native namespace tools (hard-error).
+    // flatten-namespace emits dotted function names on the wire, including Responses.
+    let restore_calls = matches!(profile.dialect.tool_type_policy, ToolTypePolicy::HardError);
     let (instructions, input) = encode_items(ir, restore_calls, report);
     let mut body = json!({
         "model": ir.model,

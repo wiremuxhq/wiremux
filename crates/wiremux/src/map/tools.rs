@@ -46,16 +46,11 @@ pub(super) fn decode_tool(value: &Value) -> IrTool {
             kind: other.to_string(),
             raw: value.clone(),
         },
-        other => {
-            if looks_like_function(value) {
-                function_from(value)
-            } else {
-                IrTool::Unknown {
-                    type_name: other.to_string(),
-                    raw: value.clone(),
-                }
-            }
-        }
+        // name+parameters must not relabel an unknown type as Function.
+        other => IrTool::Unknown {
+            type_name: other.to_string(),
+            raw: value.clone(),
+        },
     }
 }
 
@@ -115,7 +110,6 @@ pub(super) fn prepare_tools(
         .fingerprint
         .as_ref()
         .and_then(|fp| fp.tool_name_case);
-    let has_namespace_slot = matches!(wire, Wire::Responses);
     let has_hosted_slot = matches!(wire, Wire::Responses);
 
     let mut out = Vec::new();
@@ -141,7 +135,7 @@ pub(super) fn prepare_tools(
                         raw,
                         path: &path,
                         policy,
-                        has_namespace_slot,
+                        wire,
                         case,
                         report,
                     },
@@ -164,10 +158,6 @@ pub(super) fn prepare_tools(
             },
         }
     }
-
-    if matches!(policy, ToolTypePolicy::FlattenNamespace) && has_namespace_slot {
-        out = restore_namespaces(out, report);
-    }
     Ok(out)
 }
 
@@ -176,7 +166,7 @@ struct NsPush<'a> {
     raw: &'a Value,
     path: &'a str,
     policy: ToolTypePolicy,
-    has_namespace_slot: bool,
+    wire: Wire,
     case: Option<ToolNameCase>,
     report: &'a mut LossReport,
 }
@@ -187,15 +177,13 @@ fn push_namespace(out: &mut Vec<PreparedTool>, args: NsPush<'_>) -> Result<(), M
         raw,
         path,
         policy,
-        has_namespace_slot,
+        wire,
         case,
         report,
     } = args;
-    if has_namespace_slot && !matches!(policy, ToolTypePolicy::Passthrough) {
-        report.record(path, LossAction::Preserve, "namespace tool");
-        out.push(PreparedTool::Raw(namespace_raw(name, raw)));
-        return Ok(());
-    }
+    // Policy is the switch. flatten-namespace flattens on every wire,
+    // including Responses (OpenRouter). hard-error keeps a native
+    // namespace only on Responses (Codex); elsewhere it fails closed.
     match policy {
         ToolTypePolicy::Passthrough => {
             report.record(path, LossAction::Preserve, "namespace passthrough");
@@ -226,8 +214,11 @@ fn push_namespace(out: &mut Vec<PreparedTool>, args: NsPush<'_>) -> Result<(), M
             Ok(())
         }
         ToolTypePolicy::HardError => {
-            // Silent strip is a bug. Flatten only when the profile opted in
-            // and a nested tools table exists (handled above).
+            if matches!(wire, Wire::Responses) {
+                report.record(path, LossAction::Preserve, "namespace tool");
+                out.push(PreparedTool::Raw(namespace_raw(name, raw)));
+                return Ok(());
+            }
             Err(MapError::hard(
                 path,
                 "type=namespace is not silent-stripped; hard-error (set tool_type_policy = flatten-namespace to flatten)",
@@ -312,72 +303,6 @@ fn flatten_namespace(name: &str, raw: &Value, path: &str) -> Result<Vec<IrTool>,
         return Err(MapError::hard(path, "namespace flatten table is empty"));
     }
     Ok(out)
-}
-
-fn restore_namespaces(tools: Vec<PreparedTool>, report: &mut LossReport) -> Vec<PreparedTool> {
-    let mut out = Vec::new();
-    let mut pending_ns: Option<String> = None;
-    let mut pending_children: Vec<Value> = Vec::new();
-
-    let flush = |out: &mut Vec<PreparedTool>,
-                 pending_ns: &mut Option<String>,
-                 pending_children: &mut Vec<Value>,
-                 report: &mut LossReport| {
-        let Some(ns) = pending_ns.take() else {
-            return;
-        };
-        if pending_children.is_empty() {
-            return;
-        }
-        report.record(
-            format!("tools[{ns}]"),
-            LossAction::Preserve,
-            "restore namespace from dotted function names",
-        );
-        out.push(PreparedTool::Raw(json!({
-            "type": "namespace",
-            "name": ns,
-            "description": "",
-            "tools": pending_children.clone(),
-        })));
-        pending_children.clear();
-    };
-
-    for tool in tools {
-        match tool {
-            PreparedTool::Function {
-                name,
-                description,
-                parameters,
-            } => {
-                if let Some((ns, leaf)) = split_namespace_name(&name) {
-                    if pending_ns.as_deref() != Some(ns) {
-                        flush(&mut out, &mut pending_ns, &mut pending_children, report);
-                        pending_ns = Some(ns.to_string());
-                    }
-                    pending_children.push(json!({
-                        "type": "function",
-                        "name": leaf,
-                        "description": description,
-                        "parameters": parameters,
-                    }));
-                } else {
-                    flush(&mut out, &mut pending_ns, &mut pending_children, report);
-                    out.push(PreparedTool::Function {
-                        name,
-                        description,
-                        parameters,
-                    });
-                }
-            }
-            other => {
-                flush(&mut out, &mut pending_ns, &mut pending_children, report);
-                out.push(other);
-            }
-        }
-    }
-    flush(&mut out, &mut pending_ns, &mut pending_children, report);
-    out
 }
 
 pub(super) fn split_namespace_name(name: &str) -> Option<(&str, &str)> {
@@ -474,6 +399,23 @@ tool_type_policy = "{policy}"
     }
 
     #[test]
+    fn flatten_namespace_on_responses_emits_function_not_namespace() {
+        let ir = ns_ir();
+        let mut report = LossReport::default();
+        let tools = prepare_tools(
+            Wire::Responses,
+            &ir,
+            &profile("flatten-namespace"),
+            &mut report,
+        )
+        .expect("flatten on Responses");
+        match &tools[0] {
+            PreparedTool::Function { name, .. } => assert_eq!(name, "crm.lookup"),
+            other => panic!("OpenRouter-style flatten must not emit namespace, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn unknown_type_errors_under_hard_error() {
         let ir = IrRequest {
             model: "m".into(),
@@ -488,5 +430,48 @@ tool_type_policy = "{policy}"
         let err = prepare_tools(Wire::Responses, &ir, &profile("hard-error"), &mut report)
             .expect_err("unknown type");
         assert!(matches!(err, MapError::HardError { .. }));
+    }
+
+    #[test]
+    fn unknown_type_with_name_stays_unknown() {
+        let tool = decode_tool(&json!({
+            "type": "weird",
+            "name": "do_thing",
+            "description": "A thing",
+            "parameters": {"type": "object", "properties": {}}
+        }));
+        match &tool {
+            IrTool::Unknown { type_name, raw } => {
+                assert_eq!(type_name, "weird");
+                assert_eq!(raw["name"], "do_thing");
+            }
+            other => panic!("must stay Unknown, not relabel as Function: {other:?}"),
+        }
+
+        let ir = IrRequest {
+            model: "m".into(),
+            items: Vec::new(),
+            tools: vec![tool],
+            sampling: IrSampling::default(),
+        };
+        let mut report = LossReport::default();
+        let err = prepare_tools(Wire::Responses, &ir, &profile("hard-error"), &mut report)
+            .expect_err("unknown type with name must hard-error");
+        assert!(matches!(err, MapError::HardError { .. }));
+        let mut report = LossReport::default();
+        prepare_tools(
+            Wire::Responses,
+            &ir,
+            &profile("flatten-namespace"),
+            &mut report,
+        )
+        .expect_err("flatten-namespace still errors on unknown type");
+        let mut report = LossReport::default();
+        let out = prepare_tools(Wire::Responses, &ir, &profile("passthrough"), &mut report)
+            .expect("passthrough");
+        match &out[0] {
+            PreparedTool::Raw(raw) => assert_eq!(raw["type"], "weird"),
+            other => panic!("passthrough should forward raw, got {other:?}"),
+        }
     }
 }

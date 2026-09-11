@@ -154,6 +154,16 @@ fn codex_namespace_is_not_silent_stripped() {
         "expected flatten Degrade, got {:?}",
         loss.events
     );
+
+    let (flat_resp, _) =
+        encode(Wire::Responses, &ir, &flatten_profile()).expect("flatten on Responses");
+    let body: Value = serde_json::from_slice(&flat_resp).expect("json");
+    assert_eq!(body["tools"][0]["type"], "function");
+    assert_eq!(body["tools"][0]["name"], "mcp__fs.list_dir");
+    assert_ne!(
+        body["tools"][0]["type"], "namespace",
+        "openrouter-style flatten-namespace must not emit type=namespace"
+    );
 }
 
 #[test]
@@ -309,22 +319,56 @@ fn responses_messages_responses_round_trip_keeps_tool_names() {
     let tools = resp["tools"].as_array().expect("Responses tools");
     let names = collect_tool_names(tools);
     assert!(
-        names
-            .iter()
-            .any(|name| name == "crm.lookup" || name == "lookup" || name == "crm"),
-        "round-trip must keep CRM tool names, got {names:?}"
+        names.iter().any(|name| name == "crm.lookup"),
+        "round-trip must keep CRM tool names as dotted functions, got {names:?}"
     );
     assert!(
-        tools.iter().any(|tool| {
-            tool.get("type").and_then(Value::as_str) == Some("namespace")
-                && tool.get("name").and_then(Value::as_str) == Some("crm")
-        }) || names.iter().any(|name| name == "crm.lookup"),
-        "expected restored namespace or dotted function, got {tools:?}"
+        tools
+            .iter()
+            .any(|tool| tool.get("type").and_then(Value::as_str) == Some("function")),
+        "flatten-namespace encode to Responses must emit function tools, got {tools:?}"
     );
     assert!(
         !resp_loss.events.is_empty() || !msg_loss.events.is_empty(),
         "round-trip must report loss"
     );
+}
+
+#[test]
+fn unknown_type_with_name_is_not_relabeled_function() {
+    let bytes = br#"{
+        "model": "gpt-5",
+        "input": "hi",
+        "tools": [{
+            "type": "weird",
+            "name": "do_thing",
+            "description": "A thing",
+            "parameters": {"type": "object", "properties": {}}
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, bytes).expect("decode");
+    assert!(
+        matches!(&ir.tools[0], IrTool::Unknown { type_name, .. } if type_name == "weird"),
+        "type=weird with name must stay Unknown, got {:?}",
+        ir.tools
+    );
+    encode(Wire::Responses, &ir, &hard_error_profile())
+        .expect_err("hard-error must fail closed on unknown type");
+    encode(Wire::Responses, &ir, &flatten_profile())
+        .expect_err("flatten-namespace must not coerce unknown type to function");
+
+    let passthrough = profile(
+        r#"
+schema_version = 1
+id = "test-passthrough"
+wire = "responses"
+tool_type_policy = "passthrough"
+"#,
+    );
+    let (out, _) = encode(Wire::Responses, &ir, &passthrough).expect("passthrough");
+    let body: Value = serde_json::from_slice(&out).expect("json");
+    assert_eq!(body["tools"][0]["type"], "weird");
+    assert_eq!(body["tools"][0]["name"], "do_thing");
 }
 
 fn collect_tool_names(tools: &[Value]) -> Vec<String> {
