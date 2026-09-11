@@ -19,6 +19,94 @@ pub(crate) struct TokenWrite<'a> {
     pub access_token: &'a str,
     pub refresh_token: Option<&'a str>,
     pub expires_in_secs: u64,
+    /// When true, write `expires_at` as RFC 3339 even if the slot is new.
+    pub expires_rfc3339: bool,
+}
+
+/// `{issuer}::{client_id}` store key. Trailing slash on the issuer is stripped.
+pub(crate) fn oidc_profile_key(issuer: &str, client_id: &str) -> String {
+    format!("{}::{}", issuer.trim_end_matches('/'), client_id)
+}
+
+/// Scheme + host from an https or loopback http URL.
+pub(crate) fn issuer_origin(url: &str) -> Option<String> {
+    let (scheme, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        ("https", rest)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        ("http", rest)
+    } else {
+        return None;
+    };
+    let host = rest.split('/').next()?.trim();
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{host}"))
+}
+
+fn escape_pointer_token(token: &str) -> String {
+    token.replace('~', "~0").replace('/', "~1")
+}
+
+/// Exact `{issuer}::{client_id}`, else `{issuer}::{client_id}@{name}`.
+pub(crate) fn select_oidc_entry_key(doc: Option<&Value>, want: &str) -> String {
+    let Some(obj) = doc.and_then(Value::as_object) else {
+        return want.to_owned();
+    };
+    if obj.contains_key(want) {
+        return want.to_owned();
+    }
+    obj.keys()
+        .find(|key| {
+            key.strip_prefix(want)
+                .and_then(|rest| rest.strip_prefix('@'))
+                .is_some_and(|suffix| {
+                    !suffix.is_empty() && !suffix.contains("::") && !suffix.contains('/')
+                })
+        })
+        .cloned()
+        .unwrap_or_else(|| want.to_owned())
+}
+
+fn oidc_issuer_and_client(oauth: &OauthPack) -> Result<(String, String), AuthError> {
+    let client = oauth
+        .client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AuthError::MissingField("oauth.client_id".into()))?
+        .to_owned();
+    let issuer = oauth
+        .authorize_url
+        .as_deref()
+        .and_then(issuer_origin)
+        .or_else(|| issuer_origin(&oauth.token_url))
+        .ok_or_else(|| {
+            AuthError::MissingField("oauth issuer (authorize_url or token_url origin)".into())
+        })?;
+    Ok((issuer, client))
+}
+
+/// Access / refresh / expires pointers for `creds_format = "oidc-auth-json"`.
+pub(crate) fn oidc_store_pointers(
+    oauth: &OauthPack,
+    doc: Option<&Value>,
+) -> Result<Option<(String, String, String)>, AuthError> {
+    if oauth.creds_format != Some(CredsFormat::OidcAuthJson) {
+        return Ok(None);
+    }
+    if oauth.access_token_ptr.is_some() {
+        return Ok(None);
+    }
+    let (issuer, client) = oidc_issuer_and_client(oauth)?;
+    let want = oidc_profile_key(&issuer, &client);
+    let entry = select_oidc_entry_key(doc, &want);
+    let escaped = escape_pointer_token(&entry);
+    Ok(Some((
+        format!("/{escaped}/key"),
+        format!("/{escaped}/refresh_token"),
+        format!("/{escaped}/expires_at"),
+    )))
 }
 
 /// Persist tokens from a login exchange.
@@ -42,17 +130,47 @@ pub async fn persist_login_tokens(
         .as_deref()
         .ok_or_else(|| AuthError::MissingField("oauth.creds_path".into()))?;
     let path = expand_tilde(raw);
+    let existing = if path.is_file() {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+    } else {
+        None
+    };
+    let oidc = oidc_store_pointers(oauth, existing.as_ref())?;
+    let access_owned;
+    let refresh_owned;
+    let expires_owned;
+    let (access_ptr, refresh_ptr, expires_ptr, expires_rfc3339) = if let Some(ptrs) = oidc {
+        access_owned = ptrs.0;
+        refresh_owned = ptrs.1;
+        expires_owned = ptrs.2;
+        (
+            access_owned.as_str(),
+            Some(refresh_owned.as_str()),
+            Some(expires_owned.as_str()),
+            true,
+        )
+    } else {
+        (
+            oauth.access_token_ptr.as_deref().unwrap_or("/access_token"),
+            oauth
+                .refresh_token_ptr
+                .as_deref()
+                .or(Some("/refresh_token")),
+            oauth.expires_ptr.as_deref().or(Some("/expires_in")),
+            false,
+        )
+    };
     let write = TokenWrite {
-        access_ptr: oauth.access_token_ptr.as_deref().unwrap_or("/access_token"),
-        refresh_ptr: oauth
-            .refresh_token_ptr
-            .as_deref()
-            .or(Some("/refresh_token")),
-        expires_ptr: oauth.expires_ptr.as_deref().or(Some("/expires_in")),
+        access_ptr,
+        refresh_ptr,
+        expires_ptr,
         expires_unit: oauth.expires_unit.unwrap_or(ExpiresUnit::S),
         access_token: &tokens.access_token,
         refresh_token: tokens.refresh_token.as_deref(),
         expires_in_secs: tokens.expires_in.unwrap_or(3600),
+        expires_rfc3339,
     };
     if path.is_file() {
         return write_tokens(&path, &write).await;
@@ -117,7 +235,13 @@ pub(crate) fn apply_tokens(doc: &mut Value, write: &TokenWrite<'_>) -> Result<()
         pointer_set(
             doc,
             ptr,
-            expires_value(doc, ptr, write.expires_unit, write.expires_in_secs),
+            expires_value(
+                doc,
+                ptr,
+                write.expires_unit,
+                write.expires_in_secs,
+                write.expires_rfc3339,
+            ),
         )?;
     }
     Ok(())
@@ -134,9 +258,15 @@ fn is_root_pointer(pointer: &str) -> bool {
     pointer.is_empty()
 }
 
-fn expires_value(doc: &Value, ptr: &str, unit: ExpiresUnit, expires_in_secs: u64) -> Value {
+fn expires_value(
+    doc: &Value,
+    ptr: &str,
+    unit: ExpiresUnit,
+    expires_in_secs: u64,
+    expires_rfc3339: bool,
+) -> Value {
     let existing_is_string = pointer_get(doc, ptr).is_some_and(Value::is_string);
-    if existing_is_string {
+    if existing_is_string || expires_rfc3339 {
         return Value::String(crate::helpers::format_rfc3339_now_plus(expires_in_secs));
     }
     let now = std::time::SystemTime::now()
@@ -395,6 +525,32 @@ mod tests {
     }
 
     #[test]
+    fn oidc_pointer_escapes_issuer_slashes() {
+        let key = oidc_profile_key("https://auth.openai.com/", "wiremux-cli");
+        assert_eq!(key, "https://auth.openai.com::wiremux-cli");
+        let ptr = format!("/{}/key", escape_pointer_token(&key));
+        let mut doc = serde_json::json!({});
+        pointer_set(&mut doc, &ptr, Value::String("tok".into())).unwrap();
+        assert_eq!(
+            doc["https://auth.openai.com::wiremux-cli"]["key"].as_str(),
+            Some("tok")
+        );
+        assert_eq!(
+            issuer_origin("https://auth.openai.com/oauth/token").as_deref(),
+            Some("https://auth.openai.com")
+        );
+        assert_eq!(
+            select_oidc_entry_key(
+                Some(&serde_json::json!({
+                    "https://auth.openai.com::wiremux-cli@work": {"key": "x"}
+                })),
+                "https://auth.openai.com::wiremux-cli"
+            ),
+            "https://auth.openai.com::wiremux-cli@work"
+        );
+    }
+
+    #[test]
     fn apply_tokens_refuses_empty_access() {
         let mut doc = serde_json::json!({"access": "old"});
         let err = apply_tokens(
@@ -407,6 +563,7 @@ mod tests {
                 access_token: "  ",
                 refresh_token: None,
                 expires_in_secs: 60,
+                expires_rfc3339: false,
             },
         )
         .unwrap_err();
@@ -431,6 +588,7 @@ mod tests {
                 access_token: "new-token",
                 refresh_token: Some("rt-new"),
                 expires_in_secs: 60,
+                expires_rfc3339: false,
             },
         )
         .unwrap_err();
@@ -459,6 +617,7 @@ mod tests {
                 access_token: "tok",
                 refresh_token: None,
                 expires_in_secs: 60,
+                expires_rfc3339: false,
             },
         )
         .unwrap_err();
@@ -546,5 +705,48 @@ mod tests {
             "{err:?}"
         );
         assert!(!path.exists(), "must not invent a Claude credentials file");
+    }
+
+    #[tokio::test]
+    async fn persist_login_tokens_writes_oidc_named_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-openai.json");
+        let oauth = crate::parse_profile_str(&format!(
+            r#"
+schema_version = 1
+id = "openai-codex-oauth"
+[oauth]
+token_url = "https://auth.openai.com/oauth/token"
+authorize_url = "https://auth.openai.com/oauth/authorize"
+client_id = "wiremux-cli"
+creds_format = "oidc-auth-json"
+creds_path = "{}"
+login = "none"
+"#,
+            path.display().to_string().replace('\\', "/")
+        ))
+        .unwrap()
+        .oauth
+        .unwrap();
+        let tokens = TokenExchangeResponse {
+            access_token: "new-access".into(),
+            refresh_token: Some("new-rt".into()),
+            expires_in: Some(60),
+            token_type: None,
+            scope: None,
+        };
+        persist_login_tokens(&oauth, &tokens)
+            .await
+            .expect("persist oidc");
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let entry = &doc["https://auth.openai.com::wiremux-cli"];
+        assert_eq!(entry["key"].as_str(), Some("new-access"));
+        assert_eq!(entry["refresh_token"].as_str(), Some("new-rt"));
+        let expires = entry["expires_at"].as_str().expect("rfc3339");
+        assert!(expires.contains('T'), "{expires}");
+        assert!(
+            doc.get("access_token").is_none(),
+            "must not use root /access_token"
+        );
     }
 }

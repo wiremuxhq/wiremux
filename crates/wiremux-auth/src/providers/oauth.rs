@@ -25,7 +25,8 @@ use crate::profile::{
 #[cfg(target_os = "macos")]
 use crate::writeback::apply_tokens;
 use crate::writeback::{
-    TokenWrite, json_string, json_u64, pointer_get, read_creds_string, write_tokens,
+    TokenWrite, json_string, json_u64, oidc_store_pointers, pointer_get, read_creds_string,
+    write_tokens,
 };
 
 const DEFAULT_LIFETIME_SECS: u64 = 3600;
@@ -300,6 +301,8 @@ impl ProfileTokenProvider {
                         access_token,
                         refresh_token,
                         expires_in_secs: expires_in,
+                        expires_rfc3339: self.inner.oauth.creds_format
+                            == Some(CredsFormat::OidcAuthJson),
                     },
                 )
                 .await
@@ -321,6 +324,8 @@ impl ProfileTokenProvider {
                         access_token,
                         refresh_token,
                         expires_in_secs: expires_in,
+                        expires_rfc3339: self.inner.oauth.creds_format
+                            == Some(CredsFormat::OidcAuthJson),
                     },
                 )?;
                 let updated = serde_json::to_string(&doc)?;
@@ -818,6 +823,14 @@ fn resolve_layout(oauth: &OauthPack, doc: Option<&Value>) -> Result<StoreLayout,
             expires_unit: oauth.expires_unit.unwrap_or(ExpiresUnit::S),
         });
     }
+    if let Some((access, refresh, expires)) = oidc_store_pointers(oauth, doc)? {
+        return Ok(StoreLayout {
+            access_ptr: access,
+            refresh_ptr: Some(refresh),
+            expires_ptr: Some(expires),
+            expires_unit: oauth.expires_unit.unwrap_or(ExpiresUnit::S),
+        });
+    }
     // Env-only / no store: pointers unused until write-back (which is None).
     Ok(StoreLayout {
         access_ptr: "/access_token".into(),
@@ -1046,6 +1059,24 @@ login = "setup-token"
 setup_token_hint = "run `claude setup-token`"
 [oauth.refresh_body]
 grant_type = "refresh_token"
+"#
+        )
+    }
+
+    fn oidc_toml(token_url: &str, creds: &std::path::Path, client_id: &str) -> String {
+        let creds = creds.to_string_lossy().replace('\\', "/");
+        format!(
+            r#"
+schema_version = 1
+id = "openai-codex-oauth"
+[oauth]
+token_url = "{token_url}"
+authorize_url = "https://auth.openai.com/oauth/authorize"
+client_id = "{client_id}"
+token_request_format = "form"
+creds_format = "oidc-auth-json"
+creds_path = "{creds}"
+login = "none"
 "#
         )
     }
@@ -1411,6 +1442,121 @@ expires_unit = "s"
         assert_eq!(doc["tokens"]["access"].as_str(), Some("new-access"));
         assert_eq!(doc["tokens"]["refresh"].as_str(), Some("new-refresh"));
         assert_eq!(doc["keep"].as_bool(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn oidc_auth_json_reads_matching_issuer_client_entry() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth-openai.json",
+            document: serde_json::json!({
+                "https://aaa.example::other": {
+                    "key": "wrong-access",
+                    "refresh_token": "wrong-rt",
+                    "expires_at": "2099-01-01T00:00:00Z"
+                },
+                "https://auth.openai.com::wiremux-cli": {
+                    "key": "oidc-access",
+                    "refresh_token": "oidc-rt",
+                    "expires_at": "2099-01-01T00:00:00Z"
+                }
+            }),
+        });
+        let oauth = pack_from_toml(&oidc_toml(&closed_http_url(), &path, "wiremux-cli"));
+        let p = provider(&oauth);
+        assert_eq!(p.get_token().await.expect("oidc entry"), "oidc-access");
+    }
+
+    #[tokio::test]
+    async fn oidc_auth_json_matches_named_suffix() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth-work.json",
+            document: serde_json::json!({
+                "https://auth.openai.com::wiremux-cli@work": {
+                    "key": "WORK_TOKEN",
+                    "refresh_token": "work-rt",
+                    "expires_at": "2099-01-01T00:00:00Z"
+                }
+            }),
+        });
+        let oauth = pack_from_toml(&oidc_toml(&closed_http_url(), &path, "wiremux-cli"));
+        let p = provider(&oauth);
+        assert_eq!(p.get_token().await.expect("named suffix"), "WORK_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn oidc_auth_json_refresh_preserves_sibling_entries() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth-openai.json",
+            document: serde_json::json!({
+                "https://aaa.example::other": {
+                    "key": "keep-me",
+                    "refresh_token": "keep-rt",
+                    "expires_at": "2099-01-01T00:00:00Z"
+                },
+                "https://auth.openai.com::wiremux-cli": {
+                    "key": "old-access",
+                    "refresh_token": "old-rt",
+                    "expires_at": "2020-01-01T00:00:00Z"
+                }
+            }),
+        });
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"new-oidc","refresh_token":"new-rt","expires_in":3600}"#,
+        );
+        let oauth = pack_from_toml(&oidc_toml(&url, &path, "wiremux-cli"));
+        let p = provider(&oauth);
+        assert_eq!(p.get_token().await.expect("oidc refresh"), "new-oidc");
+        let _ = handle.join();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            doc["https://aaa.example::other"]["key"].as_str(),
+            Some("keep-me")
+        );
+        assert_eq!(
+            doc["https://auth.openai.com::wiremux-cli"]["key"].as_str(),
+            Some("new-oidc")
+        );
+        assert_eq!(
+            doc["https://auth.openai.com::wiremux-cli"]["refresh_token"].as_str(),
+            Some("new-rt")
+        );
+        let expires = doc["https://auth.openai.com::wiremux-cli"]["expires_at"]
+            .as_str()
+            .expect("rfc3339 expires_at");
+        assert!(
+            expires.contains('T'),
+            "expires_at must stay RFC 3339: {expires}"
+        );
+    }
+
+    #[test]
+    fn oidc_auth_json_empty_client_id_fails_closed() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth-openai.json",
+            document: serde_json::json!({
+                "https://auth.openai.com::someone": {
+                    "key": "must-not-guess",
+                    "refresh_token": "rt",
+                    "expires_at": "2099-01-01T00:00:00Z"
+                }
+            }),
+        });
+        let oauth = pack_from_toml(&oidc_toml(&closed_http_url(), &path, ""));
+        let err = provider_from_oauth(&oauth).expect_err("empty client_id");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("client_id"),
+            "must fail closed on empty client_id, got {msg}"
+        );
+        assert!(
+            !msg.contains("must-not-guess"),
+            "must not leak a guessed token: {msg}"
+        );
     }
 
     #[tokio::test]
