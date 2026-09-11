@@ -2073,6 +2073,76 @@ fn responses_json_schema_round_trips() {
 }
 
 #[test]
+fn chat_json_schema_without_name_is_dropped() {
+    let ir = user_ir(IrSampling {
+        json_schema: Some(serde_json::json!({"type": "object"})),
+        json_schema_name: None,
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("response_format").is_none(),
+        "nameless json_schema must not emit response_format, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "nameless json_schema must Drop, got {report:?}"
+    );
+
+    let ir = user_ir(IrSampling {
+        json_schema: Some(serde_json::json!(["not", "object"])),
+        json_schema_name: Some("answer".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("response_format").is_none(),
+        "non-object json_schema must not emit response_format, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "non-object json_schema must Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_json_schema_without_name_is_dropped() {
+    let ir = user_ir(IrSampling {
+        json_schema: Some(serde_json::json!({"type": "object"})),
+        json_schema_name: None,
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("text").is_none(),
+        "nameless json_schema must not emit text.format, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "nameless json_schema must Drop, got {report:?}"
+    );
+
+    let ir = user_ir(IrSampling {
+        json_schema: Some(serde_json::json!("not-object")),
+        json_schema_name: Some("answer".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("text").is_none(),
+        "non-object json_schema must not emit text.format, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "non-object json_schema must Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn messages_json_schema_is_dropped() {
     let ir = user_ir(IrSampling {
         json_schema: Some(serde_json::json!({"type": "object"})),

@@ -526,15 +526,17 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.thinking_budget.is_some() {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
     }
-    if let Some(schema) = &s.json_schema {
-        let mut format = json!({
-            "type": "json_schema",
-            "schema": schema,
+    if let Some(schema) = &s.json_schema
+        && let Some((schema, name)) =
+            super::official_json_schema(schema, s.json_schema_name.as_deref(), report)
+    {
+        body["text"] = json!({
+            "format": {
+                "type": "json_schema",
+                "name": name,
+                "schema": schema,
+            }
         });
-        if let Some(name) = &s.json_schema_name {
-            format["name"] = json!(name);
-        }
-        body["text"] = json!({ "format": format });
     }
 }
 
