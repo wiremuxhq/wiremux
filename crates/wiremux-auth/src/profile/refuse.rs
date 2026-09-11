@@ -121,7 +121,7 @@ fn check_url(field: &str, raw: &str) -> Result<(), ProfileError> {
     }
 }
 
-fn is_loopback_http(url: &str) -> bool {
+pub(crate) fn is_loopback_http(url: &str) -> bool {
     let Some((_, rest)) = url.split_once(':') else {
         return false;
     };
