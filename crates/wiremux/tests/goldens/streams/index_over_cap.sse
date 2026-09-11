@@ -1,0 +1,1 @@
+data: {"id":"chatcmpl-redacted","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":129,"id":"call_hostile","type":"function","function":{"name":"explode","arguments":""}}]},"finish_reason":null}]}
