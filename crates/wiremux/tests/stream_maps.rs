@@ -258,6 +258,145 @@ fn usage_does_not_invent_cache_tokens() {
     }
 }
 
+fn usage_tuple(events: &[IrStreamEvent]) -> (u32, u32, u32, u32, u32) {
+    events
+        .iter()
+        .find_map(|ev| match ev {
+            IrStreamEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                reasoning_tokens,
+            } => Some((
+                *prompt_tokens,
+                *completion_tokens,
+                *cache_read_tokens,
+                *cache_write_tokens,
+                *reasoning_tokens,
+            )),
+            _ => None,
+        })
+        .expect("usage event")
+}
+
+#[test]
+fn usage_cache_token_fields_are_accurate() {
+    let chat = decode_all(
+        Wire::ChatCompletions,
+        &golden("chat_usage_with_cache.sse"),
+        &chat_profile(),
+    )
+    .expect("decode chat cache usage");
+    assert_eq!(usage_tuple(&chat), (100, 20, 40, 0, 7));
+
+    let messages = decode_all(
+        Wire::Messages,
+        &golden("anthropic_usage_with_cache.sse"),
+        &messages_profile(),
+    )
+    .expect("decode messages cache usage");
+    assert_eq!(usage_tuple(&messages), (80, 12, 25, 9, 3));
+
+    let responses = decode_all(
+        Wire::Responses,
+        &golden("responses_usage_with_cache.sse"),
+        &responses_profile(),
+    )
+    .expect("decode responses cache usage");
+    assert_eq!(usage_tuple(&responses), (64, 8, 16, 0, 2));
+
+    let ev = IrStreamEvent::Usage {
+        prompt_tokens: 80,
+        completion_tokens: 12,
+        cache_read_tokens: 25,
+        cache_write_tokens: 9,
+        reasoning_tokens: 3,
+    };
+
+    let chat_json: Value = serde_json::from_str(
+        &encode_stream_event(Wire::ChatCompletions, &ev)
+            .unwrap()
+            .data,
+    )
+    .unwrap();
+    assert_eq!(
+        chat_json.pointer("/usage/prompt_tokens_details/cached_tokens"),
+        Some(&Value::from(25))
+    );
+    assert_eq!(
+        chat_json.pointer("/usage/completion_tokens_details/reasoning_tokens"),
+        Some(&Value::from(3))
+    );
+    assert!(
+        chat_json
+            .pointer("/usage/cache_read_input_tokens")
+            .is_none(),
+        "Chat must not emit Anthropic cache keys: {chat_json}"
+    );
+    assert!(
+        chat_json
+            .pointer("/usage/cache_creation_input_tokens")
+            .is_none(),
+        "Chat has no cache-write slot: {chat_json}"
+    );
+
+    let msg_json: Value =
+        serde_json::from_str(&encode_stream_event(Wire::Messages, &ev).unwrap().data).unwrap();
+    assert_eq!(
+        msg_json.pointer("/usage/cache_read_input_tokens"),
+        Some(&Value::from(25))
+    );
+    assert_eq!(
+        msg_json.pointer("/usage/cache_creation_input_tokens"),
+        Some(&Value::from(9))
+    );
+    assert_eq!(
+        msg_json.pointer("/usage/output_tokens_details/thinking_tokens"),
+        Some(&Value::from(3))
+    );
+    assert!(
+        !msg_json.to_string().contains("cached_tokens"),
+        "Messages must not emit OpenAI cached_tokens: {msg_json}"
+    );
+
+    let resp_json: Value =
+        serde_json::from_str(&encode_stream_event(Wire::Responses, &ev).unwrap().data).unwrap();
+    assert_eq!(
+        resp_json.pointer("/response/usage/input_tokens_details/cached_tokens"),
+        Some(&Value::from(25))
+    );
+    assert_eq!(
+        resp_json.pointer("/response/usage/output_tokens_details/reasoning_tokens"),
+        Some(&Value::from(3))
+    );
+    assert!(
+        resp_json
+            .pointer("/response/usage/cache_creation_input_tokens")
+            .is_none(),
+        "Responses has no cache-write slot: {resp_json}"
+    );
+}
+
+#[test]
+fn chat_top_level_cached_tokens_alias_is_read() {
+    let raw = RawSse {
+        event: None,
+        data:
+            r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,"cached_tokens":4}}"#
+                .into(),
+    };
+    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode top-level cached_tokens")
+        .expect("usage");
+    match ev {
+        IrStreamEvent::Usage {
+            cache_read_tokens, ..
+        } => assert_eq!(cache_read_tokens, 4),
+        other => panic!("expected Usage, got {other:?}"),
+    }
+}
+
 #[test]
 fn unknown_event_hard_error_and_passthrough() {
     let raw = RawSse {
