@@ -201,6 +201,100 @@ fn expand_responses_function_call(
     ])
 }
 
+/// Merge Chat tool-call starts that arrive as id-only then name-only.
+#[derive(Debug, Default)]
+pub struct ToolCallAssembler {
+    pending: Option<IrStreamEvent>,
+}
+
+impl ToolCallAssembler {
+    /// Empty assembler.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed one event. Incomplete starts are held until the name or id arrives.
+    pub fn push(&mut self, ev: IrStreamEvent) -> Vec<IrStreamEvent> {
+        match ev {
+            IrStreamEvent::ToolCallStart {
+                id,
+                name,
+                thought_signature,
+            } => self.push_start(id, name, thought_signature),
+            other => {
+                let mut out = Vec::new();
+                if let Some(pending) = self.pending.take() {
+                    out.push(pending);
+                }
+                out.push(other);
+                out
+            }
+        }
+    }
+
+    /// Emit a held start at end of stream.
+    pub fn flush(&mut self) -> Vec<IrStreamEvent> {
+        self.pending.take().into_iter().collect()
+    }
+
+    fn push_start(
+        &mut self,
+        id: String,
+        name: String,
+        thought_signature: Option<String>,
+    ) -> Vec<IrStreamEvent> {
+        let incoming = IrStreamEvent::ToolCallStart {
+            id,
+            name,
+            thought_signature,
+        };
+        match self.pending.take() {
+            Some(IrStreamEvent::ToolCallStart {
+                id: pid,
+                name: pname,
+                thought_signature: psig,
+            }) => {
+                let IrStreamEvent::ToolCallStart {
+                    id,
+                    name,
+                    thought_signature,
+                } = incoming
+                else {
+                    unreachable!("incoming is ToolCallStart");
+                };
+                let merged = IrStreamEvent::ToolCallStart {
+                    id: if id.is_empty() { pid } else { id },
+                    name: if name.is_empty() { pname } else { name },
+                    thought_signature: thought_signature.or(psig),
+                };
+                if let IrStreamEvent::ToolCallStart { id, name, .. } = &merged
+                    && (id.is_empty() || name.is_empty())
+                {
+                    self.pending = Some(merged);
+                    Vec::new()
+                } else {
+                    vec![merged]
+                }
+            }
+            Some(other) => {
+                self.pending = Some(incoming);
+                vec![other]
+            }
+            None => {
+                if let IrStreamEvent::ToolCallStart { id, name, .. } = &incoming
+                    && (id.is_empty() || name.is_empty())
+                {
+                    self.pending = Some(incoming);
+                    Vec::new()
+                } else {
+                    vec![incoming]
+                }
+            }
+        }
+    }
+}
+
 /// Encode one IR event into the target dialect's SSE shape.
 pub fn encode_stream_event(wire: Wire, ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     match ev {

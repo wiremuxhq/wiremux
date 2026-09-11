@@ -14,7 +14,7 @@ pub use ir::{
 pub use map::{MapError, decode, encode};
 pub use stream::{
     MAX_CONTENT_BLOCK_INDEX, MAX_SSE_PENDING, MAX_TOOL_CALL_INDEX, RawSse, SseFrameReader,
-    decode_stream_event, decode_stream_events, encode_stream_event,
+    ToolCallAssembler, decode_stream_event, decode_stream_events, encode_stream_event,
 };
 pub use wiremux_auth::VERSION;
 pub use wiremux_auth::{
