@@ -20,7 +20,9 @@ use serde_json::Value;
 use crate::cli::{parse_listen, proxy_token, upstream_url_for_model};
 use crate::ir::{IrStreamEvent, LossReport};
 use crate::map::{decode, encode};
-use crate::stream::{RawSse, SseFrameReader, decode_stream_events, encode_stream_event};
+use crate::stream::{
+    RawSse, SseFrameReader, ToolCallAssembler, decode_stream_events, encode_stream_event,
+};
 
 type ProxyBody = UnsyncBoxBody<Bytes, Infallible>;
 
@@ -375,6 +377,7 @@ fn map_sse_stream(
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
         let mut reader = SseFrameReader::new();
+        let mut assembler = ToolCallAssembler::new();
         while let Some(item) = stream.next().await {
             let bytes = match item {
                 Ok(b) => b,
@@ -396,12 +399,19 @@ fn map_sse_stream(
                     return;
                 }
             };
-            if !push_mapped_frames(&state, target, &tx, frames).await {
+            if !push_mapped_frames(&state, target, &tx, frames, &mut assembler).await {
                 return;
             }
         }
         if let Some(last) = reader.drain() {
-            let _ = push_mapped_frames(&state, target, &tx, vec![last]).await;
+            let _ = push_mapped_frames(&state, target, &tx, vec![last], &mut assembler).await;
+        }
+        for ev in assembler.flush() {
+            if let Ok(mapped) = encode_stream_event(state.from, &ev) {
+                let _ = tx
+                    .send(Ok(Frame::data(Bytes::from(format_sse(&mapped)))))
+                    .await;
+            }
         }
     });
     let body_stream = futures_util::stream::unfold(rx, |mut rx| async move {
@@ -419,11 +429,12 @@ async fn push_mapped_frames(
     target: Wire,
     tx: &tokio::sync::mpsc::Sender<Result<Frame<Bytes>, Infallible>>,
     frames: Vec<RawSse>,
+    assembler: &mut ToolCallAssembler,
 ) -> bool {
     for raw in frames {
         match decode_stream_events(target, &raw, &state.profile) {
             Ok(events) => {
-                for ev in events {
+                for ev in events.into_iter().flat_map(|ev| assembler.push(ev)) {
                     match encode_stream_event(state.from, &ev) {
                         Ok(mapped) => {
                             if tx

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use wiremux::{
-    IrStreamEvent, MapError, RawSse, ResolvedProfile, Wire, decode_stream_event,
+    IrStreamEvent, MapError, RawSse, ResolvedProfile, ToolCallAssembler, Wire, decode_stream_event,
     decode_stream_events, encode_stream_event, parse_profile_str,
 };
 
@@ -1001,6 +1001,41 @@ fn chat_tool_start_with_args_keeps_bytes() {
             IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"#
         )),
         "fan-out must emit ArgDelta, got {all:?}"
+    );
+}
+
+#[test]
+fn chat_id_then_name_assembles_one_start() {
+    let id_only = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":""}}]}}]}"#.into(),
+    };
+    let name_only = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"lookup"}}]}}]}"#.into(),
+    };
+    let mut asm = ToolCallAssembler::new();
+    let first = decode_stream_events(Wire::ChatCompletions, &id_only, &chat_profile()).expect("id");
+    let mut out = Vec::new();
+    for ev in first {
+        out.extend(asm.push(ev));
+    }
+    assert!(
+        out.is_empty(),
+        "id-only start must wait for the name, got {out:?}"
+    );
+    let second =
+        decode_stream_events(Wire::ChatCompletions, &name_only, &chat_profile()).expect("name");
+    for ev in second {
+        out.extend(asm.push(ev));
+    }
+    assert_eq!(out.len(), 1, "must merge to one start, got {out:?}");
+    assert!(
+        matches!(
+            &out[0],
+            IrStreamEvent::ToolCallStart { id, name, .. } if id == "call_1" && name == "lookup"
+        ),
+        "merged start, got {out:?}"
     );
 }
 
