@@ -20,6 +20,7 @@ default = ["proxy"]
 # default-features = false to stay on maps + profile types only.
 proxy = [
     "dep:bytes",
+    "dep:futures-util",
     "dep:http",
     "dep:http-body-util",
     "dep:hyper",
@@ -29,6 +30,7 @@ proxy = [
 [dependencies]
 bytes = { version = "1", optional = true }
 clap = { version = "4.5", features = ["derive"] }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 http = { version = "1.5", optional = true }
 http-body-util = { version = "0.1.5", optional = true }
 hyper = { version = "1.11.1", optional = true, features = ["http1", "server"] }
