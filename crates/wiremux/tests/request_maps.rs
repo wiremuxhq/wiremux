@@ -640,10 +640,14 @@ fn gemini_thinking_config_round_trips() {
     let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let tc = body
-        .get("thinkingConfig")
-        .expect("thinkingConfig should be present");
+        .pointer("/generationConfig/thinkingConfig")
+        .expect("thinkingConfig should be nested under generationConfig");
     assert_eq!(tc["includeThoughts"], true);
     assert_eq!(tc["thinkingBudget"], 24576);
+    assert!(
+        body.get("thinkingConfig").is_none(),
+        "must not emit top-level thinkingConfig: {body}"
+    );
 }
 
 #[test]
@@ -657,6 +661,10 @@ fn gemini_thinking_config_absent_is_not_invented() {
     assert!(
         body.get("thinkingConfig").is_none(),
         "must not invent thinkingConfig: {body}"
+    );
+    assert!(
+        body.pointer("/generationConfig/thinkingConfig").is_none(),
+        "must not invent nested thinkingConfig: {body}"
     );
 }
 
@@ -1589,9 +1597,15 @@ fn gemini_thinking_config_survives_reasoning_sampling_fields() {
     });
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
-    let tc = body.get("thinkingConfig").expect("thinkingConfig");
+    let tc = body
+        .pointer("/generationConfig/thinkingConfig")
+        .expect("thinkingConfig should be nested under generationConfig");
     assert_eq!(tc.get("includeThoughts"), Some(&Value::Bool(true)));
     assert_eq!(tc.get("thinkingBudget"), Some(&serde_json::json!(24576)));
+    assert!(
+        body.get("thinkingConfig").is_none(),
+        "must not emit top-level thinkingConfig: {body}"
+    );
     assert!(
         loss_dropped(&report, "sampling.reasoning_effort"),
         "Gemini effort drop missing, got {report:?}"

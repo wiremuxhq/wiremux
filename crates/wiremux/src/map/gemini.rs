@@ -351,6 +351,16 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if !s.stop.is_empty() {
         cfg["stopSequences"] = json!(s.stop);
     }
+    if s.include_thoughts.is_some() || s.thinking_budget.is_some() {
+        let mut tc = json!({});
+        if let Some(include) = s.include_thoughts {
+            tc["includeThoughts"] = json!(include);
+        }
+        if let Some(budget) = s.thinking_budget {
+            tc["thinkingBudget"] = json!(budget);
+        }
+        cfg["thinkingConfig"] = tc;
+    }
     if cfg.as_object().is_some_and(|o| !o.is_empty()) {
         body["generationConfig"] = cfg;
     }
@@ -365,16 +375,6 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(stream) = s.stream {
         body["stream"] = json!(stream);
-    }
-    if s.include_thoughts.is_some() || s.thinking_budget.is_some() {
-        let mut tc = json!({});
-        if let Some(include) = s.include_thoughts {
-            tc["includeThoughts"] = json!(include);
-        }
-        if let Some(budget) = s.thinking_budget {
-            tc["thinkingBudget"] = json!(budget);
-        }
-        body["thinkingConfig"] = tc;
     }
     if s.reasoning_effort
         .as_deref()
