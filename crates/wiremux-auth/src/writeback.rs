@@ -7,7 +7,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::AuthError;
 use crate::exchange::TokenExchangeResponse;
-use crate::helpers::{MAX_CREDS_BYTES, expand_tilde};
+use crate::helpers::{MAX_CREDS_BYTES, resolve_creds_path};
 use crate::profile::{CredsFormat, ExpiresUnit, OauthPack};
 
 /// Pointers and token values applied during fail-closed write-back.
@@ -212,7 +212,7 @@ pub async fn persist_login_tokens(
         .creds_path
         .as_deref()
         .ok_or_else(|| AuthError::MissingField("oauth.creds_path".into()))?;
-    let path = expand_tilde(raw);
+    let path = resolve_creds_path(raw)?;
     let existing = if path.is_file() {
         std::fs::read_to_string(&path)
             .ok()
@@ -264,7 +264,7 @@ pub async fn remove_store_entry(oauth: &OauthPack) -> Result<(), AuthError> {
         .creds_path
         .as_deref()
         .ok_or_else(|| AuthError::MissingField("oauth.creds_path".into()))?;
-    let path = expand_tilde(raw);
+    let path = resolve_creds_path(raw)?;
     if !path.is_file() {
         return Err(AuthError::TokenProvider(
             "credentials file is missing; nothing to remove".into(),
@@ -847,8 +847,8 @@ mod tests {
 
     #[tokio::test]
     async fn persist_login_tokens_writes_oidc_named_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("auth-openai.json");
+        let home = crate::isolated_home::IsolatedHome::new();
+        let path = home.path().join("auth-openai.json");
         let oauth = crate::parse_profile_str(&format!(
             r#"
 schema_version = 1
@@ -914,8 +914,8 @@ login = "none"
 
     #[tokio::test]
     async fn remove_auth_file_entry_leaves_sibling() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("auth-openai.json");
+        let home = crate::isolated_home::IsolatedHome::new();
+        let path = home.path().join("auth-openai.json");
         std::fs::write(
             &path,
             serde_json::to_string(&serde_json::json!({
@@ -936,8 +936,8 @@ login = "none"
 
     #[tokio::test]
     async fn remove_auth_file_entry_deletes_file_when_last() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("auth-openai.json");
+        let home = crate::isolated_home::IsolatedHome::new();
+        let path = home.path().join("auth-openai.json");
         std::fs::write(
             &path,
             serde_json::to_string(&serde_json::json!({
@@ -954,8 +954,8 @@ login = "none"
 
     #[tokio::test]
     async fn remove_auth_file_entry_fails_closed_on_corrupt_json() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("auth-openai.json");
+        let home = crate::isolated_home::IsolatedHome::new();
+        let path = home.path().join("auth-openai.json");
         std::fs::write(&path, "not-json").unwrap();
         let err = remove_store_entry(&oidc_pack(&path))
             .await
@@ -969,8 +969,8 @@ login = "none"
 
     #[tokio::test]
     async fn persist_login_tokens_writes_copilot_hosts_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("hosts.json");
+        let home = crate::isolated_home::IsolatedHome::new();
+        let path = home.path().join("hosts.json");
         let oauth = crate::parse_profile_str(&format!(
             r#"
 schema_version = 1
@@ -999,5 +999,88 @@ login = "none"
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(doc["github.com"]["oauth_token"].as_str(), Some("ghu_new"));
         assert!(doc.get("access_token").is_none());
+    }
+
+    #[tokio::test]
+    async fn persist_login_tokens_refuses_parent_dir() {
+        let _home = crate::isolated_home::IsolatedHome::new();
+        let oauth = crate::parse_profile_str(
+            r#"
+schema_version = 1
+id = "escape-home"
+[oauth]
+token_url = "https://auth.example.invalid/token"
+authorize_url = "https://auth.example.invalid/authorize"
+client_id = "wiremux-cli"
+creds_format = "oidc-auth-json"
+creds_path = "~/ok/../escaped.json"
+login = "none"
+"#,
+        )
+        .unwrap()
+        .oauth
+        .unwrap();
+        let tokens = TokenExchangeResponse {
+            access_token: "new-access".into(),
+            refresh_token: Some("new-rt".into()),
+            expires_in: Some(60),
+            token_type: None,
+            scope: None,
+        };
+        let err = persist_login_tokens(&oauth, &tokens)
+            .await
+            .expect_err("parent dir must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("oauth.creds_path"),
+            "error must name oauth.creds_path, got {msg}"
+        );
+        assert!(
+            msg.to_ascii_lowercase().contains("home"),
+            "error must say path must stay under home, got {msg}"
+        );
+        let escaped = crate::helpers::expand_tilde("~/ok/../escaped.json");
+        assert!(
+            !escaped.exists(),
+            "must not create_dir_all or write across .."
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_login_tokens_writes_under_isolated_home() {
+        let home = crate::isolated_home::IsolatedHome::new();
+        let oauth = crate::parse_profile_str(
+            r#"
+schema_version = 1
+id = "under-home"
+[oauth]
+token_url = "https://auth.example.invalid/token"
+authorize_url = "https://auth.example.invalid/authorize"
+client_id = "wiremux-cli"
+creds_format = "oidc-auth-json"
+creds_path = "~/.config/wiremux/auth-openai.json"
+login = "none"
+"#,
+        )
+        .unwrap()
+        .oauth
+        .unwrap();
+        let tokens = TokenExchangeResponse {
+            access_token: "new-access".into(),
+            refresh_token: Some("new-rt".into()),
+            expires_in: Some(60),
+            token_type: None,
+            scope: None,
+        };
+        persist_login_tokens(&oauth, &tokens)
+            .await
+            .expect("path under IsolatedHome must write");
+        let path = home.path().join(".config/wiremux/auth-openai.json");
+        assert!(path.is_file(), "expected write at {}", path.display());
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            doc["https://auth.example.invalid::wiremux-cli"]["key"].as_str(),
+            Some("new-access")
+        );
     }
 }

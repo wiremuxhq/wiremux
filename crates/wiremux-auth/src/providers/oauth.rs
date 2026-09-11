@@ -14,9 +14,10 @@ use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
     AUTH_LOCK_TIMEOUT, InFlight, cached_token_on_lock_failure, duration_from_expires_in_secs,
-    expand_tilde, format_oauth_http_error, is_token_rotation_error, lead_or_follow,
-    oauth_http_client, parse_rfc3339, read_oauth_body, redact_url_origin,
-    remaining_from_system_time, sanitize_oauth_error_body, try_acquire_refresh_lock,
+    expand_tilde, format_oauth_http_error, is_token_rotation_error, jail_creds_path,
+    lead_or_follow, oauth_http_client, parse_rfc3339, read_oauth_body, redact_url_origin,
+    remaining_from_system_time, resolve_creds_path, sanitize_oauth_error_body,
+    try_acquire_refresh_lock,
 };
 use crate::keychain_guard::keychain_disabled;
 use crate::profile::{
@@ -676,14 +677,15 @@ fn parse_token_response(
 
 fn load_credentials(oauth: &OauthPack, explicit: Option<&Path>) -> Result<Loaded, AuthError> {
     if let Some(path) = explicit {
+        let path = jail_creds_path(path)?;
         if path.is_file() {
-            return load_from_file(oauth, path);
+            return load_from_file(oauth, &path);
         }
         return load_from_env(oauth)?.ok_or_else(|| missing_creds(oauth));
     }
 
     if let Some(raw) = oauth.creds_path.as_deref() {
-        let path = expand_tilde(raw);
+        let path = resolve_creds_path(raw)?;
         if path.is_file() {
             return load_from_file(oauth, &path);
         }
@@ -699,6 +701,8 @@ fn load_credentials(oauth: &OauthPack, explicit: Option<&Path>) -> Result<Loaded
 }
 
 fn load_from_file(oauth: &OauthPack, path: &Path) -> Result<Loaded, AuthError> {
+    let path = jail_creds_path(path)?;
+    let path = path.as_path();
     let meta = std::fs::metadata(path).map_err(|e| AuthError::io(Some(path.to_path_buf()), e))?;
     if meta.len() > crate::helpers::MAX_CREDS_BYTES {
         return Err(AuthError::TokenProvider(format!(
@@ -1054,6 +1058,7 @@ fn sanitize_lock_component(s: &str) -> String {
 }
 
 fn absolute_write_back_path(path: &Path) -> Option<PathBuf> {
+    let path = jail_creds_path(path).ok()?;
     if path.as_os_str().is_empty() {
         return None;
     }
@@ -1061,13 +1066,13 @@ fn absolute_write_back_path(path: &Path) -> Option<PathBuf> {
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir));
     if path.exists()
-        && let Ok(canon) = std::fs::canonicalize(path)
+        && let Ok(canon) = std::fs::canonicalize(&path)
     {
         return Some(canon);
     }
     let joined = match std::env::current_dir() {
-        Ok(cwd) => cwd.join(path),
-        Err(_) if path.is_absolute() && !has_parent => return Some(path.to_path_buf()),
+        Ok(cwd) => cwd.join(&path),
+        Err(_) if path.is_absolute() && !has_parent => return Some(path),
         Err(_) => return None,
     };
     if let Ok(canon) = std::fs::canonicalize(&joined) {

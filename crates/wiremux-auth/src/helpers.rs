@@ -2,7 +2,7 @@
 
 use std::future::Future;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -414,6 +414,45 @@ pub(crate) fn expand_tilde(path: &str) -> PathBuf {
         return home.join(rest);
     }
     PathBuf::from(path)
+}
+
+/// Expand `~` / relative paths, then refuse anything that leaves `$HOME`.
+pub(crate) fn resolve_creds_path(raw: &str) -> Result<PathBuf, AuthError> {
+    jail_creds_path(&expand_tilde(raw))
+}
+
+/// Refuse `..` and any path that is not under `$HOME` / IsolatedHome.
+pub(crate) fn jail_creds_path(path: &Path) -> Result<PathBuf, AuthError> {
+    if path.as_os_str().is_empty() || has_parent_dir(path) {
+        return Err(creds_path_escapes_home());
+    }
+    let home = home_dir().filter(|h| !h.as_os_str().is_empty());
+    let Some(home) = home else {
+        return Err(creds_path_escapes_home());
+    };
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        home.join(path)
+    };
+    if has_parent_dir(&resolved) || !path_is_under_home(&resolved, &home) {
+        return Err(creds_path_escapes_home());
+    }
+    Ok(resolved)
+}
+
+fn has_parent_dir(path: &Path) -> bool {
+    path.components().any(|c| matches!(c, Component::ParentDir))
+}
+
+fn path_is_under_home(path: &Path, home: &Path) -> bool {
+    let path: Vec<Component<'_>> = path.components().collect();
+    let home: Vec<Component<'_>> = home.components().collect();
+    !home.is_empty() && path.starts_with(&home)
+}
+
+fn creds_path_escapes_home() -> AuthError {
+    AuthError::TokenProvider("oauth.creds_path must stay under home".into())
 }
 
 pub(crate) fn home_dir() -> Option<PathBuf> {
