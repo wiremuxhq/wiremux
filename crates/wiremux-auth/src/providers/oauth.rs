@@ -22,8 +22,10 @@ use crate::keychain_guard::keychain_disabled;
 use crate::profile::{
     CredsFormat, ExpiresUnit, OauthPack, ResolvedProfile, TokenRequestFormat, TokenResponse,
 };
+#[cfg(target_os = "macos")]
+use crate::writeback::apply_tokens;
 use crate::writeback::{
-    TokenWrite, apply_tokens, json_string, json_u64, pointer_get, read_creds_string, write_tokens,
+    TokenWrite, json_string, json_u64, pointer_get, read_creds_string, write_tokens,
 };
 
 const DEFAULT_LIFETIME_SECS: u64 = 3600;
@@ -499,12 +501,9 @@ fn refresh_request_body(oauth: &OauthPack, refresh_token: &str) -> BTreeMap<Stri
     body
 }
 
-fn token_endpoint_allowed(url: &str) -> bool {
-    let url = url.trim();
-    if url.len() >= 8 && url[..8].eq_ignore_ascii_case("https://") {
-        return true;
-    }
-    crate::profile::is_loopback_http(url)
+fn https_token_url(url: &str) -> Option<reqwest::Url> {
+    let parsed = reqwest::Url::parse(url.trim()).ok()?;
+    (parsed.scheme() == "https").then_some(parsed)
 }
 
 async fn token_post(
@@ -514,14 +513,27 @@ async fn token_post(
     body: &BTreeMap<String, String>,
     format: TokenRequestFormat,
 ) -> Result<reqwest::Response, AuthError> {
-    if !token_endpoint_allowed(url) {
-        return Err(AuthError::TokenProvider(
-            "token_url must be https (or loopback http)".into(),
-        ));
+    if let Some(https) = https_token_url(url) {
+        return send_token_post(http, oauth, https, body, format).await;
     }
-    // IsolatedHome mocks speak HTTP on 127.0.0.1. refuse.rs already
-    // rejected non-loopback http token_url at profile load.
-    // codeql[rust/cleartext-transmission]
+    #[cfg(any(test, feature = "test-util"))]
+    if crate::profile::is_loopback_http(url) {
+        let parsed = reqwest::Url::parse(url.trim())
+            .map_err(|e| AuthError::TokenProvider(format!("token_url is not a valid URL: {e}")))?;
+        return send_token_post(http, oauth, parsed, body, format).await;
+    }
+    Err(AuthError::TokenProvider(
+        "token_url must be https (or loopback http)".into(),
+    ))
+}
+
+async fn send_token_post(
+    http: &reqwest::Client,
+    oauth: &OauthPack,
+    url: reqwest::Url,
+    body: &BTreeMap<String, String>,
+    format: TokenRequestFormat,
+) -> Result<reqwest::Response, AuthError> {
     let mut req = http.post(url);
     for (k, v) in &oauth.token_headers {
         req = req.header(k.as_str(), v.as_str());
@@ -1408,12 +1420,15 @@ access_env = "WIREMUX_TEST_ACCESS"
 
     #[test]
     fn token_endpoint_https_or_loopback_only() {
-        assert!(token_endpoint_allowed("https://auth.example.invalid/token"));
-        assert!(token_endpoint_allowed("HTTPS://auth.example.invalid/token"));
-        assert!(token_endpoint_allowed("http://127.0.0.1:9/token"));
-        assert!(token_endpoint_allowed("http://localhost/token"));
-        assert!(!token_endpoint_allowed("http://192.0.2.1/token"));
-        assert!(!token_endpoint_allowed("http://example.invalid/token"));
+        assert!(https_token_url("https://auth.example.invalid/token").is_some());
+        assert!(https_token_url("HTTPS://auth.example.invalid/token").is_some());
+        assert!(https_token_url("http://127.0.0.1:9/token").is_none());
+        assert!(crate::profile::is_loopback_http("http://127.0.0.1:9/token"));
+        assert!(crate::profile::is_loopback_http("http://localhost/token"));
+        assert!(!crate::profile::is_loopback_http("http://192.0.2.1/token"));
+        assert!(!crate::profile::is_loopback_http(
+            "http://example.invalid/token"
+        ));
     }
 
     #[test]
