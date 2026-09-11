@@ -309,6 +309,7 @@ fn encode_parts(parts: &[IrPart]) -> Vec<Value> {
                     "inlineData": { "mimeType": media_type, "data": data }
                 }));
             }
+            IrPart::Raw { .. } => {}
             IrPart::ImageUrl(url) => {
                 if let Some(rest) = url.strip_prefix("data:")
                     && let Some((mime, b64)) = rest.split_once(";base64,")

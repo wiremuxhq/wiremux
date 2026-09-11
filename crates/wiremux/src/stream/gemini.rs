@@ -112,10 +112,9 @@ fn map_finish(reason: &str) -> &'static str {
     match reason {
         "STOP" => "stop",
         "MAX_TOKENS" => "max_tokens",
-        "SAFETY" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "IMAGE_SAFETY" | "LANGUAGE" => {
-            "content_filter"
-        }
-        "MALFORMED_FUNCTION_CALL" => "tool_calls",
+        "SAFETY" | "RECITATION" | "OTHER" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII"
+        | "IMAGE_SAFETY" | "LANGUAGE" => "content_filter",
+        "MALFORMED_FUNCTION_CALL" => "malformed_function_call",
         other if other.eq_ignore_ascii_case("stop") => "stop",
         _ => "stop",
     }

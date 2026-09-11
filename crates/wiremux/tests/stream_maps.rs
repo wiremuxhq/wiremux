@@ -111,9 +111,9 @@ fn anthropic_tool_use_and_thinking_golden() {
     assert_eq!(args, r#"{"location":"San Francisco"}"#);
 
     assert!(
-        events
-            .iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "tool_use")),
+        events.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "tool_calls")
+        ),
         "message_delta stop_reason must become FinishReason, got {events:?}"
     );
     assert!(
@@ -552,6 +552,52 @@ fn stream_function_call_thought_signature_round_trips_on_next_request() {
 }
 
 #[test]
+fn gemini_safety_finish_reasons_are_content_filter() {
+    for reason in ["RECITATION", "SPII", "OTHER", "SAFETY"] {
+        let raw = RawSse {
+            event: None,
+            data: format!(r#"{{"candidates":[{{"finishReason":"{reason}"}}]}}"#),
+        };
+        let ev = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
+            .expect("decode")
+            .expect("event");
+        assert!(
+            matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "content_filter"),
+            "{reason} must be content_filter, got {ev:?}"
+        );
+    }
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL"}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode")
+        .expect("event");
+    assert!(
+        matches!(
+            ev,
+            IrStreamEvent::FinishReason { ref reason } if reason == "malformed_function_call"
+        ),
+        "MALFORMED_FUNCTION_CALL must not be tool_calls, got {ev:?}"
+    );
+}
+
+#[test]
+fn chat_eos_finish_reason_is_stop() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{},"finish_reason":"eos"}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode")
+        .expect("event");
+    assert!(
+        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "stop"),
+        "eos must be stop, got {ev:?}"
+    );
+}
+
+#[test]
 fn chat_prompt_cache_hit_tokens_alias_is_read() {
     let raw = RawSse {
         event: None,
@@ -759,7 +805,7 @@ fn message_delta_stop_reason_wins_over_usage() {
         .expect("decode combined message_delta")
         .expect("event");
     assert!(
-        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "tool_use"),
+        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "tool_calls"),
         "stop_reason must not be dropped for usage, got {ev:?}"
     );
 

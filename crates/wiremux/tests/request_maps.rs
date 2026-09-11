@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use wiremux::{
-    IrItem, IrTool, LossAction, MapError, ResolvedProfile, Wire, decode, encode, parse_profile_str,
+    IrItem, IrPart, IrRequest, IrSampling, IrTool, LossAction, MapError, ResolvedProfile, Wire,
+    decode, encode, parse_profile_str,
 };
 
 fn golden(name: &str) -> Vec<u8> {
@@ -728,5 +729,221 @@ fn stream_absent_is_not_invented() {
     assert!(
         body.get("stream").is_none(),
         "must not invent stream when the source omitted it: {body}"
+    );
+}
+
+#[test]
+fn replay_thinking_and_signature_in_assistant_json() {
+    let req = br#"{
+        "model": "claude-opus-4-6",
+        "messages": [{
+            "role": "assistant",
+            "content": [
+                { "type": "thinking", "thinking": "I should greet them", "signature": "sig_abc" },
+                { "type": "text", "text": "Hello" }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    assert!(
+        content.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("thinking")
+                && block.get("thinking").and_then(Value::as_str) == Some("I should greet them")
+                && block.get("signature").and_then(Value::as_str) == Some("sig_abc")
+        }),
+        "replay JSON must include thinking + signature, got {body}"
+    );
+}
+
+#[test]
+fn unsigned_thinking_is_not_replayed_on_messages() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![IrItem::Assistant {
+            parts: vec![
+                IrPart::Thinking {
+                    text: "scratch".into(),
+                    signature: None,
+                },
+                IrPart::Text("Hello".into()),
+            ],
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    assert!(
+        content
+            .iter()
+            .all(|block| block.get("type").and_then(Value::as_str) != Some("thinking")),
+        "unsigned thinking must not be replayed, got {body}"
+    );
+    assert!(
+        content
+            .iter()
+            .any(|block| block.get("text").and_then(Value::as_str) == Some("Hello")),
+        "visible text must stay, got {body}"
+    );
+}
+
+#[test]
+fn replay_redacted_thinking_in_assistant_json() {
+    let req = br#"{
+        "model": "claude-opus-4-6",
+        "messages": [{
+            "role": "assistant",
+            "content": [
+                { "type": "redacted_thinking", "data": "enc_abc" },
+                { "type": "text", "text": "Hello" }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    assert!(
+        content.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("redacted_thinking")
+                && block.get("data").and_then(Value::as_str) == Some("enc_abc")
+        }),
+        "replay JSON must include redacted_thinking, got {body}"
+    );
+}
+
+#[test]
+fn chat_skips_thinking_and_protocol_parts() {
+    let ir = IrRequest {
+        model: "grok-4".into(),
+        items: vec![IrItem::Assistant {
+            parts: vec![
+                IrPart::Thinking {
+                    text: "plan".into(),
+                    signature: Some("sig".into()),
+                },
+                IrPart::Text("Hello".into()),
+            ],
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = &body["messages"][0]["content"];
+    assert_eq!(
+        content, "Hello",
+        "Chat must send only visible text, got {body}"
+    );
+}
+
+#[test]
+fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
+    let ir = IrRequest {
+        model: "gpt-5".into(),
+        items: vec![IrItem::Assistant {
+            parts: vec![
+                IrPart::Thinking {
+                    text: "secret plan".into(),
+                    signature: None,
+                },
+                IrPart::Text("Hello".into()),
+            ],
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("include"),
+        Some(&serde_json::json!(["reasoning.encrypted_content"])),
+        "Responses must request encrypted reasoning, got {body}"
+    );
+    let dumped = body.to_string();
+    assert!(
+        !dumped.contains("secret plan"),
+        "unsigned thinking must not become output_text, got {body}"
+    );
+}
+
+#[test]
+fn chat_stream_true_requests_include_usage() {
+    let req = br#"{
+        "model": "grok-4",
+        "stream": true,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/stream_options/include_usage"),
+        Some(&Value::Bool(true)),
+        "stream:true must request usage, got {body}"
+    );
+}
+
+#[test]
+fn messages_whitespace_only_assistant_becomes_dot() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![IrItem::Assistant {
+            parts: vec![IrPart::Text("\n".into())],
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("."),
+        "whitespace-only text must become '.', got {body}"
+    );
+}
+
+#[test]
+fn chat_data_url_becomes_image_base64_for_gemini() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "see" },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(p, IrPart::ImageBase64 { media_type, .. } if media_type == "image/png"))
+        )),
+        "data URL must become ImageBase64, got {:?}",
+        ir.items
+    );
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/1/inlineData/mimeType")
+            .and_then(Value::as_str),
+        Some("image/png"),
+        "Gemini must get inlineData, got {body}"
     );
 }

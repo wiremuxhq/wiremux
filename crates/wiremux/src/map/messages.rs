@@ -102,6 +102,10 @@ fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) {
                     .to_string(),
                 signature: str_field(block, "signature"),
             }),
+            "redacted_thinking" => parts.push(IrPart::Raw {
+                type_name: "redacted_thinking".into(),
+                raw: block.clone(),
+            }),
             _ => {
                 if let Some(part) = decode_content_part(block) {
                     parts.push(part);
@@ -470,6 +474,9 @@ fn encode_assistant(
             _ => break,
         }
     }
+    if content.is_empty() {
+        content.push(json!({"type": "text", "text": "."}));
+    }
     (
         json!({
             "role": "assistant",
@@ -532,34 +539,39 @@ fn reasoning_block(
 }
 
 fn encode_user_parts(parts: &[IrPart]) -> Vec<Value> {
-    if parts.is_empty() {
-        return vec![json!({"type": "text", "text": ""})];
+    let out: Vec<Value> = parts.iter().filter_map(encode_part).collect();
+    if out.is_empty() {
+        vec![json!({"type": "text", "text": "."})]
+    } else {
+        out
     }
-    parts.iter().map(encode_part).collect()
 }
 
 fn encode_assistant_parts(parts: &[IrPart]) -> Vec<Value> {
-    parts.iter().map(encode_part).collect()
+    parts.iter().filter_map(encode_part).collect()
 }
 
-fn encode_part(part: &IrPart) -> Value {
+fn encode_part(part: &IrPart) -> Option<Value> {
     match part {
-        IrPart::Text(text) => json!({"type": "text", "text": text}),
-        IrPart::ImageUrl(url) => json!({
+        IrPart::Text(text) if text.trim().is_empty() => None,
+        IrPart::Text(text) => Some(json!({"type": "text", "text": text})),
+        IrPart::ImageUrl(url) => Some(json!({
             "type": "image",
             "source": {"type": "url", "url": url}
-        }),
-        IrPart::ImageBase64 { media_type, data } => json!({
+        })),
+        IrPart::ImageBase64 { media_type, data } => Some(json!({
             "type": "image",
             "source": {"type": "base64", "media_type": media_type, "data": data}
-        }),
+        })),
         IrPart::Thinking { text, signature } => {
-            let mut block = json!({"type": "thinking", "thinking": text});
-            if let Some(sig) = signature {
-                block["signature"] = json!(sig);
-            }
-            block
+            let sig = signature.as_deref().filter(|s| !s.is_empty())?;
+            Some(json!({
+                "type": "thinking",
+                "thinking": text,
+                "signature": sig,
+            }))
         }
+        IrPart::Raw { raw, .. } => Some(raw.clone()),
     }
 }
 

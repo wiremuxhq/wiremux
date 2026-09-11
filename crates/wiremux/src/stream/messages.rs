@@ -66,7 +66,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             // stop_reason only appears here; usage already arrived on message_start.
             if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str) {
                 Ok(Some(IrStreamEvent::FinishReason {
-                    reason: reason.to_string(),
+                    reason: map_stop_reason(reason).to_string(),
                 }))
             } else if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
                 Ok(Some(usage::from_anthropic(usage)))
@@ -165,4 +165,14 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         event: Some(event.into()),
         data: data.to_string(),
     })
+}
+
+fn map_stop_reason(reason: &str) -> &str {
+    match reason {
+        "refusal" => "content_filter",
+        "max_tokens" => "max_tokens",
+        "tool_use" => "tool_calls",
+        "end_turn" => "stop",
+        other => other,
+    }
 }

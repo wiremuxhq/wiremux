@@ -104,8 +104,15 @@ fn decode_part(part: &Value) -> Option<IrPart> {
                 u.as_str()
                     .map(str::to_string)
                     .or_else(|| str_field(u, "url"))
-            });
-            url.map(IrPart::ImageUrl)
+            })?;
+            if let Some((media_type, data)) = super::split_data_url(&url) {
+                Some(IrPart::ImageBase64 {
+                    media_type: media_type.to_string(),
+                    data: data.to_string(),
+                })
+            } else {
+                Some(IrPart::ImageUrl(url))
+            }
         }
         "thinking" => Some(IrPart::Thinking {
             text: part
@@ -309,16 +316,20 @@ fn function_call_json(call_id: &str, name: &str, arguments: &str) -> Value {
 }
 
 fn encode_parts(parts: &[IrPart]) -> Value {
-    if parts.is_empty() {
+    let visible: Vec<&IrPart> = parts
+        .iter()
+        .filter(|part| !matches!(part, IrPart::Thinking { .. } | IrPart::Raw { .. }))
+        .collect();
+    if visible.is_empty() {
         return Value::String(String::new());
     }
-    if parts.len() == 1
-        && let IrPart::Text(text) = &parts[0]
+    if visible.len() == 1
+        && let IrPart::Text(text) = visible[0]
     {
         return Value::String(text.clone());
     }
     Value::Array(
-        parts
+        visible
             .iter()
             .map(|part| match part {
                 IrPart::Text(text) => json!({"type": "text", "text": text}),
@@ -327,13 +338,7 @@ fn encode_parts(parts: &[IrPart]) -> Value {
                     "type": "image_url",
                     "image_url": {"url": format!("data:{media_type};base64,{data}")}
                 }),
-                IrPart::Thinking { text, signature } => {
-                    let mut obj = json!({"type": "thinking", "text": text});
-                    if let Some(sig) = signature {
-                        obj["signature"] = json!(sig);
-                    }
-                    obj
-                }
+                IrPart::Thinking { .. } | IrPart::Raw { .. } => unreachable!("filtered"),
             })
             .collect(),
     )
@@ -395,6 +400,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(stream) = s.stream {
         body["stream"] = json!(stream);
+        if stream {
+            body["stream_options"] = json!({ "include_usage": true });
+        }
     }
 }
 
