@@ -6,8 +6,9 @@ use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
 use crate::error::AuthError;
-use crate::helpers::MAX_CREDS_BYTES;
-use crate::profile::ExpiresUnit;
+use crate::exchange::TokenExchangeResponse;
+use crate::helpers::{MAX_CREDS_BYTES, expand_tilde};
+use crate::profile::{CredsFormat, ExpiresUnit, OauthPack};
 
 /// Pointers and token values applied during fail-closed write-back.
 pub(crate) struct TokenWrite<'a> {
@@ -18,6 +19,55 @@ pub(crate) struct TokenWrite<'a> {
     pub access_token: &'a str,
     pub refresh_token: Option<&'a str>,
     pub expires_in_secs: u64,
+}
+
+/// Persist tokens from a login exchange.
+///
+/// Creates the credential file when missing. Refuses to invent a Claude
+/// credentials document from scratch (env-only stays env-only).
+pub async fn persist_login_tokens(
+    oauth: &OauthPack,
+    tokens: &TokenExchangeResponse,
+) -> Result<(), AuthError> {
+    if tokens.access_token.trim().is_empty() {
+        return Err(AuthError::EmptyWriteRefused);
+    }
+    if matches!(oauth.creds_format, Some(CredsFormat::ClaudeCredentials)) {
+        return Err(AuthError::TokenProvider(
+            "refusing to invent a Claude credentials file; run the setup-token flow".into(),
+        ));
+    }
+    let raw = oauth
+        .creds_path
+        .as_deref()
+        .ok_or_else(|| AuthError::MissingField("oauth.creds_path".into()))?;
+    let path = expand_tilde(raw);
+    let write = TokenWrite {
+        access_ptr: oauth.access_token_ptr.as_deref().unwrap_or("/access_token"),
+        refresh_ptr: oauth
+            .refresh_token_ptr
+            .as_deref()
+            .or(Some("/refresh_token")),
+        expires_ptr: oauth.expires_ptr.as_deref().or(Some("/expires_in")),
+        expires_unit: oauth.expires_unit.unwrap_or(ExpiresUnit::S),
+        access_token: &tokens.access_token,
+        refresh_token: tokens.refresh_token.as_deref(),
+        expires_in_secs: tokens.expires_in.unwrap_or(3600),
+    };
+    if path.is_file() {
+        return write_tokens(&path, &write).await;
+    }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| AuthError::io(Some(parent.to_path_buf()), e))?;
+    }
+    let mut doc = serde_json::json!({});
+    apply_tokens(&mut doc, &write)?;
+    let updated = serde_json::to_string_pretty(&doc)?;
+    write_secret_file(&path, updated.as_bytes()).await
 }
 
 /// Read-modify-write tokens into an existing JSON object via pointers.
@@ -449,5 +499,52 @@ mod tests {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(err.is_err(), "create tmp in a 0555 dir must fail");
         assert_eq!(std::fs::read(&path).unwrap(), b"keep-me");
+    }
+
+    #[tokio::test]
+    async fn persist_login_tokens_refuses_claude_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.json");
+        let oauth = OauthPack {
+            token_url: "https://auth.example.invalid/token".into(),
+            token_url_fallback: None,
+            authorize_url: None,
+            authorize_params: Default::default(),
+            device_auth_url: None,
+            client_id: None,
+            redirect_uri: None,
+            scopes: Vec::new(),
+            list_merge: crate::profile::ListMerge::Union,
+            pkce: None,
+            refresh_grant: None,
+            refresh_body: Default::default(),
+            token_request_format: None,
+            token_headers: Default::default(),
+            creds_path: Some(path.to_string_lossy().into_owned()),
+            creds_format: Some(CredsFormat::ClaudeCredentials),
+            access_token_ptr: None,
+            refresh_token_ptr: None,
+            expires_ptr: None,
+            expires_unit: None,
+            access_env: None,
+            login: None,
+            setup_token_hint: None,
+            keychain_service: None,
+            keychain_accounts: Vec::new(),
+            token_response: None,
+        };
+        let tokens = TokenExchangeResponse {
+            access_token: "sk-new".into(),
+            refresh_token: Some("rt-new".into()),
+            expires_in: Some(60),
+            token_type: None,
+            scope: None,
+        };
+        let err = persist_login_tokens(&oauth, &tokens).await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::TokenProvider(ref msg) if msg.contains("Claude")),
+            "{err:?}"
+        );
+        assert!(!path.exists(), "must not invent a Claude credentials file");
     }
 }
