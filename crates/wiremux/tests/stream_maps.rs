@@ -101,6 +101,12 @@ fn anthropic_tool_use_and_thinking_golden() {
     assert_eq!(args, r#"{"location":"San Francisco"}"#);
 
     assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "tool_use")),
+        "message_delta stop_reason must become FinishReason, got {events:?}"
+    );
+    assert!(
         events.iter().any(|ev| matches!(ev, IrStreamEvent::Done)),
         "message_stop must map to Done, got {events:?}"
     );
@@ -416,5 +422,107 @@ fn encode_round_trip_text_and_tool_start() {
             .expect("decode start")
             .expect("start event");
         assert_eq!(back, start, "tool start round-trip {wire:?}");
+    }
+}
+
+#[test]
+fn message_delta_stop_reason_wins_over_usage() {
+    let both = RawSse {
+        event: Some("message_delta".into()),
+        data: r#"{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":67}}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Messages, &both, &messages_profile())
+        .expect("decode combined message_delta")
+        .expect("event");
+    assert!(
+        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "tool_use"),
+        "stop_reason must not be dropped for usage, got {ev:?}"
+    );
+
+    let usage_only = RawSse {
+        event: Some("message_delta".into()),
+        data: r#"{"type":"message_delta","delta":{},"usage":{"output_tokens":3}}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Messages, &usage_only, &messages_profile())
+        .expect("decode usage-only message_delta")
+        .expect("event");
+    assert!(
+        matches!(
+            ev,
+            IrStreamEvent::Usage {
+                completion_tokens: 3,
+                ..
+            }
+        ),
+        "usage-only message_delta should stay Usage, got {ev:?}"
+    );
+}
+
+#[test]
+fn responses_reasoning_delta_is_not_output_text() {
+    let ev = IrStreamEvent::ReasoningDelta {
+        text: "hidden thought".into(),
+    };
+    let raw = encode_stream_event(Wire::Responses, &ev).expect("encode reasoning");
+    assert_ne!(
+        raw.event.as_deref(),
+        Some("response.output_text.delta"),
+        "thinking must not become assistant output_text"
+    );
+    let body: Value = serde_json::from_str(&raw.data).expect("json");
+    assert_ne!(
+        body.get("type").and_then(Value::as_str),
+        Some("response.output_text.delta")
+    );
+    assert_eq!(body["item"]["type"], "reasoning");
+    assert_eq!(body["item"]["text"], "hidden thought");
+
+    let back = decode_stream_event(Wire::Responses, &raw, &responses_profile())
+        .expect("decode reasoning item")
+        .expect("event");
+    assert_eq!(back, ev, "reasoning must not rematch as TextDelta");
+}
+
+#[test]
+fn chat_tool_start_with_args_keeps_bytes() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode start+args")
+        .expect("must not drop tool-bearing frame");
+    match ev {
+        IrStreamEvent::Protocol {
+            ref item_type,
+            ref payload,
+        } => {
+            assert_eq!(item_type, "chunk");
+            assert_eq!(
+                payload["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"],
+                r#"{"q":"#
+            );
+        }
+        other => panic!("expected Protocol keeping arg bytes, got {other:?}"),
+    }
+}
+
+#[test]
+fn chat_non_function_tool_type_is_not_relabeled() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"custom","custom":{"name":"lookup","input":"{}"}}]}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode custom tool")
+        .expect("must not drop tool-bearing frame");
+    match ev {
+        IrStreamEvent::Protocol { ref payload, .. } => {
+            assert_eq!(
+                payload["choices"][0]["delta"]["tool_calls"][0]["type"],
+                "custom"
+            );
+        }
+        other => panic!("non-function type must stay Protocol, got {other:?}"),
     }
 }

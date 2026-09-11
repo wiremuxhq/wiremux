@@ -62,13 +62,13 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             Ok(Some(protocol(name, value)))
         }
         "message_delta" => {
-            if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
-                Ok(Some(usage::from_anthropic(usage)))
-            } else if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str)
-            {
+            // stop_reason only appears here; usage already arrived on message_start.
+            if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str) {
                 Ok(Some(IrStreamEvent::FinishReason {
                     reason: reason.to_string(),
                 }))
+            } else if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
+                Ok(Some(usage::from_anthropic(usage)))
             } else {
                 Ok(Some(protocol(name, value)))
             }

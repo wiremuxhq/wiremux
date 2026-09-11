@@ -35,10 +35,8 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                 payload: value.clone(),
             }));
         }
-        if let Some(call) = calls.first()
-            && let Some(ev) = decode_tool_call(call)
-        {
-            return Ok(Some(ev));
+        if let Some(call) = calls.first() {
+            return Ok(Some(decode_tool_call(call, value)));
         }
     }
 
@@ -85,18 +83,34 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     Ok(None)
 }
 
-fn decode_tool_call(call: &Value) -> Option<IrStreamEvent> {
+fn decode_tool_call(call: &Value, chunk: &Value) -> IrStreamEvent {
+    let keep = || IrStreamEvent::Protocol {
+        item_type: "chunk".into(),
+        payload: chunk.clone(),
+    };
+    if let Some(ty) = call.get("type").and_then(Value::as_str)
+        && ty != "function"
+    {
+        return keep();
+    }
     let func = call.get("function").unwrap_or(call);
     let id = str_field(call, "id");
     let name = str_field(func, "name");
+    let args = str_field(func, "arguments").filter(|s| !s.is_empty());
+    // 1:1 API cannot emit Start and ArgDelta together; keep the whole chunk.
+    if (id.is_some() || name.is_some()) && args.is_some() {
+        return keep();
+    }
     if id.is_some() || name.is_some() {
-        return Some(IrStreamEvent::ToolCallStart {
+        return IrStreamEvent::ToolCallStart {
             id: id.unwrap_or_default(),
             name: name.unwrap_or_default(),
-        });
+        };
     }
-    let args = str_field(func, "arguments").filter(|s| !s.is_empty())?;
-    Some(IrStreamEvent::ToolCallArgDelta { delta: args })
+    match args {
+        Some(delta) => IrStreamEvent::ToolCallArgDelta { delta },
+        None => keep(),
+    }
 }
 
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {

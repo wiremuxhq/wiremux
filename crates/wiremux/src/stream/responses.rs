@@ -27,6 +27,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                     name: str_field(item, "name").unwrap_or_default(),
                 }))
             }
+            Some("reasoning") => Ok(Some(decode_reasoning_item(name, value))),
             _ => Ok(Some(protocol(name, value))),
         },
         "response.output_item.done" => match item_type(value) {
@@ -57,6 +58,17 @@ fn item_type(value: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
+fn decode_reasoning_item(name: &str, value: &Value) -> IrStreamEvent {
+    let item = value.get("item").unwrap_or(value);
+    if let Some(signature) = str_field(item, "signature").filter(|s| !s.is_empty()) {
+        return IrStreamEvent::ReasoningSignature { signature };
+    }
+    if let Some(text) = str_field(item, "text").filter(|s| !s.is_empty()) {
+        return IrStreamEvent::ReasoningDelta { text };
+    }
+    protocol(name, value)
+}
+
 fn nonempty_delta(
     value: &Value,
     wrap: impl FnOnce(String) -> IrStreamEvent,
@@ -83,11 +95,11 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             }),
         ),
         IrStreamEvent::ReasoningDelta { text } => (
-            "response.output_text.delta",
+            "response.output_item.added",
             json!({
-                "type": "response.output_text.delta",
+                "type": "response.output_item.added",
                 "output_index": 0,
-                "delta": text
+                "item": { "type": "reasoning", "text": text }
             }),
         ),
         IrStreamEvent::ReasoningSignature { signature } => (
