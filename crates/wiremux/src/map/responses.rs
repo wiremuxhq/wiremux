@@ -294,12 +294,12 @@ fn encode_items(
             }
             IrItem::User { parts } => input.push(json!({
                 "role": "user",
-                "content": encode_parts(parts, true),
+                "content": encode_parts(parts, true, report),
             })),
             IrItem::Assistant { parts } => input.push(json!({
                 "type": "message",
                 "role": "assistant",
-                "content": encode_parts(parts, false),
+                "content": encode_parts(parts, false, report),
             })),
             IrItem::FunctionCall {
                 call_id,
@@ -380,11 +380,29 @@ fn encode_reasoning(encrypted: Option<&str>, summary: Option<&str>, raw: Option<
     obj
 }
 
-fn encode_parts(parts: &[IrPart], input: bool) -> Value {
+fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value {
     let text_ty = if input { "input_text" } else { "output_text" };
     let visible: Vec<&IrPart> = parts
         .iter()
-        .filter(|part| !matches!(part, IrPart::Thinking { .. } | IrPart::Raw { .. }))
+        .filter(|part| match part {
+            IrPart::Thinking { .. } => {
+                report.record(
+                    "part.thinking",
+                    LossAction::Drop,
+                    "thinking has no Responses slot",
+                );
+                false
+            }
+            IrPart::Raw { .. } => {
+                report.record(
+                    "part.raw",
+                    LossAction::Drop,
+                    "raw part has no Responses slot",
+                );
+                false
+            }
+            _ => true,
+        })
         .collect();
     if visible.len() == 1
         && let IrPart::Text(text) = visible[0]

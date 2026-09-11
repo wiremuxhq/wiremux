@@ -221,7 +221,7 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 idx += 1;
             }
             IrItem::User { parts } => {
-                messages.push(json!({"role": "user", "content": encode_parts(parts)}));
+                messages.push(json!({"role": "user", "content": encode_parts(parts, report)}));
                 idx += 1;
             }
             IrItem::Assistant { parts } => {
@@ -310,7 +310,7 @@ fn encode_assistant(
     }
     let mut msg = json!({
         "role": "assistant",
-        "content": encode_parts(parts),
+        "content": encode_parts(parts, report),
     });
     if !calls.is_empty() {
         msg["tool_calls"] = Value::Array(calls);
@@ -329,10 +329,28 @@ fn function_call_json(call_id: &str, name: &str, arguments: &str) -> Value {
     })
 }
 
-fn encode_parts(parts: &[IrPart]) -> Value {
+fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
     let visible: Vec<&IrPart> = parts
         .iter()
-        .filter(|part| !matches!(part, IrPart::Thinking { .. } | IrPart::Raw { .. }))
+        .filter(|part| match part {
+            IrPart::Thinking { .. } => {
+                report.record(
+                    "part.thinking",
+                    LossAction::Drop,
+                    "thinking has no Chat Completions slot",
+                );
+                false
+            }
+            IrPart::Raw { .. } => {
+                report.record(
+                    "part.raw",
+                    LossAction::Drop,
+                    "raw part has no Chat Completions slot",
+                );
+                false
+            }
+            _ => true,
+        })
         .collect();
     if visible.is_empty() {
         return Value::String(String::new());

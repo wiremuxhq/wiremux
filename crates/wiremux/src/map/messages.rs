@@ -409,10 +409,10 @@ fn encode_user(
     ir: &IrRequest,
     start: usize,
     parts: &[IrPart],
-    _report: &mut LossReport,
+    report: &mut LossReport,
 ) -> (Value, usize) {
     let mut consumed = 1;
-    let mut content = encode_user_parts(parts);
+    let mut content = encode_user_parts(parts, report);
     while let Some(IrItem::FunctionOutput { call_id, output }) = ir.items.get(start + consumed) {
         content.push(tool_result_block(call_id, output));
         consumed += 1;
@@ -433,7 +433,7 @@ fn encode_assistant(
     report: &mut LossReport,
 ) -> (Value, usize) {
     let mut consumed = 1;
-    let mut content = encode_assistant_parts(parts);
+    let mut content = encode_assistant_parts(parts, report);
     loop {
         match ir.items.get(start + consumed) {
             Some(IrItem::FunctionCall {
@@ -542,8 +542,11 @@ fn reasoning_block(
     Some(block)
 }
 
-fn encode_user_parts(parts: &[IrPart]) -> Vec<Value> {
-    let out: Vec<Value> = parts.iter().filter_map(encode_part).collect();
+fn encode_user_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
+    let out: Vec<Value> = parts
+        .iter()
+        .filter_map(|part| encode_part(part, report))
+        .collect();
     if out.is_empty() {
         vec![json!({"type": "text", "text": "."})]
     } else {
@@ -551,11 +554,14 @@ fn encode_user_parts(parts: &[IrPart]) -> Vec<Value> {
     }
 }
 
-fn encode_assistant_parts(parts: &[IrPart]) -> Vec<Value> {
-    parts.iter().filter_map(encode_part).collect()
+fn encode_assistant_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
+    parts
+        .iter()
+        .filter_map(|part| encode_part(part, report))
+        .collect()
 }
 
-fn encode_part(part: &IrPart) -> Option<Value> {
+fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
     match part {
         IrPart::Text(text) if text.trim().is_empty() => None,
         IrPart::Text(text) => Some(json!({"type": "text", "text": text})),
@@ -568,7 +574,14 @@ fn encode_part(part: &IrPart) -> Option<Value> {
             "source": {"type": "base64", "media_type": media_type, "data": data}
         })),
         IrPart::Thinking { text, signature } => {
-            let sig = signature.as_deref().filter(|s| !s.is_empty())?;
+            let Some(sig) = signature.as_deref().filter(|s| !s.is_empty()) else {
+                report.record(
+                    "part.thinking",
+                    LossAction::Drop,
+                    "unsigned thinking is not replayed",
+                );
+                return None;
+            };
             Some(json!({
                 "type": "thinking",
                 "thinking": text,

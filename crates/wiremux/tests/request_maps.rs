@@ -776,7 +776,7 @@ fn replay_thinking_and_signature_in_assistant_json() {
         }]
     }"#;
     let (ir, _) = decode(Wire::Messages, req).expect("decode");
-    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let content = body
         .pointer("/messages/0/content")
@@ -789,6 +789,10 @@ fn replay_thinking_and_signature_in_assistant_json() {
                 && block.get("signature").and_then(Value::as_str) == Some("sig_abc")
         }),
         "replay JSON must include thinking + signature, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "part.thinking"),
+        "signed thinking must not be recorded as dropped, got {report:?}"
     );
 }
 
@@ -808,7 +812,7 @@ fn unsigned_thinking_is_not_replayed_on_messages() {
         tools: vec![],
         sampling: IrSampling::default(),
     };
-    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let content = body
         .pointer("/messages/0/content")
@@ -825,6 +829,10 @@ fn unsigned_thinking_is_not_replayed_on_messages() {
             .iter()
             .any(|block| block.get("text").and_then(Value::as_str) == Some("Hello")),
         "visible text must stay, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.thinking"),
+        "unsigned thinking drop missing, got {report:?}"
     );
 }
 
@@ -866,18 +874,30 @@ fn chat_skips_thinking_and_protocol_parts() {
                     text: "plan".into(),
                     signature: Some("sig".into()),
                 },
+                IrPart::Raw {
+                    type_name: "redacted_thinking".into(),
+                    raw: serde_json::json!({"type": "redacted_thinking", "data": "enc"}),
+                },
                 IrPart::Text("Hello".into()),
             ],
         }],
         tools: vec![],
         sampling: IrSampling::default(),
     };
-    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let content = &body["messages"][0]["content"];
     assert_eq!(
         content, "Hello",
         "Chat must send only visible text, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.thinking"),
+        "thinking drop missing, got {report:?}"
+    );
+    assert!(
+        loss_dropped(&report, "part.raw"),
+        "raw drop missing, got {report:?}"
     );
 }
 
@@ -891,13 +911,17 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
                     text: "secret plan".into(),
                     signature: None,
                 },
+                IrPart::Raw {
+                    type_name: "redacted_thinking".into(),
+                    raw: serde_json::json!({"type": "redacted_thinking", "data": "enc"}),
+                },
                 IrPart::Text("Hello".into()),
             ],
         }],
         tools: vec![],
         sampling: IrSampling::default(),
     };
-    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
         body.get("include"),
@@ -908,6 +932,18 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
     assert!(
         !dumped.contains("secret plan"),
         "unsigned thinking must not become output_text, got {body}"
+    );
+    assert!(
+        !dumped.contains("redacted_thinking"),
+        "raw protocol part must not be replayed, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.thinking"),
+        "thinking drop missing, got {report:?}"
+    );
+    assert!(
+        loss_dropped(&report, "part.raw"),
+        "raw drop missing, got {report:?}"
     );
 }
 
