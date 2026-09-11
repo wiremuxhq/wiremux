@@ -32,6 +32,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                 Some("tool_use") => Ok(Some(IrStreamEvent::ToolCallStart {
                     id: str_field(block, "id").unwrap_or_default(),
                     name: str_field(block, "name").unwrap_or_default(),
+                    thought_signature: None,
                 })),
                 _ => Ok(Some(protocol(name, value))),
             }
@@ -110,7 +111,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "delta": { "type": "signature_delta", "signature": signature }
             }),
         ),
-        IrStreamEvent::ToolCallStart { id, name } => (
+        IrStreamEvent::ToolCallStart { id, name, .. } => (
             "content_block_start",
             json!({
                 "type": "content_block_start",

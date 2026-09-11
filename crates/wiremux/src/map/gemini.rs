@@ -58,6 +58,11 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
                 call_id: name.clone(),
                 name,
                 arguments: args.to_string(),
+                thought_signature: part
+                    .get("thoughtSignature")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
             });
             continue;
         }
@@ -141,6 +146,7 @@ fn decode_tools(value: &Value) -> Vec<crate::ir::IrTool> {
 
 fn decode_sampling(value: &Value) -> IrSampling {
     let cfg = value.get("generationConfig").unwrap_or(value);
+    let thinking = thinking_config_obj(value);
     IrSampling {
         temperature: f32_field(cfg, "temperature"),
         top_p: f32_field(cfg, "topP").or_else(|| f32_field(cfg, "top_p")),
@@ -152,7 +158,18 @@ fn decode_sampling(value: &Value) -> IrSampling {
         previous_response_id: None,
         cache: IrCache::default(),
         stream: bool_field(value, "stream"),
+        include_thoughts: bool_field(thinking, "includeThoughts")
+            .or_else(|| bool_field(thinking, "include_thoughts")),
+        thinking_budget: u32_field(thinking, "thinkingBudget")
+            .or_else(|| u32_field(thinking, "thinking_budget")),
     }
+}
+
+fn thinking_config_obj(value: &Value) -> &Value {
+    value
+        .get("thinkingConfig")
+        .or_else(|| value.pointer("/generationConfig/thinkingConfig"))
+        .unwrap_or(&Value::Null)
 }
 
 pub(super) fn encode(
@@ -162,6 +179,7 @@ pub(super) fn encode(
 ) -> Result<Value, MapError> {
     let mut system_parts = Vec::new();
     let mut contents = Vec::new();
+    let mut call_names = Vec::new();
     for item in &ir.items {
         match item {
             IrItem::System { text } | IrItem::Developer { text } => {
@@ -175,35 +193,44 @@ pub(super) fn encode(
                 system_parts.push(json!({ "text": text }));
             }
             IrItem::User { parts } => {
-                contents.push(json!({
-                    "role": "user",
-                    "parts": encode_parts(parts),
-                }));
+                for part in encode_parts(parts) {
+                    push_role_part(&mut contents, "user", part);
+                }
             }
             IrItem::Assistant { parts } => {
-                contents.push(json!({
-                    "role": "model",
-                    "parts": encode_parts(parts),
-                }));
+                for part in encode_parts(parts) {
+                    push_role_part(&mut contents, "model", part);
+                }
             }
             IrItem::FunctionCall {
-                name, arguments, ..
+                call_id,
+                name,
+                arguments,
+                thought_signature,
             } => {
+                call_names.push((call_id.as_str(), name.as_str()));
                 let args: Value = serde_json::from_str(arguments).unwrap_or_else(|_| json!({}));
-                contents.push(json!({
-                    "role": "model",
-                    "parts": [{ "functionCall": { "name": name, "args": args } }],
-                }));
+                let mut part = json!({ "functionCall": { "name": name, "args": args } });
+                if let Some(sig) = thought_signature.as_deref().filter(|s| !s.is_empty()) {
+                    part["thoughtSignature"] = json!(sig);
+                }
+                push_role_part(&mut contents, "model", part);
             }
             IrItem::FunctionOutput { call_id, output } => {
+                let name = call_names
+                    .iter()
+                    .rev()
+                    .find_map(|(id, name)| (*id == call_id).then_some(*name))
+                    .unwrap_or(call_id.as_str());
                 let response: Value =
-                    serde_json::from_str(output).unwrap_or_else(|_| json!({ "output": output }));
-                contents.push(json!({
-                    "role": "user",
-                    "parts": [{
-                        "functionResponse": { "name": call_id, "response": response }
-                    }],
-                }));
+                    serde_json::from_str(output).unwrap_or_else(|_| json!({ "result": output }));
+                push_role_part(
+                    &mut contents,
+                    "user",
+                    json!({
+                        "functionResponse": { "name": name, "response": response }
+                    }),
+                );
             }
             IrItem::Reasoning { .. } => {
                 report.record(
@@ -254,6 +281,17 @@ pub(super) fn encode(
     Ok(body)
 }
 
+fn push_role_part(contents: &mut Vec<Value>, role: &str, part: Value) {
+    if let Some(last) = contents.last_mut()
+        && last.get("role").and_then(Value::as_str) == Some(role)
+        && let Some(parts) = last.get_mut("parts").and_then(Value::as_array_mut)
+    {
+        parts.push(part);
+        return;
+    }
+    contents.push(json!({ "role": role, "parts": [part] }));
+}
+
 fn encode_parts(parts: &[IrPart]) -> Vec<Value> {
     let mut out = Vec::new();
     for part in parts {
@@ -271,7 +309,17 @@ fn encode_parts(parts: &[IrPart]) -> Vec<Value> {
                     "inlineData": { "mimeType": media_type, "data": data }
                 }));
             }
-            IrPart::ImageUrl(url) => out.push(json!({ "text": url })),
+            IrPart::ImageUrl(url) => {
+                if let Some(rest) = url.strip_prefix("data:")
+                    && let Some((mime, b64)) = rest.split_once(";base64,")
+                {
+                    out.push(json!({
+                        "inlineData": { "mimeType": mime, "data": b64 }
+                    }));
+                } else {
+                    out.push(json!({ "text": format!("[image: {url}]") }));
+                }
+            }
         }
     }
     out
@@ -306,5 +354,15 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(stream) = s.stream {
         body["stream"] = json!(stream);
+    }
+    if s.include_thoughts.is_some() || s.thinking_budget.is_some() {
+        let mut tc = json!({});
+        if let Some(include) = s.include_thoughts {
+            tc["includeThoughts"] = json!(include);
+        }
+        if let Some(budget) = s.thinking_budget {
+            tc["thinkingBudget"] = json!(budget);
+        }
+        body["thinkingConfig"] = tc;
     }
 }

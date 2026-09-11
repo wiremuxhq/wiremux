@@ -200,7 +200,11 @@ fn json_completion_to_sse(from: Wire, body: &Bytes) -> Option<Bytes> {
         events.push(IrStreamEvent::TextDelta { text });
     }
     for (id, name, args) in tools {
-        events.push(IrStreamEvent::ToolCallStart { id, name });
+        events.push(IrStreamEvent::ToolCallStart {
+            id,
+            name,
+            thought_signature: None,
+        });
         if !args.is_empty() {
             events.push(IrStreamEvent::ToolCallArgDelta { delta: args });
         }
