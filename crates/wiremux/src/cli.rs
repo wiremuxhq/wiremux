@@ -739,7 +739,10 @@ mod tests {
         let profile = shipped("openai-codex-oauth");
         match login_plan(&profile) {
             LoginPlan::NotReady { reason } => {
-                assert!(reason.contains("client_id") || reason.contains("login"));
+                assert!(
+                    reason.contains("client_id"),
+                    "openai login plan must name client_id, got {reason}"
+                );
             }
             other => panic!("expected not-ready, got {other:?}"),
         }

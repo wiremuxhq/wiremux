@@ -482,6 +482,29 @@ wire = "gemini"
             .and_then(Value::as_str),
         Some("lookup")
     );
+    assert_eq!(
+        body.pointer("/contents/1/parts/0/functionCall/name")
+            .and_then(Value::as_str),
+        Some("lookup"),
+        "encode must keep functionCall.name, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/1/parts/0/functionCall/args/q")
+            .and_then(Value::as_str),
+        Some("x"),
+        "encode must keep functionCall.args.q, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/2/parts/0/functionResponse/name")
+            .and_then(Value::as_str),
+        Some("lookup"),
+        "encode must keep functionResponse, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/2/parts/0/functionResponse/response/ok"),
+        Some(&Value::Bool(true)),
+        "encode must keep functionResponse.response, got {body}"
+    );
     let temp = body
         .pointer("/generationConfig/temperature")
         .and_then(Value::as_f64)
@@ -933,9 +956,13 @@ fn chat_data_url_becomes_image_base64_for_gemini() {
     assert!(
         ir.items.iter().any(|item| matches!(
             item,
-            IrItem::User { parts } if parts.iter().any(|p| matches!(p, IrPart::ImageBase64 { media_type, .. } if media_type == "image/png"))
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::ImageBase64 { media_type, data }
+                    if media_type == "image/png" && data == "iVBORw0KGgo="
+            ))
         )),
-        "data URL must become ImageBase64, got {:?}",
+        "data URL must become ImageBase64 with payload, got {:?}",
         ir.items
     );
     let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
@@ -945,6 +972,12 @@ fn chat_data_url_becomes_image_base64_for_gemini() {
             .and_then(Value::as_str),
         Some("image/png"),
         "Gemini must get inlineData, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/1/inlineData/data")
+            .and_then(Value::as_str),
+        Some("iVBORw0KGgo="),
+        "Gemini must encode inlineData/data, got {body}"
     );
 }
 
