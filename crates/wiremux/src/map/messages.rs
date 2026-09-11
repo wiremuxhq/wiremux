@@ -440,8 +440,15 @@ fn encode_assistant(
                 call_id,
                 name,
                 arguments,
-                ..
+                thought_signature,
             }) => {
+                if thought_signature.is_some() {
+                    report.record(
+                        format!("items[{}]", start + consumed),
+                        LossAction::Drop,
+                        "thoughtSignature has no Messages slot",
+                    );
+                }
                 content.push(tool_use_block(call_id, name, arguments));
                 consumed += 1;
             }
@@ -839,6 +846,12 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.max_reasoning_tokens.is_some() {
         report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
+    }
+    if s.include_thoughts.is_some() {
+        report.record("sampling.include_thoughts", LossAction::Drop, "no slot");
+    }
+    if s.thinking_budget.is_some() {
+        report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
     }
 }
 

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use wiremux::{
-    IrCache, IrItem, IrPart, IrRequest, IrSampling, IrTool, LossAction, LossReport, MapError,
-    ResolvedProfile, Wire, decode, encode, parse_profile_str,
+    IrCache, IrItem, IrPart, IrRequest, IrSampling, IrTool, IrToolChoice, LossAction, LossReport,
+    MapError, ResolvedProfile, Wire, decode, encode, parse_profile_str,
 };
 
 fn golden(name: &str) -> Vec<u8> {
@@ -1566,5 +1566,115 @@ fn gemini_thinking_config_survives_reasoning_sampling_fields() {
     assert!(
         loss_dropped(&report, "sampling.max_reasoning_tokens"),
         "Gemini max drop missing, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_thinking_ir_drops_on_chat_and_messages() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(true),
+        thinking_budget: Some(24576),
+        ..IrSampling::default()
+    });
+    for (wire, profile) in [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Messages, messages_profile()),
+    ] {
+        let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert!(
+            body.get("thinkingConfig").is_none(),
+            "{wire:?} must not invent thinkingConfig, got {body}"
+        );
+        assert!(
+            body.get("include_thoughts").is_none() && body.get("includeThoughts").is_none(),
+            "{wire:?} must not invent include_thoughts, got {body}"
+        );
+        assert!(
+            body.get("thinking_budget").is_none() && body.get("thinkingBudget").is_none(),
+            "{wire:?} must not invent thinking_budget, got {body}"
+        );
+        assert!(
+            loss_dropped(&report, "sampling.include_thoughts"),
+            "{wire:?} include_thoughts drop missing, got {report:?}"
+        );
+        assert!(
+            loss_dropped(&report, "sampling.thinking_budget"),
+            "{wire:?} thinking_budget drop missing, got {report:?}"
+        );
+    }
+}
+
+#[test]
+fn chat_required_tool_choice_drops_on_gemini() {
+    let ir = user_ir(IrSampling {
+        tool_choice: IrToolChoice::Required,
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("tool_choice").is_none(),
+        "Gemini must not invent tool_choice, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.tool_choice"),
+        "Gemini tool_choice drop missing, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_grouped_function_call_records_thought_signature_drop() {
+    let ir = IrRequest {
+        model: "gpt-4".into(),
+        items: vec![
+            IrItem::Assistant {
+                parts: vec![IrPart::Text("calling".into())],
+            },
+            IrItem::FunctionCall {
+                call_id: "call_1".into(),
+                name: "lookup".into(),
+                arguments: "{}".into(),
+                thought_signature: Some("sig_grouped".into()),
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (_, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Drop
+                && event.detail == "thoughtSignature has no Chat Completions slot"
+        }),
+        "grouped FunctionCall must record the same thought_signature Drop as standalone, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_encode_does_not_invent_empty_function_call_args() {
+    let ir = IrRequest {
+        model: "gemini-2.5-flash".into(),
+        items: vec![IrItem::FunctionCall {
+            call_id: "lookup".into(),
+            name: "lookup".into(),
+            arguments: "not-json".into(),
+            thought_signature: None,
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let args = body.pointer("/contents/0/parts/0/functionCall/args");
+    assert_ne!(
+        args,
+        Some(&serde_json::json!({})),
+        "invalid JSON must not become empty object, got {body}"
+    );
+    assert_eq!(
+        args,
+        Some(&Value::String("not-json".into())),
+        "invalid JSON must stay a string, got {body}"
     );
 }

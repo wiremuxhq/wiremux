@@ -476,6 +476,12 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.max_reasoning_tokens.is_some() {
         report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
     }
+    if s.include_thoughts.is_some() {
+        report.record("sampling.include_thoughts", LossAction::Drop, "no slot");
+    }
+    if s.thinking_budget.is_some() {
+        report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
+    }
 }
 
 fn encode_tool_choice(choice: &IrToolChoice, body: &mut Value) {
