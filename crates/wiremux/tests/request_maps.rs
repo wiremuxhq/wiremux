@@ -1390,6 +1390,48 @@ fn chat_decode_reads_reasoning_effort() {
 }
 
 #[test]
+fn responses_decode_reads_reasoning_effort() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": "hi",
+        "reasoning": { "effort": "high" }
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(ir.sampling.reasoning_effort.as_deref(), Some("high"));
+}
+
+#[test]
+fn chat_decode_reads_max_reasoning_tokens() {
+    let req = br#"{
+        "model": "o4-mini",
+        "max_reasoning_tokens": 2048,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.max_reasoning_tokens, Some(2048));
+}
+
+#[test]
+fn chat_decode_empty_reasoning_effort_is_unset() {
+    for effort in ["", "  \t"] {
+        let req = format!(
+            r#"{{
+                "model": "o4-mini",
+                "reasoning_effort": {effort},
+                "messages": [{{"role": "user", "content": "hi"}}]
+            }}"#,
+            effort = serde_json::to_string(effort).expect("json")
+        );
+        let (ir, _) = decode(Wire::ChatCompletions, req.as_bytes()).expect("decode");
+        assert_eq!(
+            ir.sampling.reasoning_effort, None,
+            "empty or whitespace-only effort must be unset, got {:?} for {effort:?}",
+            ir.sampling.reasoning_effort
+        );
+    }
+}
+
+#[test]
 fn chat_drops_max_reasoning_tokens() {
     let ir = user_ir(IrSampling {
         max_reasoning_tokens: Some(2048),
@@ -1400,6 +1442,24 @@ fn chat_drops_max_reasoning_tokens() {
     assert!(
         body.get("max_reasoning_tokens").is_none(),
         "Chat has no max_reasoning_tokens slot, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.max_reasoning_tokens"),
+        "must record drop, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_encode_drops_max_reasoning_tokens() {
+    let ir = user_ir(IrSampling {
+        max_reasoning_tokens: Some(2048),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("reasoning").is_none(),
+        "max alone must not invent reasoning, got {body}"
     );
     assert!(
         loss_dropped(&report, "sampling.max_reasoning_tokens"),
@@ -1436,6 +1496,22 @@ fn responses_encode_does_not_invent_reasoning_object_when_unset() {
         body.get("reasoning").is_none(),
         "unset effort must not invent reasoning, got {body}"
     );
+}
+
+#[test]
+fn responses_encode_does_not_invent_reasoning_for_empty_effort() {
+    for effort in ["", "  \t"] {
+        let ir = user_ir(IrSampling {
+            reasoning_effort: Some(effort.into()),
+            ..IrSampling::default()
+        });
+        let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert!(
+            body.get("reasoning").is_none(),
+            "empty or whitespace-only effort must not invent reasoning, got {body}"
+        );
+    }
 }
 
 #[test]

@@ -368,7 +368,10 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         }
         body["thinkingConfig"] = tc;
     }
-    if s.reasoning_effort.is_some() {
+    if s.reasoning_effort
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
         report.record("sampling.reasoning_effort", LossAction::Drop, "no slot");
     }
     if s.max_reasoning_tokens.is_some() {
