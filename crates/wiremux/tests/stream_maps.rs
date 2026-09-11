@@ -583,6 +583,33 @@ fn gemini_safety_finish_reasons_are_content_filter() {
 }
 
 #[test]
+fn responses_reasoning_and_refusal_deltas_are_known() {
+    let reasoning = RawSse {
+        event: Some("response.reasoning_summary_text.delta".into()),
+        data: r#"{"type":"response.reasoning_summary_text.delta","delta":"think"}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Responses, &reasoning, &responses_profile())
+        .expect("decode reasoning")
+        .expect("event");
+    assert!(
+        matches!(ev, IrStreamEvent::ReasoningDelta { ref text } if text == "think"),
+        "got {ev:?}"
+    );
+
+    let refusal = RawSse {
+        event: Some("response.refusal.delta".into()),
+        data: r#"{"type":"response.refusal.delta","delta":"no"}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Responses, &refusal, &responses_profile())
+        .expect("decode refusal")
+        .expect("event");
+    assert!(
+        matches!(ev, IrStreamEvent::TextDelta { ref text } if text == "no"),
+        "got {ev:?}"
+    );
+}
+
+#[test]
 fn chat_eos_finish_reason_is_stop() {
     let raw = RawSse {
         event: None,
