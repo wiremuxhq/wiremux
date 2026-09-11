@@ -2156,10 +2156,7 @@ access_env = "WIREMUX_TEST_ACCESS"
             .truncate(false)
             .open(&lock_path)
             .unwrap();
-        assert!(
-            fs4::fs_std::FileExt::try_lock_exclusive(&lock_file).expect("try lock"),
-            "test must hold the sibling lock"
-        );
+        fs4::FileExt::try_lock(&lock_file).expect("try lock");
         let token = p.get_token().await.expect("cached on lock timeout");
         assert_eq!(token, "sk-ant-oat01-cached");
         p.mark_stale();

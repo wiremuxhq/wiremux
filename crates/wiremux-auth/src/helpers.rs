@@ -305,7 +305,7 @@ pub(crate) struct FileLockGuard {
 
 impl Drop for FileLockGuard {
     fn drop(&mut self) {
-        let _ = fs4::fs_std::FileExt::unlock(&self.file);
+        let _ = fs4::FileExt::unlock(&self.file);
     }
 }
 
@@ -346,7 +346,7 @@ pub(crate) fn lock_sibling(path: &Path) -> PathBuf {
 }
 
 fn lock_exclusive_timeout(lock_path: &Path, timeout: Duration) -> Result<FileLockGuard, AuthError> {
-    use fs4::fs_std::FileExt;
+    use fs4::TryLockError;
     use std::fs::OpenOptions;
 
     if let Some(parent) = lock_path.parent() {
@@ -364,21 +364,24 @@ fn lock_exclusive_timeout(lock_path: &Path, timeout: Duration) -> Result<FileLoc
 
     let start = std::time::Instant::now();
     loop {
-        match file.try_lock_exclusive() {
-            Ok(true) => return Ok(FileLockGuard { file }),
-            Ok(false) => {
+        // UFCS: std::fs::File::try_lock (1.89+) would otherwise shadow FileExt.
+        match fs4::FileExt::try_lock(&file) {
+            Ok(()) => return Ok(FileLockGuard { file }),
+            Err(TryLockError::WouldBlock) => {
                 if start.elapsed() >= timeout {
                     return Err(AuthError::LockTimeout);
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            Err(e) if is_lock_busy(&e) => {
+            Err(TryLockError::Error(e)) if is_lock_busy(&e) => {
                 if start.elapsed() >= timeout {
                     return Err(AuthError::LockTimeout);
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            Err(e) => return Err(AuthError::io(Some(lock_path.to_path_buf()), e)),
+            Err(TryLockError::Error(e)) => {
+                return Err(AuthError::io(Some(lock_path.to_path_buf()), e));
+            }
         }
     }
 }
