@@ -25,8 +25,8 @@ use crate::profile::{
 #[cfg(target_os = "macos")]
 use crate::writeback::apply_tokens;
 use crate::writeback::{
-    TokenWrite, copilot_store_pointers, json_string, json_u64, oidc_store_pointers, pointer_get,
-    read_creds_string, write_tokens,
+    TokenWrite, copilot_store_pointers, json_string, json_u64, oidc_store_pointers,
+    oidc_token_url_ptr, oidc_token_url_value, pointer_get, read_creds_string, write_tokens,
 };
 
 const DEFAULT_LIFETIME_SECS: u64 = 3600;
@@ -167,12 +167,30 @@ struct Loaded {
     lifetime: Duration,
     source: CredSource,
     layout: StoreLayout,
+    store_token_url: Option<String>,
 }
 
 impl ProfileTokenProvider {
-    fn from_loaded(oauth: OauthPack, loaded: Loaded) -> Result<Self, AuthError> {
+    fn from_loaded(mut oauth: OauthPack, loaded: Loaded) -> Result<Self, AuthError> {
         if loaded.access_token.trim().is_empty() {
             return Err(empty_access_error(&oauth));
+        }
+        if oauth.creds_format == Some(CredsFormat::OidcAuthJson)
+            && loaded
+                .refresh_token
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_none()
+        {
+            return Err(AuthError::TokenProvider(
+                "oidc-auth-json requires a non-empty refresh_token".into(),
+            ));
+        }
+        if let Some(url) = loaded.store_token_url.filter(|s| !s.is_empty())
+            && token_url_allowed(&url)
+        {
+            oauth.token_url = url;
         }
         let write_back = match &loaded.source {
             CredSource::File(path) => absolute_write_back_path(path)
@@ -291,6 +309,8 @@ impl ProfileTokenProvider {
         }
         match &self.inner.write_back {
             WriteBack::File(path) => {
+                let token_url_ptr =
+                    oidc_token_url_ptr(&self.inner.oauth, &self.inner.layout.access_ptr);
                 write_tokens(
                     path,
                     &TokenWrite {
@@ -303,6 +323,8 @@ impl ProfileTokenProvider {
                         expires_in_secs: expires_in,
                         expires_rfc3339: self.inner.oauth.creds_format
                             == Some(CredsFormat::OidcAuthJson),
+                        token_url_ptr: token_url_ptr.as_deref(),
+                        token_url: oidc_token_url_value(&self.inner.oauth),
                     },
                 )
                 .await
@@ -314,6 +336,8 @@ impl ProfileTokenProvider {
                 }
                 let current = read_keychain(service, account)?;
                 let mut doc: Value = serde_json::from_str(&current)?;
+                let token_url_ptr =
+                    oidc_token_url_ptr(&self.inner.oauth, &self.inner.layout.access_ptr);
                 apply_tokens(
                     &mut doc,
                     &TokenWrite {
@@ -326,6 +350,8 @@ impl ProfileTokenProvider {
                         expires_in_secs: expires_in,
                         expires_rfc3339: self.inner.oauth.creds_format
                             == Some(CredsFormat::OidcAuthJson),
+                        token_url_ptr: token_url_ptr.as_deref(),
+                        token_url: oidc_token_url_value(&self.inner.oauth),
                     },
                 )?;
                 let updated = serde_json::to_string(&doc)?;
@@ -350,6 +376,10 @@ impl ProfileTokenProvider {
                 return cached_token_on_lock_failure(Some(cached.as_str()), force, e);
             }
         };
+
+        if self.inner.oauth.creds_format == Some(CredsFormat::CopilotHosts) {
+            return self.adopt_copilot_hosts().await;
+        }
 
         let refresh_token = {
             let mut state = self.inner.state.write().await;
@@ -456,6 +486,39 @@ impl ProfileTokenProvider {
         }
 
         Ok(token_resp.access_token)
+    }
+
+    async fn adopt_copilot_hosts(&self) -> Result<String, AuthError> {
+        match self.reload_from_store().await {
+            Ok(Some((store_token, store_rt, store_lifetime))) => {
+                let mut state = self.inner.state.write().await;
+                if let Some(adopted) =
+                    adopt_from_store(&state, &store_token, store_rt, store_lifetime)
+                {
+                    debug!("copilot hosts token changed, adopting");
+                    let token = adopted.access_token.clone();
+                    *state = adopted;
+                    return Ok(token);
+                }
+                Ok(state.access_token.clone())
+            }
+            Ok(None) => {
+                let state = self.inner.state.read().await;
+                if state.access_token.trim().is_empty() {
+                    return Err(empty_access_error(&self.inner.oauth));
+                }
+                warn!("copilot hosts reload returned nothing, keeping cached token");
+                Ok(state.access_token.clone())
+            }
+            Err(e) => {
+                let state = self.inner.state.read().await;
+                if state.access_token.trim().is_empty() {
+                    return Err(e);
+                }
+                warn!("copilot hosts reload failed ({e}), keeping cached token");
+                Ok(state.access_token.clone())
+            }
+        }
     }
 }
 
@@ -657,11 +720,12 @@ fn load_from_file(oauth: &OauthPack, path: &Path) -> Result<Loaded, AuthError> {
     Ok(Loaded {
         access_token: parsed.0,
         refresh_token: parsed.1,
-        lifetime: parsed.2,
+        lifetime: copilot_or_default_lifetime(oauth, parsed.2),
         source: CredSource::File(
             absolute_write_back_path(path).unwrap_or_else(|| path.to_path_buf()),
         ),
         layout,
+        store_token_url: stored_oidc_token_url(oauth, &doc),
     })
 }
 
@@ -683,6 +747,7 @@ fn load_from_env(oauth: &OauthPack) -> Result<Option<Loaded>, AuthError> {
         lifetime: Duration::from_secs(DEFAULT_LIFETIME_SECS),
         source: CredSource::Env,
         layout,
+        store_token_url: None,
     }))
 }
 
@@ -730,12 +795,13 @@ fn load_from_keychain(oauth: &OauthPack) -> Result<Option<Loaded>, AuthError> {
             return Ok(Some(Loaded {
                 access_token: parsed.0,
                 refresh_token: parsed.1,
-                lifetime: parsed.2,
+                lifetime: copilot_or_default_lifetime(oauth, parsed.2),
                 source: CredSource::Keychain {
                     service: service.to_owned(),
                     account: account.clone(),
                 },
                 layout,
+                store_token_url: stored_oidc_token_url(oauth, &doc),
             }));
         }
         Ok(None)
@@ -902,6 +968,40 @@ fn claude_layout(oauth: &OauthPack, doc: Option<&Value>) -> StoreLayout {
             expires_ptr: Some("/expiresAt".into()),
             expires_unit: oauth.expires_unit.unwrap_or(ExpiresUnit::Ms),
         }
+    }
+}
+
+fn copilot_or_default_lifetime(oauth: &OauthPack, lifetime: Duration) -> Duration {
+    if oauth.creds_format == Some(CredsFormat::CopilotHosts)
+        && lifetime == Duration::from_secs(DEFAULT_LIFETIME_SECS)
+    {
+        Duration::from_secs(8 * 3600)
+    } else {
+        lifetime
+    }
+}
+
+fn stored_oidc_token_url(oauth: &OauthPack, doc: &Value) -> Option<String> {
+    if oauth.creds_format != Some(CredsFormat::OidcAuthJson) {
+        return None;
+    }
+    let (access, _, _) = oidc_store_pointers(oauth, Some(doc)).ok().flatten()?;
+    let entry = access.strip_suffix("/key")?;
+    let ptr = format!("{entry}/token_url");
+    pointer_get(doc, &ptr).and_then(json_string)
+}
+
+fn token_url_allowed(url: &str) -> bool {
+    if https_token_url(url).is_some() {
+        return true;
+    }
+    #[cfg(any(test, feature = "test-util"))]
+    {
+        crate::profile::is_loopback_http(url)
+    }
+    #[cfg(not(any(test, feature = "test-util")))]
+    {
+        false
     }
 }
 
@@ -1598,6 +1698,129 @@ login = "none"
             p.get_token().await.expect("copilot token"),
             "ghu_from_hosts"
         );
+    }
+
+    #[tokio::test]
+    async fn copilot_expired_path_adopts_from_file() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/github-copilot/hosts.json",
+            document: serde_json::json!({
+                "github.com": { "oauth_token": "ghu_old" }
+            }),
+        });
+        let oauth = pack_from_toml(&copilot_toml(&path));
+        let p = provider(&oauth);
+        assert_eq!(p.get_token().await.expect("first"), "ghu_old");
+        std::fs::write(
+            &path,
+            serde_json::to_string(&serde_json::json!({
+                "github.com": { "oauth_token": "ghu_rotated" }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        p.mark_stale();
+        assert_eq!(
+            p.get_token().await.expect("adopt rotated hosts.json"),
+            "ghu_rotated"
+        );
+    }
+
+    #[tokio::test]
+    async fn copilot_stale_without_rotation_keeps_cached() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/github-copilot/hosts.json",
+            document: serde_json::json!({
+                "github.com": { "oauth_token": "ghu_same" }
+            }),
+        });
+        let oauth = pack_from_toml(&copilot_toml(&path));
+        let p = provider(&oauth);
+        assert_eq!(p.get_token().await.expect("first"), "ghu_same");
+        p.mark_stale();
+        assert_eq!(
+            p.get_token().await.expect("no refresh token must not fail"),
+            "ghu_same"
+        );
+    }
+
+    #[test]
+    fn oidc_new_rejects_empty_refresh_token() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth-openai.json",
+            document: serde_json::json!({
+                "https://auth.openai.com::wiremux-cli": {
+                    "key": "access-only",
+                    "expires_at": "2099-01-01T00:00:00Z"
+                }
+            }),
+        });
+        let oauth = pack_from_toml(&oidc_toml(&closed_http_url(), &path, "wiremux-cli"));
+        let err = provider_from_oauth(&oauth).expect_err("empty refresh");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("refresh"),
+            "oidc-auth-json must refuse empty refresh at construction, got {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oidc_refresh_persists_token_url() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth-openai.json",
+            document: serde_json::json!({
+                "https://auth.openai.com::wiremux-cli": {
+                    "key": "old-access",
+                    "refresh_token": "old-rt",
+                    "expires_at": "2020-01-01T00:00:00Z"
+                }
+            }),
+        });
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"new-oidc","refresh_token":"new-rt","expires_in":3600}"#,
+        );
+        let oauth = pack_from_toml(&oidc_toml(&url, &path, "wiremux-cli"));
+        let p = provider(&oauth);
+        assert_eq!(p.get_token().await.expect("refresh"), "new-oidc");
+        let _ = handle.join();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            doc["https://auth.openai.com::wiremux-cli"]["token_url"].as_str(),
+            Some(url.as_str()),
+            "refresh must persist token_url, got {doc}"
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_token_url_wins_over_profile() {
+        let home = IsolatedHome::new();
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"from-store-url","refresh_token":"new-rt","expires_in":3600}"#,
+        );
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth-openai.json",
+            document: serde_json::json!({
+                "https://auth.openai.com::wiremux-cli": {
+                    "key": "old-access",
+                    "refresh_token": "old-rt",
+                    "expires_at": "2020-01-01T00:00:00Z",
+                    "token_url": url
+                }
+            }),
+        });
+        let oauth = pack_from_toml(&oidc_toml(&closed_http_url(), &path, "wiremux-cli"));
+        let p = provider(&oauth);
+        assert_eq!(
+            p.get_token().await.expect("refresh via stored token_url"),
+            "from-store-url"
+        );
+        let _ = handle.join();
     }
 
     #[tokio::test]
