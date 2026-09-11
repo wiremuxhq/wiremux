@@ -1,7 +1,10 @@
 //! Dialect maps. Not ready.
 
+pub mod cli;
 pub mod ir;
 pub mod map;
+#[cfg(feature = "proxy")]
+pub mod proxy;
 pub mod stream;
 
 pub use ir::{
