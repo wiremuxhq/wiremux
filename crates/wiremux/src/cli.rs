@@ -228,13 +228,18 @@ pub async fn run_login(profile: &ResolvedProfile) -> i32 {
                 EXIT_ERROR
             }
         },
-        LoginPlan::Device => match run_device(profile).await {
-            Ok(()) => EXIT_OK,
-            Err(err) => {
-                eprintln!("{err}");
-                EXIT_ERROR
+        LoginPlan::Device => {
+            if let Some(note) = copilot_tos_note(profile) {
+                println!("{note}");
             }
-        },
+            match run_device(profile).await {
+                Ok(()) => EXIT_OK,
+                Err(err) => {
+                    eprintln!("{err}");
+                    EXIT_ERROR
+                }
+            }
+        }
     }
 }
 
@@ -342,6 +347,14 @@ async fn run_pkce(oauth: &OauthPack, listener: TcpListener) -> Result<(), String
         .map_err(|e| e.to_string())?;
     println!("login saved");
     Ok(())
+}
+
+fn copilot_tos_note(profile: &ResolvedProfile) -> Option<String> {
+    let oauth = profile.oauth.as_ref()?;
+    if oauth.creds_format != Some(wiremux_auth::CredsFormat::CopilotHosts) {
+        return None;
+    }
+    Some("GitHub Copilot product terms apply to tokens obtained with this profile.".into())
 }
 
 async fn run_device(profile: &ResolvedProfile) -> Result<(), String> {
@@ -629,6 +642,29 @@ mod tests {
             }
             other => panic!("expected setup-token, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn login_plan_copilot_gist_device_needs_client_id() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../wiremux-auth/tests/gists/github-copilot-device.toml");
+        let profile =
+            parse_profile_str(&std::fs::read_to_string(&path).expect("gist")).expect("parse");
+        match login_plan(&profile) {
+            LoginPlan::NotReady { reason } => {
+                assert!(reason.contains("client_id"), "{reason}");
+            }
+            other => panic!("empty client_id must be not-ready, got {other:?}"),
+        }
+        assert_eq!(
+            profile.oauth.as_ref().and_then(|o| o.creds_format),
+            Some(wiremux_auth::CredsFormat::CopilotHosts)
+        );
+        assert!(
+            copilot_tos_note(&profile)
+                .unwrap()
+                .contains("Copilot product terms")
+        );
     }
 
     #[test]

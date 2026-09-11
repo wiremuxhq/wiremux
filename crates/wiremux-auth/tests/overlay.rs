@@ -646,3 +646,52 @@ base_url = "https://env.example.invalid"
         Some("https://env.example.invalid")
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn application_support_overlay_wins_over_xdg() {
+    let home = IsolatedHome::new();
+    let xdg = home.path().join(".config/wiremux/profiles");
+    let app_support = home
+        .path()
+        .join("Library/Application Support/wiremux/profiles");
+    write_toml(
+        &xdg,
+        "anthropic-oauth.toml",
+        r#"
+schema_version = 1
+id = "anthropic-oauth"
+display_name = "from-xdg"
+[oauth]
+token_url = "https://xdg.example.invalid/token"
+"#,
+    );
+    write_toml(
+        &app_support,
+        "anthropic-oauth.toml",
+        r#"
+schema_version = 1
+id = "anthropic-oauth"
+display_name = "from-application-support"
+[oauth]
+token_url = "https://appsupport.example.invalid/token"
+"#,
+    );
+    let profile = load_profile(
+        "anthropic-oauth",
+        &LoadOptions {
+            include_shipped: false,
+            include_user_config: true,
+            ..hermetic_opts()
+        },
+    )
+    .expect("mac user-dir sibling");
+    assert_eq!(
+        profile.display_name.as_deref(),
+        Some("from-application-support")
+    );
+    assert_eq!(
+        profile.oauth.as_ref().map(|o| o.token_url.as_str()),
+        Some("https://appsupport.example.invalid/token")
+    );
+}
