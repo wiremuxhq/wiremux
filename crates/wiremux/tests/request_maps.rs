@@ -2058,7 +2058,7 @@ fn gemini_thinking_ir_drops_on_chat_and_messages() {
 }
 
 #[test]
-fn chat_required_tool_choice_drops_on_gemini() {
+fn chat_required_tool_choice_maps_on_gemini() {
     let ir = user_ir(IrSampling {
         tool_choice: IrToolChoice::Required,
         ..IrSampling::default()
@@ -2069,10 +2069,127 @@ fn chat_required_tool_choice_drops_on_gemini() {
         body.get("tool_choice").is_none(),
         "Gemini must not invent tool_choice, got {body}"
     );
-    assert!(
-        loss_dropped(&report, "sampling.tool_choice"),
-        "Gemini tool_choice drop missing, got {report:?}"
+    assert_eq!(
+        body.pointer("/toolConfig/functionCallingConfig/mode")
+            .and_then(Value::as_str),
+        Some("ANY"),
+        "Required must encode as functionCallingConfig.mode ANY, got {body}"
     );
+    assert!(
+        !loss_dropped(&report, "sampling.tool_choice"),
+        "Gemini has a slot and must not Drop tool_choice, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_none_tool_choice_encodes() {
+    let ir = user_ir(IrSampling {
+        tool_choice: IrToolChoice::None,
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/toolConfig/functionCallingConfig/mode")
+            .and_then(Value::as_str),
+        Some("NONE"),
+        "None must encode as functionCallingConfig.mode NONE, got {body}"
+    );
+    assert!(
+        body.pointer("/toolConfig/functionCallingConfig/allowedFunctionNames")
+            .is_none(),
+        "None must not invent allowedFunctionNames, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.tool_choice"),
+        "Gemini has a slot and must not Drop tool_choice, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_named_tool_choice_encodes() {
+    let ir = user_ir(IrSampling {
+        tool_choice: IrToolChoice::Named("lookup".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/toolConfig/functionCallingConfig/mode")
+            .and_then(Value::as_str),
+        Some("ANY"),
+        "Named must encode as functionCallingConfig.mode ANY, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/toolConfig/functionCallingConfig/allowedFunctionNames"),
+        Some(&serde_json::json!(["lookup"])),
+        "Named must encode allowedFunctionNames, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.tool_choice"),
+        "Gemini has a slot and must not Drop tool_choice, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_tool_choice_round_trips() {
+    let cases: &[(&str, IrToolChoice, Value)] = &[
+        (
+            r#"{
+                "model": "gemini-2.5-pro",
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "toolConfig": {"functionCallingConfig": {"mode": "ANY"}}
+            }"#,
+            IrToolChoice::Required,
+            serde_json::json!({"mode": "ANY"}),
+        ),
+        (
+            r#"{
+                "model": "gemini-2.5-pro",
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "toolConfig": {"functionCallingConfig": {"mode": "NONE"}}
+            }"#,
+            IrToolChoice::None,
+            serde_json::json!({"mode": "NONE"}),
+        ),
+        (
+            r#"{
+                "model": "gemini-2.5-pro",
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "toolConfig": {
+                    "functionCallingConfig": {
+                        "mode": "ANY",
+                        "allowedFunctionNames": ["lookup"]
+                    }
+                }
+            }"#,
+            IrToolChoice::Named("lookup".into()),
+            serde_json::json!({"mode": "ANY", "allowedFunctionNames": ["lookup"]}),
+        ),
+    ];
+    for (req, expected, fcc) in cases {
+        let (ir, decode_report) = decode(Wire::Gemini, req.as_bytes()).expect("decode");
+        assert_eq!(
+            ir.sampling.tool_choice, *expected,
+            "decode tool_choice from {req}"
+        );
+        assert!(
+            !loss_dropped(&decode_report, "sampling.tool_choice"),
+            "Gemini has toolConfig and must not Drop on decode, got {decode_report:?}"
+        );
+        let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            body.get("toolConfig")
+                .and_then(|v| v.get("functionCallingConfig")),
+            Some(fcc),
+            "Gemini must emit functionCallingConfig {fcc}, got {body}"
+        );
+        assert!(
+            !loss_dropped(&report, "sampling.tool_choice"),
+            "Gemini has a slot and must not Drop tool_choice, got {report:?}"
+        );
+    }
 }
 
 #[test]

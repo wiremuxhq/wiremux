@@ -143,7 +143,8 @@ fn decode_tools(value: &Value) -> Vec<crate::ir::IrTool> {
 fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     let cfg = value.get("generationConfig").unwrap_or(value);
     let thinking = thinking_config_obj(value);
-    if gemini_source_has_tool_choice(value) {
+    let tool_choice = decode_tool_choice(value);
+    if gemini_source_has_unmapped_tool_choice(value) {
         report.record("sampling.tool_choice", LossAction::Drop, "no slot");
     }
     let json_schema = gemini_json_schema(cfg);
@@ -159,7 +160,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         top_p: f32_field(cfg, "topP").or_else(|| f32_field(cfg, "top_p")),
         max_tokens: u32_field(cfg, "maxOutputTokens").or_else(|| u32_field(cfg, "max_tokens")),
         stop: stop_values(cfg, &["stopSequences", "stop"]),
-        tool_choice: IrToolChoice::Auto,
+        tool_choice,
         parallel_tool_calls: bool_field(value, "parallel_tool_calls"),
         store: None,
         previous_response_id: None,
@@ -192,8 +193,39 @@ fn thinking_config_obj(value: &Value) -> &Value {
         .unwrap_or(&Value::Null)
 }
 
-fn gemini_source_has_tool_choice(value: &Value) -> bool {
-    value.get("tool_choice").is_some() || value.get("toolConfig").is_some()
+fn decode_tool_choice(value: &Value) -> IrToolChoice {
+    let Some(fcc) = gemini_function_calling_config(value) else {
+        return IrToolChoice::Auto;
+    };
+    let named = fcc
+        .get("allowedFunctionNames")
+        .or_else(|| fcc.get("allowed_function_names"))
+        .and_then(Value::as_array)
+        .and_then(|names| names.iter().find_map(|n| n.as_str()))
+        .filter(|n| !n.is_empty())
+        .map(str::to_string);
+    match str_field(fcc, "mode").as_deref() {
+        Some("NONE") | Some("none") => IrToolChoice::None,
+        Some("ANY") | Some("any") => match named {
+            Some(name) => IrToolChoice::Named(name),
+            None => IrToolChoice::Required,
+        },
+        _ => IrToolChoice::Auto,
+    }
+}
+
+fn gemini_tool_config(value: &Value) -> Option<&Value> {
+    value.get("toolConfig").or_else(|| value.get("tool_config"))
+}
+
+fn gemini_function_calling_config(value: &Value) -> Option<&Value> {
+    let cfg = gemini_tool_config(value)?;
+    cfg.get("functionCallingConfig")
+        .or_else(|| cfg.get("function_calling_config"))
+}
+
+fn gemini_source_has_unmapped_tool_choice(value: &Value) -> bool {
+    value.get("tool_choice").is_some() && gemini_tool_config(value).is_none()
 }
 
 fn gemini_source_has_json_schema(value: &Value) -> bool {
@@ -439,10 +471,21 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.max_reasoning_tokens.is_some() {
         report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
     }
-    if !matches!(s.tool_choice, IrToolChoice::Auto) {
-        report.record("sampling.tool_choice", LossAction::Drop, "no slot");
-    }
+    encode_tool_choice(&s.tool_choice, body);
     if s.parallel_tool_calls.is_some() {
         report.record("sampling.parallel_tool_calls", LossAction::Drop, "no slot");
     }
+}
+
+fn encode_tool_choice(choice: &IrToolChoice, body: &mut Value) {
+    let fcc = match choice {
+        IrToolChoice::Auto => return,
+        IrToolChoice::None => json!({ "mode": "NONE" }),
+        IrToolChoice::Required => json!({ "mode": "ANY" }),
+        IrToolChoice::Named(name) => json!({
+            "mode": "ANY",
+            "allowedFunctionNames": [name],
+        }),
+    };
+    body["toolConfig"] = json!({ "functionCallingConfig": fcc });
 }
