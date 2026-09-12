@@ -1227,6 +1227,7 @@ fn prompt_caching_on_system_and_first_user() {
             cache: IrCache {
                 enabled: true,
                 retention: None,
+                ..Default::default()
             },
             ..IrSampling::default()
         },
@@ -1277,6 +1278,7 @@ fn long_ttl_with_tools_tags_last_tool_before_system() {
             cache: IrCache {
                 enabled: true,
                 retention: Some("1h".into()),
+                ..Default::default()
             },
             ..IrSampling::default()
         },
@@ -1346,6 +1348,7 @@ fn cache_retention_none_skips_cache_control() {
             cache: IrCache {
                 enabled: true,
                 retention: Some("none".into()),
+                ..Default::default()
             },
             ..IrSampling::default()
         },
@@ -1386,6 +1389,7 @@ fn multi_fragment_system_stays_at_or_under_cache_control_limit() {
             cache: IrCache {
                 enabled: true,
                 retention: Some("1h".into()),
+                ..Default::default()
             },
             ..IrSampling::default()
         },
@@ -1460,6 +1464,7 @@ fn multi_fragment_long_ttl_with_tools_tags_first_system_not_last() {
             cache: IrCache {
                 enabled: true,
                 retention: Some("1h".into()),
+                ..Default::default()
             },
             ..IrSampling::default()
         },
@@ -1506,6 +1511,7 @@ fn short_ttl_multi_system_tags_last_system_and_first_user() {
             cache: IrCache {
                 enabled: true,
                 retention: None,
+                ..Default::default()
             },
             ..IrSampling::default()
         },
@@ -1570,6 +1576,65 @@ fn encode_after_decode_strips_six_cache_markers_to_preferred_pair() {
         body.pointer("/messages/0/content/0/cache_control")
             .is_some(),
         "first user kept, got {body}"
+    );
+}
+
+fn cached_messages_ir(text: &str, floor: Option<u32>) -> IrRequest {
+    IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![
+            IrItem::System { text: text.into() },
+            IrItem::User {
+                parts: vec![IrPart::Text("hello".into())],
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling {
+            cache: IrCache {
+                enabled: true,
+                retention: None,
+                min_cacheable_tokens: floor,
+            },
+            ..IrSampling::default()
+        },
+    }
+}
+
+#[test]
+fn short_prompt_below_min_cacheable_tokens_drops_cache_control() {
+    let ir = cached_messages_ir("rules", Some(1024));
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(count_cache_control(&body), 0, "short prompt, got {body}");
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.cache"
+                && event.action == LossAction::Drop
+                && event.detail.contains("1024")
+        }),
+        "must Drop sampling.cache naming the floor, got {report:?}"
+    );
+}
+
+#[test]
+fn long_prompt_at_min_cacheable_tokens_still_tags() {
+    let ir = cached_messages_ir(&"x".repeat(5000), Some(1024));
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        count_cache_control(&body) > 0,
+        "long prompt must still tag, got {body}"
+    );
+}
+
+#[test]
+fn min_cacheable_tokens_zero_does_not_skip() {
+    let ir = cached_messages_ir("rules", Some(0));
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        count_cache_control(&body) > 0,
+        "floor 0 must still tag, got {body}"
     );
 }
 

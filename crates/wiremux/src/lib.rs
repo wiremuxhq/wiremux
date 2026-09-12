@@ -10,7 +10,7 @@ pub mod stream;
 
 pub use ir::{
     IrCache, IrItem, IrPart, IrRequest, IrSampling, IrStreamEvent, IrTool, IrToolChoice,
-    LossAction, LossEvent, LossReport,
+    LossAction, LossEvent, LossReport, estimate_prompt_tokens,
 };
 pub use map::{MapError, decode, encode};
 pub use stream::{
