@@ -1,0 +1,10 @@
+# Gitleaks configuration for wiremux.
+# Suppress the synthetic PKCS8 used by GCP JWT unit tests.
+
+title = "wiremux gitleaks config"
+
+[allowlist]
+# openssl genpkey fixture in GcpTokenProvider tests. Not a production secret.
+paths = [
+    '''crates/wiremux-auth/src/providers/gcp\.rs''',
+]
