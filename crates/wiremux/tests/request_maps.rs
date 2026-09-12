@@ -1256,6 +1256,60 @@ fn gemini_hosted_google_search_tool_is_not_dropped() {
     );
 }
 
+#[test]
+fn gemini_mixed_function_declarations_and_google_search() {
+    let bytes = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "search"}]}],
+        "tools": [{
+            "functionDeclarations": [{"name": "lookup"}],
+            "googleSearch": {}
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, bytes).expect("decode");
+    assert!(
+        ir.tools
+            .iter()
+            .any(|tool| matches!(tool, IrTool::Function { name, .. } if name == "lookup")),
+        "lookup Function missing, got {:?}",
+        ir.tools
+    );
+    assert!(
+        ir.tools.iter().any(|tool| match tool {
+            IrTool::Unknown { type_name, .. } => type_name == "googleSearch",
+            IrTool::Hosted { kind, .. } => kind == "googleSearch",
+            _ => false,
+        }),
+        "googleSearch must decode beside functionDeclarations, got {:?}",
+        ir.tools
+    );
+}
+
+#[test]
+fn gemini_hosted_google_search_passthrough_encodes() {
+    let bytes = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "search"}]}],
+        "tools": [{"googleSearch": {}}]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, bytes).expect("decode");
+    let passthrough = profile(
+        r#"
+schema_version = 1
+id = "test-gemini-hosted-passthrough"
+wire = "gemini"
+tool_type_policy = "passthrough"
+"#,
+    );
+    let (out, report) = encode(Wire::Gemini, &ir, &passthrough).expect("encode");
+    let body: Value = serde_json::from_slice(&out).expect("json");
+    let tools = body.get("tools").and_then(Value::as_array);
+    assert!(
+        tools.is_some_and(|tools| tools.iter().any(|tool| tool.get("googleSearch").is_some())),
+        "passthrough encode must emit googleSearch, got {body} report={report:?}"
+    );
+}
+
 fn count_cache_control(value: &Value) -> usize {
     match value {
         Value::Object(map) => {

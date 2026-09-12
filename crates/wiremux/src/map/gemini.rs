@@ -123,7 +123,10 @@ fn decode_tools(value: &Value) -> Vec<crate::ir::IrTool> {
     };
     let mut out = Vec::new();
     for tool in tools {
-        if let Some(decls) = tool.get("functionDeclarations").and_then(Value::as_array) {
+        let Some(obj) = tool.as_object() else {
+            continue;
+        };
+        if let Some(decls) = obj.get("functionDeclarations").and_then(Value::as_array) {
             for decl in decls {
                 out.push(crate::ir::IrTool::Function {
                     name: str_field(decl, "name").unwrap_or_default(),
@@ -134,11 +137,17 @@ fn decode_tools(value: &Value) -> Vec<crate::ir::IrTool> {
                         .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
                 });
             }
+            for (key, val) in obj {
+                if key == "functionDeclarations" {
+                    continue;
+                }
+                out.push(crate::ir::IrTool::Unknown {
+                    type_name: key.clone(),
+                    raw: json!({ key: val.clone() }),
+                });
+            }
             continue;
         }
-        let Some(obj) = tool.as_object() else {
-            continue;
-        };
         let Some(type_name) = obj.keys().next() else {
             continue;
         };
@@ -334,34 +343,53 @@ pub(super) fn encode(
     if !system_parts.is_empty() {
         body["systemInstruction"] = json!({ "parts": system_parts });
     }
-    let decls: Vec<Value> = prepared
-        .iter()
-        .enumerate()
-        .filter_map(|(i, tool)| match tool {
+    let tools = encode_prepared_tools(prepared, report);
+    if !tools.is_empty() {
+        body["tools"] = json!(tools);
+    }
+    encode_sampling(ir, &mut body, report);
+    Ok(body)
+}
+
+fn encode_prepared_tools(prepared: &[PreparedTool], report: &mut LossReport) -> Vec<Value> {
+    let mut decls = Vec::new();
+    let mut hosted = Vec::new();
+    for (i, tool) in prepared.iter().enumerate() {
+        match tool {
             PreparedTool::Function {
                 name,
                 description,
                 parameters,
-            } => Some(json!({
+            } => decls.push(json!({
                 "name": name,
                 "description": description,
                 "parameters": parameters,
             })),
+            PreparedTool::Raw(raw) if is_gemini_hosted_raw(raw) => hosted.push(raw.clone()),
             PreparedTool::Raw(_) => {
                 report.record(
                     format!("tools[{i}]"),
                     LossAction::Drop,
                     "raw tool has no generateContent slot",
                 );
-                None
             }
-        })
-        .collect();
-    if !decls.is_empty() {
-        body["tools"] = json!([{ "functionDeclarations": decls }]);
+        }
     }
-    encode_sampling(ir, &mut body, report);
-    Ok(body)
+    let mut tools = Vec::new();
+    if !decls.is_empty() {
+        tools.push(json!({ "functionDeclarations": decls }));
+    }
+    tools.extend(hosted);
+    tools
+}
+
+fn is_gemini_hosted_raw(raw: &Value) -> bool {
+    let Some(obj) = raw.as_object() else {
+        return false;
+    };
+    obj.contains_key("googleSearch")
+        || obj.contains_key("codeExecution")
+        || obj.contains_key("googleSearchRetrieval")
 }
 
 fn push_role_part(contents: &mut Vec<Value>, role: &str, part: Value) {
