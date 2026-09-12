@@ -454,7 +454,7 @@ pub fn token_status(profile: &ResolvedProfile) -> TokenStatus {
     TokenStatus {
         id: profile.id.clone(),
         available: false,
-        detail: "no credentials".into(),
+        detail: "no credentials (set [headers] Authorization or x-api-key, [oauth], or auth_scheme = \"none\")".into(),
     }
 }
 
@@ -492,9 +492,14 @@ pub fn parse_wire(s: &str) -> Result<Wire, String> {
         "messages" => Ok(Wire::Messages),
         "chat-completions" | "chat" => Ok(Wire::ChatCompletions),
         "gemini" => Ok(Wire::Gemini),
-        other => Err(format!(
-            "unknown --from `{other}` (responses|messages|chat-completions|gemini)"
-        )),
+        other => {
+            let listed = "responses|messages|chat-completions|gemini";
+            let mut msg = format!("unknown --from `{other}` ({listed})");
+            if let Some(suggest) = Wire::suggest(other) {
+                msg.push_str(&format!("; did you mean `{suggest}`"));
+            }
+            Err(msg)
+        }
     }
 }
 
@@ -721,6 +726,35 @@ login = "none"
     }
 
     #[test]
+    fn parse_wire_typo_suggests_close_matches() {
+        assert_eq!(parse_wire("chat").unwrap(), Wire::ChatCompletions);
+
+        for (input, want) in [
+            ("chat_completions", "chat-completions"),
+            ("ChatCompletions", "chat-completions"),
+            ("response", "responses"),
+        ] {
+            let err = parse_wire(input).expect_err(input);
+            assert!(
+                err.contains(&format!("unknown --from `{input}`")),
+                "{input} must echo the unknown value, got {err}"
+            );
+            assert!(
+                err.contains("responses")
+                    && err.contains("messages")
+                    && err.contains("chat-completions")
+                    && err.contains("gemini"),
+                "{input} must list legal --from values, got {err}"
+            );
+            assert!(
+                err.to_ascii_lowercase().contains("did you mean")
+                    && err.contains(&format!("`{want}`")),
+                "{input} should suggest {want}, got {err}"
+            );
+        }
+    }
+
+    #[test]
     fn gemini_upstream_url_substitutes_model() {
         let profile = parse_profile_str(
             r#"
@@ -746,7 +780,42 @@ base_url = "https://generativelanguage.googleapis.com"
     #[test]
     fn parse_listen_rejects_wildcard() {
         assert!(parse_listen("0.0.0.0:0").is_err());
-        assert!(parse_listen("127.0.0.1:0").is_ok());
+        let addr = parse_listen("127.0.0.1:0").expect("loopback ephemeral listen");
+        assert_eq!(addr, "127.0.0.1:0".parse().expect("socket addr"));
+    }
+
+    #[test]
+    fn token_status_no_credentials_names_what_to_set() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "no-creds"
+wire = "chat-completions"
+base_url = "http://127.0.0.1:9"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile);
+        assert!(!status.available);
+        let detail = &status.detail;
+        assert!(detail.contains("no credentials"), "{detail}");
+        assert!(
+            detail.contains("[headers]")
+                && detail.contains("Authorization")
+                && detail.contains("x-api-key"),
+            "must name [headers] Authorization or x-api-key, got {detail}"
+        );
+        assert!(
+            detail.contains("[oauth]"),
+            "must name [oauth], got {detail}"
+        );
+        assert!(
+            detail.contains("auth_scheme") && detail.contains("none"),
+            "must name auth_scheme = none, got {detail}"
+        );
+        let text = format_status(&status);
+        assert!(text.contains("unavailable"), "{text}");
+        assert!(text.contains("[headers]"), "{text}");
     }
 
     #[test]

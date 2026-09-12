@@ -106,7 +106,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     Ok(None)
 }
 
-fn map_finish(reason: &str) -> &'static str {
+pub(super) fn map_finish(reason: &str) -> &'static str {
     match reason {
         "STOP" => "stop",
         "MAX_TOKENS" => "max_tokens",

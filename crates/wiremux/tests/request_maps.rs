@@ -669,6 +669,39 @@ fn gemini_thinking_config_absent_is_not_invented() {
 }
 
 #[test]
+fn gemini_user_text_then_function_response_stays_user() {
+    let req = br#"{
+        "contents": [{
+            "role": "user",
+            "parts": [
+                { "text": "here is the result" },
+                { "functionResponse": { "name": "lookup", "response": { "ok": true } } }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    assert!(
+        matches!(
+            ir.items.as_slice(),
+            [
+                IrItem::User { parts },
+                IrItem::FunctionOutput { call_id, .. }
+            ] if parts.iter().any(|p| matches!(p, IrPart::Text(t) if t == "here is the result"))
+                && call_id == "lookup"
+        ),
+        "mixed user text+functionResponse must be User then FunctionOutput, got {:?}",
+        ir.items
+    );
+    assert!(
+        !ir.items
+            .iter()
+            .any(|item| matches!(item, IrItem::Assistant { .. })),
+        "user-role pending text must not flush as Assistant, got {:?}",
+        ir.items
+    );
+}
+
+#[test]
 fn gemini_consecutive_function_responses_share_user_turn() {
     let req = br#"{
         "contents": [
@@ -1196,6 +1229,84 @@ tool_type_policy = "passthrough"
                     .contains("raw tool has no generateContent slot")
         }),
         "Raw tool drop missing, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_hosted_google_search_tool_is_not_dropped() {
+    let bytes = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "search"}]}],
+        "tools": [{"googleSearch": {}}]
+    }"#;
+    let (ir, report) = decode(Wire::Gemini, bytes).expect("decode");
+    assert!(
+        !ir.tools.is_empty(),
+        "googleSearch must not vanish, tools={:?} report={report:?}",
+        ir.tools
+    );
+    assert!(
+        ir.tools.iter().any(|tool| match tool {
+            IrTool::Unknown { type_name, .. } => type_name == "googleSearch",
+            IrTool::Hosted { kind, .. } => kind == "googleSearch",
+            _ => false,
+        }),
+        "googleSearch must be Unknown or Hosted, got {:?}",
+        ir.tools
+    );
+}
+
+#[test]
+fn gemini_mixed_function_declarations_and_google_search() {
+    let bytes = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "search"}]}],
+        "tools": [{
+            "functionDeclarations": [{"name": "lookup"}],
+            "googleSearch": {}
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, bytes).expect("decode");
+    assert!(
+        ir.tools
+            .iter()
+            .any(|tool| matches!(tool, IrTool::Function { name, .. } if name == "lookup")),
+        "lookup Function missing, got {:?}",
+        ir.tools
+    );
+    assert!(
+        ir.tools.iter().any(|tool| match tool {
+            IrTool::Unknown { type_name, .. } => type_name == "googleSearch",
+            IrTool::Hosted { kind, .. } => kind == "googleSearch",
+            _ => false,
+        }),
+        "googleSearch must decode beside functionDeclarations, got {:?}",
+        ir.tools
+    );
+}
+
+#[test]
+fn gemini_hosted_google_search_passthrough_encodes() {
+    let bytes = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "search"}]}],
+        "tools": [{"googleSearch": {}}]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, bytes).expect("decode");
+    let passthrough = profile(
+        r#"
+schema_version = 1
+id = "test-gemini-hosted-passthrough"
+wire = "gemini"
+tool_type_policy = "passthrough"
+"#,
+    );
+    let (out, report) = encode(Wire::Gemini, &ir, &passthrough).expect("encode");
+    let body: Value = serde_json::from_slice(&out).expect("json");
+    let tools = body.get("tools").and_then(Value::as_array);
+    assert!(
+        tools.is_some_and(|tools| tools.iter().any(|tool| tool.get("googleSearch").is_some())),
+        "passthrough encode must emit googleSearch, got {body} report={report:?}"
     );
 }
 
@@ -2025,7 +2136,7 @@ fn gemini_thinking_ir_drops_on_chat_and_messages() {
 }
 
 #[test]
-fn chat_required_tool_choice_drops_on_gemini() {
+fn chat_required_tool_choice_maps_on_gemini() {
     let ir = user_ir(IrSampling {
         tool_choice: IrToolChoice::Required,
         ..IrSampling::default()
@@ -2036,10 +2147,127 @@ fn chat_required_tool_choice_drops_on_gemini() {
         body.get("tool_choice").is_none(),
         "Gemini must not invent tool_choice, got {body}"
     );
-    assert!(
-        loss_dropped(&report, "sampling.tool_choice"),
-        "Gemini tool_choice drop missing, got {report:?}"
+    assert_eq!(
+        body.pointer("/toolConfig/functionCallingConfig/mode")
+            .and_then(Value::as_str),
+        Some("ANY"),
+        "Required must encode as functionCallingConfig.mode ANY, got {body}"
     );
+    assert!(
+        !loss_dropped(&report, "sampling.tool_choice"),
+        "Gemini has a slot and must not Drop tool_choice, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_none_tool_choice_encodes() {
+    let ir = user_ir(IrSampling {
+        tool_choice: IrToolChoice::None,
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/toolConfig/functionCallingConfig/mode")
+            .and_then(Value::as_str),
+        Some("NONE"),
+        "None must encode as functionCallingConfig.mode NONE, got {body}"
+    );
+    assert!(
+        body.pointer("/toolConfig/functionCallingConfig/allowedFunctionNames")
+            .is_none(),
+        "None must not invent allowedFunctionNames, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.tool_choice"),
+        "Gemini has a slot and must not Drop tool_choice, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_named_tool_choice_encodes() {
+    let ir = user_ir(IrSampling {
+        tool_choice: IrToolChoice::Named("lookup".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/toolConfig/functionCallingConfig/mode")
+            .and_then(Value::as_str),
+        Some("ANY"),
+        "Named must encode as functionCallingConfig.mode ANY, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/toolConfig/functionCallingConfig/allowedFunctionNames"),
+        Some(&serde_json::json!(["lookup"])),
+        "Named must encode allowedFunctionNames, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.tool_choice"),
+        "Gemini has a slot and must not Drop tool_choice, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_tool_choice_round_trips() {
+    let cases: &[(&str, IrToolChoice, Value)] = &[
+        (
+            r#"{
+                "model": "gemini-2.5-pro",
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "toolConfig": {"functionCallingConfig": {"mode": "ANY"}}
+            }"#,
+            IrToolChoice::Required,
+            serde_json::json!({"mode": "ANY"}),
+        ),
+        (
+            r#"{
+                "model": "gemini-2.5-pro",
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "toolConfig": {"functionCallingConfig": {"mode": "NONE"}}
+            }"#,
+            IrToolChoice::None,
+            serde_json::json!({"mode": "NONE"}),
+        ),
+        (
+            r#"{
+                "model": "gemini-2.5-pro",
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "toolConfig": {
+                    "functionCallingConfig": {
+                        "mode": "ANY",
+                        "allowedFunctionNames": ["lookup"]
+                    }
+                }
+            }"#,
+            IrToolChoice::Named("lookup".into()),
+            serde_json::json!({"mode": "ANY", "allowedFunctionNames": ["lookup"]}),
+        ),
+    ];
+    for (req, expected, fcc) in cases {
+        let (ir, decode_report) = decode(Wire::Gemini, req.as_bytes()).expect("decode");
+        assert_eq!(
+            ir.sampling.tool_choice, *expected,
+            "decode tool_choice from {req}"
+        );
+        assert!(
+            !loss_dropped(&decode_report, "sampling.tool_choice"),
+            "Gemini has toolConfig and must not Drop on decode, got {decode_report:?}"
+        );
+        let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            body.get("toolConfig")
+                .and_then(|v| v.get("functionCallingConfig")),
+            Some(fcc),
+            "Gemini must emit functionCallingConfig {fcc}, got {body}"
+        );
+        assert!(
+            !loss_dropped(&report, "sampling.tool_choice"),
+            "Gemini has a slot and must not Drop tool_choice, got {report:?}"
+        );
+    }
 }
 
 #[test]
@@ -2067,6 +2295,64 @@ fn chat_grouped_function_call_records_thought_signature_drop() {
                 && event.detail == "thoughtSignature has no Chat Completions slot"
         }),
         "grouped FunctionCall must record the same thought_signature Drop as standalone, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_standalone_function_calls_encode_one_tool_calls_message() {
+    let ir = IrRequest {
+        model: "gpt-4".into(),
+        items: vec![
+            IrItem::FunctionCall {
+                call_id: "call_1".into(),
+                name: "lookup".into(),
+                arguments: r#"{"q":"x"}"#.into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionCall {
+                call_id: "call_2".into(),
+                name: "search".into(),
+                arguments: r#"{"q":"y"}"#.into(),
+                thought_signature: None,
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    assert_eq!(
+        messages.len(),
+        1,
+        "standalone FunctionCalls must be one assistant turn, got {body}"
+    );
+    assert_eq!(
+        messages[0].get("content"),
+        Some(&Value::Null),
+        "tool-only assistant content must stay null, got {body}"
+    );
+    let calls = messages[0]
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .expect("tool_calls");
+    assert_eq!(
+        calls.len(),
+        2,
+        "one tool_calls array with both calls, got {body}"
+    );
+    assert_eq!(
+        calls[0].pointer("/function/name").and_then(Value::as_str),
+        Some("lookup"),
+        "first tool_call name, got {body}"
+    );
+    assert_eq!(
+        calls[1].pointer("/function/name").and_then(Value::as_str),
+        Some("search"),
+        "second tool_call name, got {body}"
     );
 }
 

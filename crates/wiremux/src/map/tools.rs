@@ -152,7 +152,9 @@ pub(super) fn prepare_tools(
                 ToolTypePolicy::HardError | ToolTypePolicy::FlattenNamespace => {
                     return Err(MapError::hard(
                         path,
-                        format!("unknown tool type `{type_name}`"),
+                        format!(
+                            "unknown tool type `{type_name}` (tool_type_policy = passthrough|flatten-namespace|hard-error)"
+                        ),
                     ));
                 }
             },
@@ -429,7 +431,22 @@ tool_type_policy = "{policy}"
         let mut report = LossReport::default();
         let err = prepare_tools(Wire::Responses, &ir, &profile("hard-error"), &mut report)
             .expect_err("unknown type");
-        assert!(matches!(err, MapError::HardError { .. }));
+        match err {
+            MapError::HardError { detail, .. } => {
+                assert!(detail.contains("weird"), "detail={detail}");
+                assert!(
+                    detail.contains("tool_type_policy"),
+                    "must name tool_type_policy, got {detail}"
+                );
+                assert!(
+                    detail.contains("passthrough")
+                        && detail.contains("flatten-namespace")
+                        && detail.contains("hard-error"),
+                    "must list tool_type_policy values, got {detail}"
+                );
+            }
+            other => panic!("expected HardError, got {other}"),
+        }
     }
 
     #[test]
@@ -457,7 +474,15 @@ tool_type_policy = "{policy}"
         let mut report = LossReport::default();
         let err = prepare_tools(Wire::Responses, &ir, &profile("hard-error"), &mut report)
             .expect_err("unknown type with name must hard-error");
-        assert!(matches!(err, MapError::HardError { .. }));
+        match err {
+            MapError::HardError { detail, .. } => {
+                assert!(
+                    detail.contains("tool_type_policy"),
+                    "must name tool_type_policy, got {detail}"
+                );
+            }
+            other => panic!("expected HardError, got {other}"),
+        }
         let mut report = LossReport::default();
         prepare_tools(
             Wire::Responses,

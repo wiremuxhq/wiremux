@@ -76,7 +76,7 @@ pub struct Dialect {
 }
 
 /// v1 wire dialects. Not a host registry name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Wire {
     /// OpenAI Chat Completions.
@@ -90,6 +90,9 @@ pub enum Wire {
 }
 
 impl Wire {
+    /// Catalog spellings. CLI `--from` also accepts `chat` for `chat-completions`.
+    const NAMES: &'static [&'static str] = &["chat-completions", "messages", "responses", "gemini"];
+
     /// Catalog / file spelling (`messages`, `chat-completions`, `responses`, `gemini`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -99,6 +102,22 @@ impl Wire {
             Self::Responses => "responses",
             Self::Gemini => "gemini",
         }
+    }
+
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "chat-completions" => Ok(Self::ChatCompletions),
+            "messages" => Ok(Self::Messages),
+            "responses" => Ok(Self::Responses),
+            "gemini" => Ok(Self::Gemini),
+            other => Err(unknown_kebab("wire", other, Self::NAMES)),
+        }
+    }
+
+    /// Close match after folding case and `_`/`-`.
+    #[must_use]
+    pub fn suggest(s: &str) -> Option<&'static str> {
+        suggest_kebab(s, Self::NAMES)
     }
 
     /// Built-in SSE event names when `stream_events` is omitted.
@@ -156,6 +175,12 @@ impl Wire {
     }
 }
 
+impl<'de> Deserialize<'de> for Wire {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_kebab(deserializer, Self::parse)
+    }
+}
+
 /// List merge policy. `verbatim` is an alias of `replace`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -168,25 +193,27 @@ pub enum ListMerge {
 }
 
 impl ListMerge {
-    pub(crate) fn parse(s: &str) -> Option<Self> {
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
         match s {
-            "union" => Some(Self::Union),
-            "replace" | "verbatim" => Some(Self::Replace),
-            _ => None,
+            "union" => Ok(Self::Union),
+            "replace" | "verbatim" => Ok(Self::Replace),
+            other => Err(unknown_kebab(
+                "list_merge",
+                other,
+                &["union", "replace", "verbatim"],
+            )),
         }
     }
 }
 
 impl<'de> Deserialize<'de> for ListMerge {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        Self::parse(&s)
-            .ok_or_else(|| D::Error::unknown_variant(&s, &["union", "replace", "verbatim"]))
+        deserialize_kebab(deserializer, Self::parse)
     }
 }
 
 /// How encode treats unknown / namespaced tool types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToolTypePolicy {
     /// Forward the tool type as-is.
@@ -198,8 +225,29 @@ pub enum ToolTypePolicy {
     HardError,
 }
 
+impl ToolTypePolicy {
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "passthrough" => Ok(Self::Passthrough),
+            "flatten-namespace" => Ok(Self::FlattenNamespace),
+            "hard-error" => Ok(Self::HardError),
+            other => Err(unknown_kebab(
+                "tool_type_policy",
+                other,
+                &["passthrough", "flatten-namespace", "hard-error"],
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolTypePolicy {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_kebab(deserializer, Self::parse)
+    }
+}
+
 /// How decode treats unrecognized SSE events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StreamUnknownPolicy {
     /// Fail the map.
@@ -207,6 +255,26 @@ pub enum StreamUnknownPolicy {
     HardError,
     /// Forward the raw SSE frame.
     Passthrough,
+}
+
+impl StreamUnknownPolicy {
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "hard-error" => Ok(Self::HardError),
+            "passthrough" => Ok(Self::Passthrough),
+            other => Err(unknown_kebab(
+                "stream_unknown_policy",
+                other,
+                &["hard-error", "passthrough"],
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StreamUnknownPolicy {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_kebab(deserializer, Self::parse)
+    }
 }
 
 /// HTTP request surface (API calls, not the token POST).
@@ -263,14 +331,60 @@ impl AuthScheme {
     }
 }
 
+const AUTH_SCHEME_NAMES: &[&str] = &["bearer", "x-api-key", "none", "header:<name>"];
+
 fn suggest_auth_scheme(s: &str) -> Option<&'static str> {
-    let folded = s.to_ascii_lowercase().replace('_', "-");
-    match folded.as_str() {
-        "bearer" => Some("bearer"),
-        "x-api-key" | "api-key" => Some("x-api-key"),
-        "none" => Some("none"),
+    suggest_kebab(s, AUTH_SCHEME_NAMES)
+}
+
+fn fold_enum_key(s: &str) -> String {
+    s.to_ascii_lowercase().replace(['_', '-'], "")
+}
+
+/// Close match after folding case and `_`/`-`.
+pub(crate) fn suggest_kebab<'a>(input: &str, legal: &[&'a str]) -> Option<&'a str> {
+    let folded = fold_enum_key(input);
+    if folded.is_empty() {
+        return None;
+    }
+    let mut close = Vec::new();
+    for &opt in legal {
+        let candidate = fold_enum_key(opt);
+        if candidate == folded {
+            return Some(opt);
+        }
+        if candidate.starts_with(&folded)
+            || folded.starts_with(&candidate)
+            || candidate.ends_with(&folded)
+            || folded.ends_with(&candidate)
+        {
+            close.push(opt);
+        }
+    }
+    match close.as_slice() {
+        [only] => Some(*only),
         _ => None,
     }
+}
+
+fn unknown_kebab(field: &str, got: &str, legal: &[&str]) -> String {
+    let listed = legal.join("|");
+    let mut msg = format!("unknown {field} `{got}` ({listed})");
+    if let Some(suggest) = suggest_kebab(got, legal) {
+        msg.push_str(&format!("; did you mean `{suggest}`"));
+    }
+    msg
+}
+
+fn deserialize_kebab<'de, T, D>(
+    deserializer: D,
+    parse: fn(&str) -> Result<T, String>,
+) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    parse(&s).map_err(D::Error::custom)
 }
 
 impl<'de> Deserialize<'de> for AuthScheme {
@@ -367,7 +481,7 @@ pub struct TokenResponse {
 }
 
 /// Token POST body encoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TokenRequestFormat {
     /// JSON body (Anthropic).
@@ -376,8 +490,28 @@ pub enum TokenRequestFormat {
     Form,
 }
 
+impl TokenRequestFormat {
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "json" => Ok(Self::Json),
+            "form" => Ok(Self::Form),
+            other => Err(unknown_kebab(
+                "token_request_format",
+                other,
+                &["json", "form"],
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for TokenRequestFormat {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_kebab(deserializer, Self::parse)
+    }
+}
+
 /// Named credential-store layouts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CredsFormat {
     /// Explicit JSON Pointers on the pack.
@@ -399,8 +533,35 @@ pub enum CredsFormat {
     CopilotHosts,
 }
 
+impl CredsFormat {
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "json-pointer" => Ok(Self::JsonPointer),
+            "claude-credentials" => Ok(Self::ClaudeCredentials),
+            "oidc-auth-json" => Ok(Self::OidcAuthJson),
+            "copilot-hosts" => Ok(Self::CopilotHosts),
+            other => Err(unknown_kebab(
+                "creds_format",
+                other,
+                &[
+                    "json-pointer",
+                    "claude-credentials",
+                    "oidc-auth-json",
+                    "copilot-hosts",
+                ],
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CredsFormat {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_kebab(deserializer, Self::parse)
+    }
+}
+
 /// Expiry field unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExpiresUnit {
     /// Milliseconds since epoch (Claude credentials).
@@ -409,8 +570,24 @@ pub enum ExpiresUnit {
     S,
 }
 
+impl ExpiresUnit {
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "ms" => Ok(Self::Ms),
+            "s" => Ok(Self::S),
+            other => Err(unknown_kebab("expires_unit", other, &["ms", "s"])),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ExpiresUnit {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_kebab(deserializer, Self::parse)
+    }
+}
+
 /// Login engine selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Login {
     /// Print `setup_token_hint` and exit 2.
@@ -421,6 +598,28 @@ pub enum Login {
     Device,
     /// Not ready / disabled.
     None,
+}
+
+impl Login {
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "setup-token" => Ok(Self::SetupToken),
+            "pkce" => Ok(Self::Pkce),
+            "device" => Ok(Self::Device),
+            "none" => Ok(Self::None),
+            other => Err(unknown_kebab(
+                "login",
+                other,
+                &["setup-token", "pkce", "device", "none"],
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Login {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_kebab(deserializer, Self::parse)
+    }
 }
 
 /// Encode-time fingerprint (API request only).
@@ -443,7 +642,7 @@ pub struct Fingerprint {
 }
 
 /// Tool-name case conversion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToolNameCase {
     /// Leave names unchanged.
@@ -454,8 +653,29 @@ pub enum ToolNameCase {
     Kebab,
 }
 
+impl ToolNameCase {
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "as-is" => Ok(Self::AsIs),
+            "snake" => Ok(Self::Snake),
+            "kebab" => Ok(Self::Kebab),
+            other => Err(unknown_kebab(
+                "tool_name_case",
+                other,
+                &["as-is", "snake", "kebab"],
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolNameCase {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_kebab(deserializer, Self::parse)
+    }
+}
+
 /// Encode-time policy for `forbidden_body_fields`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ForbiddenFieldPolicy {
     /// Drop the field.
@@ -463,6 +683,26 @@ pub enum ForbiddenFieldPolicy {
     /// Fail encode.
     #[default]
     HardError,
+}
+
+impl ForbiddenFieldPolicy {
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "strip" => Ok(Self::Strip),
+            "hard-error" => Ok(Self::HardError),
+            other => Err(unknown_kebab(
+                "forbidden_field_policy",
+                other,
+                &["strip", "hard-error"],
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ForbiddenFieldPolicy {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_kebab(deserializer, Self::parse)
+    }
 }
 
 /// Beta header values and merge policy.

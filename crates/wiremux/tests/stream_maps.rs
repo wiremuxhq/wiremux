@@ -561,19 +561,9 @@ fn stream_signed_function_call_keeps_nonempty_args() {
     let ev = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
         .expect("decode")
         .expect("event");
-    let encoded = encode_stream_event(Wire::Gemini, &ev).expect("encode");
-    let json: Value = serde_json::from_str(&encoded.data).expect("json");
-    assert_eq!(
-        json.pointer("/candidates/0/content/parts/0/thoughtSignature")
-            .and_then(Value::as_str),
-        Some("sig_args"),
-        "signature must survive, got {json}"
-    );
-    assert_eq!(
-        json.pointer("/candidates/0/content/parts/0/functionCall/args/q")
-            .and_then(Value::as_str),
-        Some("x"),
-        "nonempty args must not be dropped when thoughtSignature is present, got {json}"
+    assert!(
+        matches!(ev, IrStreamEvent::Protocol { ref item_type, .. } if item_type == "chunk"),
+        "1:1 nonempty args stay Protocol, got {ev:?}"
     );
 
     let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("fan-out");
@@ -589,13 +579,32 @@ fn stream_signed_function_call_keeps_nonempty_args() {
         "fan-out must emit signed ToolCallStart, got {all:?}"
     );
     assert!(
-        all.iter().any(|ev| match ev {
-            IrStreamEvent::ToolCallArgDelta { delta } => {
-                delta.contains("\"q\"") && delta.contains("\"x\"")
-            }
-            _ => false,
-        }),
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+        )),
         "fan-out must emit ArgDelta, got {all:?}"
+    );
+    let delta = all
+        .iter()
+        .find_map(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { delta } => Some(delta.as_str()),
+            _ => None,
+        })
+        .expect("ArgDelta");
+    let encoded = encode_stream_event(
+        Wire::Gemini,
+        &IrStreamEvent::ToolCallArgDelta {
+            delta: delta.to_string(),
+        },
+    )
+    .expect("encode ArgDelta");
+    let json: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(
+        json.pointer("/candidates/0/content/parts/0/functionCall/args/q")
+            .and_then(Value::as_str),
+        Some("x"),
+        "encoded fan-out ArgDelta must keep nonempty args, got {json}"
     );
 }
 
@@ -629,12 +638,10 @@ fn gemini_thought_then_function_call_emits_both() {
         "functionCall after thought must emit ToolCallStart, got {all:?}"
     );
     assert!(
-        all.iter().any(|ev| match ev {
-            IrStreamEvent::ToolCallArgDelta { delta } => {
-                delta.contains("\"q\"") && delta.contains("\"x\"")
-            }
-            _ => false,
-        }),
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+        )),
         "functionCall args must emit ArgDelta, got {all:?}"
     );
 }
@@ -661,13 +668,41 @@ fn gemini_text_then_function_call_emits_both() {
         "functionCall after text must emit ToolCallStart, got {all:?}"
     );
     assert!(
-        all.iter().any(|ev| match ev {
-            IrStreamEvent::ToolCallArgDelta { delta } => {
-                delta.contains("\"q\"") && delta.contains("\"x\"")
-            }
-            _ => false,
-        }),
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+        )),
         "functionCall args must emit ArgDelta, got {all:?}"
+    );
+}
+
+#[test]
+fn gemini_last_chunk_parts_keep_finish_and_usage() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2}}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("fan-out");
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "done")),
+        "text part must stay, got {all:?}"
+    );
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+        "same-chunk finishReason must stay, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Usage {
+                prompt_tokens: 3,
+                completion_tokens: 2,
+                ..
+            }
+        )),
+        "same-chunk usageMetadata must stay, got {all:?}"
     );
 }
 
@@ -779,6 +814,18 @@ fn unknown_event_hard_error_and_passthrough() {
         MapError::HardError { path, detail } => {
             assert_eq!(path, "vendor.foo");
             assert!(detail.contains("vendor.foo"), "detail={detail}");
+            assert!(
+                detail.contains("stream_unknown_policy"),
+                "must name stream_unknown_policy, got {detail}"
+            );
+            assert!(
+                detail.contains("hard-error") && detail.contains("passthrough"),
+                "must list stream_unknown_policy values, got {detail}"
+            );
+            assert!(
+                detail.contains("stream_events"),
+                "must mention adding the name to stream_events, got {detail}"
+            );
         }
         other => panic!("expected HardError, got {other}"),
     }
@@ -1077,6 +1124,51 @@ fn chat_tool_start_with_args_keeps_bytes() {
 }
 
 #[test]
+fn chat_parallel_tool_calls_keep_protocol() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":1}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"search","arguments":"{\"q\":2}"}}]}}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode parallel tools");
+    let starts: Vec<(&str, &str)> = all
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart { id, name, .. } => Some((id.as_str(), name.as_str())),
+            _ => None,
+        })
+        .collect();
+    let has_protocol = all
+        .iter()
+        .any(|ev| matches!(ev, IrStreamEvent::Protocol { .. }));
+    assert!(
+        has_protocol
+            || (starts
+                .iter()
+                .any(|(id, name)| *id == "call_1" && *name == "lookup")
+                && starts
+                    .iter()
+                    .any(|(id, name)| *id == "call_2" && *name == "search")),
+        "parallel tool_calls must stay Protocol or emit both starts, got {all:?}"
+    );
+    if let [IrStreamEvent::Protocol { payload, .. }] = all.as_slice() {
+        let calls = payload
+            .pointer("/choices/0/delta/tool_calls")
+            .and_then(Value::as_array)
+            .expect("tool_calls");
+        assert_eq!(
+            calls.len(),
+            2,
+            "Protocol must keep both sibling calls, got {payload}"
+        );
+    }
+    assert!(
+        !(starts.len() == 1 && starts[0] == ("call_1", "lookup")),
+        "must not expand only the first tool_call, got {all:?}"
+    );
+}
+
+#[test]
 fn chat_id_then_name_assembles_one_start() {
     let id_only = RawSse {
         event: None,
@@ -1164,6 +1256,13 @@ fn chat_array_delta_content_flattens_to_text() {
         event: None,
         data: r#"{"choices":[{"delta":{"content":[{"type":"text","text":"Hi"}]}}]}"#.into(),
     };
+    let first = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("1:1")
+        .expect("event");
+    assert!(
+        matches!(first, IrStreamEvent::TextDelta { ref text } if text == "Hi"),
+        "1:1 decode must flatten array content, got {first:?}"
+    );
     let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("array");
     assert!(
         all.iter()
@@ -1201,6 +1300,47 @@ fn chat_same_chunk_finish_and_usage_fans_out() {
             }
         )),
         "same-chunk usage must not be dropped, got {all:?}"
+    );
+}
+
+#[test]
+fn chat_tool_delta_same_chunk_finish_and_usage() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":6}}"#.into(),
+    };
+    let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode tool+finish+usage");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallStart { id, name, .. } if id == "call_1" && name == "lookup"
+        )),
+        "must emit Start, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+        )),
+        "must emit ArgDelta, got {all:?}"
+    );
+    assert!(
+        all.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "tool_calls")
+        ),
+        "same-chunk finish_reason must stay, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Usage {
+                prompt_tokens: 4,
+                completion_tokens: 6,
+                ..
+            }
+        )),
+        "same-chunk usage must stay, got {all:?}"
     );
 }
 

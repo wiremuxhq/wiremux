@@ -250,25 +250,10 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 messages.push(msg);
                 idx += consumed;
             }
-            IrItem::FunctionCall {
-                call_id,
-                name,
-                arguments,
-                thought_signature,
-            } => {
-                if thought_signature.is_some() {
-                    report.record(
-                        format!("items[{idx}]"),
-                        LossAction::Drop,
-                        "thoughtSignature has no Chat Completions slot",
-                    );
-                }
-                messages.push(json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [function_call_json(call_id, name, arguments)],
-                }));
-                idx += 1;
+            IrItem::FunctionCall { .. } => {
+                let (msg, consumed) = encode_standalone_function_calls(ir, idx, report);
+                messages.push(msg);
+                idx += consumed;
             }
             IrItem::FunctionOutput { call_id, output } => {
                 messages.push(json!({
@@ -310,7 +295,39 @@ fn encode_assistant(
     parts: &[IrPart],
     report: &mut LossReport,
 ) -> (Value, usize) {
-    let mut consumed = 1;
+    let (calls, extra) = take_function_calls(ir, start + 1, report);
+    let mut msg = json!({
+        "role": "assistant",
+        "content": encode_parts(parts, report),
+    });
+    if !calls.is_empty() {
+        msg["tool_calls"] = Value::Array(calls);
+    }
+    (msg, 1 + extra)
+}
+
+fn encode_standalone_function_calls(
+    ir: &IrRequest,
+    start: usize,
+    report: &mut LossReport,
+) -> (Value, usize) {
+    let (calls, consumed) = take_function_calls(ir, start, report);
+    (
+        json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": calls,
+        }),
+        consumed,
+    )
+}
+
+fn take_function_calls(
+    ir: &IrRequest,
+    start: usize,
+    report: &mut LossReport,
+) -> (Vec<Value>, usize) {
+    let mut consumed = 0;
     let mut calls = Vec::new();
     while let Some(IrItem::FunctionCall {
         call_id,
@@ -329,14 +346,7 @@ fn encode_assistant(
         calls.push(function_call_json(call_id, name, arguments));
         consumed += 1;
     }
-    let mut msg = json!({
-        "role": "assistant",
-        "content": encode_parts(parts, report),
-    });
-    if !calls.is_empty() {
-        msg["tool_calls"] = Value::Array(calls);
-    }
-    (msg, consumed)
+    (calls, consumed)
 }
 
 fn function_call_json(call_id: &str, name: &str, arguments: &str) -> Value {

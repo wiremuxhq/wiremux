@@ -87,9 +87,17 @@ pub fn decode_stream_events(
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
     {
         let events = chat::decode_all(&value)?;
-        let tool_protocol = matches!(events.as_slice(), [IrStreamEvent::Protocol { .. }]);
-        if !events.is_empty() && !tool_protocol {
-            return Ok(events);
+        if !events.is_empty() {
+            if let Some(IrStreamEvent::Protocol { .. }) = events.first()
+                && let Some(mut expanded) = expand_complete_tool_call(wire, &events[0], raw)
+            {
+                expanded.extend(events.into_iter().skip(1));
+                return Ok(expanded);
+            }
+            let lone_protocol = matches!(events.as_slice(), [IrStreamEvent::Protocol { .. }]);
+            if !lone_protocol {
+                return Ok(events);
+            }
         }
     }
     if matches!(wire, Wire::Responses)
@@ -129,12 +137,21 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
     let parts = value
         .pointer("/candidates/0/content/parts")
         .and_then(Value::as_array)?;
-    if parts.len() < 2 {
-        return None;
-    }
     let mut out = Vec::new();
     for part in parts {
         out.extend(gemini_part_events(part));
+    }
+    if let Some(reason) = value
+        .pointer("/candidates/0/finishReason")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::FinishReason {
+            reason: gemini::map_finish(reason).to_string(),
+        });
+    }
+    if let Some(usage) = value.get("usageMetadata").filter(|v| v.is_object()) {
+        out.push(usage::from_gemini(usage));
     }
     if out.len() < 2 {
         return None;
@@ -214,7 +231,13 @@ fn expand_chat_tool_call(first: &IrStreamEvent, value: &Value) -> Option<Vec<IrS
     let IrStreamEvent::Protocol { .. } = first else {
         return None;
     };
-    let call = value.pointer("/choices/0/delta/tool_calls/0")?;
+    let tool_calls = value
+        .pointer("/choices/0/delta/tool_calls")
+        .and_then(Value::as_array)?;
+    if tool_calls.len() > 1 {
+        return None;
+    }
+    let call = tool_calls.first()?;
     if let Some(ty) = call.get("type").and_then(Value::as_str)
         && ty != "function"
     {
@@ -449,7 +472,9 @@ fn unknown_event(
     match profile.dialect.stream_unknown_policy {
         StreamUnknownPolicy::HardError => Err(MapError::HardError {
             path: name.to_string(),
-            detail: format!("unknown stream event `{name}`"),
+            detail: format!(
+                "unknown stream event `{name}` (stream_unknown_policy = hard-error|passthrough, or add `{name}` to stream_events)"
+            ),
         }),
         StreamUnknownPolicy::Passthrough => {
             let raw =

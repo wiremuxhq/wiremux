@@ -48,20 +48,72 @@ pub enum AuthError {
 
 impl AuthError {
     pub(crate) fn io(path: Option<PathBuf>, source: io::Error) -> Self {
-        Self::Io { path, source }
+        Self::Io {
+            path: path.map(redact_pathbuf),
+            source,
+        }
     }
 
     /// Label a JSON error with the store path. Path-less `?` still uses [`Self::Json`].
     pub(crate) fn json(path: impl AsRef<Path>, source: serde_json::Error) -> Self {
         Self::Json {
-            path: Some(path.as_ref().to_path_buf()),
+            path: Some(redact_pathbuf(path.as_ref().to_path_buf())),
             source,
         }
     }
 }
 
+fn redact_pathbuf(path: PathBuf) -> PathBuf {
+    PathBuf::from(crate::helpers::redact_secret_looking(
+        &path.display().to_string(),
+    ))
+}
+
 impl From<serde_json::Error> for AuthError {
     fn from(source: serde_json::Error) -> Self {
         Self::Json { path: None, source }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LEAK: &str = "ghp_ENVSUBST_LEAK_TOKEN_51";
+
+    fn leak_path() -> PathBuf {
+        PathBuf::from(format!("/tmp/creds-{LEAK}.json"))
+    }
+
+    #[test]
+    fn auth_error_json_display_redacts_secret_in_path() {
+        let source = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let err = AuthError::json(leak_path(), source);
+        let display = err.to_string();
+        assert!(
+            !display.contains(LEAK),
+            "JSON Display leaked token: {display}"
+        );
+        assert!(
+            display.contains("[redacted]"),
+            "JSON Display should redact: {display}"
+        );
+    }
+
+    #[test]
+    fn auth_error_io_display_redacts_secret_in_path() {
+        let err = AuthError::io(
+            Some(leak_path()),
+            io::Error::new(io::ErrorKind::NotFound, "missing store"),
+        );
+        let display = err.to_string();
+        assert!(
+            !display.contains(LEAK),
+            "Io Display leaked token: {display}"
+        );
+        assert!(
+            display.contains("[redacted]"),
+            "Io Display should redact: {display}"
+        );
     }
 }

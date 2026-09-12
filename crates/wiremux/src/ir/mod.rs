@@ -305,37 +305,34 @@ mod tests {
     #[test]
     fn loss_report_records_all_actions() {
         let mut report = LossReport::default();
-        report.events.extend([
-            LossEvent {
-                path: "items[0]".into(),
-                action: LossAction::Preserve,
-                detail: "kept as-is".into(),
-            },
-            LossEvent {
-                path: "items[1]".into(),
-                action: LossAction::Degrade,
-                detail: "developer to system".into(),
-            },
-            LossEvent {
-                path: "sampling.store".into(),
-                action: LossAction::Drop,
-                detail: "no slot".into(),
-            },
-            LossEvent {
-                path: "tools[0]".into(),
-                action: LossAction::HardError,
-                detail: "namespace".into(),
-            },
-        ]);
+        report.record("items[0]", LossAction::Preserve, "kept as-is");
+        report.record("items[1]", LossAction::Degrade, "developer to system");
+        report.record("sampling.store", LossAction::Drop, "no slot");
+        report.record("tools[0]", LossAction::HardError, "namespace");
 
-        let actions: Vec<_> = report.events.iter().map(|event| event.action).collect();
         assert_eq!(
-            actions,
+            report.events,
             [
-                LossAction::Preserve,
-                LossAction::Degrade,
-                LossAction::Drop,
-                LossAction::HardError,
+                LossEvent {
+                    path: "items[0]".into(),
+                    action: LossAction::Preserve,
+                    detail: "kept as-is".into(),
+                },
+                LossEvent {
+                    path: "items[1]".into(),
+                    action: LossAction::Degrade,
+                    detail: "developer to system".into(),
+                },
+                LossEvent {
+                    path: "sampling.store".into(),
+                    action: LossAction::Drop,
+                    detail: "no slot".into(),
+                },
+                LossEvent {
+                    path: "tools[0]".into(),
+                    action: LossAction::HardError,
+                    detail: "namespace".into(),
+                },
             ]
         );
     }
@@ -364,33 +361,6 @@ mod tests {
         assert_ne!(system, developer);
         assert!(matches!(system, IrItem::System { .. }));
         assert!(matches!(developer, IrItem::Developer { .. }));
-    }
-
-    #[test]
-    fn ir_stream_event_usage_does_not_invent_cached_tokens() {
-        let usage = IrStreamEvent::Usage {
-            prompt_tokens: 20,
-            completion_tokens: 5,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
-            reasoning_tokens: 0,
-        };
-        match usage {
-            IrStreamEvent::Usage {
-                prompt_tokens,
-                completion_tokens,
-                cache_read_tokens,
-                cache_write_tokens,
-                reasoning_tokens,
-            } => {
-                assert_eq!(prompt_tokens, 20);
-                assert_eq!(completion_tokens, 5);
-                assert_eq!(cache_read_tokens, 0);
-                assert_eq!(cache_write_tokens, 0);
-                assert_eq!(reasoning_tokens, 0);
-            }
-            other => panic!("expected Usage, got {other:?}"),
-        }
     }
 
     #[test]

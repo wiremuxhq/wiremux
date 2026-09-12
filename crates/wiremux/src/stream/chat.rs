@@ -43,12 +43,9 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     let delta = choice.get("delta");
     if let Some(text) = delta
         .and_then(|d| d.get("content"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
+        .and_then(flatten_content)
     {
-        return Ok(Some(IrStreamEvent::TextDelta {
-            text: text.to_string(),
-        }));
+        return Ok(Some(IrStreamEvent::TextDelta { text }));
     }
     if let Some(text) = delta
         .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
@@ -98,6 +95,7 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
         return Ok(Vec::new());
     };
 
+    let mut out = Vec::new();
     if let Some(calls) = choice
         .pointer("/delta/tool_calls")
         .and_then(Value::as_array)
@@ -106,18 +104,16 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
             check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
         }
         if calls.len() > 1 {
-            return Ok(vec![IrStreamEvent::Protocol {
+            out.push(IrStreamEvent::Protocol {
                 item_type: "chunk".into(),
                 payload: value.clone(),
-            }]);
-        }
-        if let Some(call) = calls.first() {
-            return Ok(vec![decode_tool_call(call, value)]);
+            });
+        } else if let Some(call) = calls.first() {
+            out.push(decode_tool_call(call, value));
         }
     }
 
     let delta = choice.get("delta");
-    let mut out = Vec::new();
     if let Some(text) = delta
         .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
         .and_then(Value::as_str)

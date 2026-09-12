@@ -386,6 +386,7 @@ fn map_sse_stream(
     status: StatusCode,
     resp: reqwest::Response,
 ) -> Response<ProxyBody> {
+    let url = resp.url().to_string();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(16);
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
@@ -397,7 +398,8 @@ fn map_sse_stream(
                 Err(err) => {
                     let _ = tx
                         .send(Ok(Frame::data(Bytes::from(format!(
-                            "upstream stream: {err}\n"
+                            "{}\n",
+                            format_oauth_transport_error("upstream stream", &err, &url)
                         )))))
                         .await;
                     return;
