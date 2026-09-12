@@ -207,26 +207,6 @@ pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-pub(crate) fn base64_url_encode(data: &[u8]) -> String {
-    const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = chunk.get(1).copied().unwrap_or(0);
-        let b2 = chunk.get(2).copied().unwrap_or(0);
-        let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | b2 as u32;
-        out.push(CHARS[((n >> 18) & 63) as usize] as char);
-        out.push(CHARS[((n >> 12) & 63) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(CHARS[((n >> 6) & 63) as usize] as char);
-        }
-        if chunk.len() > 2 {
-            out.push(CHARS[(n & 63) as usize] as char);
-        }
-    }
-    out.replace('+', "-").replace('/', "_")
-}
-
 pub(crate) async fn read_oauth_body(mut resp: reqwest::Response) -> Result<String, AuthError> {
     if let Some(len) = resp.content_length()
         && len > MAX_OAUTH_BODY_BYTES as u64

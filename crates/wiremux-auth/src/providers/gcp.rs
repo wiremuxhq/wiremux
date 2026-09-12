@@ -11,8 +11,8 @@ use tokio::sync::RwLock;
 use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
-    InFlight, MAX_CREDS_BYTES, base64_url_encode, duration_from_expires_in_secs,
-    format_oauth_http_error, lead_or_follow, oauth_http_client, post_form_url,
+    InFlight, MAX_CREDS_BYTES, duration_from_expires_in_secs, format_oauth_http_error,
+    lead_or_follow, oauth_http_client, post_form_url,
 };
 
 const DEFAULT_LIFETIME_SECS: u64 = 3600;
@@ -124,24 +124,20 @@ impl GcpTokenProvider {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let header = r#"{"alg":"RS256","typ":"JWT"}"#;
-        let claims = serde_json::json!({
-            "iss": self.inner.client_email,
-            "sub": self.inner.client_email,
-            "aud": self.inner.token_uri,
-            "iat": now,
-            "exp": now + 3600,
-            "scope": self.inner.scope,
-        });
-        let claims = serde_json::to_string(&claims)
-            .map_err(|e| AuthError::TokenProvider(format!("GCP JWT claims: {e}")))?;
-        let signing_input = format!(
-            "{}.{}",
-            base64_url_encode(header.as_bytes()),
-            base64_url_encode(claims.as_bytes())
-        );
-        let signature = sign_rs256(&self.inner.private_key_pem, signing_input.as_bytes())?;
-        Ok(format!("{signing_input}.{signature}"))
+        let claims = GcpJwtClaims {
+            iss: self.inner.client_email.clone(),
+            sub: self.inner.client_email.clone(),
+            aud: self.inner.token_uri.clone(),
+            iat: now,
+            exp: now + 3600,
+            scope: self.inner.scope.clone(),
+        };
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.typ = Some("JWT".into());
+        let key = jsonwebtoken::EncodingKey::from_rsa_pem(self.inner.private_key_pem.as_bytes())
+            .map_err(|e| AuthError::TokenProvider(format!("GCP private_key PEM: {e}")))?;
+        jsonwebtoken::encode(&header, &claims, &key)
+            .map_err(|e| AuthError::TokenProvider(format!("GCP JWT sign: {e}")))
     }
 
     async fn refresh(&self, force: bool) -> Result<String, AuthError> {
@@ -187,20 +183,14 @@ impl GcpTokenProvider {
     }
 }
 
-fn sign_rs256(pem: &str, data: &[u8]) -> Result<String, AuthError> {
-    use rsa::RsaPrivateKey;
-    use rsa::pkcs1::DecodeRsaPrivateKey;
-    use rsa::pkcs1v15::SigningKey;
-    use rsa::pkcs8::DecodePrivateKey;
-    use rsa::sha2::Sha256;
-    use rsa::signature::{SignatureEncoding, Signer};
-
-    let key = RsaPrivateKey::from_pkcs8_pem(pem)
-        .or_else(|_| RsaPrivateKey::from_pkcs1_pem(pem))
-        .map_err(|e| AuthError::TokenProvider(format!("GCP private_key PEM: {e}")))?;
-    let signing_key = SigningKey::<Sha256>::new(key);
-    let sig = signing_key.sign(data);
-    Ok(base64_url_encode(sig.to_bytes().as_ref()))
+#[derive(serde::Serialize)]
+struct GcpJwtClaims {
+    iss: String,
+    sub: String,
+    aud: String,
+    iat: u64,
+    exp: u64,
+    scope: String,
 }
 
 struct ParsedGcpToken {
