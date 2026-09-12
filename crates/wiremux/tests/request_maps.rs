@@ -1232,6 +1232,30 @@ tool_type_policy = "passthrough"
     );
 }
 
+#[test]
+fn gemini_hosted_google_search_tool_is_not_dropped() {
+    let bytes = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "search"}]}],
+        "tools": [{"googleSearch": {}}]
+    }"#;
+    let (ir, report) = decode(Wire::Gemini, bytes).expect("decode");
+    assert!(
+        !ir.tools.is_empty(),
+        "googleSearch must not vanish, tools={:?} report={report:?}",
+        ir.tools
+    );
+    assert!(
+        ir.tools.iter().any(|tool| match tool {
+            IrTool::Unknown { type_name, .. } => type_name == "googleSearch",
+            IrTool::Hosted { kind, .. } => kind == "googleSearch",
+            _ => false,
+        }),
+        "googleSearch must be Unknown or Hosted, got {:?}",
+        ir.tools
+    );
+}
+
 fn count_cache_control(value: &Value) -> usize {
     match value {
         Value::Object(map) => {

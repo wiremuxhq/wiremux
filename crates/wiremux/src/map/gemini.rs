@@ -123,19 +123,29 @@ fn decode_tools(value: &Value) -> Vec<crate::ir::IrTool> {
     };
     let mut out = Vec::new();
     for tool in tools {
-        let Some(decls) = tool.get("functionDeclarations").and_then(Value::as_array) else {
+        if let Some(decls) = tool.get("functionDeclarations").and_then(Value::as_array) {
+            for decl in decls {
+                out.push(crate::ir::IrTool::Function {
+                    name: str_field(decl, "name").unwrap_or_default(),
+                    description: str_field(decl, "description").unwrap_or_default(),
+                    parameters: decl
+                        .get("parameters")
+                        .cloned()
+                        .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
+                });
+            }
+            continue;
+        }
+        let Some(obj) = tool.as_object() else {
             continue;
         };
-        for decl in decls {
-            out.push(crate::ir::IrTool::Function {
-                name: str_field(decl, "name").unwrap_or_default(),
-                description: str_field(decl, "description").unwrap_or_default(),
-                parameters: decl
-                    .get("parameters")
-                    .cloned()
-                    .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
-            });
-        }
+        let Some(type_name) = obj.keys().next() else {
+            continue;
+        };
+        out.push(crate::ir::IrTool::Unknown {
+            type_name: type_name.clone(),
+            raw: tool.clone(),
+        });
     }
     out
 }

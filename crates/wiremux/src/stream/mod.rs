@@ -87,9 +87,17 @@ pub fn decode_stream_events(
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
     {
         let events = chat::decode_all(&value)?;
-        let tool_protocol = matches!(events.as_slice(), [IrStreamEvent::Protocol { .. }]);
-        if !events.is_empty() && !tool_protocol {
-            return Ok(events);
+        if !events.is_empty() {
+            if let Some(IrStreamEvent::Protocol { .. }) = events.first()
+                && let Some(mut expanded) = expand_complete_tool_call(wire, &events[0], raw)
+            {
+                expanded.extend(events.into_iter().skip(1));
+                return Ok(expanded);
+            }
+            let lone_protocol = matches!(events.as_slice(), [IrStreamEvent::Protocol { .. }]);
+            if !lone_protocol {
+                return Ok(events);
+            }
         }
     }
     if matches!(wire, Wire::Responses)
@@ -129,12 +137,21 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
     let parts = value
         .pointer("/candidates/0/content/parts")
         .and_then(Value::as_array)?;
-    if parts.len() < 2 {
-        return None;
-    }
     let mut out = Vec::new();
     for part in parts {
         out.extend(gemini_part_events(part));
+    }
+    if let Some(reason) = value
+        .pointer("/candidates/0/finishReason")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::FinishReason {
+            reason: gemini::map_finish(reason).to_string(),
+        });
+    }
+    if let Some(usage) = value.get("usageMetadata").filter(|v| v.is_object()) {
+        out.push(usage::from_gemini(usage));
     }
     if out.len() < 2 {
         return None;

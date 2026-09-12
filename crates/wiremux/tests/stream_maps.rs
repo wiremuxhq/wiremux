@@ -677,6 +677,36 @@ fn gemini_text_then_function_call_emits_both() {
 }
 
 #[test]
+fn gemini_last_chunk_parts_keep_finish_and_usage() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2}}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("fan-out");
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "done")),
+        "text part must stay, got {all:?}"
+    );
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+        "same-chunk finishReason must stay, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Usage {
+                prompt_tokens: 3,
+                completion_tokens: 2,
+                ..
+            }
+        )),
+        "same-chunk usageMetadata must stay, got {all:?}"
+    );
+}
+
+#[test]
 fn gemini_safety_finish_reasons_are_content_filter() {
     for reason in ["RECITATION", "SPII", "OTHER", "SAFETY"] {
         let raw = RawSse {
@@ -1270,6 +1300,47 @@ fn chat_same_chunk_finish_and_usage_fans_out() {
             }
         )),
         "same-chunk usage must not be dropped, got {all:?}"
+    );
+}
+
+#[test]
+fn chat_tool_delta_same_chunk_finish_and_usage() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":6}}"#.into(),
+    };
+    let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode tool+finish+usage");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallStart { id, name, .. } if id == "call_1" && name == "lookup"
+        )),
+        "must emit Start, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+        )),
+        "must emit ArgDelta, got {all:?}"
+    );
+    assert!(
+        all.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "tool_calls")
+        ),
+        "same-chunk finish_reason must stay, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Usage {
+                prompt_tokens: 4,
+                completion_tokens: 6,
+                ..
+            }
+        )),
+        "same-chunk usage must stay, got {all:?}"
     );
 }
 
