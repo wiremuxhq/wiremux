@@ -763,7 +763,10 @@ mod tests {
     fn parse_sts_xml() {
         let creds = parse_assume_role_xml(STS_XML).expect("xml");
         assert_eq!(creds.access_key_id, "ASIAEXAMPLE");
-        assert!(creds.expiration.is_some());
+        assert_eq!(
+            creds.expiration,
+            Some(UNIX_EPOCH + Duration::from_secs(4_070_908_800))
+        );
     }
 
     #[tokio::test]

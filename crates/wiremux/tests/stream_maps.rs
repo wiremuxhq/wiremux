@@ -561,19 +561,9 @@ fn stream_signed_function_call_keeps_nonempty_args() {
     let ev = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
         .expect("decode")
         .expect("event");
-    let encoded = encode_stream_event(Wire::Gemini, &ev).expect("encode");
-    let json: Value = serde_json::from_str(&encoded.data).expect("json");
-    assert_eq!(
-        json.pointer("/candidates/0/content/parts/0/thoughtSignature")
-            .and_then(Value::as_str),
-        Some("sig_args"),
-        "signature must survive, got {json}"
-    );
-    assert_eq!(
-        json.pointer("/candidates/0/content/parts/0/functionCall/args/q")
-            .and_then(Value::as_str),
-        Some("x"),
-        "nonempty args must not be dropped when thoughtSignature is present, got {json}"
+    assert!(
+        matches!(ev, IrStreamEvent::Protocol { ref item_type, .. } if item_type == "chunk"),
+        "1:1 nonempty args stay Protocol, got {ev:?}"
     );
 
     let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("fan-out");
@@ -589,13 +579,32 @@ fn stream_signed_function_call_keeps_nonempty_args() {
         "fan-out must emit signed ToolCallStart, got {all:?}"
     );
     assert!(
-        all.iter().any(|ev| match ev {
-            IrStreamEvent::ToolCallArgDelta { delta } => {
-                delta.contains("\"q\"") && delta.contains("\"x\"")
-            }
-            _ => false,
-        }),
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+        )),
         "fan-out must emit ArgDelta, got {all:?}"
+    );
+    let delta = all
+        .iter()
+        .find_map(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { delta } => Some(delta.as_str()),
+            _ => None,
+        })
+        .expect("ArgDelta");
+    let encoded = encode_stream_event(
+        Wire::Gemini,
+        &IrStreamEvent::ToolCallArgDelta {
+            delta: delta.to_string(),
+        },
+    )
+    .expect("encode ArgDelta");
+    let json: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(
+        json.pointer("/candidates/0/content/parts/0/functionCall/args/q")
+            .and_then(Value::as_str),
+        Some("x"),
+        "encoded fan-out ArgDelta must keep nonempty args, got {json}"
     );
 }
 
@@ -629,12 +638,10 @@ fn gemini_thought_then_function_call_emits_both() {
         "functionCall after thought must emit ToolCallStart, got {all:?}"
     );
     assert!(
-        all.iter().any(|ev| match ev {
-            IrStreamEvent::ToolCallArgDelta { delta } => {
-                delta.contains("\"q\"") && delta.contains("\"x\"")
-            }
-            _ => false,
-        }),
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+        )),
         "functionCall args must emit ArgDelta, got {all:?}"
     );
 }
@@ -661,12 +668,10 @@ fn gemini_text_then_function_call_emits_both() {
         "functionCall after text must emit ToolCallStart, got {all:?}"
     );
     assert!(
-        all.iter().any(|ev| match ev {
-            IrStreamEvent::ToolCallArgDelta { delta } => {
-                delta.contains("\"q\"") && delta.contains("\"x\"")
-            }
-            _ => false,
-        }),
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+        )),
         "functionCall args must emit ArgDelta, got {all:?}"
     );
 }

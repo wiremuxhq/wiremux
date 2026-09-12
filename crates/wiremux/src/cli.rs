@@ -746,7 +746,8 @@ base_url = "https://generativelanguage.googleapis.com"
     #[test]
     fn parse_listen_rejects_wildcard() {
         assert!(parse_listen("0.0.0.0:0").is_err());
-        assert!(parse_listen("127.0.0.1:0").is_ok());
+        let addr = parse_listen("127.0.0.1:0").expect("loopback ephemeral listen");
+        assert_eq!(addr, "127.0.0.1:0".parse().expect("socket addr"));
     }
 
     #[test]

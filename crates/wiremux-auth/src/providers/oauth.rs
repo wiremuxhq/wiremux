@@ -2253,8 +2253,13 @@ access_env = "WIREMUX_TEST_ACCESS"
 
     #[test]
     fn token_endpoint_https_or_loopback_only() {
-        assert!(https_token_url("https://auth.example.invalid/token").is_some());
-        assert!(https_token_url("HTTPS://auth.example.invalid/token").is_some());
+        let https = https_token_url("https://auth.example.invalid/token").expect("https token url");
+        assert_eq!(https.as_str(), "https://auth.example.invalid/token");
+        let https_upper =
+            https_token_url("HTTPS://auth.example.invalid/token").expect("HTTPS token url");
+        assert_eq!(https_upper.scheme(), "https");
+        assert_eq!(https_upper.host_str(), Some("auth.example.invalid"));
+        assert_eq!(https_upper.path(), "/token");
         assert!(https_token_url("http://127.0.0.1:9/token").is_none());
         assert!(crate::profile::is_loopback_http("http://127.0.0.1:9/token"));
         assert!(crate::profile::is_loopback_http("http://localhost/token"));
