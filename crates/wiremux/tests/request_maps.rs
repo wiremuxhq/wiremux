@@ -1638,6 +1638,96 @@ fn min_cacheable_tokens_zero_does_not_skip() {
     );
 }
 
+#[test]
+fn long_developer_at_min_cacheable_tokens_still_tags() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![
+            IrItem::Developer {
+                text: "x".repeat(5000),
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("hello".into())],
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling {
+            cache: IrCache {
+                enabled: true,
+                retention: None,
+                min_cacheable_tokens: Some(1024),
+            },
+            ..IrSampling::default()
+        },
+    };
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        count_cache_control(&body) > 0,
+        "long developer must still tag, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.cache" && event.action == LossAction::Preserve
+        }),
+        "must Preserve sampling.cache, got {report:?}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| { event.path == "sampling.cache" && event.action == LossAction::Drop }),
+        "must not Drop sampling.cache, got {report:?}"
+    );
+    let (decoded, _) = decode(Wire::Messages, &bytes).expect("decode");
+    assert_eq!(
+        decoded.sampling.cache.min_cacheable_tokens, None,
+        "floor is host policy, not a wire field"
+    );
+}
+
+#[test]
+fn large_function_output_at_min_cacheable_tokens_still_tags() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![
+            IrItem::System {
+                text: "rules".into(),
+            },
+            IrItem::FunctionOutput {
+                call_id: "c1".into(),
+                output: "x".repeat(5000),
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling {
+            cache: IrCache {
+                enabled: true,
+                retention: None,
+                min_cacheable_tokens: Some(1024),
+            },
+            ..IrSampling::default()
+        },
+    };
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        count_cache_control(&body) > 0,
+        "large tool result must still tag, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.cache" && event.action == LossAction::Preserve
+        }),
+        "must Preserve sampling.cache, got {report:?}"
+    );
+    let (decoded, _) = decode(Wire::Messages, &bytes).expect("decode");
+    assert_eq!(
+        decoded.sampling.cache.min_cacheable_tokens, None,
+        "floor is host policy, not a wire field"
+    );
+}
+
 fn user_ir(sampling: IrSampling) -> IrRequest {
     IrRequest {
         model: "gpt-4".into(),

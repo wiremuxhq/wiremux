@@ -54,9 +54,11 @@ pub fn load_profile(id: &str, opts: &LoadOptions<'_>) -> Result<ResolvedProfile,
 ///
 /// If a catalog id equals the wire name (`messages`, `chat-completions`,
 /// `responses`, `gemini`), that profile is loaded. Otherwise the first
-/// shipped-or-user profile whose resolved `wire` matches is returned. If
-/// none exist, a minimal in-memory profile is returned so a host never
-/// needs `UnknownProvider` for a known dialect.
+/// non-shipped (user, extra-dir, or explicit) profile whose resolved
+/// `wire` matches is returned. Shipped vendor packs are never selected
+/// as the unknown-name fallback. If none match, a minimal in-memory
+/// profile is returned so a host never needs `UnknownProvider` for a
+/// known dialect.
 pub fn load_profile_for_wire(
     wire: Wire,
     opts: &LoadOptions<'_>,
@@ -68,23 +70,26 @@ pub fn load_profile_for_wire(
         Err(err) => return Err(err),
     }
 
-    for id in unique_layer_ids(opts)? {
+    for id in unique_non_shipped_layer_ids(opts)? {
         if id == name {
             continue;
         }
         match load_profile(&id, opts) {
             Ok(profile) if profile.dialect.wire == Some(wire) => return Ok(profile),
             Ok(_) => {}
-            Err(_) => {}
+            Err(err) => return Err(err),
         }
     }
     Ok(minimal_profile_for_wire(wire))
 }
 
-fn unique_layer_ids(opts: &LoadOptions<'_>) -> Result<Vec<String>, ProfileError> {
+fn unique_non_shipped_layer_ids(opts: &LoadOptions<'_>) -> Result<Vec<String>, ProfileError> {
     let mut seen = BTreeSet::new();
     let mut ids = Vec::new();
     for layer in collect_layers(opts)? {
+        if layer.from_shipped {
+            continue;
+        }
         if seen.insert(layer.id.clone()) {
             ids.push(layer.id);
         }
@@ -161,6 +166,7 @@ fn looks_like_path(s: &str) -> bool {
 struct Layer {
     id: String,
     profile: RawProfile,
+    from_shipped: bool,
 }
 
 fn collect_layers(opts: &LoadOptions<'_>) -> Result<Vec<Layer>, ProfileError> {
@@ -169,7 +175,11 @@ fn collect_layers(opts: &LoadOptions<'_>) -> Result<Vec<Layer>, ProfileError> {
         for text in shipped::documents() {
             let profile = parse_layer_str(text)?;
             if let Some(id) = catalog_id(&profile, None) {
-                layers.push(Layer { id, profile });
+                layers.push(Layer {
+                    id,
+                    profile,
+                    from_shipped: true,
+                });
             }
         }
     }
@@ -261,7 +271,11 @@ fn push_layer(layers: &mut Vec<Layer>, path: &Path) -> Result<(), ProfileError> 
             "profile filename stem differs from document id; using document id"
         );
     }
-    layers.push(Layer { id, profile });
+    layers.push(Layer {
+        id,
+        profile,
+        from_shipped: false,
+    });
     Ok(())
 }
 
@@ -366,5 +380,24 @@ wire = "gemini"
         let profile = load_profile_for_wire(Wire::Gemini, &opts).expect("wire match");
         assert_eq!(profile.id, "custom-gemini");
         assert_eq!(profile.dialect.wire, Some(Wire::Gemini));
+    }
+
+    #[test]
+    fn load_profile_for_wire_default_opts_does_not_return_shipped_oauth() {
+        let opts = LoadOptions {
+            include_shipped: true,
+            include_user_config: false,
+            extra_profile_dirs: Vec::new(),
+            ..empty_opts()
+        };
+        let messages = load_profile_for_wire(Wire::Messages, &opts).expect("dialect skeleton");
+        assert_eq!(messages.id, "messages");
+        assert!(messages.oauth.is_none());
+        assert_eq!(messages.dialect.wire, Some(Wire::Messages));
+
+        let chat = load_profile_for_wire(Wire::ChatCompletions, &opts).expect("dialect skeleton");
+        assert_eq!(chat.id, "chat-completions");
+        assert!(chat.oauth.is_none());
+        assert_ne!(chat.id, "grok-ollama");
     }
 }

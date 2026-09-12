@@ -219,18 +219,22 @@ pub enum LossAction {
 
 /// Estimate prompt tokens as `chars / 4` over IR text.
 ///
-/// Counts system / user / assistant text parts, function-call names and
-/// args, and function-tool names, descriptions, and parameters.
+/// Counts system / developer / user / assistant text and thinking parts,
+/// function-call names and args, function-output text, and function-tool
+/// names, descriptions, and parameters.
 #[must_use]
 pub fn estimate_prompt_tokens(req: &IrRequest) -> u32 {
     let mut chars = 0usize;
     for item in &req.items {
         match item {
-            IrItem::System { text } => chars += text.len(),
+            IrItem::System { text } | IrItem::Developer { text } => chars += text.len(),
             IrItem::User { parts } | IrItem::Assistant { parts } => {
                 for part in parts {
-                    if let IrPart::Text(text) = part {
-                        chars += text.len();
+                    match part {
+                        IrPart::Text(text) | IrPart::Thinking { text, .. } => {
+                            chars += text.len();
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -238,6 +242,9 @@ pub fn estimate_prompt_tokens(req: &IrRequest) -> u32 {
                 name, arguments, ..
             } => {
                 chars += name.len() + arguments.len();
+            }
+            IrItem::FunctionOutput { output, .. } => {
+                chars += output.len();
             }
             _ => {}
         }
@@ -384,5 +391,57 @@ mod tests {
             }
             other => panic!("expected Usage, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_counts_developer_text() {
+        let req = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::Developer {
+                text: "x".repeat(5000),
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&req) >= 1024,
+            "5000 developer chars must meet a 1024-token floor"
+        );
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_counts_function_output() {
+        let req = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::FunctionOutput {
+                call_id: "c1".into(),
+                output: "x".repeat(5000),
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&req) >= 1024,
+            "5000 tool-result chars must meet a 1024-token floor"
+        );
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_counts_thinking_text() {
+        let req = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::Assistant {
+                parts: vec![IrPart::Thinking {
+                    text: "x".repeat(5000),
+                    signature: None,
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&req) >= 1024,
+            "5000 thinking chars must meet a 1024-token floor"
+        );
     }
 }
