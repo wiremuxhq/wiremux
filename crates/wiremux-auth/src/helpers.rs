@@ -774,6 +774,28 @@ mod tests {
     }
 
     #[test]
+    fn format_oauth_transport_error_upstream_stream_is_origin_only() {
+        let msg = format_oauth_transport_via(
+            "upstream stream",
+            "transport",
+            "https://user:s3cret@api.example.invalid/v1/stream?token=ghp_ENVSUBST_LEAK_TOKEN_51",
+        );
+        assert!(
+            msg.contains("upstream stream"),
+            "SSE transport error must keep the stream context, got {msg}"
+        );
+        assert!(
+            msg.contains("via https://api.example.invalid"),
+            "SSE transport error must name the redacted origin, got {msg}"
+        );
+        assert!(!msg.contains("s3cret"), "{msg}");
+        assert!(!msg.contains("user:"), "{msg}");
+        assert!(!msg.contains("ghp_ENVSUBST_LEAK_TOKEN_51"), "{msg}");
+        assert!(!msg.contains("/v1/stream"), "{msg}");
+        assert!(!msg.contains("token="), "{msg}");
+    }
+
+    #[test]
     fn vendor_rejected_summary_omits_http_status() {
         let summary = vendor_rejected_summary(
             "Azure token request failed",

@@ -15,8 +15,8 @@ use crate::error::AuthError;
 use crate::helpers::{
     AUTH_LOCK_TIMEOUT, InFlight, cached_token_on_lock_failure, duration_from_expires_in_secs,
     expand_tilde, format_oauth_transport_error, is_token_rotation_error, jail_creds_path,
-    lead_or_follow, oauth_http_client, parse_rfc3339, read_oauth_body, redact_url_origin,
-    remaining_from_system_time, resolve_creds_path, try_acquire_refresh_lock,
+    lead_or_follow, oauth_http_client, parse_rfc3339, read_oauth_body, redact_secret_looking,
+    redact_url_origin, remaining_from_system_time, resolve_creds_path, try_acquire_refresh_lock,
     vendor_rejected_summary,
 };
 use crate::keychain_guard::keychain_disabled;
@@ -1128,13 +1128,13 @@ fn absolute_write_back_path(path: &Path) -> Option<PathBuf> {
 }
 
 fn setup_hint(oauth: &OauthPack) -> String {
-    oauth
+    let hint = oauth
         .setup_token_hint
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("re-authenticate using the profile login flow")
-        .to_owned()
+        .unwrap_or("re-authenticate using the profile login flow");
+    redact_secret_looking(hint)
 }
 
 fn empty_access_error(oauth: &OauthPack) -> AuthError {
@@ -1160,7 +1160,10 @@ fn attempted_cred_stores(oauth: &OauthPack) -> String {
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        tried.push(format!("creds_path={}", expand_tilde(raw).display()));
+        tried.push(format!(
+            "creds_path={}",
+            redact_secret_looking(&expand_tilde(raw).display().to_string())
+        ));
     }
     if let Some(service) = oauth
         .keychain_service
@@ -2363,6 +2366,110 @@ access_env = "WIREMUX_TEST_ACCESS"
         assert!(
             debug.contains("https://auth.example.invalid"),
             "Debug must keep redacted origin: {debug}"
+        );
+    }
+
+    #[test]
+    fn missing_creds_display_redacts_envsubst_token() {
+        const LEAK: &str = "ghp_ENVSUBST_LEAK_TOKEN_51";
+        let home = IsolatedHome::with_extra_envs(&["GITHUB_TOKEN"]);
+        home.set_env("GITHUB_TOKEN", LEAK);
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "env-leak"
+[oauth]
+token_url = "https://auth.example.invalid/token"
+creds_path = "~/stolen/{env:GITHUB_TOKEN}.json"
+setup_token_hint = "paste {env:GITHUB_TOKEN} into the vendor CLI"
+"#,
+        )
+        .expect("test profile");
+        let oauth = profile.oauth.as_ref().expect("oauth");
+        assert!(
+            oauth
+                .creds_path
+                .as_deref()
+                .is_some_and(|p| p.contains(LEAK)),
+            "precondition: envsubst must expand creds_path, got {:?}",
+            oauth.creds_path
+        );
+        assert!(
+            oauth
+                .setup_token_hint
+                .as_deref()
+                .is_some_and(|h| h.contains(LEAK)),
+            "precondition: envsubst must expand setup_token_hint, got {:?}",
+            oauth.setup_token_hint
+        );
+        let msg = missing_creds(oauth).to_string();
+        assert!(
+            !msg.contains(LEAK),
+            "AuthError Display leaked envsubst token: {msg}"
+        );
+        assert!(
+            msg.contains("[redacted]"),
+            "redacted Display must keep a placeholder, got {msg}"
+        );
+        assert!(
+            msg.contains("paste"),
+            "redacted Display must keep the setup hint, got {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_token_error_display_redacts_envsubst_hint() {
+        const LEAK: &str = "ghp_ENVSUBST_LEAK_TOKEN_51";
+        let home = IsolatedHome::with_extra_envs(&["GITHUB_TOKEN"]);
+        home.set_env("GITHUB_TOKEN", LEAK);
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth.json",
+            document: serde_json::json!({
+                "tokens": {
+                    "access": "expired-access",
+                    "refresh": "",
+                    "expiry_unix": 1
+                }
+            }),
+        });
+        let creds = path.to_string_lossy().replace('\\', "/");
+        let oauth = pack_from_toml(&format!(
+            r#"
+schema_version = 1
+id = "env-hint-get"
+[oauth]
+token_url = "https://auth.example.invalid/token"
+creds_path = "{creds}"
+creds_format = "json-pointer"
+access_token_ptr = "/tokens/access"
+refresh_token_ptr = "/tokens/refresh"
+expires_ptr = "/tokens/expiry_unix"
+expires_unit = "s"
+setup_token_hint = "paste {{env:GITHUB_TOKEN}} into the vendor CLI"
+"#
+        ));
+        assert!(
+            oauth
+                .setup_token_hint
+                .as_deref()
+                .is_some_and(|h| h.contains(LEAK)),
+            "precondition: envsubst must expand setup_token_hint, got {:?}",
+            oauth.setup_token_hint
+        );
+        let p = provider(&oauth);
+        let err = p.get_token().await.expect_err("expired without refresh");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains(LEAK),
+            "get_token AuthError leaked envsubst token: {msg}"
+        );
+        assert!(
+            msg.contains("[redacted]"),
+            "redacted get_token error must keep a placeholder, got {msg}"
+        );
+        assert!(
+            msg.contains("paste"),
+            "redacted get_token error must keep the setup hint, got {msg}"
         );
     }
 }
