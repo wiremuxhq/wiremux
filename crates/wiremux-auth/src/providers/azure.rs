@@ -74,13 +74,13 @@ impl AzureTokenProvider {
             scope = DEFAULT_SCOPE.to_string();
         }
         if tenant_id.trim().is_empty() {
-            return Err(AuthError::MissingField("tenant_id".into()));
+            return Err(AuthError::MissingField("Azure tenant_id".into()));
         }
         if client_id.trim().is_empty() {
-            return Err(AuthError::MissingField("client_id".into()));
+            return Err(AuthError::MissingField("Azure client_id".into()));
         }
         if client_secret.trim().is_empty() {
-            return Err(AuthError::MissingField("client_secret".into()));
+            return Err(AuthError::MissingField("Azure client_secret".into()));
         }
         let token_url = format!("https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token");
         Ok(Self {

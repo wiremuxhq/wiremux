@@ -92,10 +92,10 @@ impl GcpTokenProvider {
         let key: ServiceAccountKey = serde_json::from_str(json)
             .map_err(|e| AuthError::TokenProvider(format!("GCP service-account key: {e}")))?;
         if key.client_email.trim().is_empty() {
-            return Err(AuthError::MissingField("client_email".into()));
+            return Err(AuthError::MissingField("GCP client_email".into()));
         }
         if key.private_key.trim().is_empty() {
-            return Err(AuthError::MissingField("private_key".into()));
+            return Err(AuthError::MissingField("GCP private_key".into()));
         }
         let token_uri = key
             .token_uri
