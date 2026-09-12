@@ -48,6 +48,11 @@ pub trait TokenProvider: Send + Sync + std::fmt::Debug {
 
     /// Drop the cached token so the next [`TokenProvider::get_token`] refreshes.
     fn mark_stale(&self) {}
+
+    /// Host laptop-wake hook. Default calls [`TokenProvider::mark_stale`].
+    fn wake(&self) {
+        self.mark_stale();
+    }
 }
 
 /// Type-erased token provider.
@@ -64,6 +69,13 @@ impl TokenProvider for AnyTokenProvider {
         match self {
             Self::Static(p) => p.mark_stale(),
             Self::Profile(p) => p.mark_stale(),
+        }
+    }
+
+    fn wake(&self) {
+        match self {
+            Self::Static(p) => p.wake(),
+            Self::Profile(p) => p.wake(),
         }
     }
 

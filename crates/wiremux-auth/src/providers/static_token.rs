@@ -41,6 +41,13 @@ mod tests {
         assert_eq!(provider.get_token().await.unwrap(), "sk-test-key");
     }
 
+    #[tokio::test]
+    async fn static_wake_is_noop() {
+        let provider = StaticToken::new("sk-test-key");
+        provider.wake();
+        assert_eq!(provider.get_token().await.unwrap(), "sk-test-key");
+    }
+
     #[test]
     fn debug_redacts_key() {
         let provider = StaticToken::new("sk-secret-123");
