@@ -455,7 +455,9 @@ fn unknown_event(
     match profile.dialect.stream_unknown_policy {
         StreamUnknownPolicy::HardError => Err(MapError::HardError {
             path: name.to_string(),
-            detail: format!("unknown stream event `{name}`"),
+            detail: format!(
+                "unknown stream event `{name}` (stream_unknown_policy = hard-error|passthrough, or add `{name}` to stream_events)"
+            ),
         }),
         StreamUnknownPolicy::Passthrough => {
             let raw =

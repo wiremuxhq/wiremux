@@ -784,6 +784,18 @@ fn unknown_event_hard_error_and_passthrough() {
         MapError::HardError { path, detail } => {
             assert_eq!(path, "vendor.foo");
             assert!(detail.contains("vendor.foo"), "detail={detail}");
+            assert!(
+                detail.contains("stream_unknown_policy"),
+                "must name stream_unknown_policy, got {detail}"
+            );
+            assert!(
+                detail.contains("hard-error") && detail.contains("passthrough"),
+                "must list stream_unknown_policy values, got {detail}"
+            );
+            assert!(
+                detail.contains("stream_events"),
+                "must mention adding the name to stream_events, got {detail}"
+            );
         }
         other => panic!("expected HardError, got {other}"),
     }

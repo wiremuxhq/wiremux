@@ -470,6 +470,47 @@ mod tests {
     }
 
     #[test]
+    fn unknown_stream_unknown_policy_names_field_and_suggests() {
+        let err = parse_profile_str(
+            "schema_version = 1\nid = \"x\"\nstream_unknown_policy = \"hard_error\"\n",
+        )
+        .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("stream_unknown_policy"),
+            "must name the field, got {text}"
+        );
+        assert!(
+            text.contains("hard-error") && text.contains("passthrough"),
+            "must list legal values, got {text}"
+        );
+        assert!(
+            text.to_ascii_lowercase().contains("did you mean") && text.contains("`hard-error`"),
+            "hard_error should suggest hard-error, got {text}"
+        );
+    }
+
+    #[test]
+    fn unknown_wire_chat_suggests_chat_completions() {
+        let err =
+            parse_profile_str("schema_version = 1\nid = \"x\"\nwire = \"chat\"\n").unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("unknown wire `chat`"), "{text}");
+        assert!(
+            text.contains("chat-completions")
+                && text.contains("messages")
+                && text.contains("responses")
+                && text.contains("gemini"),
+            "must list legal wire values, got {text}"
+        );
+        assert!(
+            text.to_ascii_lowercase().contains("did you mean")
+                && text.contains("`chat-completions`"),
+            "CLI-only chat alias must suggest chat-completions in a profile, got {text}"
+        );
+    }
+
+    #[test]
     fn oauth_without_token_url_fails_closed() {
         let err = parse_profile_str("schema_version = 1\nid = \"x\"\n[oauth]\nclient_id = \"c\"\n")
             .unwrap_err();
