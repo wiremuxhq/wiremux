@@ -22,4 +22,27 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         notes.contains("default-features = false"),
         "maps pin stays maps-only"
     );
+    assert!(
+        notes.contains("LLM layer is wiremux"),
+        "heading must say the LLM layer is wiremux"
+    );
+    assert!(
+        !notes.contains("DESIGN non-goal for v1")
+            && !notes.contains("Same crate later")
+            && !notes.contains("IrCache` is only `enabled` + `retention`"),
+        "notes must not leave Gcp/Azure/AwsSts or the cache floor in Bline"
+    );
+    assert!(
+        notes.contains("`GcpTokenProvider`, `AzureTokenProvider`, `AwsStsTokenProvider`")
+            && notes.contains("`wiremux-auth`"),
+        "cloud TokenProviders belong in wiremux-auth"
+    );
+    assert!(
+        notes.contains("load_profile_for_wire"),
+        "resolve-by-wire belongs here"
+    );
+    assert!(
+        notes.contains("min_cacheable_tokens"),
+        "cache floor belongs on IrCache"
+    );
 }

@@ -37,19 +37,18 @@ Not ready.
 Do not add a launch pitch, GitHub topics, or an About string when this
 plan is executed.
 
-## K13: convert at the crate boundary
+## LLM layer is wiremux
 
-Bline keeps its own types and control plane:
+Dialect maps, IR, TokenProviders (OAuth, static, GCP, Azure, AWS STS,
+Copilot store and device login), profile catalog, and login engines
+live in this workspace. Bline does not keep a second copy.
 
-- `ChatRequest` in `bline-types`
-- the agent loop
-- the factory, including router and failover
-- the wire logger
-- `bline diagnose`
+Bline (the host) still owns the agent loop, router, failover, wire
+logger, and `bline diagnose`. Those are not LLM wire.
 
-Do not `pub use wiremux::IrRequest as ChatRequest`. Do not re-export
-wiremux request types from `bline-types`. Call through and keep host
-types (craftbag consume lesson).
+`IrRequest` is the LLM request. Do not grow a parallel Bline dialect
+map. A thin host-type shim is allowed only until Bline deletes
+`ChatRequest`. Do not `pub use wiremux::IrRequest as ChatRequest`.
 
 `wiremux-auth` must not depend on `bline-types`. `AuthError` stays
 independent of `LlmError`.
@@ -122,34 +121,34 @@ Do not `pub use` `IrRequest` as `ChatRequest`. The factory continues
 to construct Bline adapters and still owns router and failover.
 Wiremux does not become the router.
 
-Gemini is `wire = "gemini"` in wiremux. Bline still owns the
-`ChatRequest` wrap and the adapter that calls decode/encode.
+Gemini is `wire = "gemini"` in wiremux. The host adapter calls
+`decode` / `encode` on `IrRequest`. It does not keep a second Gemini
+map.
 
-## Stay in Bline
-
-These were leftovers in the extract design. They are not missing
-wiremux APIs.
+## Stay in Bline (host only)
 
 | Stay in Bline | Why |
 |---------------|-----|
-| `GcpTokenProvider`, `AzureTokenProvider`, `AwsStsTokenProvider` | DESIGN non-goal for v1. Same crate later. |
-| `install_wake_monitor` / wake flag on `get_token` | Host laptop-wake policy. Wiremux has `mark_stale` only. The Bline wrapper can call `mark_stale` when the host wake flag is set. |
-| Dedicated Copilot device-flow login | Gist + `copilot-hosts` store exist. Product ToS. Device login stays later. |
-| `ChatRequest` and factory | K13. Adapter maps at the `bline-llm` boundary. |
-| Unknown name + `protocol = "anthropic"` is `FactoryError::UnknownProvider` | Host factory change. Optional later: resolve a wiremux profile by `wire = "messages"`. |
-| `PromptCacheConfig.min_cacheable_tokens` and `estimate_prompt_tokens` | Host floor (`chars / 4`). `IrCache` is only `enabled` + `retention`. |
-| Router, failover, wire logger, diagnose, `repair.rs` | Out of scope. |
+| Agent loop | Not LLM wire. |
+| Router, failover, wire logger, diagnose, `repair.rs` | Host control plane. |
+| OS wake watcher | Host installs the watcher. It must call `TokenProvider::wake` (or `mark_stale`) on the wiremux provider. Do not keep a Bline TokenProvider just for wake. |
+| Account / `ProviderConfig` UI | Host config. Values feed a wiremux profile. |
 
-Also stay in Bline: agent loop, `bline auth login` presets (optionally
-add a wiremux profile path later), account and provider config on
-`ProviderConfig`.
+Do **not** leave these in Bline:
 
-## Bline follow-ups (not this extract)
+| Was "later" | Now |
+|-------------|-----|
+| `GcpTokenProvider`, `AzureTokenProvider`, `AwsStsTokenProvider` | `wiremux-auth` |
+| Copilot device-flow login | Engine + gist already here. Persist is `copilot-hosts`. |
+| `min_cacheable_tokens` / `estimate_prompt_tokens` | `IrCache` |
+| Unknown name + Anthropic protocol | `load_profile_for_wire(Wire::Messages)` |
+| Dialect maps / `ChatRequest` conversions | `wiremux::{decode,encode}` |
 
-Unknown name plus `protocol = "anthropic"` is still
-`FactoryError::UnknownProvider` in Bline. The host may later resolve a
-wiremux profile by `wire = "messages"`. That is a Bline change, not a
-wiremux PR.
+## Host follow-up (Bline, after this crate has the APIs)
+
+Bline deletes its parallel TokenProviders and dialect conversions
+once it pins a SHA that exports them. That is a Bline PR. The APIs
+must exist here first.
 
 Canact consume of `wiremux-auth` is a later canact PR, not a wiremux
 PR and not part of this spike.
