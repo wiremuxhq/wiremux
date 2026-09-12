@@ -176,11 +176,19 @@ impl AwsStsTokenProvider {
                 return Ok(cached.creds.clone());
             }
         }
-        let token = lead_or_follow(&self.inner.inflight, || self.refresh_as_leader(force)).await?;
-        let state = self.inner.state.read().await;
-        state.as_ref().map(|c| c.creds.clone()).ok_or_else(|| {
-            AuthError::TokenProvider(format!("STS cache empty after refresh ({token})"))
-        })
+        let result = async {
+            let token =
+                lead_or_follow(&self.inner.inflight, || self.refresh_as_leader(force)).await?;
+            let state = self.inner.state.read().await;
+            state.as_ref().map(|c| c.creds.clone()).ok_or_else(|| {
+                AuthError::TokenProvider(format!("STS cache empty after refresh ({token})"))
+            })
+        }
+        .await;
+        if force && result.is_err() {
+            self.inner.force_refresh.store(true, Ordering::SeqCst);
+        }
+        result
     }
 
     async fn refresh_as_leader(&self, force: bool) -> Result<String, AuthError> {
@@ -381,8 +389,8 @@ pub fn sign_aws_request(
         date_stamp,
         params.region,
         params.service,
-    );
-    let signature = hex_encode(&hmac_sha256(&signing_key, string_to_sign.as_bytes()));
+    )?;
+    let signature = hex_encode(&hmac_sha256(&signing_key, string_to_sign.as_bytes())?);
     Ok(format!(
         "{SIGV4_ALGO} Credential={}/{}, SignedHeaders={signed_headers}, Signature={signature}",
         creds.access_key_id, credential_scope
@@ -427,18 +435,24 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
-fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>, AuthError> {
     use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
-    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("HMAC-SHA256 key");
+    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(key)
+        .map_err(|e| AuthError::TokenProvider(format!("HMAC-SHA256 key: {e}")))?;
     mac.update(data);
-    mac.finalize().into_bytes().to_vec()
+    Ok(mac.finalize().into_bytes().to_vec())
 }
 
-fn signing_key(secret: &str, date: &str, region: &str, service: &str) -> Vec<u8> {
-    let k_date = hmac_sha256(format!("AWS4{secret}").as_bytes(), date.as_bytes());
-    let k_region = hmac_sha256(&k_date, region.as_bytes());
-    let k_service = hmac_sha256(&k_region, service.as_bytes());
+fn signing_key(
+    secret: &str,
+    date: &str,
+    region: &str,
+    service: &str,
+) -> Result<Vec<u8>, AuthError> {
+    let k_date = hmac_sha256(format!("AWS4{secret}").as_bytes(), date.as_bytes())?;
+    let k_region = hmac_sha256(&k_date, region.as_bytes())?;
+    let k_service = hmac_sha256(&k_region, service.as_bytes())?;
     hmac_sha256(&k_service, b"aws4_request")
 }
 
@@ -485,7 +499,6 @@ impl TokenProvider for AwsStsTokenProvider {
     }
 
     async fn get_token(&self) -> Result<String, AuthError> {
-        let _creds = self.get_credentials().await?;
         Err(AuthError::TokenProvider(
             "AWS STS session is not a Bearer API key; use get_credentials + sign_aws_request"
                 .into(),
@@ -511,6 +524,32 @@ mod tests {
   </AssumeRoleResult>
 </AssumeRoleResponse>"#;
 
+    fn read_http_headers(stream: &mut impl Read) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 2048];
+        loop {
+            match stream.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        buf
+    }
+
+    fn write_http_xml(stream: &mut impl Write, status: u16, body: &str) {
+        let resp = format!(
+            "HTTP/1.1 {status} OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    }
+
     fn spawn_http_server(status: u16, body: &str) -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
         let addr = listener.local_addr().expect("local_addr");
@@ -518,27 +557,64 @@ mod tests {
         let handle = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
             stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            let mut buf = Vec::new();
-            let mut tmp = [0u8; 2048];
+            let buf = read_http_headers(&mut stream);
+            write_http_xml(&mut stream, status, &body);
+            String::from_utf8_lossy(&buf).into_owned()
+        });
+        (format!("http://{addr}/"), handle)
+    }
+
+    /// Accepts at most one request, then returns `None` if nobody connected.
+    fn spawn_http_server_optional(
+        status: u16,
+        body: &str,
+        accept_timeout: Duration,
+    ) -> (String, thread::JoinHandle<Option<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let addr = listener.local_addr().expect("local_addr");
+        let body = body.to_owned();
+        let handle = thread::spawn(move || {
+            let start = Instant::now();
             loop {
-                match stream.read(&mut tmp) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        buf.extend_from_slice(&tmp[..n]);
-                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                            break;
-                        }
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).ok();
+                        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                        let buf = read_http_headers(&mut stream);
+                        write_http_xml(&mut stream, status, &body);
+                        return Some(String::from_utf8_lossy(&buf).into_owned());
                     }
-                    Err(_) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if start.elapsed() >= accept_timeout {
+                            return None;
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => return None,
                 }
             }
-            let req = String::from_utf8_lossy(&buf).into_owned();
-            let resp = format!(
-                "HTTP/1.1 {status} OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(resp.as_bytes());
-            req
+        });
+        (format!("http://{addr}/"), handle)
+    }
+
+    fn spawn_http_script(responses: &[(u16, &str)]) -> (String, thread::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        let addr = listener.local_addr().expect("local_addr");
+        let responses: Vec<(u16, String)> = responses
+            .iter()
+            .map(|(status, body)| (*status, (*body).to_owned()))
+            .collect();
+        let handle = thread::spawn(move || {
+            let mut served = 0usize;
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().expect("accept");
+                stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                let _ = read_http_headers(&mut stream);
+                write_http_xml(&mut stream, status, &body);
+                served += 1;
+            }
+            served
         });
         (format!("http://{addr}/"), handle)
     }
@@ -610,11 +686,18 @@ mod tests {
             "20150830",
             "us-east-1",
             "iam",
-        );
+        )
+        .expect("signing_key");
         assert_eq!(
             hex_encode(&key),
             "c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9"
         );
+    }
+
+    #[test]
+    fn hmac_sha256_empty_key_does_not_panic() {
+        let mac = hmac_sha256(b"", b"data").expect("HMAC-SHA256 accepts empty key");
+        assert_eq!(mac.len(), 32);
     }
 
     #[test]
@@ -680,5 +763,54 @@ mod tests {
         let creds = parse_assume_role_xml(STS_XML).expect("xml");
         assert_eq!(creds.access_key_id, "ASIAEXAMPLE");
         assert!(creds.expiration.is_some());
+    }
+
+    #[tokio::test]
+    async fn get_token_does_not_call_assume_role() {
+        let (url, handle) = spawn_http_server_optional(200, STS_XML, Duration::from_millis(400));
+        let p = AwsStsTokenProvider::new(cfg(&url)).expect("new");
+        let err = p.get_token().await.expect_err("not a bearer");
+        let msg = err.to_string();
+        assert!(msg.contains("not a Bearer"), "{msg}");
+        let accepted = handle.join().expect("join");
+        assert!(
+            accepted.is_none(),
+            "get_token must not call STS, got {accepted:?}"
+        );
+    }
+
+    const STS_XML_RETRY: &str = r#"<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleResult>
+    <Credentials>
+      <AccessKeyId>ASIARETRY</AccessKeyId>
+      <SecretAccessKey>secretRetry</SecretAccessKey>
+      <SessionToken>tokenRetry</SessionToken>
+      <Expiration>2099-01-01T00:00:00Z</Expiration>
+    </Credentials>
+  </AssumeRoleResult>
+</AssumeRoleResponse>"#;
+
+    #[tokio::test]
+    async fn get_credentials_retries_after_forced_refresh_http_error() {
+        let (url, handle) = spawn_http_script(&[
+            (200, STS_XML),
+            (
+                403,
+                "<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>",
+            ),
+            (200, STS_XML_RETRY),
+        ]);
+        let p = AwsStsTokenProvider::new(cfg(&url)).expect("new");
+        let first = p.get_credentials().await.expect("cache");
+        assert_eq!(first.access_key_id, "ASIAEXAMPLE");
+        p.mark_stale();
+        let err = p.get_credentials().await.expect_err("forced 403");
+        assert!(
+            err.to_string().contains("403") || err.to_string().contains("AssumeRole"),
+            "{err}"
+        );
+        let retry = p.get_credentials().await.expect("retry after failed force");
+        assert_eq!(retry.access_key_id, "ASIARETRY");
+        assert_eq!(handle.join().expect("join"), 3);
     }
 }

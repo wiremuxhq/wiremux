@@ -213,7 +213,15 @@ impl TokenProvider for AzureTokenProvider {
                 return Ok(tok.access_token.clone());
             }
         }
-        lead_or_follow(&self.inner.inflight, || self.refresh(force)).await
+        match lead_or_follow(&self.inner.inflight, || self.refresh(force)).await {
+            Ok(token) => Ok(token),
+            Err(err) => {
+                if force {
+                    self.inner.force_refresh.store(true, Ordering::SeqCst);
+                }
+                Err(err)
+            }
+        }
     }
 }
 
@@ -225,6 +233,32 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    fn read_http_headers(stream: &mut impl Read) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1024];
+        loop {
+            match stream.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        buf
+    }
+
+    fn write_http_json(stream: &mut impl Write, status: u16, body: &str) {
+        let resp = format!(
+            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    }
+
     fn spawn_http_server(status: u16, body: &str) -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
         let addr = listener.local_addr().expect("local_addr");
@@ -232,27 +266,30 @@ mod tests {
         let handle = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
             stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            let mut buf = Vec::new();
-            let mut tmp = [0u8; 1024];
-            loop {
-                match stream.read(&mut tmp) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        buf.extend_from_slice(&tmp[..n]);
-                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
+            let buf = read_http_headers(&mut stream);
+            write_http_json(&mut stream, status, &body);
+            String::from_utf8_lossy(&buf).into_owned()
+        });
+        (format!("http://{addr}/oauth/token"), handle)
+    }
+
+    fn spawn_http_script(responses: &[(u16, &str)]) -> (String, thread::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        let addr = listener.local_addr().expect("local_addr");
+        let responses: Vec<(u16, String)> = responses
+            .iter()
+            .map(|(status, body)| (*status, (*body).to_owned()))
+            .collect();
+        let handle = thread::spawn(move || {
+            let mut served = 0usize;
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().expect("accept");
+                stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                let _ = read_http_headers(&mut stream);
+                write_http_json(&mut stream, status, &body);
+                served += 1;
             }
-            let req = String::from_utf8_lossy(&buf).into_owned();
-            let resp = format!(
-                "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(resp.as_bytes());
-            req
+            served
         });
         (format!("http://{addr}/oauth/token"), handle)
     }
@@ -297,5 +334,29 @@ mod tests {
     fn azure_empty_secret_fails() {
         let err = AzureTokenProvider::new("t", "c", "", "s").expect_err("empty");
         assert!(err.to_string().contains("client_secret"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn forced_refresh_http_error_restores_force_flag() {
+        let (url, handle) = spawn_http_script(&[
+            (200, r#"{"access_token":"az-first","expires_in":3600}"#),
+            (401, r#"{"error":"invalid_client"}"#),
+            (200, r#"{"access_token":"az-retry","expires_in":3600}"#),
+        ]);
+        let p = AzureTokenProvider::new("tenant", "client", "secret", "scope")
+            .expect("new")
+            .with_token_url(url);
+        assert_eq!(p.get_token().await.expect("cache"), "az-first");
+        p.mark_stale();
+        let err = p.get_token().await.expect_err("forced 401");
+        assert!(
+            err.to_string().contains("401") || err.to_string().contains("Azure"),
+            "{err}"
+        );
+        assert_eq!(
+            p.get_token().await.expect("retry after failed force"),
+            "az-retry"
+        );
+        assert_eq!(handle.join().expect("join"), 3);
     }
 }
