@@ -43,12 +43,9 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     let delta = choice.get("delta");
     if let Some(text) = delta
         .and_then(|d| d.get("content"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
+        .and_then(flatten_content)
     {
-        return Ok(Some(IrStreamEvent::TextDelta {
-            text: text.to_string(),
-        }));
+        return Ok(Some(IrStreamEvent::TextDelta { text }));
     }
     if let Some(text) = delta
         .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))

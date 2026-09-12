@@ -669,6 +669,39 @@ fn gemini_thinking_config_absent_is_not_invented() {
 }
 
 #[test]
+fn gemini_user_text_then_function_response_stays_user() {
+    let req = br#"{
+        "contents": [{
+            "role": "user",
+            "parts": [
+                { "text": "here is the result" },
+                { "functionResponse": { "name": "lookup", "response": { "ok": true } } }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    assert!(
+        matches!(
+            ir.items.as_slice(),
+            [
+                IrItem::User { parts },
+                IrItem::FunctionOutput { call_id, .. }
+            ] if parts.iter().any(|p| matches!(p, IrPart::Text(t) if t == "here is the result"))
+                && call_id == "lookup"
+        ),
+        "mixed user text+functionResponse must be User then FunctionOutput, got {:?}",
+        ir.items
+    );
+    assert!(
+        !ir.items
+            .iter()
+            .any(|item| matches!(item, IrItem::Assistant { .. })),
+        "user-role pending text must not flush as Assistant, got {:?}",
+        ir.items
+    );
+}
+
+#[test]
 fn gemini_consecutive_function_responses_share_user_turn() {
     let req = br#"{
         "contents": [

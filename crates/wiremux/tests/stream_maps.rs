@@ -1082,6 +1082,51 @@ fn chat_tool_start_with_args_keeps_bytes() {
 }
 
 #[test]
+fn chat_parallel_tool_calls_keep_protocol() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":1}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"search","arguments":"{\"q\":2}"}}]}}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode parallel tools");
+    let starts: Vec<(&str, &str)> = all
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart { id, name, .. } => Some((id.as_str(), name.as_str())),
+            _ => None,
+        })
+        .collect();
+    let has_protocol = all
+        .iter()
+        .any(|ev| matches!(ev, IrStreamEvent::Protocol { .. }));
+    assert!(
+        has_protocol
+            || (starts
+                .iter()
+                .any(|(id, name)| *id == "call_1" && *name == "lookup")
+                && starts
+                    .iter()
+                    .any(|(id, name)| *id == "call_2" && *name == "search")),
+        "parallel tool_calls must stay Protocol or emit both starts, got {all:?}"
+    );
+    if let [IrStreamEvent::Protocol { payload, .. }] = all.as_slice() {
+        let calls = payload
+            .pointer("/choices/0/delta/tool_calls")
+            .and_then(Value::as_array)
+            .expect("tool_calls");
+        assert_eq!(
+            calls.len(),
+            2,
+            "Protocol must keep both sibling calls, got {payload}"
+        );
+    }
+    assert!(
+        !(starts.len() == 1 && starts[0] == ("call_1", "lookup")),
+        "must not expand only the first tool_call, got {all:?}"
+    );
+}
+
+#[test]
 fn chat_id_then_name_assembles_one_start() {
     let id_only = RawSse {
         event: None,
@@ -1169,6 +1214,13 @@ fn chat_array_delta_content_flattens_to_text() {
         event: None,
         data: r#"{"choices":[{"delta":{"content":[{"type":"text","text":"Hi"}]}}]}"#.into(),
     };
+    let first = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("1:1")
+        .expect("event");
+    assert!(
+        matches!(first, IrStreamEvent::TextDelta { ref text } if text == "Hi"),
+        "1:1 decode must flatten array content, got {first:?}"
+    );
     let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("array");
     assert!(
         all.iter()

@@ -214,7 +214,13 @@ fn expand_chat_tool_call(first: &IrStreamEvent, value: &Value) -> Option<Vec<IrS
     let IrStreamEvent::Protocol { .. } = first else {
         return None;
     };
-    let call = value.pointer("/choices/0/delta/tool_calls/0")?;
+    let tool_calls = value
+        .pointer("/choices/0/delta/tool_calls")
+        .and_then(Value::as_array)?;
+    if tool_calls.len() > 1 {
+        return None;
+    }
+    let call = tool_calls.first()?;
     if let Some(ty) = call.get("type").and_then(Value::as_str)
         && ty != "function"
     {

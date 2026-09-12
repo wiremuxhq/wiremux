@@ -51,7 +51,7 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
     let mut text_parts = Vec::new();
     for part in parts {
         if let Some(fc) = part.get("functionCall") {
-            flush_assistant(&mut text_parts, items);
+            flush_parts(role, &mut text_parts, items);
             let name = str_field(fc, "name").unwrap_or_default();
             let args = fc.get("args").cloned().unwrap_or_else(|| json!({}));
             items.push(IrItem::FunctionCall {
@@ -67,7 +67,7 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
             continue;
         }
         if let Some(fr) = part.get("functionResponse") {
-            flush_assistant(&mut text_parts, items);
+            flush_parts(role, &mut text_parts, items);
             let name = str_field(fr, "name").unwrap_or_default();
             let output = fr
                 .get("response")
@@ -103,22 +103,18 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
             });
         }
     }
-    if text_parts.is_empty() {
-        return;
-    }
-    match role {
-        "model" => items.push(IrItem::Assistant { parts: text_parts }),
-        _ => items.push(IrItem::User { parts: text_parts }),
-    }
+    flush_parts(role, &mut text_parts, items);
 }
 
-fn flush_assistant(parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
+fn flush_parts(role: &str, parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
     if parts.is_empty() {
         return;
     }
-    items.push(IrItem::Assistant {
-        parts: std::mem::take(parts),
-    });
+    let taken = std::mem::take(parts);
+    match role {
+        "model" => items.push(IrItem::Assistant { parts: taken }),
+        _ => items.push(IrItem::User { parts: taken }),
+    }
 }
 
 fn decode_tools(value: &Value) -> Vec<crate::ir::IrTool> {
