@@ -517,12 +517,38 @@ fn path_is_under_home(path: &Path, home: &Path) -> bool {
     if let Ok(canon) = std::fs::canonicalize(path) {
         return canon.starts_with(&home_canon);
     }
-    // Missing file: map the logical HOME prefix through the same symlink
+    // Missing leaf: canonicalize the first existing ancestor so a parent
+    // symlink out of home (`~/out` -> `/tmp`) cannot pass a logical prefix.
+    if let Some(resolved) = resolve_via_existing_ancestor(path) {
+        return resolved.starts_with(&home_canon);
+    }
+    // No existing ancestor: keep the logical-prefix fallback
     // (macOS /var/folders -> /private/var/folders).
     if let Ok(rest) = path.strip_prefix(home) {
         return home_canon.join(rest).starts_with(&home_canon);
     }
     path.strip_prefix(&home_canon).is_ok()
+}
+
+fn resolve_via_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    let mut current = path.to_path_buf();
+    loop {
+        if current.exists() {
+            let mut resolved = std::fs::canonicalize(&current).ok()?;
+            for part in suffix.iter().rev() {
+                resolved.push(part);
+            }
+            return Some(resolved);
+        }
+        let name = current.file_name()?.to_os_string();
+        suffix.push(name);
+        let parent = current.parent()?;
+        if parent.as_os_str().is_empty() || parent == current {
+            return None;
+        }
+        current = parent.to_path_buf();
+    }
 }
 
 fn creds_path_escapes_home() -> AuthError {
@@ -777,5 +803,21 @@ mod tests {
         jail_creds_path(&canon).expect("canonical path under IsolatedHome");
         let missing = home.path().join(".claude/.credentials.json");
         jail_creds_path(&missing).expect("missing file still under IsolatedHome");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jail_rejects_parent_symlink_out_of_home() {
+        let home = crate::isolated_home::IsolatedHome::new();
+        let outside = tempfile::tempdir().expect("outside home");
+        let link = home.path().join("out");
+        std::os::unix::fs::symlink(outside.path(), &link).expect("symlink out of home");
+        let stolen = home.path().join("out/stolen.json");
+        jail_creds_path(&stolen).expect_err("creds_path must stay under home");
+
+        let ok_dir = home.path().join("ok");
+        std::fs::create_dir_all(&ok_dir).expect("mkdir ok");
+        let missing = ok_dir.join("missing.json");
+        jail_creds_path(&missing).expect("missing file under a real in-home dir");
     }
 }

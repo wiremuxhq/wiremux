@@ -12,7 +12,7 @@ use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
     InFlight, MAX_CREDS_BYTES, duration_from_expires_in_secs, format_oauth_http_error,
-    lead_or_follow, oauth_http_client, post_form_url,
+    lead_or_follow, oauth_http_client, post_form_url, redact_url_origin,
 };
 
 const DEFAULT_LIFETIME_SECS: u64 = 3600;
@@ -54,7 +54,7 @@ impl std::fmt::Debug for GcpTokenProvider {
         f.debug_struct("GcpTokenProvider")
             .field("client_email", &self.inner.client_email)
             .field("private_key", &"[REDACTED]")
-            .field("token_uri", &self.inner.token_uri)
+            .field("token_uri", &redact_url_origin(&self.inner.token_uri))
             .field("scope", &self.inner.scope)
             .finish()
     }
@@ -391,11 +391,18 @@ c+5RXVheoFNjzJpbLyOIeEEttw==
 
     #[test]
     fn gcp_debug_redacts_private_key() {
-        let json = test_key_json("https://oauth2.googleapis.com/token");
+        let json = test_key_json(
+            "https://user:s3cret@oauth2.googleapis.com/token?client_secret=supersecret",
+        );
         let p = GcpTokenProvider::from_key(&json).expect("from_key");
         let debug = format!("{p:?}");
         assert!(!debug.contains("BEGIN PRIVATE"), "{debug}");
         assert!(debug.contains("[REDACTED]"), "{debug}");
+        assert!(!debug.contains("s3cret"), "{debug}");
+        assert!(!debug.contains("supersecret"), "{debug}");
+        assert!(!debug.contains("client_secret="), "{debug}");
+        assert!(!debug.contains("user:"), "{debug}");
+        assert!(debug.contains("https://oauth2.googleapis.com"), "{debug}");
     }
 
     #[test]
