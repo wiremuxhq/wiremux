@@ -1590,7 +1590,7 @@ expires_unit = "s"
     fn provider(oauth: &OauthPack) -> ProfileTokenProvider {
         match provider_from_oauth(oauth).expect("provider") {
             AnyTokenProvider::Profile(p) => p,
-            AnyTokenProvider::Static(_) => panic!("expected Profile"),
+            _ => panic!("expected Profile"),
         }
     }
 
