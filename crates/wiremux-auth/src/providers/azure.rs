@@ -9,8 +9,8 @@ use tokio::sync::RwLock;
 use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
-    InFlight, duration_from_expires_in_secs, format_oauth_http_error, lead_or_follow,
-    oauth_http_client, post_form_url,
+    InFlight, duration_from_expires_in_secs, lead_or_follow, oauth_http_client, post_form_url,
+    vendor_rejected_summary,
 };
 
 const DEFAULT_LIFETIME_SECS: u64 = 3600;
@@ -74,13 +74,13 @@ impl AzureTokenProvider {
             scope = DEFAULT_SCOPE.to_string();
         }
         if tenant_id.trim().is_empty() {
-            return Err(AuthError::MissingField("tenant_id".into()));
+            return Err(AuthError::MissingField("Azure tenant_id".into()));
         }
         if client_id.trim().is_empty() {
-            return Err(AuthError::MissingField("client_id".into()));
+            return Err(AuthError::MissingField("Azure client_id".into()));
         }
         if client_secret.trim().is_empty() {
-            return Err(AuthError::MissingField("client_secret".into()));
+            return Err(AuthError::MissingField("Azure client_secret".into()));
         }
         let token_url = format!("https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token");
         Ok(Self {
@@ -128,9 +128,8 @@ impl AzureTokenProvider {
         if !(200..300).contains(&status) {
             return Err(AuthError::VendorRejected {
                 status,
-                summary: format_oauth_http_error(
+                summary: vendor_rejected_summary(
                     "Azure token request failed",
-                    status,
                     &body,
                     &self.inner.token_url,
                 ),
@@ -202,10 +201,11 @@ impl TokenProvider for AzureTokenProvider {
     }
 
     async fn get_token(&self) -> Result<String, AuthError> {
-        let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
+        // load() not swap: a concurrent get_token must not see a cleared force
+        // flag before the InFlight claim.
         {
             let state = self.inner.state.read().await;
-            if !force
+            if !self.inner.force_refresh.load(Ordering::SeqCst)
                 && let Some(tok) = state.as_ref()
                 && !tok.needs_refresh()
                 && !self.inner.inflight.is_busy()
@@ -213,7 +213,15 @@ impl TokenProvider for AzureTokenProvider {
                 return Ok(tok.access_token.clone());
             }
         }
-        lead_or_follow(&self.inner.inflight, || self.refresh(force)).await
+        lead_or_follow(&self.inner.inflight, || async {
+            let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
+            let result = self.refresh(force).await;
+            if result.is_err() && force {
+                self.inner.force_refresh.store(true, Ordering::SeqCst);
+            }
+            result
+        })
+        .await
     }
 }
 
@@ -223,7 +231,33 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    fn read_http_headers(stream: &mut impl Read) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1024];
+        loop {
+            match stream.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        buf
+    }
+
+    fn write_http_json(stream: &mut impl Write, status: u16, body: &str) {
+        let resp = format!(
+            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    }
 
     fn spawn_http_server(status: u16, body: &str) -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
@@ -232,27 +266,78 @@ mod tests {
         let handle = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
             stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            let mut buf = Vec::new();
-            let mut tmp = [0u8; 1024];
-            loop {
-                match stream.read(&mut tmp) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        buf.extend_from_slice(&tmp[..n]);
-                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            let buf = read_http_headers(&mut stream);
+            write_http_json(&mut stream, status, &body);
+            String::from_utf8_lossy(&buf).into_owned()
+        });
+        (format!("http://{addr}/oauth/token"), handle)
+    }
+
+    fn spawn_http_script(responses: &[(u16, &str)]) -> (String, thread::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        let addr = listener.local_addr().expect("local_addr");
+        let responses: Vec<(u16, String)> = responses
+            .iter()
+            .map(|(status, body)| (*status, (*body).to_owned()))
+            .collect();
+        let handle = thread::spawn(move || {
+            let mut served = 0usize;
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().expect("accept");
+                stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                let _ = read_http_headers(&mut stream);
+                write_http_json(&mut stream, status, &body);
+                served += 1;
+            }
+            served
+        });
+        (format!("http://{addr}/oauth/token"), handle)
+    }
+
+    /// Cache-fill 200, then up to two delayed refresh 200s (leader + extra POST).
+    fn spawn_http_cache_then_refresh(
+        first: &str,
+        refreshed: &str,
+        refresh_delay: Duration,
+        extra_idle: Duration,
+    ) -> (String, thread::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let addr = listener.local_addr().expect("local_addr");
+        let first = first.to_owned();
+        let refreshed = refreshed.to_owned();
+        let handle = thread::spawn(move || {
+            let mut served = 0usize;
+            let first_deadline = Instant::now() + Duration::from_secs(5);
+            let mut extra_deadline: Option<Instant> = None;
+            while served < 3 {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).ok();
+                        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                        let _ = read_http_headers(&mut stream);
+                        if served == 0 {
+                            write_http_json(&mut stream, 200, &first);
+                        } else {
+                            if served == 1 && !refresh_delay.is_zero() {
+                                thread::sleep(refresh_delay);
+                            }
+                            write_http_json(&mut stream, 200, &refreshed);
+                            extra_deadline = Some(Instant::now() + extra_idle);
+                        }
+                        served += 1;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        let limit = extra_deadline.unwrap_or(first_deadline);
+                        if Instant::now() >= limit {
                             break;
                         }
+                        thread::sleep(Duration::from_millis(5));
                     }
                     Err(_) => break,
                 }
             }
-            let req = String::from_utf8_lossy(&buf).into_owned();
-            let resp = format!(
-                "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(resp.as_bytes());
-            req
+            served
         });
         (format!("http://{addr}/oauth/token"), handle)
     }
@@ -297,5 +382,63 @@ mod tests {
     fn azure_empty_secret_fails() {
         let err = AzureTokenProvider::new("t", "c", "", "s").expect_err("empty");
         assert!(err.to_string().contains("client_secret"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn forced_refresh_http_error_restores_force_flag() {
+        let (url, handle) = spawn_http_script(&[
+            (200, r#"{"access_token":"az-first","expires_in":3600}"#),
+            (401, r#"{"error":"invalid_client"}"#),
+            (200, r#"{"access_token":"az-retry","expires_in":3600}"#),
+        ]);
+        let p = AzureTokenProvider::new("tenant", "client", "secret", "scope")
+            .expect("new")
+            .with_token_url(url);
+        assert_eq!(p.get_token().await.expect("cache"), "az-first");
+        p.mark_stale();
+        let err = p.get_token().await.expect_err("forced 401");
+        let msg = err.to_string();
+        assert!(msg.contains("401") || msg.contains("Azure"), "{msg}");
+        assert_eq!(
+            msg.matches("(HTTP ").count(),
+            1,
+            "VendorRejected must not re-wrap HTTP: {msg}"
+        );
+        assert_eq!(
+            p.get_token().await.expect("retry after failed force"),
+            "az-retry"
+        );
+        assert_eq!(handle.join().expect("join"), 3);
+    }
+
+    #[tokio::test]
+    async fn concurrent_mark_stale_does_not_serve_stale_cache() {
+        let first = r#"{"access_token":"az-first","expires_in":3600}"#;
+        let second = r#"{"access_token":"az-second","expires_in":3600}"#;
+        let (url, handle) = spawn_http_cache_then_refresh(
+            first,
+            second,
+            Duration::from_millis(80),
+            Duration::from_millis(200),
+        );
+        let p = AzureTokenProvider::new("tenant", "client", "secret", "scope")
+            .expect("new")
+            .with_token_url(url);
+        assert_eq!(p.get_token().await.expect("cache"), "az-first");
+        p.mark_stale();
+        let a = p.clone();
+        let b = p.clone();
+        let (left, right) = tokio::join!(a.get_token(), b.get_token());
+        let left = left.expect("left");
+        let right = right.expect("right");
+        assert_ne!(left, "az-first", "must not return just-staled cache");
+        assert_ne!(right, "az-first", "must not return just-staled cache");
+        assert_eq!(left, "az-second");
+        assert_eq!(right, "az-second");
+        let served = handle.join().expect("join");
+        assert!(
+            served >= 2,
+            "cache fill plus at least one refresh, got {served}"
+        );
     }
 }

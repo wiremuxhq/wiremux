@@ -1,4 +1,4 @@
-//! Generic PKCE (RFC 7636) for profile-driven login. Login CLI is a later PR.
+//! Generic PKCE (RFC 7636) for profile-driven login.
 
 use std::collections::BTreeMap;
 

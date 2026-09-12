@@ -141,7 +141,7 @@ Do **not** leave these in Bline:
 | `GcpTokenProvider`, `AzureTokenProvider`, `AwsStsTokenProvider` | `wiremux-auth` |
 | Copilot device-flow login | Engine + gist already here. Persist is `copilot-hosts`. |
 | `min_cacheable_tokens` / `estimate_prompt_tokens` | `IrCache` |
-| Unknown name + Anthropic protocol | `load_profile_for_wire(Wire::Messages)` |
+| Unknown name + Anthropic protocol | `load_profile_for_wire(Wire::Messages)`. Dialect skeleton (no `[oauth]`), not a shipped vendor pack. Load `anthropic-oauth` by catalog id for Anthropic OAuth. |
 | Dialect maps / `ChatRequest` conversions | `wiremux::{decode,encode}` |
 
 ## Host follow-up (Bline, after this crate has the APIs)

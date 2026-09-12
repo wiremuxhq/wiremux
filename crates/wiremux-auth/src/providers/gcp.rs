@@ -11,8 +11,8 @@ use tokio::sync::RwLock;
 use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
-    InFlight, MAX_CREDS_BYTES, duration_from_expires_in_secs, format_oauth_http_error,
-    lead_or_follow, oauth_http_client, post_form_url,
+    InFlight, MAX_CREDS_BYTES, duration_from_expires_in_secs, lead_or_follow, oauth_http_client,
+    post_form_url, redact_url_origin, vendor_rejected_summary,
 };
 
 const DEFAULT_LIFETIME_SECS: u64 = 3600;
@@ -54,7 +54,7 @@ impl std::fmt::Debug for GcpTokenProvider {
         f.debug_struct("GcpTokenProvider")
             .field("client_email", &self.inner.client_email)
             .field("private_key", &"[REDACTED]")
-            .field("token_uri", &self.inner.token_uri)
+            .field("token_uri", &redact_url_origin(&self.inner.token_uri))
             .field("scope", &self.inner.scope)
             .finish()
     }
@@ -92,10 +92,10 @@ impl GcpTokenProvider {
         let key: ServiceAccountKey = serde_json::from_str(json)
             .map_err(|e| AuthError::TokenProvider(format!("GCP service-account key: {e}")))?;
         if key.client_email.trim().is_empty() {
-            return Err(AuthError::MissingField("client_email".into()));
+            return Err(AuthError::MissingField("GCP client_email".into()));
         }
         if key.private_key.trim().is_empty() {
-            return Err(AuthError::MissingField("private_key".into()));
+            return Err(AuthError::MissingField("GCP private_key".into()));
         }
         let token_uri = key
             .token_uri
@@ -159,9 +159,8 @@ impl GcpTokenProvider {
         if !(200..300).contains(&status) {
             return Err(AuthError::VendorRejected {
                 status,
-                summary: format_oauth_http_error(
+                summary: vendor_rejected_summary(
                     "GCP token request failed",
-                    status,
                     &body,
                     &self.inner.token_uri,
                 ),
@@ -227,10 +226,11 @@ impl TokenProvider for GcpTokenProvider {
     }
 
     async fn get_token(&self) -> Result<String, AuthError> {
-        let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
+        // load() not swap: a concurrent get_token must not see a cleared force
+        // flag before the InFlight claim.
         {
             let state = self.inner.state.read().await;
-            if !force
+            if !self.inner.force_refresh.load(Ordering::SeqCst)
                 && let Some(tok) = state.as_ref()
                 && !tok.needs_refresh()
                 && !self.inner.inflight.is_busy()
@@ -238,7 +238,15 @@ impl TokenProvider for GcpTokenProvider {
                 return Ok(tok.access_token.clone());
             }
         }
-        lead_or_follow(&self.inner.inflight, || self.refresh(force)).await
+        lead_or_follow(&self.inner.inflight, || async {
+            let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
+            let result = self.refresh(force).await;
+            if result.is_err() && force {
+                self.inner.force_refresh.store(true, Ordering::SeqCst);
+            }
+            result
+        })
+        .await
     }
 }
 
@@ -291,6 +299,32 @@ c+5RXVheoFNjzJpbLyOIeEEttw==
         .to_string()
     }
 
+    fn read_http_headers(stream: &mut impl Read) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 2048];
+        loop {
+            match stream.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        buf
+    }
+
+    fn write_http_json(stream: &mut impl Write, status: u16, body: &str) {
+        let resp = format!(
+            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    }
+
     fn spawn_http_server(status: u16, body: &str) -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
         let addr = listener.local_addr().expect("local_addr");
@@ -298,27 +332,30 @@ c+5RXVheoFNjzJpbLyOIeEEttw==
         let handle = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
             stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            let mut buf = Vec::new();
-            let mut tmp = [0u8; 2048];
-            loop {
-                match stream.read(&mut tmp) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        buf.extend_from_slice(&tmp[..n]);
-                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
+            let buf = read_http_headers(&mut stream);
+            write_http_json(&mut stream, status, &body);
+            String::from_utf8_lossy(&buf).into_owned()
+        });
+        (format!("http://{addr}/token"), handle)
+    }
+
+    fn spawn_http_script(responses: &[(u16, &str)]) -> (String, thread::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        let addr = listener.local_addr().expect("local_addr");
+        let responses: Vec<(u16, String)> = responses
+            .iter()
+            .map(|(status, body)| (*status, (*body).to_owned()))
+            .collect();
+        let handle = thread::spawn(move || {
+            let mut served = 0usize;
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().expect("accept");
+                stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                let _ = read_http_headers(&mut stream);
+                write_http_json(&mut stream, status, &body);
+                served += 1;
             }
-            let req = String::from_utf8_lossy(&buf).into_owned();
-            let resp = format!(
-                "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(resp.as_bytes());
-            req
+            served
         });
         (format!("http://{addr}/token"), handle)
     }
@@ -354,16 +391,48 @@ c+5RXVheoFNjzJpbLyOIeEEttw==
 
     #[test]
     fn gcp_debug_redacts_private_key() {
-        let json = test_key_json("https://oauth2.googleapis.com/token");
+        let json = test_key_json(
+            "https://user:s3cret@oauth2.googleapis.com/token?client_secret=supersecret",
+        );
         let p = GcpTokenProvider::from_key(&json).expect("from_key");
         let debug = format!("{p:?}");
         assert!(!debug.contains("BEGIN PRIVATE"), "{debug}");
         assert!(debug.contains("[REDACTED]"), "{debug}");
+        assert!(!debug.contains("s3cret"), "{debug}");
+        assert!(!debug.contains("supersecret"), "{debug}");
+        assert!(!debug.contains("client_secret="), "{debug}");
+        assert!(!debug.contains("user:"), "{debug}");
+        assert!(debug.contains("https://oauth2.googleapis.com"), "{debug}");
     }
 
     #[test]
     fn gcp_missing_email_fails() {
         let err = GcpTokenProvider::from_key(r#"{"private_key":"x"}"#).expect_err("missing");
         assert!(err.to_string().contains("client_email"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn forced_refresh_http_error_restores_force_flag() {
+        let (url, handle) = spawn_http_script(&[
+            (200, r#"{"access_token":"ya29.first","expires_in":3600}"#),
+            (401, r#"{"error":"invalid_grant"}"#),
+            (200, r#"{"access_token":"ya29.retry","expires_in":3600}"#),
+        ]);
+        let p = GcpTokenProvider::from_key(&test_key_json(&url)).expect("from_key");
+        assert_eq!(p.get_token().await.expect("cache"), "ya29.first");
+        p.mark_stale();
+        let err = p.get_token().await.expect_err("forced 401");
+        let msg = err.to_string();
+        assert!(msg.contains("401") || msg.contains("GCP"), "{msg}");
+        assert_eq!(
+            msg.matches("(HTTP ").count(),
+            1,
+            "VendorRejected must not re-wrap HTTP: {msg}"
+        );
+        assert_eq!(
+            p.get_token().await.expect("retry after failed force"),
+            "ya29.retry"
+        );
+        assert_eq!(handle.join().expect("join"), 3);
     }
 }
