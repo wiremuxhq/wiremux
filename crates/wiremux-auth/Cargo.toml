@@ -20,7 +20,7 @@ test-util = ["dep:tempfile"]
 [dependencies]
 fs4 = { version = "1.1.0", features = ["sync"] }
 hmac = "0.13"
-jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
+jsonwebtoken = { version = "10", default-features = false, features = ["use_pem"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
