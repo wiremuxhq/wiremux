@@ -9,7 +9,10 @@ use super::error::ProfileError;
 use super::overlay;
 use super::parse::{RawProfile, parse_layer_file, parse_layer_str, resolve};
 use super::shipped;
-use super::types::{LoadOptions, ResolvedProfile};
+use super::types::{
+    Betas, Dialect, Http, ListMerge, LoadOptions, ResolvedProfile, StreamUnknownPolicy,
+    ToolTypePolicy, Wire,
+};
 
 /// List document ids from shipped ∪ user dir ∪ explicit file.
 pub fn list_profiles(opts: &LoadOptions<'_>) -> Result<Vec<String>, ProfileError> {
@@ -44,6 +47,77 @@ pub fn load_profile(id: &str, opts: &LoadOptions<'_>) -> Result<ResolvedProfile,
             id: id.to_string(),
             known: known.into_iter().collect(),
         }),
+    }
+}
+
+/// Load a profile for a dialect wire.
+///
+/// If a catalog id equals the wire name (`messages`, `chat-completions`,
+/// `responses`, `gemini`), that profile is loaded. Otherwise the first
+/// shipped-or-user profile whose resolved `wire` matches is returned. If
+/// none exist, a minimal in-memory profile is returned so a host never
+/// needs `UnknownProvider` for a known dialect.
+pub fn load_profile_for_wire(
+    wire: Wire,
+    opts: &LoadOptions<'_>,
+) -> Result<ResolvedProfile, ProfileError> {
+    let name = wire.as_str();
+    match load_profile(name, opts) {
+        Ok(profile) => return Ok(profile),
+        Err(ProfileError::NotFound { .. }) => {}
+        Err(err) => return Err(err),
+    }
+
+    for id in unique_layer_ids(opts)? {
+        if id == name {
+            continue;
+        }
+        match load_profile(&id, opts) {
+            Ok(profile) if profile.dialect.wire == Some(wire) => return Ok(profile),
+            Ok(_) => {}
+            Err(_) => {}
+        }
+    }
+    Ok(minimal_profile_for_wire(wire))
+}
+
+fn unique_layer_ids(opts: &LoadOptions<'_>) -> Result<Vec<String>, ProfileError> {
+    let mut seen = BTreeSet::new();
+    let mut ids = Vec::new();
+    for layer in collect_layers(opts)? {
+        if seen.insert(layer.id.clone()) {
+            ids.push(layer.id);
+        }
+    }
+    Ok(ids)
+}
+
+fn minimal_profile_for_wire(wire: Wire) -> ResolvedProfile {
+    ResolvedProfile {
+        schema_version: 1,
+        id: wire.as_str().to_string(),
+        display_name: None,
+        dialect: Dialect {
+            wire: Some(wire),
+            stream_events: wire
+                .default_stream_events()
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+            list_merge: ListMerge::default(),
+            tool_type_policy: ToolTypePolicy::HardError,
+            stream_unknown_policy: StreamUnknownPolicy::default(),
+        },
+        http: Http {
+            base_url: None,
+            chat_path: Some(wire.default_chat_path().to_string()),
+            auth_scheme: Some(wire.default_auth_scheme()),
+            headers: std::collections::BTreeMap::new(),
+            header_merge: ListMerge::default(),
+        },
+        oauth: None,
+        fingerprint: None,
+        betas: Betas::default_for(Some(wire), false),
     }
 }
 
@@ -222,4 +296,75 @@ fn list_profile_files(dir: &Path) -> Result<Vec<PathBuf>, ProfileError> {
     }
     files.sort();
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_opts() -> LoadOptions<'static> {
+        LoadOptions {
+            id: None,
+            explicit_file: None,
+            extra_profile_dirs: Vec::new(),
+            include_shipped: false,
+            include_user_config: false,
+        }
+    }
+
+    #[test]
+    fn load_profile_for_wire_messages_does_not_need_catalog_id() {
+        let profile = load_profile_for_wire(Wire::Messages, &empty_opts())
+            .expect("known dialect must not be NotFound");
+        assert_eq!(profile.dialect.wire, Some(Wire::Messages));
+        assert_eq!(profile.id, "messages");
+        assert_eq!(profile.schema_version, 1);
+        assert_eq!(profile.dialect.tool_type_policy, ToolTypePolicy::HardError);
+        let err = load_profile("messages", &empty_opts()).expect_err("no catalog id");
+        assert!(matches!(err, ProfileError::NotFound { .. }));
+    }
+
+    #[test]
+    fn load_profile_for_wire_prefers_catalog_id_equal_to_wire_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("messages.toml"),
+            r#"
+schema_version = 1
+id = "messages"
+wire = "messages"
+display_name = "catalog-id-hit"
+"#,
+        )
+        .expect("write");
+        let opts = LoadOptions {
+            extra_profile_dirs: vec![dir.path().to_path_buf()],
+            ..empty_opts()
+        };
+        let profile = load_profile_for_wire(Wire::Messages, &opts).expect("catalog id");
+        assert_eq!(profile.id, "messages");
+        assert_eq!(profile.display_name.as_deref(), Some("catalog-id-hit"));
+        assert_eq!(profile.dialect.wire, Some(Wire::Messages));
+    }
+
+    #[test]
+    fn load_profile_for_wire_finds_first_matching_wire() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("custom.toml"),
+            r#"
+schema_version = 1
+id = "custom-gemini"
+wire = "gemini"
+"#,
+        )
+        .expect("write");
+        let opts = LoadOptions {
+            extra_profile_dirs: vec![dir.path().to_path_buf()],
+            ..empty_opts()
+        };
+        let profile = load_profile_for_wire(Wire::Gemini, &opts).expect("wire match");
+        assert_eq!(profile.id, "custom-gemini");
+        assert_eq!(profile.dialect.wire, Some(Wire::Gemini));
+    }
 }
