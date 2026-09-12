@@ -83,6 +83,22 @@ pub fn decode_stream_events(
     profile: &ResolvedProfile,
 ) -> Result<Vec<IrStreamEvent>, MapError> {
     let first = decode_stream_event(wire, raw, profile)?;
+    if matches!(wire, Wire::ChatCompletions)
+        && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
+    {
+        let events = chat::decode_all(&value)?;
+        let tool_protocol = matches!(events.as_slice(), [IrStreamEvent::Protocol { .. }]);
+        if !events.is_empty() && !tool_protocol {
+            return Ok(events);
+        }
+    }
+    if matches!(wire, Wire::Responses)
+        && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
+        && let Some(events) =
+            responses::decode_terminal_events(&frame_event_name(wire, raw), &value)
+    {
+        return Ok(events);
+    }
     let Some(first) = first else {
         return Ok(Vec::new());
     };

@@ -150,8 +150,13 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     if gemini_source_has_tool_choice(value) {
         report.record("sampling.tool_choice", LossAction::Drop, "no slot");
     }
-    if gemini_source_has_json_schema(value) {
-        report.record("sampling.json_schema", LossAction::Drop, "no slot");
+    let json_schema = gemini_json_schema(cfg);
+    if gemini_source_has_json_schema(value) && json_schema.is_none() {
+        report.record(
+            "sampling.json_schema",
+            LossAction::Drop,
+            "json_schema requires object schema",
+        );
     }
     IrSampling {
         temperature: f32_field(cfg, "temperature"),
@@ -170,9 +175,18 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .or_else(|| u32_field(thinking, "thinking_budget")),
         reasoning_effort: None,
         max_reasoning_tokens: None,
-        json_schema: None,
+        json_schema,
         json_schema_name: None,
     }
+}
+
+fn gemini_json_schema(cfg: &Value) -> Option<Value> {
+    cfg.get("responseSchema")
+        .or_else(|| cfg.get("responseJsonSchema"))
+        .or_else(|| cfg.get("response_schema"))
+        .or_else(|| cfg.get("response_json_schema"))
+        .filter(|v| v.is_object())
+        .cloned()
 }
 
 fn thinking_config_obj(value: &Value) -> &Value {
@@ -393,6 +407,18 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         }
         cfg["thinkingConfig"] = tc;
     }
+    if let Some(schema) = &s.json_schema {
+        if schema.is_object() {
+            cfg["responseMimeType"] = json!("application/json");
+            cfg["responseSchema"] = schema.clone();
+        } else {
+            report.record(
+                "sampling.json_schema",
+                LossAction::Drop,
+                "json_schema requires object schema",
+            );
+        }
+    }
     if cfg.as_object().is_some_and(|o| !o.is_empty()) {
         body["generationConfig"] = cfg;
     }
@@ -422,8 +448,5 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.parallel_tool_calls.is_some() {
         report.record("sampling.parallel_tool_calls", LossAction::Drop, "no slot");
-    }
-    if s.json_schema.is_some() {
-        report.record("sampling.json_schema", LossAction::Drop, "no slot");
     }
 }
