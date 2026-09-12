@@ -163,6 +163,50 @@ pub(crate) fn append_oauth_body_chunk(buf: &mut Vec<u8>, chunk: &[u8]) -> Result
     Ok(())
 }
 
+/// POST `application/x-www-form-urlencoded` to an https (or test loopback) URL.
+pub(crate) async fn post_form_url(
+    http: &reqwest::Client,
+    url: &str,
+    form: &[(&str, &str)],
+) -> Result<(u16, String), AuthError> {
+    let parsed = parse_token_endpoint(url)?;
+    let resp = http.post(parsed).form(form).send().await.map_err(|e| {
+        AuthError::TokenProvider(format_oauth_transport_error(
+            "token request failed",
+            &e,
+            url,
+        ))
+    })?;
+    let status = resp.status().as_u16();
+    let body = read_oauth_body(resp).await?;
+    Ok((status, body))
+}
+
+pub(crate) fn parse_token_endpoint(url: &str) -> Result<reqwest::Url, AuthError> {
+    let parsed = reqwest::Url::parse(url.trim())
+        .map_err(|e| AuthError::TokenProvider(format!("token_url is not a valid URL: {e}")))?;
+    if parsed.scheme() == "https" {
+        return Ok(parsed);
+    }
+    #[cfg(any(test, feature = "test-util"))]
+    if crate::profile::is_loopback_http(url) {
+        return Ok(parsed);
+    }
+    Err(AuthError::TokenProvider(
+        "token_url must be https (or loopback http)".into(),
+    ))
+}
+
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
 pub(crate) async fn read_oauth_body(mut resp: reqwest::Response) -> Result<String, AuthError> {
     if let Some(len) = resp.content_length()
         && len > MAX_OAUTH_BODY_BYTES as u64

@@ -1256,6 +1256,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wake_forces_refresh_on_next_get() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth.json",
+            document: serde_json::json!({
+                "tokens": {
+                    "access": "first",
+                    "refresh": "rt",
+                    "expiry_unix": 4_102_444_800_i64
+                }
+            }),
+        });
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"second","refresh_token":"rt2","expires_in":3600}"#,
+        );
+        let oauth = pack_from_toml(&pointer_toml(&url, &path));
+        let p = provider(&oauth);
+        assert_eq!(p.get_token().await.expect("first"), "first");
+        p.wake();
+        assert_eq!(p.get_token().await.expect("forced refresh"), "second");
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
     async fn mark_stale_forces_refresh_on_next_get() {
         let home = IsolatedHome::new();
         let path = home.plant_credentials(PlantCredentials::JsonPointer {
@@ -1565,7 +1590,7 @@ expires_unit = "s"
     fn provider(oauth: &OauthPack) -> ProfileTokenProvider {
         match provider_from_oauth(oauth).expect("provider") {
             AnyTokenProvider::Profile(p) => p,
-            AnyTokenProvider::Static(_) => panic!("expected Profile"),
+            _ => panic!("expected Profile"),
         }
     }
 

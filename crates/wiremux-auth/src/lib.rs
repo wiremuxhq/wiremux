@@ -23,8 +23,13 @@ pub use profile::{
     AuthScheme, Betas, CredsFormat, Dialect, ExpiresUnit, Fingerprint, ForbiddenFieldPolicy, Http,
     ListMerge, LoadOptions, Login, OauthPack, ProfileError, ResolvedProfile, SCHEMA_VERSION_MAX,
     StreamUnknownPolicy, TokenRequestFormat, TokenResponse, ToolNameCase, ToolTypePolicy, Wire,
-    list_profiles, load_profile, load_profile_from_cli, parse_profile_str,
+    list_profiles, load_profile, load_profile_for_wire, load_profile_from_cli, parse_profile_str,
 };
+pub use providers::aws::{
+    AwsCredentials, AwsSignParams, AwsStsConfig, AwsStsTokenProvider, sign_aws_request,
+};
+pub use providers::azure::AzureTokenProvider;
+pub use providers::gcp::GcpTokenProvider;
 pub use providers::oauth::{
     ProfileTokenProvider, provider_from_oauth, provider_from_oauth_opts, provider_from_profile,
 };
@@ -48,6 +53,11 @@ pub trait TokenProvider: Send + Sync + std::fmt::Debug {
 
     /// Drop the cached token so the next [`TokenProvider::get_token`] refreshes.
     fn mark_stale(&self) {}
+
+    /// Host laptop-wake hook. Default calls [`TokenProvider::mark_stale`].
+    fn wake(&self) {
+        self.mark_stale();
+    }
 }
 
 /// Type-erased token provider.
@@ -57,6 +67,12 @@ pub enum AnyTokenProvider {
     Static(StaticToken),
     /// Driven by a loaded `[oauth]` table.
     Profile(ProfileTokenProvider),
+    /// Azure AD client credentials.
+    Azure(AzureTokenProvider),
+    /// GCP service-account JWT bearer.
+    Gcp(GcpTokenProvider),
+    /// AWS STS AssumeRole (not a Bearer API key).
+    AwsSts(AwsStsTokenProvider),
 }
 
 impl TokenProvider for AnyTokenProvider {
@@ -64,6 +80,19 @@ impl TokenProvider for AnyTokenProvider {
         match self {
             Self::Static(p) => p.mark_stale(),
             Self::Profile(p) => p.mark_stale(),
+            Self::Azure(p) => p.mark_stale(),
+            Self::Gcp(p) => p.mark_stale(),
+            Self::AwsSts(p) => p.mark_stale(),
+        }
+    }
+
+    fn wake(&self) {
+        match self {
+            Self::Static(p) => p.wake(),
+            Self::Profile(p) => p.wake(),
+            Self::Azure(p) => p.wake(),
+            Self::Gcp(p) => p.wake(),
+            Self::AwsSts(p) => p.wake(),
         }
     }
 
@@ -71,6 +100,9 @@ impl TokenProvider for AnyTokenProvider {
         match self {
             Self::Static(p) => p.get_token().await,
             Self::Profile(p) => p.get_token().await,
+            Self::Azure(p) => p.get_token().await,
+            Self::Gcp(p) => p.get_token().await,
+            Self::AwsSts(p) => p.get_token().await,
         }
     }
 }
@@ -84,6 +116,24 @@ impl From<StaticToken> for AnyTokenProvider {
 impl From<ProfileTokenProvider> for AnyTokenProvider {
     fn from(t: ProfileTokenProvider) -> Self {
         Self::Profile(t)
+    }
+}
+
+impl From<AzureTokenProvider> for AnyTokenProvider {
+    fn from(t: AzureTokenProvider) -> Self {
+        Self::Azure(t)
+    }
+}
+
+impl From<GcpTokenProvider> for AnyTokenProvider {
+    fn from(t: GcpTokenProvider) -> Self {
+        Self::Gcp(t)
+    }
+}
+
+impl From<AwsStsTokenProvider> for AnyTokenProvider {
+    fn from(t: AwsStsTokenProvider) -> Self {
+        Self::AwsSts(t)
     }
 }
 

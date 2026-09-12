@@ -90,6 +90,17 @@ pub enum Wire {
 }
 
 impl Wire {
+    /// Catalog / file spelling (`messages`, `chat-completions`, `responses`, `gemini`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat-completions",
+            Self::Messages => "messages",
+            Self::Responses => "responses",
+            Self::Gemini => "gemini",
+        }
+    }
+
     /// Built-in SSE event names when `stream_events` is omitted.
     #[must_use]
     pub fn default_stream_events(self) -> &'static [&'static str] {

@@ -50,6 +50,9 @@ pub struct IrCache {
     pub enabled: bool,
     /// "5m" or "1h" when the target dialect has a TTL slot.
     pub retention: Option<String>,
+    /// Skip `cache_control` when estimated prompt tokens are below this floor.
+    /// `None` or `0` means no floor.
+    pub min_cacheable_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -212,6 +215,44 @@ pub enum LossAction {
     Degrade,
     Drop,
     HardError,
+}
+
+/// Estimate prompt tokens as `chars / 4` over IR text.
+///
+/// Counts system / user / assistant text parts, function-call names and
+/// args, and function-tool names, descriptions, and parameters.
+#[must_use]
+pub fn estimate_prompt_tokens(req: &IrRequest) -> u32 {
+    let mut chars = 0usize;
+    for item in &req.items {
+        match item {
+            IrItem::System { text } => chars += text.len(),
+            IrItem::User { parts } | IrItem::Assistant { parts } => {
+                for part in parts {
+                    if let IrPart::Text(text) = part {
+                        chars += text.len();
+                    }
+                }
+            }
+            IrItem::FunctionCall {
+                name, arguments, ..
+            } => {
+                chars += name.len() + arguments.len();
+            }
+            _ => {}
+        }
+    }
+    for tool in &req.tools {
+        if let IrTool::Function {
+            name,
+            description,
+            parameters,
+        } = tool
+        {
+            chars += name.len() + description.len() + parameters.to_string().len();
+        }
+    }
+    (chars / 4) as u32
 }
 
 #[cfg(test)]

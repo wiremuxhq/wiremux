@@ -12,13 +12,15 @@ categories = []
 
 [features]
 default = ["pkce", "device"]
-pkce = ["dep:getrandom", "dep:sha2"]
+pkce = ["dep:getrandom"]
 device = []
 # Public IsolatedHome helper. Not a runtime API.
 test-util = ["dep:tempfile"]
 
 [dependencies]
 fs4 = { version = "1.1.0", features = ["sync"] }
+hmac = "0.13"
+jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
@@ -27,7 +29,7 @@ toml = "1.1"
 tracing = "0.1.41"
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
 getrandom = { version = "0.4", optional = true }
-sha2 = { version = "0.11", optional = true }
+sha2 = "0.11"
 tempfile = { version = "3.23.0", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

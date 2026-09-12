@@ -269,6 +269,7 @@ fn cache_from(value: &Value) -> IrCache {
         Some(ttl) => IrCache {
             enabled: true,
             retention: ttl,
+            min_cacheable_tokens: None,
         },
         None => IrCache::default(),
     }
@@ -315,7 +316,7 @@ pub(super) fn encode(
         body["tools"] = Value::Array(tools.iter().map(encode_tool).collect());
     }
     encode_sampling(ir, &mut body, report);
-    apply_cache_breakpoints(&mut body, &ir.sampling.cache, report);
+    apply_cache_breakpoints(&mut body, ir, report);
     Ok(body)
 }
 
@@ -632,9 +633,23 @@ const ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS: usize = 4;
 /// Preferred agent layout. Leaves headroom if a proxy injects more.
 const ANTHROPIC_PREFERRED_CACHE_CONTROL_BLOCKS: usize = 2;
 
-fn apply_cache_breakpoints(body: &mut Value, cache: &IrCache, report: &mut LossReport) {
+fn apply_cache_breakpoints(body: &mut Value, ir: &IrRequest, report: &mut LossReport) {
+    let cache = &ir.sampling.cache;
     if !cache.enabled || cache.retention.as_deref() == Some("none") {
         return;
+    }
+    if let Some(floor) = cache.min_cacheable_tokens
+        && floor > 0
+    {
+        let estimated = crate::ir::estimate_prompt_tokens(ir);
+        if estimated < floor {
+            report.record(
+                "sampling.cache",
+                LossAction::Drop,
+                format!("below min_cacheable_tokens floor {floor}"),
+            );
+            return;
+        }
     }
     report.record("sampling.cache", LossAction::Preserve, "messages cache");
     let ttl = match cache.retention.as_deref() {
