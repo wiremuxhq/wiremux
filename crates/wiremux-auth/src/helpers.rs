@@ -308,6 +308,17 @@ pub(crate) fn format_oauth_http_error(
     }
 }
 
+/// Sanitized body and origin only. HTTP status lives on [`AuthError::VendorRejected`].
+pub(crate) fn vendor_rejected_summary(context: &str, body: &str, url: &str) -> String {
+    let summary = sanitize_oauth_error_body(body);
+    let via = redact_url_origin(url);
+    if summary.is_empty() {
+        format!("{context} via {via}")
+    } else {
+        format!("{context}: {summary} via {via}")
+    }
+}
+
 pub(crate) fn redact_secret_looking(s: &str) -> String {
     let mut out = redact_prefix(s, "sk-ant-");
     out = redact_jwt(&out);
@@ -744,6 +755,28 @@ mod tests {
         assert!(!msg.contains("supersecret"), "{msg}");
         assert!(!msg.contains("user:"), "{msg}");
         assert!(!msg.contains("/oauth"), "{msg}");
+    }
+
+    #[test]
+    fn vendor_rejected_summary_omits_http_status() {
+        let summary = vendor_rejected_summary(
+            "Azure token request failed",
+            r#"{"error":"invalid_client"}"#,
+            "https://login.microsoftonline.com/t/oauth2/v2.0/token",
+        );
+        assert!(
+            !summary.contains("HTTP"),
+            "summary must not re-wrap HTTP status, got {summary}"
+        );
+        assert!(summary.contains("invalid_client"), "{summary}");
+        assert!(summary.contains("login.microsoftonline.com"), "{summary}");
+        let xml = vendor_rejected_summary(
+            "STS AssumeRole failed",
+            "<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>",
+            "https://sts.amazonaws.com/",
+        );
+        assert!(!xml.contains("HTTP"), "{xml}");
+        assert!(xml.contains("AssumeRole"), "{xml}");
     }
 
     #[test]

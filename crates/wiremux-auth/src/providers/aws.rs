@@ -9,8 +9,8 @@ use tokio::sync::RwLock;
 use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
-    InFlight, format_oauth_http_error, format_oauth_transport_error, hex_encode, lead_or_follow,
-    oauth_http_client, parse_rfc3339, parse_token_endpoint, percent_encode, read_oauth_body,
+    InFlight, format_oauth_transport_error, hex_encode, lead_or_follow, oauth_http_client,
+    parse_rfc3339, parse_token_endpoint, percent_encode, read_oauth_body, vendor_rejected_summary,
 };
 
 const DEFAULT_REGION: &str = "us-east-1";
@@ -138,13 +138,13 @@ impl AwsStsTokenProvider {
     /// Construct from long-lived keys. Fails if the access key or secret is empty.
     pub fn new(mut config: AwsStsConfig) -> Result<Self, AuthError> {
         if config.access_key_id.trim().is_empty() {
-            return Err(AuthError::MissingField("access_key_id".into()));
+            return Err(AuthError::MissingField("AWS access_key_id".into()));
         }
         if config.secret_access_key.trim().is_empty() {
-            return Err(AuthError::MissingField("secret_access_key".into()));
+            return Err(AuthError::MissingField("AWS secret_access_key".into()));
         }
         if config.role_arn.trim().is_empty() {
-            return Err(AuthError::MissingField("role_arn".into()));
+            return Err(AuthError::MissingField("AWS role_arn".into()));
         }
         if config.role_session_name.trim().is_empty() {
             config.role_session_name = "wiremux".into();
@@ -165,10 +165,11 @@ impl AwsStsTokenProvider {
 
     /// Temporary credentials from AssumeRole (cached at 80% of TTL).
     pub async fn get_credentials(&self) -> Result<AwsCredentials, AuthError> {
-        let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
+        // load() not swap: a concurrent get_credentials must not see a cleared
+        // force flag before the InFlight claim.
         {
             let state = self.inner.state.read().await;
-            if !force
+            if !self.inner.force_refresh.load(Ordering::SeqCst)
                 && let Some(cached) = state.as_ref()
                 && !cached.needs_refresh()
                 && !self.inner.inflight.is_busy()
@@ -176,19 +177,19 @@ impl AwsStsTokenProvider {
                 return Ok(cached.creds.clone());
             }
         }
-        let result = async {
-            let token =
-                lead_or_follow(&self.inner.inflight, || self.refresh_as_leader(force)).await?;
-            let state = self.inner.state.read().await;
-            state.as_ref().map(|c| c.creds.clone()).ok_or_else(|| {
-                AuthError::TokenProvider(format!("STS cache empty after refresh ({token})"))
-            })
-        }
-        .await;
-        if force && result.is_err() {
-            self.inner.force_refresh.store(true, Ordering::SeqCst);
-        }
-        result
+        let token = lead_or_follow(&self.inner.inflight, || async {
+            let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
+            let result = self.refresh_as_leader(force).await;
+            if result.is_err() && force {
+                self.inner.force_refresh.store(true, Ordering::SeqCst);
+            }
+            result
+        })
+        .await?;
+        let state = self.inner.state.read().await;
+        state.as_ref().map(|c| c.creds.clone()).ok_or_else(|| {
+            AuthError::TokenProvider(format!("STS cache empty after refresh ({token})"))
+        })
     }
 
     async fn refresh_as_leader(&self, force: bool) -> Result<String, AuthError> {
@@ -281,7 +282,7 @@ impl AwsStsTokenProvider {
         if !(200..300).contains(&status) {
             return Err(AuthError::VendorRejected {
                 status,
-                summary: format_oauth_http_error("STS AssumeRole failed", status, &text, &endpoint),
+                summary: vendor_rejected_summary("STS AssumeRole failed", &text, &endpoint),
             });
         }
         parse_assume_role_xml(&text)
@@ -805,9 +806,12 @@ mod tests {
         assert_eq!(first.access_key_id, "ASIAEXAMPLE");
         p.mark_stale();
         let err = p.get_credentials().await.expect_err("forced 403");
-        assert!(
-            err.to_string().contains("403") || err.to_string().contains("AssumeRole"),
-            "{err}"
+        let msg = err.to_string();
+        assert!(msg.contains("403") || msg.contains("AssumeRole"), "{msg}");
+        assert_eq!(
+            msg.matches("(HTTP ").count(),
+            1,
+            "VendorRejected must not re-wrap HTTP: {msg}"
         );
         let retry = p.get_credentials().await.expect("retry after failed force");
         assert_eq!(retry.access_key_id, "ASIARETRY");

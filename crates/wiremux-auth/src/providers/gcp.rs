@@ -11,8 +11,8 @@ use tokio::sync::RwLock;
 use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
-    InFlight, MAX_CREDS_BYTES, duration_from_expires_in_secs, format_oauth_http_error,
-    lead_or_follow, oauth_http_client, post_form_url, redact_url_origin,
+    InFlight, MAX_CREDS_BYTES, duration_from_expires_in_secs, lead_or_follow, oauth_http_client,
+    post_form_url, redact_url_origin, vendor_rejected_summary,
 };
 
 const DEFAULT_LIFETIME_SECS: u64 = 3600;
@@ -159,9 +159,8 @@ impl GcpTokenProvider {
         if !(200..300).contains(&status) {
             return Err(AuthError::VendorRejected {
                 status,
-                summary: format_oauth_http_error(
+                summary: vendor_rejected_summary(
                     "GCP token request failed",
-                    status,
                     &body,
                     &self.inner.token_uri,
                 ),
@@ -227,10 +226,11 @@ impl TokenProvider for GcpTokenProvider {
     }
 
     async fn get_token(&self) -> Result<String, AuthError> {
-        let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
+        // load() not swap: a concurrent get_token must not see a cleared force
+        // flag before the InFlight claim.
         {
             let state = self.inner.state.read().await;
-            if !force
+            if !self.inner.force_refresh.load(Ordering::SeqCst)
                 && let Some(tok) = state.as_ref()
                 && !tok.needs_refresh()
                 && !self.inner.inflight.is_busy()
@@ -238,15 +238,15 @@ impl TokenProvider for GcpTokenProvider {
                 return Ok(tok.access_token.clone());
             }
         }
-        match lead_or_follow(&self.inner.inflight, || self.refresh(force)).await {
-            Ok(token) => Ok(token),
-            Err(err) => {
-                if force {
-                    self.inner.force_refresh.store(true, Ordering::SeqCst);
-                }
-                Err(err)
+        lead_or_follow(&self.inner.inflight, || async {
+            let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
+            let result = self.refresh(force).await;
+            if result.is_err() && force {
+                self.inner.force_refresh.store(true, Ordering::SeqCst);
             }
-        }
+            result
+        })
+        .await
     }
 }
 
@@ -422,9 +422,12 @@ c+5RXVheoFNjzJpbLyOIeEEttw==
         assert_eq!(p.get_token().await.expect("cache"), "ya29.first");
         p.mark_stale();
         let err = p.get_token().await.expect_err("forced 401");
-        assert!(
-            err.to_string().contains("401") || err.to_string().contains("GCP"),
-            "{err}"
+        let msg = err.to_string();
+        assert!(msg.contains("401") || msg.contains("GCP"), "{msg}");
+        assert_eq!(
+            msg.matches("(HTTP ").count(),
+            1,
+            "VendorRejected must not re-wrap HTTP: {msg}"
         );
         assert_eq!(
             p.get_token().await.expect("retry after failed force"),

@@ -14,10 +14,10 @@ use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
     AUTH_LOCK_TIMEOUT, InFlight, cached_token_on_lock_failure, duration_from_expires_in_secs,
-    expand_tilde, format_oauth_http_error, format_oauth_transport_error, is_token_rotation_error,
-    jail_creds_path, lead_or_follow, oauth_http_client, parse_rfc3339, read_oauth_body,
-    redact_url_origin, remaining_from_system_time, resolve_creds_path, sanitize_oauth_error_body,
-    try_acquire_refresh_lock,
+    expand_tilde, format_oauth_transport_error, is_token_rotation_error, jail_creds_path,
+    lead_or_follow, oauth_http_client, parse_rfc3339, read_oauth_body, redact_url_origin,
+    remaining_from_system_time, resolve_creds_path, try_acquire_refresh_lock,
+    vendor_rejected_summary,
 };
 use crate::keychain_guard::keychain_disabled;
 use crate::profile::{
@@ -454,12 +454,13 @@ impl ProfileTokenProvider {
                         }
                     }
                 }
-                let summary = sanitize_oauth_error_body(&body);
-                let msg = format_oauth_http_error("token refresh failed", status, &body, &url);
                 let hint = setup_hint(&self.inner.oauth);
                 return Err(AuthError::VendorRejected {
                     status,
-                    summary: format!("{msg}; {hint} ({summary})"),
+                    summary: format!(
+                        "{}; {hint}",
+                        vendor_rejected_summary("token refresh failed", &body, &url)
+                    ),
                 });
             }
         };
@@ -540,22 +541,26 @@ impl TokenProvider for ProfileTokenProvider {
     }
 
     async fn get_token(&self) -> Result<String, AuthError> {
-        let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
+        // load() not swap: a concurrent get_token must not see a cleared force
+        // flag before the InFlight claim.
         {
             let state = self.inner.state.read().await;
-            if !force && !state.needs_refresh() && !self.inner.inflight.is_busy() {
+            if !self.inner.force_refresh.load(Ordering::SeqCst)
+                && !state.needs_refresh()
+                && !self.inner.inflight.is_busy()
+            {
                 return Ok(state.access_token.clone());
             }
         }
-        match lead_or_follow(&self.inner.inflight, || self.refresh_as_leader(force)).await {
-            Ok(token) => Ok(token),
-            Err(err) => {
-                if force {
-                    self.inner.force_refresh.store(true, Ordering::SeqCst);
-                }
-                Err(err)
+        lead_or_follow(&self.inner.inflight, || async {
+            let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
+            let result = self.refresh_as_leader(force).await;
+            if result.is_err() && force {
+                self.inner.force_refresh.store(true, Ordering::SeqCst);
             }
-        }
+            result
+        })
+        .await
     }
 }
 
@@ -1338,7 +1343,13 @@ mod tests {
         assert_eq!(p.get_token().await.expect("cached"), "first");
         p.mark_stale();
         let err = p.get_token().await.expect_err("forced 401");
-        assert!(err.to_string().contains("401"), "{err}");
+        let msg = err.to_string();
+        assert!(msg.contains("401"), "{msg}");
+        assert_eq!(
+            msg.matches("(HTTP ").count(),
+            1,
+            "VendorRejected must not re-wrap HTTP: {msg}"
+        );
         assert_eq!(
             p.get_token().await.expect("retry after failed force"),
             "second"

@@ -9,8 +9,8 @@ use tokio::sync::RwLock;
 use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
-    InFlight, duration_from_expires_in_secs, format_oauth_http_error, lead_or_follow,
-    oauth_http_client, post_form_url,
+    InFlight, duration_from_expires_in_secs, lead_or_follow, oauth_http_client, post_form_url,
+    vendor_rejected_summary,
 };
 
 const DEFAULT_LIFETIME_SECS: u64 = 3600;
@@ -128,9 +128,8 @@ impl AzureTokenProvider {
         if !(200..300).contains(&status) {
             return Err(AuthError::VendorRejected {
                 status,
-                summary: format_oauth_http_error(
+                summary: vendor_rejected_summary(
                     "Azure token request failed",
-                    status,
                     &body,
                     &self.inner.token_url,
                 ),
@@ -202,10 +201,11 @@ impl TokenProvider for AzureTokenProvider {
     }
 
     async fn get_token(&self) -> Result<String, AuthError> {
-        let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
+        // load() not swap: a concurrent get_token must not see a cleared force
+        // flag before the InFlight claim.
         {
             let state = self.inner.state.read().await;
-            if !force
+            if !self.inner.force_refresh.load(Ordering::SeqCst)
                 && let Some(tok) = state.as_ref()
                 && !tok.needs_refresh()
                 && !self.inner.inflight.is_busy()
@@ -213,15 +213,15 @@ impl TokenProvider for AzureTokenProvider {
                 return Ok(tok.access_token.clone());
             }
         }
-        match lead_or_follow(&self.inner.inflight, || self.refresh(force)).await {
-            Ok(token) => Ok(token),
-            Err(err) => {
-                if force {
-                    self.inner.force_refresh.store(true, Ordering::SeqCst);
-                }
-                Err(err)
+        lead_or_follow(&self.inner.inflight, || async {
+            let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
+            let result = self.refresh(force).await;
+            if result.is_err() && force {
+                self.inner.force_refresh.store(true, Ordering::SeqCst);
             }
-        }
+            result
+        })
+        .await
     }
 }
 
@@ -231,7 +231,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     fn read_http_headers(stream: &mut impl Read) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -294,6 +294,54 @@ mod tests {
         (format!("http://{addr}/oauth/token"), handle)
     }
 
+    /// Cache-fill 200, then up to two delayed refresh 200s (leader + extra POST).
+    fn spawn_http_cache_then_refresh(
+        first: &str,
+        refreshed: &str,
+        refresh_delay: Duration,
+        extra_idle: Duration,
+    ) -> (String, thread::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let addr = listener.local_addr().expect("local_addr");
+        let first = first.to_owned();
+        let refreshed = refreshed.to_owned();
+        let handle = thread::spawn(move || {
+            let mut served = 0usize;
+            let first_deadline = Instant::now() + Duration::from_secs(5);
+            let mut extra_deadline: Option<Instant> = None;
+            while served < 3 {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).ok();
+                        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                        let _ = read_http_headers(&mut stream);
+                        if served == 0 {
+                            write_http_json(&mut stream, 200, &first);
+                        } else {
+                            if served == 1 && !refresh_delay.is_zero() {
+                                thread::sleep(refresh_delay);
+                            }
+                            write_http_json(&mut stream, 200, &refreshed);
+                            extra_deadline = Some(Instant::now() + extra_idle);
+                        }
+                        served += 1;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        let limit = extra_deadline.unwrap_or(first_deadline);
+                        if Instant::now() >= limit {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+            served
+        });
+        (format!("http://{addr}/oauth/token"), handle)
+    }
+
     #[tokio::test]
     async fn azure_client_credentials_returns_access_token() {
         let (url, handle) = spawn_http_server(
@@ -349,14 +397,48 @@ mod tests {
         assert_eq!(p.get_token().await.expect("cache"), "az-first");
         p.mark_stale();
         let err = p.get_token().await.expect_err("forced 401");
-        assert!(
-            err.to_string().contains("401") || err.to_string().contains("Azure"),
-            "{err}"
+        let msg = err.to_string();
+        assert!(msg.contains("401") || msg.contains("Azure"), "{msg}");
+        assert_eq!(
+            msg.matches("(HTTP ").count(),
+            1,
+            "VendorRejected must not re-wrap HTTP: {msg}"
         );
         assert_eq!(
             p.get_token().await.expect("retry after failed force"),
             "az-retry"
         );
         assert_eq!(handle.join().expect("join"), 3);
+    }
+
+    #[tokio::test]
+    async fn concurrent_mark_stale_does_not_serve_stale_cache() {
+        let first = r#"{"access_token":"az-first","expires_in":3600}"#;
+        let second = r#"{"access_token":"az-second","expires_in":3600}"#;
+        let (url, handle) = spawn_http_cache_then_refresh(
+            first,
+            second,
+            Duration::from_millis(80),
+            Duration::from_millis(200),
+        );
+        let p = AzureTokenProvider::new("tenant", "client", "secret", "scope")
+            .expect("new")
+            .with_token_url(url);
+        assert_eq!(p.get_token().await.expect("cache"), "az-first");
+        p.mark_stale();
+        let a = p.clone();
+        let b = p.clone();
+        let (left, right) = tokio::join!(a.get_token(), b.get_token());
+        let left = left.expect("left");
+        let right = right.expect("right");
+        assert_ne!(left, "az-first", "must not return just-staled cache");
+        assert_ne!(right, "az-first", "must not return just-staled cache");
+        assert_eq!(left, "az-second");
+        assert_eq!(right, "az-second");
+        let served = handle.join().expect("join");
+        assert!(
+            served >= 2,
+            "cache fill plus at least one refresh, got {served}"
+        );
     }
 }
