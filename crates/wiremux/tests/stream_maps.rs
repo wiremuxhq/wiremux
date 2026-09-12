@@ -1130,3 +1130,178 @@ fn chat_non_function_tool_type_is_not_relabeled() {
         other => panic!("non-function type must stay Protocol, got {other:?}"),
     }
 }
+
+#[test]
+fn chat_same_delta_content_and_reasoning_fans_out() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"content":"Hello","reasoning":"I should greet"}}]}"#.into(),
+    };
+    let first = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("1:1")
+        .expect("event");
+    assert!(
+        matches!(first, IrStreamEvent::TextDelta { ref text } if text == "Hello"),
+        "1:1 stays first-signal TextDelta, got {first:?}"
+    );
+    let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("fan-out");
+    assert!(
+        all.iter().any(
+            |ev| matches!(ev, IrStreamEvent::ReasoningDelta { text } if text == "I should greet")
+        ),
+        "same-delta reasoning must not be dropped, got {all:?}"
+    );
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hello")),
+        "same-delta content must stay, got {all:?}"
+    );
+}
+
+#[test]
+fn chat_array_delta_content_flattens_to_text() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"content":[{"type":"text","text":"Hi"}]}}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("array");
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
+        "array delta.content text parts must become TextDelta, got {all:?}"
+    );
+}
+
+#[test]
+fn chat_same_chunk_finish_and_usage_fans_out() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}"#.into(),
+    };
+    let first = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("1:1")
+        .expect("event");
+    assert!(
+        matches!(first, IrStreamEvent::FinishReason { ref reason } if reason == "stop"),
+        "1:1 stays FinishReason, got {first:?}"
+    );
+    let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("fan-out");
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+        "finish must stay, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Usage {
+                prompt_tokens: 3,
+                completion_tokens: 2,
+                ..
+            }
+        )),
+        "same-chunk usage must not be dropped, got {all:?}"
+    );
+}
+
+#[test]
+fn responses_completed_fans_protocol_finish_and_usage() {
+    let raw = RawSse {
+        event: Some("response.completed".into()),
+        data: r#"{"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","encrypted_content":"enc-xyz"}],"usage":{"input_tokens":4,"output_tokens":6}}}"#.into(),
+    };
+    let first = decode_stream_event(Wire::Responses, &raw, &responses_profile())
+        .expect("1:1")
+        .expect("event");
+    assert!(
+        matches!(first, IrStreamEvent::Usage { .. }),
+        "1:1 stays Usage, got {first:?}"
+    );
+    let all = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("fan-out");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { payload, .. }
+                if payload.get("encrypted_content").and_then(Value::as_str) == Some("enc-xyz")
+        )),
+        "encrypted reasoning in output must become Protocol, got {all:?}"
+    );
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+        "completed status must become FinishReason stop, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Usage {
+                prompt_tokens: 4,
+                completion_tokens: 6,
+                ..
+            }
+        )),
+        "completed usage must stay, got {all:?}"
+    );
+}
+
+#[test]
+fn responses_incomplete_fans_finish_usage_and_protocol() {
+    let raw = RawSse {
+        event: Some("response.incomplete".into()),
+        data: r#"{"type":"response.incomplete","response":{"status":"incomplete","output":[{"type":"reasoning","encrypted_content":"enc-cut"}],"usage":{"input_tokens":1,"output_tokens":2}}}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("fan-out");
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "length")),
+        "incomplete status must become FinishReason length, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Usage {
+                prompt_tokens: 1,
+                completion_tokens: 2,
+                ..
+            }
+        )),
+        "incomplete usage must not be dropped, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { payload, .. }
+                if payload.get("encrypted_content").and_then(Value::as_str) == Some("enc-cut")
+        )),
+        "incomplete encrypted reasoning must become Protocol, got {all:?}"
+    );
+}
+
+#[test]
+fn responses_completed_failed_status_is_not_stop() {
+    let raw = RawSse {
+        event: Some("response.completed".into()),
+        data: r#"{"type":"response.completed","response":{"status":"failed","usage":{"input_tokens":1,"output_tokens":0}}}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("fan-out");
+    assert!(
+        !all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+        "failed status must not map to stop, got {all:?}"
+    );
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "failed")),
+        "failed status must stay failed, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Usage {
+                prompt_tokens: 1,
+                ..
+            }
+        )),
+        "usage on a failed completed body must stay, got {all:?}"
+    );
+}

@@ -83,6 +83,101 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     Ok(None)
 }
 
+/// Every signal on one Chat chunk. First-wins lives in [`decode`].
+pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
+    let choices = value.get("choices").and_then(Value::as_array);
+    let empty_choices = choices.map(|c| c.is_empty()).unwrap_or(true);
+    if empty_choices && let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
+        return Ok(vec![usage::from_chat(usage)]);
+    }
+
+    let Some(choice) = choices.and_then(|c| c.first()) else {
+        if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
+            return Ok(vec![usage::from_chat(usage)]);
+        }
+        return Ok(Vec::new());
+    };
+
+    if let Some(calls) = choice
+        .pointer("/delta/tool_calls")
+        .and_then(Value::as_array)
+    {
+        for call in calls {
+            check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
+        }
+        if calls.len() > 1 {
+            return Ok(vec![IrStreamEvent::Protocol {
+                item_type: "chunk".into(),
+                payload: value.clone(),
+            }]);
+        }
+        if let Some(call) = calls.first() {
+            return Ok(vec![decode_tool_call(call, value)]);
+        }
+    }
+
+    let delta = choice.get("delta");
+    let mut out = Vec::new();
+    if let Some(text) = delta
+        .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::ReasoningDelta {
+            text: text.to_string(),
+        });
+    }
+    if let Some(signature) = delta
+        .and_then(|d| d.get("reasoning_signature"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::ReasoningSignature {
+            signature: signature.to_string(),
+        });
+    }
+    if let Some(text) = delta
+        .and_then(|d| d.get("content"))
+        .and_then(flatten_content)
+    {
+        out.push(IrStreamEvent::TextDelta { text });
+    }
+    if let Some(reason) = choice
+        .get("finish_reason")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::FinishReason {
+            reason: map_finish(reason).to_string(),
+        });
+    }
+    if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
+        out.push(usage::from_chat(usage));
+    }
+    Ok(out)
+}
+
+fn flatten_content(content: &Value) -> Option<String> {
+    if let Some(s) = content.as_str().filter(|s| !s.is_empty()) {
+        return Some(s.to_string());
+    }
+    let arr = content.as_array()?;
+    let mut out = String::new();
+    for part in arr {
+        if let Some(s) = part.as_str() {
+            out.push_str(s);
+            continue;
+        }
+        let ty = part.get("type").and_then(Value::as_str);
+        if (ty.is_none() || ty == Some("text"))
+            && let Some(s) = part.get("text").and_then(Value::as_str)
+        {
+            out.push_str(s);
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 fn map_finish(reason: &str) -> &str {
     match reason {
         "eos" => "stop",

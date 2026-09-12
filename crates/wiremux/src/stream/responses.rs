@@ -56,6 +56,62 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
     }
 }
 
+/// Fan-out for `response.completed` / `response.incomplete`.
+///
+/// 1:1 [`decode`] keeps Usage-or-Done / FinishReason. This walk emits
+/// Protocol (encrypted reasoning), FinishReason from `response.status`,
+/// then Usage when more than one signal is present.
+pub(super) fn decode_terminal_events(name: &str, value: &Value) -> Option<Vec<IrStreamEvent>> {
+    if name != "response.completed" && name != "response.incomplete" {
+        return None;
+    }
+    let mut out = Vec::new();
+    if let Some(items) = value.pointer("/response/output").and_then(Value::as_array) {
+        for item in items {
+            if item
+                .get("encrypted_content")
+                .and_then(Value::as_str)
+                .is_none_or(|s| s.is_empty())
+            {
+                continue;
+            }
+            out.push(IrStreamEvent::Protocol {
+                item_type: item
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("reasoning")
+                    .to_string(),
+                payload: item.clone(),
+            });
+        }
+    }
+    if let Some(reason) = terminal_finish_reason(name, value) {
+        out.push(IrStreamEvent::FinishReason { reason });
+    }
+    if let Some(usage) = value.pointer("/response/usage").filter(|v| v.is_object()) {
+        out.push(usage::from_responses(usage));
+    }
+    (out.len() >= 2).then_some(out)
+}
+
+fn terminal_finish_reason(name: &str, value: &Value) -> Option<String> {
+    match value.pointer("/response/status").and_then(Value::as_str) {
+        Some("completed") => Some("stop".into()),
+        Some("incomplete") => Some("length".into()),
+        Some("failed") => Some("failed".into()),
+        Some(other) if !other.is_empty() => Some(other.to_string()),
+        None if name == "response.incomplete" => Some("incomplete".into()),
+        None if name == "response.completed"
+            && value
+                .pointer("/response/usage")
+                .is_some_and(Value::is_object) =>
+        {
+            Some("stop".into())
+        }
+        _ => None,
+    }
+}
+
 fn item_type(value: &Value) -> Option<&str> {
     value
         .get("item")

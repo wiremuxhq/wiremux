@@ -2315,3 +2315,90 @@ fn messages_json_schema_is_dropped() {
         "Messages must Drop json_schema with no slot, got {report:?}"
     );
 }
+
+#[test]
+fn gemini_json_schema_round_trips() {
+    let req = br#"{
+        "model": "gemini-2.5-pro",
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+        }
+    }"#;
+    let (ir, decode_report) = decode(Wire::Gemini, req).expect("decode");
+    assert_eq!(
+        ir.sampling.json_schema,
+        Some(serde_json::json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
+    );
+    assert!(
+        !loss_dropped(&decode_report, "sampling.json_schema"),
+        "Gemini has responseSchema and must not Drop on decode, got {decode_report:?}"
+    );
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/responseMimeType")
+            .and_then(Value::as_str),
+        Some("application/json"),
+        "Gemini must emit responseMimeType, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/generationConfig/responseSchema"),
+        Some(&serde_json::json!({"type": "object", "properties": {"ok": {"type": "boolean"}}})),
+        "Gemini must emit responseSchema, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema"),
+        "Gemini has a slot and must not Drop json_schema, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_nameless_json_schema_still_encodes() {
+    let ir = user_ir(IrSampling {
+        json_schema: Some(
+            serde_json::json!({"type": "object", "properties": {"n": {"type": "number"}}}),
+        ),
+        json_schema_name: None,
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/responseSchema"),
+        Some(&serde_json::json!({"type": "object", "properties": {"n": {"type": "number"}}})),
+        "Gemini has no name slot; object schema must still encode, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema"),
+        "nameless object schema must not Drop on Gemini, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_non_object_json_schema_is_dropped() {
+    let ir = user_ir(IrSampling {
+        json_schema: Some(serde_json::json!(["not", "object"])),
+        json_schema_name: Some("answer".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.pointer("/generationConfig/responseSchema").is_none(),
+        "non-object json_schema must not emit responseSchema, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "non-object json_schema must Drop, got {report:?}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "sampling.json_schema"
+                && event.action == LossAction::Drop
+                && event.detail == "no slot"
+        }),
+        "Gemini has a slot; Drop detail must not be no slot, got {report:?}"
+    );
+}
