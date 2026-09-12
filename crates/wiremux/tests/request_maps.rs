@@ -2221,6 +2221,64 @@ fn chat_grouped_function_call_records_thought_signature_drop() {
 }
 
 #[test]
+fn chat_standalone_function_calls_encode_one_tool_calls_message() {
+    let ir = IrRequest {
+        model: "gpt-4".into(),
+        items: vec![
+            IrItem::FunctionCall {
+                call_id: "call_1".into(),
+                name: "lookup".into(),
+                arguments: r#"{"q":"x"}"#.into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionCall {
+                call_id: "call_2".into(),
+                name: "search".into(),
+                arguments: r#"{"q":"y"}"#.into(),
+                thought_signature: None,
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    assert_eq!(
+        messages.len(),
+        1,
+        "standalone FunctionCalls must be one assistant turn, got {body}"
+    );
+    assert_eq!(
+        messages[0].get("content"),
+        Some(&Value::Null),
+        "tool-only assistant content must stay null, got {body}"
+    );
+    let calls = messages[0]
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .expect("tool_calls");
+    assert_eq!(
+        calls.len(),
+        2,
+        "one tool_calls array with both calls, got {body}"
+    );
+    assert_eq!(
+        calls[0].pointer("/function/name").and_then(Value::as_str),
+        Some("lookup"),
+        "first tool_call name, got {body}"
+    );
+    assert_eq!(
+        calls[1].pointer("/function/name").and_then(Value::as_str),
+        Some("search"),
+        "second tool_call name, got {body}"
+    );
+}
+
+#[test]
 fn gemini_encode_does_not_invent_empty_function_call_args() {
     let ir = IrRequest {
         model: "gemini-2.5-flash".into(),
