@@ -319,10 +319,18 @@ pub(crate) fn vendor_rejected_summary(context: &str, body: &str, url: &str) -> S
     }
 }
 
-pub(crate) fn redact_secret_looking(s: &str) -> String {
+/// Redact common token prefixes and JWT-looking blobs.
+pub fn redact_secret_looking(s: &str) -> String {
     let mut out = redact_prefix(s, "sk-ant-");
+    out = redact_prefix(&out, "sk-");
     out = redact_jwt(&out);
-    redact_prefix(&out, "rt-")
+    out = redact_prefix(&out, "rt-");
+    out = redact_prefix(&out, "ghp_");
+    out = redact_prefix(&out, "gho_");
+    out = redact_prefix(&out, "ghs_");
+    out = redact_prefix(&out, "ghu_");
+    out = redact_prefix(&out, "github_pat_");
+    redact_prefix(&out, "AKIA")
 }
 
 fn redact_prefix(s: &str, prefix: &str) -> String {
@@ -342,7 +350,7 @@ fn redact_prefix(s: &str, prefix: &str) -> String {
 }
 
 /// Scheme + host/port only. Drops userinfo, path, query, and fragment.
-pub(crate) fn redact_url_origin(raw: &str) -> String {
+pub fn redact_url_origin(raw: &str) -> String {
     let (scheme, rest) = match raw.split_once("://") {
         Some((scheme, rest)) => (Some(scheme), rest),
         None => (None, raw),
@@ -726,6 +734,14 @@ mod tests {
         assert!(!summary.contains("sk-ant-oat01-LEAK"));
         assert!(!summary.contains("rt-LEAK"));
         assert!(summary.contains("invalid_grant"));
+    }
+
+    #[test]
+    fn redact_secret_looking_strips_github_pats() {
+        let text = redact_secret_looking("paste ghp_ENVSUBST_LEAK_TOKEN_51 into the vendor CLI");
+        assert!(!text.contains("ghp_ENVSUBST_LEAK_TOKEN_51"), "{text}");
+        assert!(text.contains("[redacted]"), "{text}");
+        assert!(text.contains("paste"), "{text}");
     }
 
     #[test]

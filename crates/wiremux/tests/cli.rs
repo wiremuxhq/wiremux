@@ -96,13 +96,122 @@ token_url = "https://auth.example.invalid/token?api_key=supersecret"
     assert_eq!(out.status.code(), Some(0), "{:?}", out);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("gist-urls"), "{stdout}");
+    assert!(stdout.contains("https://auth.example.invalid"), "{stdout}");
     assert!(
-        stdout.contains("https://auth.example.invalid/token"),
-        "{stdout}"
+        !stdout.contains("/token"),
+        "validate must drop URL paths: {stdout}"
     );
     assert!(!stdout.contains("supersecret"), "secret leaked: {stdout}");
     assert!(!stdout.contains("s3cret"), "userinfo leaked: {stdout}");
-    assert!(stdout.contains("[redacted]"), "{stdout}");
+}
+
+#[test]
+fn profile_validate_redacts_envsubst_token_in_url_path() {
+    let dir = unique_scratch();
+    let path = write_profile(
+        &dir,
+        "gist.toml",
+        r#"
+schema_version = 1
+id = "env-url"
+wire = "chat-completions"
+base_url = "https://api.example.invalid/{env:GITHUB_TOKEN}/v1"
+[oauth]
+token_url = "https://auth.example.invalid/token/{env:GITHUB_TOKEN}"
+login = "setup-token"
+setup_token_hint = "use {env:GITHUB_TOKEN}"
+"#,
+    );
+    let leak = "ghp_ENVSUBST_LEAK_TOKEN_51";
+    let (_home, mut cmd) = isolated_home();
+    cmd.env("GITHUB_TOKEN", leak);
+    let out = cmd
+        .args(["profile", "validate", path.to_str().expect("utf8")])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "{:?}", out);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains(leak),
+        "envsubst token leaked from validate: {stdout}"
+    );
+    assert!(stdout.contains("https://api.example.invalid"), "{stdout}");
+    assert!(stdout.contains("https://auth.example.invalid"), "{stdout}");
+}
+
+#[test]
+fn auth_login_redacts_envsubst_in_setup_token_hint() {
+    let dir = unique_scratch();
+    let path = write_profile(
+        &dir,
+        "hint.toml",
+        r#"
+schema_version = 1
+id = "env-hint"
+[oauth]
+token_url = "https://auth.example.invalid/token"
+login = "setup-token"
+setup_token_hint = "paste {env:GITHUB_TOKEN} into the vendor CLI"
+"#,
+    );
+    let leak = "ghp_ENVSUBST_LEAK_TOKEN_51";
+    let (_home, mut cmd) = isolated_home();
+    cmd.env("GITHUB_TOKEN", leak);
+    let out = cmd
+        .args(["auth", "login", "--profile", path.to_str().expect("utf8")])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2), "{:?}", out);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("paste"),
+        "expected setup-token hint, got: {text}"
+    );
+    assert!(
+        !text.contains(leak),
+        "envsubst token leaked from login hint: {text}"
+    );
+}
+
+#[test]
+fn auth_status_redacts_envsubst_in_error_path() {
+    let dir = unique_scratch();
+    let path = write_profile(
+        &dir,
+        "status.toml",
+        r#"
+schema_version = 1
+id = "env-status"
+[oauth]
+token_url = "https://auth.example.invalid/token"
+creds_path = "~/stolen/{env:GITHUB_TOKEN}.json"
+"#,
+    );
+    let leak = "ghp_ENVSUBST_LEAK_TOKEN_51";
+    let (_home, mut cmd) = isolated_home();
+    cmd.env("GITHUB_TOKEN", leak);
+    let out = cmd
+        .args(["auth", "status", "--profile", path.to_str().expect("utf8")])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2), "{:?}", out);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("unavailable"),
+        "expected unavailable status, got: {text}"
+    );
+    assert!(
+        !text.contains(leak),
+        "envsubst token leaked from token status: {text}"
+    );
 }
 
 #[test]

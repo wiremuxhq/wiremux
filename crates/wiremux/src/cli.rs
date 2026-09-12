@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use wiremux_auth::{
     AuthScheme, LoadOptions, Login, OauthPack, ProfileError, ResolvedProfile, TokenProvider, Wire,
-    load_profile_from_cli, persist_login_tokens, provider_from_profile, sanitize_oauth_error_text,
+    load_profile_from_cli, persist_login_tokens, provider_from_profile, redact_secret_looking,
+    redact_url_origin, sanitize_oauth_error_text,
 };
 
 /// Process exit: success.
@@ -65,90 +66,15 @@ fn push_url(lines: &mut Vec<String>, field: &str, value: Option<&str>) {
     let Some(value) = value.filter(|s| !s.is_empty()) else {
         return;
     };
-    lines.push(format!("{field}: {}", redact_secret_url(value)));
+    lines.push(format!("{field}: {}", redact_printed_url(value)));
 }
 
-/// Redact userinfo, query values, fragments, and secret-looking tokens.
-pub fn redact_secret_url(raw: &str) -> String {
-    let (scheme, rest) = match raw.split_once("://") {
-        Some((scheme, rest)) => (Some(scheme), rest),
-        None => (None, raw),
-    };
-    // Split host from path, query, or fragment. `https://host?key=s` has no `/`.
-    let cut = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = &rest[..cut];
-    let tail = &rest[cut..];
-    let authority = if let Some(at) = authority.find('@') {
-        format!("[redacted]@{}", &authority[at + 1..])
+fn redact_printed_url(raw: &str) -> String {
+    if raw.contains("://") {
+        redact_secret_looking(&redact_url_origin(raw))
     } else {
-        authority.to_string()
-    };
-    let mut out = match scheme {
-        Some(scheme) => format!("{scheme}://{authority}"),
-        None => authority,
-    };
-    let (path, query, frag) = split_url_tail(tail);
-    if let Some(path) = path {
-        out.push('/');
-        out.push_str(path);
+        redact_secret_looking(raw)
     }
-    if let Some(query) = query {
-        out.push('?');
-        out.push_str(&redact_query(query));
-    }
-    if frag.is_some() {
-        out.push_str("#[redacted]");
-    }
-    redact_secret_looking(&out)
-}
-
-fn split_url_tail(tail: &str) -> (Option<&str>, Option<&str>, Option<&str>) {
-    if tail.is_empty() {
-        return (None, None, None);
-    }
-    let (before_hash, frag) = match tail.split_once('#') {
-        Some((before, frag)) => (before, Some(frag)),
-        None => (tail, None),
-    };
-    let (before_query, query) = match before_hash.split_once('?') {
-        Some((before, query)) => (before, Some(query)),
-        None => (before_hash, None),
-    };
-    let path = before_query.strip_prefix('/');
-    (path, query, frag)
-}
-
-fn redact_query(query: &str) -> String {
-    query
-        .split('&')
-        .map(|pair| match pair.split_once('=') {
-            Some((k, _)) => format!("{k}=[redacted]"),
-            None => pair.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("&")
-}
-
-fn redact_secret_looking(s: &str) -> String {
-    let mut out = redact_prefix(s, "sk-");
-    out = redact_prefix(&out, "eyJ");
-    redact_prefix(&out, "rt-")
-}
-
-fn redact_prefix(s: &str, prefix: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(idx) = rest.find(prefix) {
-        out.push_str(&rest[..idx]);
-        out.push_str("[redacted]");
-        rest = &rest[idx + prefix.len()..];
-        let end = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
-            .unwrap_or(rest.len());
-        rest = &rest[end..];
-    }
-    out.push_str(rest);
-    out
 }
 
 /// What `auth login` should do for this profile.
@@ -181,11 +107,13 @@ pub fn login_plan(profile: &ResolvedProfile) -> LoginPlan {
     let login = oauth.login.unwrap_or(Login::None);
     match login {
         Login::SetupToken => LoginPlan::SetupToken {
-            hint: oauth
-                .setup_token_hint
-                .clone()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "run the vendor setup-token command".into()),
+            hint: redact_secret_looking(
+                &oauth
+                    .setup_token_hint
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "run the vendor setup-token command".into()),
+            ),
         },
         Login::None => {
             let mut reason = String::from(
@@ -518,7 +446,7 @@ pub fn token_status(profile: &ResolvedProfile) -> TokenStatus {
                 return TokenStatus {
                     id: profile.id.clone(),
                     available: false,
-                    detail: err.to_string(),
+                    detail: redact_secret_looking(&err.to_string()),
                 };
             }
         }
@@ -661,34 +589,14 @@ mod tests {
     use wiremux_auth::parse_profile_str;
 
     #[test]
-    fn redact_url_strips_userinfo_and_query() {
-        let redacted = redact_secret_url(
+    fn redact_printed_url_keeps_origin_only() {
+        let redacted = redact_printed_url(
             "https://user:s3cret@api.example.invalid/v1?api_key=supersecret#frag",
         );
+        assert_eq!(redacted, "https://api.example.invalid");
         assert!(!redacted.contains("s3cret"));
         assert!(!redacted.contains("supersecret"));
-        assert!(!redacted.contains("#frag"));
-        assert!(redacted.contains("[redacted]"));
-        assert!(redacted.contains("https://"));
-        assert!(redacted.contains("api.example.invalid/v1"));
-    }
-
-    #[test]
-    fn redact_url_query_and_fragment_without_path() {
-        let query_only = redact_secret_url("https://auth.example.invalid?api_key=supersecret");
-        assert!(
-            !query_only.contains("supersecret"),
-            "query leaked: {query_only}"
-        );
-        assert!(query_only.contains("https://auth.example.invalid"));
-        assert!(query_only.contains("api_key=[redacted]"), "{query_only}");
-
-        let frag_only = redact_secret_url("https://auth.example.invalid#token=s3cret");
-        assert!(
-            !frag_only.contains("s3cret"),
-            "fragment leaked: {frag_only}"
-        );
-        assert!(frag_only.ends_with("#[redacted]"), "{frag_only}");
+        assert!(!redacted.contains("/v1"));
     }
 
     fn shipped(id: &str) -> ResolvedProfile {

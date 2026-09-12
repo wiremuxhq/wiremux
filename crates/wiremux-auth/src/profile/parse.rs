@@ -518,6 +518,31 @@ mod tests {
     }
 
     #[test]
+    fn disallowed_url_display_redacts_envsubst_path() {
+        let var = "WIREMUX_TEST_ENVSUBST_URL_51";
+        let leak = "ghp_ENVSUBST_LEAK_TOKEN_51";
+        let err = with_env(var, &format!("http://192.0.2.1/{leak}"), || {
+            parse_profile_str(&format!(
+                "schema_version = 1\nid = \"x\"\nbase_url = \"{{env:{var}}}\"\n"
+            ))
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, ProfileError::DisallowedUrl { .. }),
+            "env-injected non-loopback http must refuse, got {err}"
+        );
+        let text = err.to_string();
+        assert!(
+            !text.contains(leak),
+            "DisallowedUrl Display leaked envsubst token: {text}"
+        );
+        assert!(
+            text.contains("192.0.2.1"),
+            "Display must still name the origin, got {text}"
+        );
+    }
+
+    #[test]
     fn hint_fields_allow_backticks_not_command() {
         let ok = parse_profile_str(
             "schema_version = 1\nid = \"x\"\ndisplay_name = \"run `tool`\"\n[oauth]\ntoken_url = \"https://auth.example.invalid/token\"\nsetup_token_hint = \"run `claude setup-token`\"\n",

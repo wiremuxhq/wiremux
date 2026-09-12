@@ -44,7 +44,8 @@ pub enum ProfileError {
     },
     /// Disallowed scheme or non-loopback `http://` URL.
     #[error(
-        "refused: disallowed URL in {field}: {url} (https, or http only on 127.0.0.1 / localhost / ::1)"
+        "refused: disallowed URL in {field}: {} (https, or http only on 127.0.0.1 / localhost / ::1)",
+        crate::helpers::redact_url_origin(url)
     )]
     DisallowedUrl {
         /// Dotted field path.
