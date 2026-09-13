@@ -6,6 +6,9 @@ Rust workspace. MSRV 1.95. Edition 2024.
 make check
 ```
 
+`make check` needs rustc 1.95 (see `rust-toolchain.toml`), rustfmt,
+clippy, and `cargo-deny`. Sign commits with `git commit -s` (DCO).
+
 Two crates: `wiremux-auth` (profile AST + TokenProvider) and `wiremux`
 (dialect maps + optional CLI binary). Do not add a third published crate.
 
