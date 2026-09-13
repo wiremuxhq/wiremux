@@ -217,15 +217,9 @@ fn messages_raw_passthrough(raw: &Value) -> bool {
     raw_type_name(raw).is_some() && !is_gemini_file_raw(raw)
 }
 
-/// Responses-shaped Raw is `input_file` or similar, with no Gemini file keys.
+/// Responses-shaped Raw has a nonempty `type` and no Gemini file keys.
 fn responses_raw_passthrough(raw: &Value) -> bool {
-    let Some(ty) = raw_type_name(raw) else {
-        return false;
-    };
-    if is_gemini_file_raw(raw) {
-        return false;
-    }
-    ty.starts_with("input_") || ty.starts_with("output_") || ty == "refusal"
+    messages_raw_passthrough(raw)
 }
 
 fn off_dialect_raw_path(raw: &Value) -> &'static str {
