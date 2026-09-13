@@ -79,7 +79,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.branch.outputs.name != ''
         with:
+          ref: ${{ github.sha }}
+          path: publisher
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.branch.outputs.name != ''
+        with:
           ref: ${{ steps.branch.outputs.name }}
+          path: release
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         if: steps.branch.outputs.name != ''
@@ -91,9 +98,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ steps.branch.outputs.name }}
           REPO: ${{ github.repository }}
+        working-directory: release
         run: |
           set -euo pipefail
-          bash scripts/sync-cargo-lock-workspace-versions.sh
+          SYNC_ROOT="$PWD" bash ../publisher/scripts/sync-cargo-lock-workspace-versions.sh
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.lock
