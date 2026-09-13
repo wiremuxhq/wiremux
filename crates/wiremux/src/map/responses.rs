@@ -229,7 +229,11 @@ fn decode_sampling(value: &Value) -> IrSampling {
         previous_response_id: str_field(value, "previous_response_id"),
         cache: IrCache::default(),
         stream: bool_field(value, "stream"),
-        include_thoughts: None,
+        include_thoughts: value
+            .get("reasoning")
+            .and_then(|r| str_field(r, "summary"))
+            .filter(|s| !s.trim().is_empty())
+            .map(|_| true),
         thinking_budget: None,
         reasoning_effort: value
             .get("reasoning")
@@ -600,11 +604,21 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     {
         body["reasoning"] = json!({ "effort": effort });
     }
+    if s.include_thoughts == Some(true) {
+        if !body.get("reasoning").is_some_and(Value::is_object) {
+            body["reasoning"] = json!({});
+        }
+        body["reasoning"]["summary"] = json!("auto");
+        report.record(
+            "sampling.include_thoughts",
+            LossAction::Preserve,
+            "responses reasoning.summary",
+        );
+    } else if s.include_thoughts == Some(false) {
+        report.record("sampling.include_thoughts", LossAction::Drop, "no slot");
+    }
     if s.max_reasoning_tokens.is_some() {
         report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
-    }
-    if s.include_thoughts.is_some() {
-        report.record("sampling.include_thoughts", LossAction::Drop, "no slot");
     }
     if s.thinking_budget.is_some() {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");

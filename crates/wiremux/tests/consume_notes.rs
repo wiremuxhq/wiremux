@@ -54,7 +54,10 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         notes.contains("Signed `IrPart::Thinking`")
             && notes.contains("part.thinking")
             && notes.contains("sampling.max_reasoning_tokens")
-            && notes.contains("thinking.budget_tokens"),
+            && notes.contains("thinking.budget_tokens")
+            && notes.contains("reasoning.summary=auto")
+            && notes.contains("thinkingLevel")
+            && notes.contains("Chat Completions and Responses emit `store`"),
         "thinking / LossReport table must exist for adapters"
     );
 }

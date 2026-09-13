@@ -196,6 +196,106 @@ fn store_true_forbidden_is_hard_error() {
 }
 
 #[test]
+fn chat_encode_emits_store_true() {
+    let ir = user_ir(IrSampling {
+        store: Some(true),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("store"),
+        Some(&Value::Bool(true)),
+        "Chat must emit store=true, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.store"),
+        "Chat store must not Drop as no slot, got {report:?}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.store" && event.action == LossAction::Preserve
+        }),
+        "expected Preserve store, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_encode_emits_store_false() {
+    let ir = user_ir(IrSampling {
+        store: Some(false),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("store"),
+        Some(&Value::Bool(false)),
+        "Chat must emit store=false, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.store"),
+        "Chat store=false must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_decode_reads_store_true() {
+    let req = br#"{
+        "model": "gpt-5",
+        "store": true,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.store, Some(true));
+}
+
+#[test]
+fn chat_store_forbidden_is_hard_error() {
+    let ir = user_ir(IrSampling {
+        store: Some(true),
+        ..IrSampling::default()
+    });
+    let err = encode(Wire::ChatCompletions, &ir, &openrouter_forbid_store())
+        .expect_err("OpenRouter forbidden store must hard-error on Chat");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert!(path.contains("store"), "path={path}");
+            assert!(detail.contains("store"), "detail={detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+}
+
+#[test]
+fn messages_and_gemini_do_not_invent_store() {
+    let ir = user_ir(IrSampling {
+        store: Some(true),
+        ..IrSampling::default()
+    });
+    let (msg_bytes, msg_report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let msg: Value = serde_json::from_slice(&msg_bytes).expect("json");
+    assert!(
+        msg.get("store").is_none(),
+        "Messages must not invent store, got {msg}"
+    );
+    assert!(
+        loss_dropped(&msg_report, "sampling.store"),
+        "Messages store drop missing, got {msg_report:?}"
+    );
+    let (gem_bytes, gem_report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let gem: Value = serde_json::from_slice(&gem_bytes).expect("json");
+    assert!(
+        gem.get("store").is_none(),
+        "Gemini must not invent store, got {gem}"
+    );
+    assert!(
+        loss_dropped(&gem_report, "sampling.store"),
+        "Gemini store drop missing, got {gem_report:?}"
+    );
+}
+
+#[test]
 fn developer_degrades_to_system_on_messages() {
     let bytes = golden("developer_chat.json");
     let (ir, _loss) = decode(Wire::ChatCompletions, &bytes).expect("decode Chat");
@@ -2198,6 +2298,123 @@ fn responses_encode_does_not_invent_reasoning_for_empty_effort() {
 }
 
 #[test]
+fn responses_encode_include_thoughts_as_reasoning_summary_auto() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(true),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/reasoning/summary").and_then(Value::as_str),
+        Some("auto"),
+        "include_thoughts=true must emit reasoning.summary=auto, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.include_thoughts"),
+        "include_thoughts has a Responses summary slot, got {report:?}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.include_thoughts" && event.action == LossAction::Preserve
+        }),
+        "expected Preserve include_thoughts, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_encode_merges_summary_into_existing_reasoning() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(true),
+        reasoning_effort: Some("high".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/reasoning/effort").and_then(Value::as_str),
+        Some("high"),
+        "must keep effort when merging summary, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/reasoning/summary").and_then(Value::as_str),
+        Some("auto"),
+        "must merge summary=auto into reasoning, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.include_thoughts"),
+        "include_thoughts must Preserve, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_encode_false_include_thoughts_does_not_invent_summary() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(false),
+        reasoning_effort: Some("high".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/reasoning/effort").and_then(Value::as_str),
+        Some("high"),
+        "effort must still emit, got {body}"
+    );
+    assert!(
+        body.pointer("/reasoning/summary").is_none(),
+        "include_thoughts=false must not invent summary, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.include_thoughts"),
+        "include_thoughts=false has no summary dest, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_decode_reasoning_summary_sets_include_thoughts() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": "hi",
+        "reasoning": { "summary": "auto" }
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(ir.sampling.include_thoughts, Some(true));
+}
+
+#[test]
+fn responses_decode_nonempty_reasoning_summary_sets_include_thoughts() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": "hi",
+        "reasoning": { "effort": "low", "summary": "detailed" }
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(ir.sampling.include_thoughts, Some(true));
+    assert_eq!(ir.sampling.reasoning_effort.as_deref(), Some("low"));
+}
+
+#[test]
+fn responses_decode_empty_reasoning_summary_leaves_include_thoughts_unset() {
+    for summary in ["", "  \t"] {
+        let req = format!(
+            r#"{{
+                "model": "gpt-5",
+                "input": "hi",
+                "reasoning": {{ "summary": {summary} }}
+            }}"#,
+            summary = serde_json::to_string(summary).expect("json")
+        );
+        let (ir, _) = decode(Wire::Responses, req.as_bytes()).expect("decode");
+        assert_eq!(
+            ir.sampling.include_thoughts, None,
+            "empty summary must not invent include_thoughts, got {:?} for {summary:?}",
+            ir.sampling.include_thoughts
+        );
+    }
+}
+
+#[test]
 fn messages_encode_emits_thinking_from_include_thoughts_and_budget() {
     let ir = user_ir(IrSampling {
         include_thoughts: Some(true),
@@ -2497,13 +2714,18 @@ fn gemini_thinking_config_survives_reasoning_sampling_fields() {
         .expect("thinkingConfig should be nested under generationConfig");
     assert_eq!(tc.get("includeThoughts"), Some(&Value::Bool(true)));
     assert_eq!(tc.get("thinkingBudget"), Some(&serde_json::json!(24576)));
+    assert_eq!(
+        tc.get("thinkingLevel").and_then(Value::as_str),
+        Some("high"),
+        "Gemini effort must emit thinkingLevel, got {body}"
+    );
     assert!(
         body.get("thinkingConfig").is_none(),
         "must not emit top-level thinkingConfig: {body}"
     );
     assert!(
-        loss_dropped(&report, "sampling.reasoning_effort"),
-        "Gemini effort drop missing, got {report:?}"
+        !loss_dropped(&report, "sampling.reasoning_effort"),
+        "Gemini effort has thinkingLevel, got {report:?}"
     );
     assert!(
         report.events.iter().any(|event| {
@@ -2514,6 +2736,122 @@ fn gemini_thinking_config_survives_reasoning_sampling_fields() {
         }),
         "thinking_budget sibling win must not say no slot, got {report:?}"
     );
+}
+
+#[test]
+fn gemini_encode_effort_as_thinking_level() {
+    let ir = user_ir(IrSampling {
+        reasoning_effort: Some("high".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/thinkingConfig/thinkingLevel")
+            .and_then(Value::as_str),
+        Some("high"),
+        "Gemini must emit thinkingLevel from effort, got {body}"
+    );
+    assert!(
+        body.pointer("/generationConfig/thinkingConfig/thinkingBudget")
+            .is_none(),
+        "effort must not map to thinkingBudget, got {body}"
+    );
+    assert!(
+        body.get("thinkingConfig").is_none(),
+        "must not emit top-level thinkingConfig: {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.reasoning_effort"),
+        "effort has a Gemini thinkingLevel slot, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_encode_thinking_level_is_lowercase() {
+    let ir = user_ir(IrSampling {
+        reasoning_effort: Some("MEDIUM".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/thinkingConfig/thinkingLevel")
+            .and_then(Value::as_str),
+        Some("medium"),
+        "thinkingLevel must be lowercase, got {body}"
+    );
+}
+
+#[test]
+fn gemini_encode_xhigh_effort_degrades_to_high() {
+    for effort in ["xhigh", "x-high", "XHIGH", "X-High"] {
+        let ir = user_ir(IrSampling {
+            reasoning_effort: Some(effort.into()),
+            ..IrSampling::default()
+        });
+        let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            body.pointer("/generationConfig/thinkingConfig/thinkingLevel")
+                .and_then(Value::as_str),
+            Some("high"),
+            "{effort} must map to thinkingLevel high, got {body}"
+        );
+        assert!(
+            loss_degraded(&report, "sampling.reasoning_effort"),
+            "{effort} must Degrade to high, got {report:?}"
+        );
+        assert!(
+            body.pointer("/generationConfig/thinkingConfig/thinkingBudget")
+                .is_none(),
+            "{effort} must not invent thinkingBudget, got {body}"
+        );
+    }
+}
+
+#[test]
+fn gemini_encode_empty_effort_does_not_invent_thinking_level() {
+    for effort in ["", "  \t"] {
+        let ir = user_ir(IrSampling {
+            reasoning_effort: Some(effort.into()),
+            ..IrSampling::default()
+        });
+        let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert!(
+            body.pointer("/generationConfig/thinkingConfig").is_none(),
+            "empty effort must not invent thinkingConfig, got {body}"
+        );
+        assert!(
+            !loss_dropped(&report, "sampling.reasoning_effort"),
+            "empty effort is unset, not a Drop, got {report:?}"
+        );
+    }
+}
+
+#[test]
+fn gemini_decode_reads_thinking_level() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "thinkingConfig": { "thinkingLevel": "low" }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    assert_eq!(ir.sampling.reasoning_effort.as_deref(), Some("low"));
+}
+
+#[test]
+fn gemini_decode_reads_snake_thinking_level() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "thinkingConfig": { "thinking_level": "minimal" }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    assert_eq!(ir.sampling.reasoning_effort.as_deref(), Some("minimal"));
 }
 
 #[test]

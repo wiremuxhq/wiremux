@@ -200,7 +200,9 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .or_else(|| bool_field(thinking, "include_thoughts")),
         thinking_budget: u32_field(thinking, "thinkingBudget")
             .or_else(|| u32_field(thinking, "thinking_budget")),
-        reasoning_effort: None,
+        reasoning_effort: str_field(thinking, "thinkingLevel")
+            .or_else(|| str_field(thinking, "thinking_level"))
+            .filter(|s| !s.trim().is_empty()),
         max_reasoning_tokens: None,
         json_schema,
         json_schema_name: None,
@@ -222,6 +224,20 @@ fn thinking_config_obj(value: &Value) -> &Value {
         .get("thinkingConfig")
         .or_else(|| value.pointer("/generationConfig/thinkingConfig"))
         .unwrap_or(&Value::Null)
+}
+
+/// Official `thinkingLevel` is `low` | `medium` | `high` | `minimal`.
+/// `xhigh` / `x-high` degrade to `high`. Other nonempty values emit lowercase.
+fn gemini_thinking_level(effort: &str) -> Option<(String, Option<&'static str>)> {
+    let trimmed = effort.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    match lower.as_str() {
+        "xhigh" | "x-high" => Some(("high".into(), Some("xhigh maps to high"))),
+        _ => Some((lower, None)),
+    }
 }
 
 fn decode_tool_choice(value: &Value) -> IrToolChoice {
@@ -498,13 +514,23 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         cfg["stopSequences"] = json!(s.stop);
     }
     let thinking_budget = s.thinking_budget.or(s.max_reasoning_tokens);
-    if s.include_thoughts.is_some() || thinking_budget.is_some() {
+    let thinking_level = s
+        .reasoning_effort
+        .as_deref()
+        .and_then(gemini_thinking_level);
+    if s.include_thoughts.is_some() || thinking_budget.is_some() || thinking_level.is_some() {
         let mut tc = json!({});
         if let Some(include) = s.include_thoughts {
             tc["includeThoughts"] = json!(include);
         }
         if let Some(budget) = thinking_budget {
             tc["thinkingBudget"] = json!(budget);
+        }
+        if let Some((level, degrade)) = thinking_level {
+            tc["thinkingLevel"] = json!(level);
+            if let Some(detail) = degrade {
+                report.record("sampling.reasoning_effort", LossAction::Degrade, detail);
+            }
         }
         cfg["thinkingConfig"] = tc;
     }
@@ -534,12 +560,6 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(stream) = s.stream {
         body["stream"] = json!(stream);
-    }
-    if s.reasoning_effort
-        .as_deref()
-        .is_some_and(|s| !s.trim().is_empty())
-    {
-        report.record("sampling.reasoning_effort", LossAction::Drop, "no slot");
     }
     let used_max_as_budget = s.thinking_budget.is_none() && s.max_reasoning_tokens.is_some();
     if s.max_reasoning_tokens.is_some() && !used_max_as_budget {
