@@ -1537,3 +1537,92 @@ fn gemini_thought_part_keeps_thoughtSignature() {
         "thoughtSignature must not drop beside thought text, got {all:?}"
     );
 }
+
+#[test]
+fn responses_stop_encodes_completed_status() {
+    let raw = encode_stream_event(
+        Wire::Responses,
+        &IrStreamEvent::FinishReason {
+            reason: "stop".into(),
+        },
+    )
+    .expect("encode stop");
+    let json: Value = serde_json::from_str(&raw.data).expect("json");
+    assert_eq!(
+        raw.event.as_deref(),
+        Some("response.completed"),
+        "IR stop must stay response.completed, got {raw:?}"
+    );
+    assert_eq!(
+        json.pointer("/response/status").and_then(Value::as_str),
+        Some("completed"),
+        "IR stop must encode status completed, not stop, got {json}"
+    );
+    assert_ne!(
+        json.pointer("/response/status").and_then(Value::as_str),
+        Some("stop"),
+        "status must not leak the IR string stop, got {json}"
+    );
+}
+
+#[test]
+fn responses_length_encodes_incomplete() {
+    let raw = encode_stream_event(
+        Wire::Responses,
+        &IrStreamEvent::FinishReason {
+            reason: "length".into(),
+        },
+    )
+    .expect("encode length");
+    let json: Value = serde_json::from_str(&raw.data).expect("json");
+    assert_eq!(
+        raw.event.as_deref(),
+        Some("response.incomplete"),
+        "IR length must be response.incomplete, got {raw:?}"
+    );
+    assert_eq!(
+        json.pointer("/response/status").and_then(Value::as_str),
+        Some("incomplete"),
+        "IR length must encode status incomplete, got {json}"
+    );
+}
+
+#[test]
+fn responses_max_tokens_encodes_incomplete() {
+    let raw = encode_stream_event(
+        Wire::Responses,
+        &IrStreamEvent::FinishReason {
+            reason: "max_tokens".into(),
+        },
+    )
+    .expect("encode max_tokens");
+    let json: Value = serde_json::from_str(&raw.data).expect("json");
+    assert_eq!(
+        raw.event.as_deref(),
+        Some("response.incomplete"),
+        "IR max_tokens must be response.incomplete like length, got {raw:?}"
+    );
+    assert_eq!(
+        json.pointer("/response/status").and_then(Value::as_str),
+        Some("incomplete"),
+        "IR max_tokens must encode status incomplete, got {json}"
+    );
+}
+
+#[test]
+fn responses_incomplete_round_trips_status() {
+    let raw = RawSse {
+        event: Some("response.incomplete".into()),
+        data: r#"{"type":"response.incomplete","response":{"status":"incomplete"}}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Responses, &raw, &responses_profile())
+        .expect("decode incomplete")
+        .expect("event");
+    let encoded = encode_stream_event(Wire::Responses, &ev).expect("encode Responses");
+    let json: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(
+        json.pointer("/response/status").and_then(Value::as_str),
+        Some("incomplete"),
+        "decode then encode must keep status incomplete, got event={ev:?} json={json}"
+    );
+}

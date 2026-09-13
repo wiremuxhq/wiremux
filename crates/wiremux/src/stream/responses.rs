@@ -217,18 +217,17 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             ),
         ),
         IrStreamEvent::FinishReason { reason } => {
-            let event = if reason == "failed" {
-                "response.failed"
-            } else if reason == "incomplete" {
-                "response.incomplete"
-            } else {
-                "response.completed"
+            let (event, status) = match reason.as_str() {
+                "failed" => ("response.failed", "failed"),
+                "incomplete" | "length" | "max_tokens" => ("response.incomplete", "incomplete"),
+                "stop" => ("response.completed", "completed"),
+                other => ("response.completed", other),
             };
             (
                 event,
                 json!({
                     "type": event,
-                    "response": { "status": reason }
+                    "response": { "status": status }
                 }),
             )
         }
