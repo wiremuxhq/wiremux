@@ -47,6 +47,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertNotIn('"release-type": "rust"', text)
         self.assertIn("crates/wiremux/Cargo.toml", text)
         self.assertIn("crates/wiremux-auth/Cargo.toml", text)
+        self.assertIn("$.dependencies.wiremux-auth.version", text)
 
     def test_release_please_is_main_only(self) -> None:
         text = (WORKFLOWS / "release-please.yml").read_text(encoding="utf-8")
@@ -68,7 +69,42 @@ class WorkflowTriggerTests(unittest.TestCase):
         )
         self.assertIn('ROOT="${SYNC_ROOT:-', script)
         self.assertIn("cargo check -p wiremux", script)
+        self.assertIn("sync path-dep wiremux-auth version", script)
+        self.assertIn("sync-path-dep-versions.py", script)
         self.assertNotIn("cargo generate-lockfile", script)
+        workflow = (WORKFLOWS / "release-please.yml").read_text(encoding="utf-8")
+        self.assertIn("git add Cargo.lock crates/wiremux/Cargo.toml", workflow)
+
+    def test_path_dep_sync_rewrites_stale_pin(self) -> None:
+        import subprocess
+        import sys
+        import tempfile
+
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "crates/wiremux-auth").mkdir(parents=True)
+        (tmp / "crates/wiremux").mkdir(parents=True)
+        (tmp / "crates/wiremux-auth/Cargo.toml").write_text(
+            '[package]\nname = "wiremux-auth"\nversion = "0.2.0"\n',
+            encoding="utf-8",
+        )
+        pin = tmp / "crates/wiremux/Cargo.toml"
+        pin.write_text(
+            'wiremux-auth = { version = "0.1.0", path = "../wiremux-auth" }\n',
+            encoding="utf-8",
+        )
+        out = subprocess.check_output(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "sync-path-dep-versions.py"),
+                str(tmp),
+            ],
+            text=True,
+        )
+        self.assertIn("0.2.0", out)
+        self.assertIn(
+            'wiremux-auth = { version = "0.2.0", path = "../wiremux-auth" }',
+            pin.read_text(encoding="utf-8"),
+        )
 
     def test_auto_merge_skips_release_please_head(self) -> None:
         text = (WORKFLOWS / "auto-approve.yml").read_text(encoding="utf-8")

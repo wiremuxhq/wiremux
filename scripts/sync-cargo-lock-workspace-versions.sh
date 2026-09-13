@@ -12,6 +12,10 @@ if [[ ! -f Cargo.lock ]]; then
   exit 1
 fi
 
+echo "DO: sync path-dep wiremux-auth version"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+python3 "$SCRIPT_DIR/sync-path-dep-versions.py" "$ROOT"
+
 echo "DO: cargo check -p wiremux"
 cargo check -p wiremux
 echo "DO: cargo metadata --locked"

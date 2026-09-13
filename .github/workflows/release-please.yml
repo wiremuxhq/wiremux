@@ -104,7 +104,7 @@ jobs:
           SYNC_ROOT="$PWD" bash ../publisher/scripts/sync-cargo-lock-workspace-versions.sh
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.lock
+          git add Cargo.lock crates/wiremux/Cargo.toml
           if git diff --cached --quiet; then
             echo "OK: Cargo.lock already matches crate versions"
             exit 0

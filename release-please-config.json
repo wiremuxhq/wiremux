@@ -12,6 +12,11 @@
         },
         {
           "type": "toml",
+          "path": "crates/wiremux/Cargo.toml",
+          "jsonpath": "$.dependencies.wiremux-auth.version"
+        },
+        {
+          "type": "toml",
           "path": "crates/wiremux-auth/Cargo.toml",
           "jsonpath": "$.package.version"
         }
