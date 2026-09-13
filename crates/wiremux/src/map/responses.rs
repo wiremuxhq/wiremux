@@ -356,11 +356,16 @@ fn encode_items(
                 "role": "user",
                 "content": encode_parts(parts, true, report),
             })),
-            IrItem::Assistant { parts } => input.push(json!({
-                "type": "message",
-                "role": "assistant",
-                "content": encode_parts(parts, false, report),
-            })),
+            IrItem::Assistant { parts } => {
+                let rest = peel_signed_thinking(parts, &mut input, report);
+                if !rest.is_empty() || !parts.iter().any(is_signed_thinking) {
+                    input.push(json!({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": encode_parts(&rest, false, report),
+                    }));
+                }
+            }
             IrItem::FunctionCall {
                 call_id,
                 name,
@@ -438,6 +443,45 @@ fn encode_reasoning(encrypted: Option<&str>, summary: Option<&str>, raw: Option<
         obj["summary"] = json!([{"type": "summary_text", "text": summary}]);
     }
     obj
+}
+
+fn is_signed_thinking(part: &IrPart) -> bool {
+    matches!(
+        part,
+        IrPart::Thinking {
+            signature: Some(sig),
+            ..
+        } if !sig.is_empty()
+    )
+}
+
+fn peel_signed_thinking(
+    parts: &[IrPart],
+    input: &mut Vec<Value>,
+    report: &mut LossReport,
+) -> Vec<IrPart> {
+    let mut rest = Vec::with_capacity(parts.len());
+    for part in parts {
+        match part {
+            IrPart::Thinking { text, signature }
+                if signature.as_deref().is_some_and(|sig| !sig.is_empty()) =>
+            {
+                let summary = if text.is_empty() {
+                    None
+                } else {
+                    Some(text.as_str())
+                };
+                input.push(encode_reasoning(signature.as_deref(), summary, None));
+                report.record(
+                    "part.thinking",
+                    LossAction::Preserve,
+                    "signed thinking remapped to reasoning",
+                );
+            }
+            other => rest.push(other.clone()),
+        }
+    }
+    rest
 }
 
 fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value {

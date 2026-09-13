@@ -328,12 +328,30 @@ pub(super) fn encode(
                     }),
                 );
             }
-            IrItem::Reasoning { .. } => {
-                report.record(
-                    "item.reasoning",
-                    LossAction::Drop,
-                    "no generateContent slot",
-                );
+            IrItem::Reasoning {
+                encrypted: _,
+                summary,
+                raw,
+            } => {
+                let text = summary
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| raw.as_ref().and_then(|v| str_field(v, "summary")));
+                if let Some(text) = text.filter(|t| !t.is_empty()) {
+                    // Do not copy OpenAI encrypted_content onto thoughtSignature.
+                    push_role_part(
+                        &mut contents,
+                        "model",
+                        json!({ "text": text, "thought": true }),
+                    );
+                } else {
+                    report.record(
+                        "item.reasoning",
+                        LossAction::Drop,
+                        "reasoning omitted on generateContent",
+                    );
+                }
             }
             IrItem::HostedToolCall { kind, .. }
             | IrItem::Unknown {
@@ -479,12 +497,13 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if !s.stop.is_empty() {
         cfg["stopSequences"] = json!(s.stop);
     }
-    if s.include_thoughts.is_some() || s.thinking_budget.is_some() {
+    let thinking_budget = s.thinking_budget.or(s.max_reasoning_tokens);
+    if s.include_thoughts.is_some() || thinking_budget.is_some() {
         let mut tc = json!({});
         if let Some(include) = s.include_thoughts {
             tc["includeThoughts"] = json!(include);
         }
-        if let Some(budget) = s.thinking_budget {
+        if let Some(budget) = thinking_budget {
             tc["thinkingBudget"] = json!(budget);
         }
         cfg["thinkingConfig"] = tc;
@@ -522,8 +541,14 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     {
         report.record("sampling.reasoning_effort", LossAction::Drop, "no slot");
     }
-    if s.max_reasoning_tokens.is_some() {
-        report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
+    let used_max_as_budget = s.thinking_budget.is_none() && s.max_reasoning_tokens.is_some();
+    if s.max_reasoning_tokens.is_some() && !used_max_as_budget {
+        let detail = if s.thinking_budget.is_some() {
+            "thinking_budget sibling won"
+        } else {
+            "no slot"
+        };
+        report.record("sampling.max_reasoning_tokens", LossAction::Drop, detail);
     }
     encode_tool_choice(&s.tool_choice, body);
     if s.parallel_tool_calls.is_some() {

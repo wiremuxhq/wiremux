@@ -590,6 +590,103 @@ fn thought_part_signature_is_not_stolen_by_later_function_call() {
 }
 
 #[test]
+fn gemini_reasoning_summary_encodes_as_thought_part() {
+    let ir = IrRequest {
+        model: "gemini-2.5-flash".into(),
+        items: vec![
+            IrItem::User {
+                parts: vec![IrPart::Text("hi".into())],
+            },
+            IrItem::Reasoning {
+                encrypted: Some("enc-openai-not-gemini".into()),
+                summary: Some("I should greet them".into()),
+                raw: None,
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let parts: Vec<&Value> = body
+        .get("contents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.get("parts").and_then(Value::as_array))
+        .flatten()
+        .collect();
+    let thought = parts.iter().find(|p| {
+        p.get("thought").and_then(Value::as_bool) == Some(true)
+            && p.get("text").and_then(Value::as_str) == Some("I should greet them")
+    });
+    assert!(
+        thought.is_some(),
+        "Reasoning summary must encode as a thought part, got {body}"
+    );
+    assert!(
+        thought
+            .and_then(|p| p.get("thoughtSignature"))
+            .and_then(Value::as_str)
+            != Some("enc-openai-not-gemini"),
+        "encrypted_content must not become thoughtSignature, got {body}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.contains("no generateContent slot")
+        }),
+        "summary remaps to a thought part, must not Drop as no slot, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_reasoning_without_summary_omits_thought() {
+    let ir = IrRequest {
+        model: "gemini-2.5-flash".into(),
+        items: vec![IrItem::Reasoning {
+            encrypted: Some("enc-only".into()),
+            summary: None,
+            raw: None,
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let has_thought = body
+        .get("contents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.get("parts").and_then(Value::as_array))
+        .flatten()
+        .any(|p| p.get("thought").and_then(Value::as_bool) == Some(true));
+    assert!(
+        !has_thought,
+        "encrypted-only Reasoning must not invent a thought part, got {body}"
+    );
+    assert!(
+        !body.to_string().contains("enc-only"),
+        "encrypted_content must not become thoughtSignature, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Drop
+                && event
+                    .detail
+                    .contains("reasoning omitted on generateContent")
+        }),
+        "empty Reasoning must Drop naming generateContent, got {report:?}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.contains("no generateContent slot")
+        }),
+        "must not claim no slot after remapping Reasoning, got {report:?}"
+    );
+}
+
+#[test]
 fn parallel_function_calls_only_first_signed() {
     let req = br#"{
         "contents": [{
@@ -809,6 +906,19 @@ fn replay_thinking_and_signature_in_assistant_json() {
         }]
     }"#;
     let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::Assistant { parts } if parts.iter().any(|part| matches!(
+                part,
+                IrPart::Thinking { text, signature }
+                    if text == "I should greet them"
+                        && signature.as_deref() == Some("sig_abc")
+            ))
+        )),
+        "decode must produce IrPart::Thinking {{ text: \"I should greet them\", signature: Some(\"sig_abc\") }}, got {:?}",
+        ir.items
+    );
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let content = body
@@ -856,6 +966,16 @@ fn unsigned_thinking_is_not_replayed_on_messages() {
             .iter()
             .all(|block| block.get("type").and_then(Value::as_str) != Some("thinking")),
         "unsigned thinking must not be replayed, got {body}"
+    );
+    assert!(
+        !body.to_string().contains("scratch"),
+        "unsigned thinking text must not leak onto the wire, got {body}"
+    );
+    assert!(
+        content
+            .iter()
+            .all(|block| block.get("text").and_then(Value::as_str) != Some("scratch")),
+        "unsigned thinking must not leak as a text block, got {body}"
     );
     assert!(
         content
@@ -977,6 +1097,45 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
     assert!(
         !loss_dropped(&report, "part.raw"),
         "Raw must not be dropped, got {report:?}"
+    );
+}
+
+#[test]
+fn replay_thinking_signed_encodes_as_responses_reasoning() {
+    let req = br#"{
+        "model": "claude-opus-4-6",
+        "messages": [{
+            "role": "assistant",
+            "content": [
+                { "type": "thinking", "thinking": "I should greet them", "signature": "sig_abc" },
+                { "type": "text", "text": "Hello" }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let input = body
+        .get("input")
+        .and_then(Value::as_array)
+        .expect("Responses input");
+    assert!(
+        input.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("reasoning")
+                && item.get("encrypted_content").and_then(Value::as_str) == Some("sig_abc")
+        }),
+        "signed thinking must encode as a sibling reasoning item, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "part.thinking"),
+        "signed thinking must not Drop, got {report:?}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| { event.path == "part.thinking" && event.action == LossAction::Preserve }),
+        "signed thinking remapped to reasoning must Preserve, got {report:?}"
     );
 }
 
@@ -2170,6 +2329,11 @@ fn messages_encode_thinking_budget_wins_when_max_reasoning_unset() {
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
+        body.pointer("/thinking/type").and_then(Value::as_str),
+        Some("enabled"),
+        "thinking_budget-only encode must write type enabled, got {body}"
+    );
+    assert_eq!(
         body.pointer("/thinking/budget_tokens"),
         Some(&serde_json::json!(24576)),
         "thinking_budget is the Messages slot when max_reasoning_tokens is unset, got {body}"
@@ -2177,6 +2341,43 @@ fn messages_encode_thinking_budget_wins_when_max_reasoning_unset() {
     assert!(
         !loss_dropped(&report, "sampling.thinking_budget"),
         "thinking_budget has a Messages slot, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_encode_keeps_explicit_thinking_budget_zero() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(true),
+        max_reasoning_tokens: Some(0),
+        ..IrSampling::default()
+    });
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/thinking/type").and_then(Value::as_str),
+        Some("enabled"),
+        "include_thoughts=true with budget 0 stays enabled, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/thinking/budget_tokens"),
+        Some(&serde_json::json!(0)),
+        "explicit max_reasoning_tokens 0 must not become 10240, got {body}"
+    );
+}
+
+#[test]
+fn messages_encode_thinking_budget_zero_wins_when_max_reasoning_unset() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(true),
+        thinking_budget: Some(0),
+        ..IrSampling::default()
+    });
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/thinking/budget_tokens"),
+        Some(&serde_json::json!(0)),
+        "explicit thinking_budget 0 must not become 10240, got {body}"
     );
 }
 
@@ -2202,6 +2403,60 @@ fn messages_decode_reads_thinking_disabled() {
     let (ir, _) = decode(Wire::Messages, req).expect("decode");
     assert_eq!(ir.sampling.include_thoughts, Some(false));
     assert_eq!(ir.sampling.max_reasoning_tokens, None);
+}
+
+#[test]
+fn messages_decode_unknown_thinking_missing_type_drops() {
+    let req = br#"{
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": { "budget_tokens": 2048 },
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, report) = decode(Wire::Messages, req).expect("decode");
+    assert_eq!(ir.sampling.include_thoughts, None);
+    assert_eq!(ir.sampling.max_reasoning_tokens, None);
+    assert!(
+        loss_dropped(&report, "sampling.thinking"),
+        "unknown thinking object must Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_decode_unknown_thinking_array_drops() {
+    let req = br#"{
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": [],
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, report) = decode(Wire::Messages, req).expect("decode");
+    assert_eq!(ir.sampling.include_thoughts, None);
+    assert_eq!(ir.sampling.max_reasoning_tokens, None);
+    assert!(
+        loss_dropped(&report, "sampling.thinking"),
+        "array thinking must Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_decode_unknown_thinking_adaptive_drops() {
+    let req = br#"{
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": { "type": "adaptive" },
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, report) = decode(Wire::Messages, req).expect("decode");
+    assert_eq!(ir.sampling.include_thoughts, None);
+    assert_eq!(ir.sampling.max_reasoning_tokens, None);
+    assert!(
+        loss_dropped(&report, "sampling.thinking"),
+        "adaptive thinking must Drop, got {report:?}"
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("thinking").is_none(),
+        "must not invent adaptive thinking on re-encode, got {body}"
+    );
 }
 
 #[test]
@@ -2251,8 +2506,66 @@ fn gemini_thinking_config_survives_reasoning_sampling_fields() {
         "Gemini effort drop missing, got {report:?}"
     );
     assert!(
-        loss_dropped(&report, "sampling.max_reasoning_tokens"),
-        "Gemini max drop missing, got {report:?}"
+        report.events.iter().any(|event| {
+            event.path == "sampling.max_reasoning_tokens"
+                && event.action == LossAction::Drop
+                && event.detail.contains("sibling")
+                && !event.detail.contains("no slot")
+        }),
+        "thinking_budget sibling win must not say no slot, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_thinking_budget_from_messages_max_reasoning_tokens() {
+    let req = br#"{
+        "thinking": {"type": "enabled", "budget_tokens": 2048},
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/thinkingConfig/thinkingBudget"),
+        Some(&serde_json::json!(2048)),
+        "Messages budget_tokens must encode as Gemini thinkingBudget, got {body}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "sampling.max_reasoning_tokens"
+                && event.action == LossAction::Drop
+                && event.detail.contains("no slot")
+        }),
+        "max_reasoning_tokens used as thinkingBudget must not Drop as no slot, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_thinking_budget_zero_from_max_reasoning_tokens() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(true),
+        max_reasoning_tokens: Some(0),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/thinkingConfig/thinkingBudget"),
+        Some(&serde_json::json!(0)),
+        "max_reasoning_tokens 0 is official Gemini disable, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/generationConfig/thinkingConfig/includeThoughts"),
+        Some(&Value::Bool(true)),
+        "include_thoughts must still emit, got {body}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "sampling.max_reasoning_tokens"
+                && event.action == LossAction::Drop
+                && event.detail.contains("no slot")
+        }),
+        "max_reasoning_tokens 0 has a Gemini slot, got {report:?}"
     );
 }
 

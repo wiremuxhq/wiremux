@@ -128,6 +128,18 @@ Gemini is `wire = "gemini"` in wiremux. The host adapter calls
 `decode` / `encode` on `IrRequest`. It does not keep a second Gemini
 map.
 
+Host thinking slots and `LossReport` (adapters and `bline diagnose`):
+
+| IR | Messages | Gemini | Responses | Chat Completions |
+|----|----------|--------|-----------|------------------|
+| Signed `IrPart::Thinking` | Replay `thinking` + `signature` | `thought` + `thoughtSignature` | Peel to `reasoning` | Drop |
+| Unsigned `IrPart::Thinking` | Drop (not on wire) | `thought` (no signature) | Drop | Drop |
+| `max_reasoning_tokens` | `thinking.budget_tokens` | `thinkingBudget` when `thinking_budget` unset | Drop | Drop |
+| `include_thoughts` | `thinking.type` | `includeThoughts` | Drop | Drop |
+
+Diagnose should print `LossReport` for `part.thinking` and
+`sampling.max_reasoning_tokens`.
+
 ## Stay in Bline (host only)
 
 | Stay in Bline | Why |

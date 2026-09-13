@@ -27,13 +27,22 @@ pub struct IrSampling {
     /// Client asked for SSE. Grok TUI always sets this.
     pub stream: Option<bool>,
     /// Gemini `thinkingConfig.includeThoughts`; Messages `thinking.type`.
+    /// Chat Completions and Responses have no emit slot.
     pub include_thoughts: Option<bool>,
-    /// Gemini `thinkingConfig.thinkingBudget`. Messages uses this as
-    /// `thinking.budget_tokens` when `max_reasoning_tokens` is unset.
+    /// Gemini `thinkingConfig.thinkingBudget` (decode and encode).
+    /// Messages encode emits this as `thinking.budget_tokens` when
+    /// `max_reasoning_tokens` is unset. Messages decode leaves this `None`
+    /// and writes `budget_tokens` into `max_reasoning_tokens`.
     pub thinking_budget: Option<u32>,
     /// Dialect effort string (`low`, `high`, `xhigh`). Not a host enum.
     pub reasoning_effort: Option<String>,
-    /// Host cap on reasoning tokens. Only dialects with a slot emit it.
+    /// Host cap on reasoning tokens.
+    ///
+    /// Messages decode writes `thinking.budget_tokens` here
+    /// (`thinking_budget` stays `None`). Messages encode emits this as
+    /// `thinking.budget_tokens`. Gemini encode emits it as
+    /// `thinkingConfig.thinkingBudget` when `thinking_budget` is unset.
+    /// Chat Completions and Responses have no emit slot.
     pub max_reasoning_tokens: Option<u32>,
     /// JSON schema for structured output when the dialect has a slot.
     pub json_schema: Option<serde_json::Value>,
@@ -111,6 +120,9 @@ pub enum IrPart {
         media_type: String,
         data: String,
     },
+    /// Messages replay needs a nonempty signature. Responses remaps
+    /// signed thinking to a reasoning item. Unsigned thinking is dropped
+    /// on Messages, Responses, and Chat Completions.
     Thinking {
         text: String,
         signature: Option<String>,
