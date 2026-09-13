@@ -328,12 +328,30 @@ pub(super) fn encode(
                     }),
                 );
             }
-            IrItem::Reasoning { .. } => {
-                report.record(
-                    "item.reasoning",
-                    LossAction::Drop,
-                    "no generateContent slot",
-                );
+            IrItem::Reasoning {
+                encrypted: _,
+                summary,
+                raw,
+            } => {
+                let text = summary
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| raw.as_ref().and_then(|v| str_field(v, "summary")));
+                if let Some(text) = text.filter(|t| !t.is_empty()) {
+                    // Do not copy OpenAI encrypted_content onto thoughtSignature.
+                    push_role_part(
+                        &mut contents,
+                        "model",
+                        json!({ "text": text, "thought": true }),
+                    );
+                } else {
+                    report.record(
+                        "item.reasoning",
+                        LossAction::Drop,
+                        "reasoning omitted on generateContent",
+                    );
+                }
             }
             IrItem::HostedToolCall { kind, .. }
             | IrItem::Unknown {

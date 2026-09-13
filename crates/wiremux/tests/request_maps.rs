@@ -590,6 +590,103 @@ fn thought_part_signature_is_not_stolen_by_later_function_call() {
 }
 
 #[test]
+fn gemini_reasoning_summary_encodes_as_thought_part() {
+    let ir = IrRequest {
+        model: "gemini-2.5-flash".into(),
+        items: vec![
+            IrItem::User {
+                parts: vec![IrPart::Text("hi".into())],
+            },
+            IrItem::Reasoning {
+                encrypted: Some("enc-openai-not-gemini".into()),
+                summary: Some("I should greet them".into()),
+                raw: None,
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let parts: Vec<&Value> = body
+        .get("contents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.get("parts").and_then(Value::as_array))
+        .flatten()
+        .collect();
+    let thought = parts.iter().find(|p| {
+        p.get("thought").and_then(Value::as_bool) == Some(true)
+            && p.get("text").and_then(Value::as_str) == Some("I should greet them")
+    });
+    assert!(
+        thought.is_some(),
+        "Reasoning summary must encode as a thought part, got {body}"
+    );
+    assert!(
+        thought
+            .and_then(|p| p.get("thoughtSignature"))
+            .and_then(Value::as_str)
+            != Some("enc-openai-not-gemini"),
+        "encrypted_content must not become thoughtSignature, got {body}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.contains("no generateContent slot")
+        }),
+        "summary remaps to a thought part, must not Drop as no slot, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_reasoning_without_summary_omits_thought() {
+    let ir = IrRequest {
+        model: "gemini-2.5-flash".into(),
+        items: vec![IrItem::Reasoning {
+            encrypted: Some("enc-only".into()),
+            summary: None,
+            raw: None,
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let has_thought = body
+        .get("contents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.get("parts").and_then(Value::as_array))
+        .flatten()
+        .any(|p| p.get("thought").and_then(Value::as_bool) == Some(true));
+    assert!(
+        !has_thought,
+        "encrypted-only Reasoning must not invent a thought part, got {body}"
+    );
+    assert!(
+        !body.to_string().contains("enc-only"),
+        "encrypted_content must not become thoughtSignature, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Drop
+                && event
+                    .detail
+                    .contains("reasoning omitted on generateContent")
+        }),
+        "empty Reasoning must Drop naming generateContent, got {report:?}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.contains("no generateContent slot")
+        }),
+        "must not claim no slot after remapping Reasoning, got {report:?}"
+    );
+}
+
+#[test]
 fn parallel_function_calls_only_first_signed() {
     let req = br#"{
         "contents": [{
