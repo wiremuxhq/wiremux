@@ -56,11 +56,19 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", on_block)
         self.assertNotIn("pull_request:", on_block)
         self.assertNotRegex(text, r"cargo (test|nextest|clippy|fuzz)")
+        self.assertIn("sync-release-pr-versions:", text)
+        self.assertIn("scripts/sync-cargo-lock-workspace-versions.sh", text)
+        script = (ROOT / "scripts" / "sync-cargo-lock-workspace-versions.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("cargo check -p wiremux", script)
+        self.assertNotIn("cargo generate-lockfile", script)
 
     def test_auto_merge_skips_release_please_head(self) -> None:
         text = (WORKFLOWS / "auto-approve.yml").read_text(encoding="utf-8")
         self.assertIn("!startsWith(github.head_ref, 'release-please')", text)
         self.assertIn("autorelease: pending", text)
+        self.assertIn("Skip hmarr on release-please", text)
 
     def test_cheap_pr_status_checks_do_not_cancel(self) -> None:
         for name in ("pr-title.yml", "dco.yml"):
