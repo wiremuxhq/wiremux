@@ -3029,6 +3029,68 @@ fn gemini_fileData_part_round_trips_as_raw() {
 }
 
 #[test]
+#[allow(non_snake_case)]
+fn gemini_fileData_encode_messages_does_not_leak() {
+    let req = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "fileData": {
+                    "fileUri": "files/abc",
+                    "mimeType": "application/pdf"
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        !body.to_string().contains("fileData"),
+        "Messages encode must not leak Gemini fileData, got {body}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| { event.action == LossAction::Drop && event.path.contains("fileData") }),
+        "Gemini fileData Raw must Drop on Messages encode, got {report:?}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn gemini_fileData_encode_responses_does_not_leak() {
+    let req = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "fileData": {
+                    "fileUri": "files/abc",
+                    "mimeType": "application/pdf"
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        !body.to_string().contains("fileData"),
+        "Responses encode must not leak Gemini fileData, got {body}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| { event.action == LossAction::Drop && event.path.contains("fileData") }),
+        "Gemini fileData Raw must Drop on Responses encode, got {report:?}"
+    );
+}
+
+#[test]
 fn responses_include_extras_survive_remap() {
     let req = br#"{
         "model": "gpt-5",

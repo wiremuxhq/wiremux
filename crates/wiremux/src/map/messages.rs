@@ -3,7 +3,10 @@
 use serde_json::{Value, json};
 
 use super::tools::{PreparedTool, decode_tool};
-use super::{MapError, bool_field, f32_field, stop_values, str_field, u32_field, value_as_string};
+use super::{
+    MapError, bool_field, f32_field, messages_raw_passthrough, off_dialect_raw_path, stop_values,
+    str_field, u32_field, value_as_string,
+};
 use crate::ir::{
     IrCache, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction, LossReport,
 };
@@ -620,7 +623,18 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
                 "signature": sig,
             }))
         }
-        IrPart::Raw { raw, .. } => Some(raw.clone()),
+        IrPart::Raw { raw, .. } => {
+            if messages_raw_passthrough(raw) {
+                Some(raw.clone())
+            } else {
+                report.record(
+                    off_dialect_raw_path(raw),
+                    LossAction::Drop,
+                    "raw part is not Messages-shaped",
+                );
+                None
+            }
+        }
     }
 }
 

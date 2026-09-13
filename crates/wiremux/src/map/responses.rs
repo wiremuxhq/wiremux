@@ -4,7 +4,10 @@ use serde_json::{Value, json};
 use wiremux_auth::{ResolvedProfile, ToolTypePolicy};
 
 use super::tools::{PreparedTool, decode_tool, qualify_call_name, split_namespace_name};
-use super::{MapError, bool_field, f32_field, stop_values, str_field, u32_field, value_as_string};
+use super::{
+    MapError, bool_field, f32_field, off_dialect_raw_path, responses_raw_passthrough, stop_values,
+    str_field, u32_field, value_as_string,
+};
 use crate::ir::{
     IrCache, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction, LossReport,
 };
@@ -449,6 +452,18 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                     "thinking has no Responses slot",
                 );
                 false
+            }
+            IrPart::Raw { raw, .. } => {
+                if responses_raw_passthrough(raw) {
+                    true
+                } else {
+                    report.record(
+                        off_dialect_raw_path(raw),
+                        LossAction::Drop,
+                        "raw part is not Responses-shaped",
+                    );
+                    false
+                }
             }
             _ => true,
         })

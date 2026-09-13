@@ -40,6 +40,8 @@ impl RawSse {
     }
 }
 
+#[cfg(feature = "proxy")]
+pub(crate) use chat::map_finish;
 pub use sse::{MAX_SSE_PENDING, SseFrameReader};
 #[cfg(feature = "proxy")]
 pub(crate) use usage::from_chat;

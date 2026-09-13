@@ -174,7 +174,7 @@ fn flatten_content(content: &Value) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
-fn map_finish(reason: &str) -> &str {
+pub(crate) fn map_finish(reason: &str) -> &str {
     match reason {
         "eos" => "stop",
         "function_call" => "tool_calls",
