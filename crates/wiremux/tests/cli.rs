@@ -754,6 +754,88 @@ chat_path = "/v1/chat/completions"
     );
 }
 
+#[test]
+fn proxy_json_completion_length_finish_and_usage_becomes_sse() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"id":"chatcmpl-redacted","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"cut"},"finish_reason":"length"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "grok-length.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "grok-length"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat-completions",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"grok-4","stream":true,"messages":[{"role":"user","content":"ping"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("text/event-stream"),
+        "JSON completion must wrap as SSE, got: {resp}"
+    );
+    assert!(
+        resp.contains(r#""finish_reason":"length""#),
+        "wrap must keep finish_reason length, not invent stop, got: {resp}"
+    );
+    assert!(
+        !resp.contains(r#""finish_reason":"stop""#),
+        "wrap must not invent stop when finish_reason is length, got: {resp}"
+    );
+    assert!(
+        resp.contains(r#""prompt_tokens":3"#) && resp.contains(r#""completion_tokens":2"#),
+        "wrap must forward Chat usage counts, got: {resp}"
+    );
+}
+
 fn read_listen_addr(stdout: &mut impl Read) -> std::net::SocketAddr {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut buf = Vec::new();

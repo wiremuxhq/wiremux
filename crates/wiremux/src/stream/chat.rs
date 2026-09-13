@@ -183,6 +183,13 @@ fn map_finish(reason: &str) -> &str {
     }
 }
 
+fn encode_finish(reason: &str) -> &str {
+    match reason {
+        "max_tokens" => "length",
+        other => other,
+    }
+}
+
 fn decode_tool_call(call: &Value, chunk: &Value) -> IrStreamEvent {
     let keep = || IrStreamEvent::Protocol {
         item_type: "chunk".into(),
@@ -266,7 +273,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             *reasoning_tokens,
         ),
         IrStreamEvent::FinishReason { reason } => json!({
-            "choices": [{ "index": 0, "delta": {}, "finish_reason": reason }]
+            "choices": [{ "index": 0, "delta": {}, "finish_reason": encode_finish(reason) }]
         }),
         IrStreamEvent::Done => {
             return Ok(RawSse {

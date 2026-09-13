@@ -6,7 +6,7 @@ use crate::ir::IrStreamEvent;
 
 use super::u32_field;
 
-pub(super) fn from_chat(usage: &Value) -> IrStreamEvent {
+pub(crate) fn from_chat(usage: &Value) -> IrStreamEvent {
     let cache_read = nested_u32(usage, "prompt_tokens_details", "cached_tokens")
         .filter(|&n| n > 0)
         .or_else(|| u32_field(usage, "cached_tokens").filter(|&n| n > 0))

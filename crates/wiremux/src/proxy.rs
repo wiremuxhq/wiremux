@@ -21,7 +21,7 @@ use crate::cli::{parse_listen, proxy_token, upstream_url_for_model};
 use crate::ir::{IrStreamEvent, LossReport};
 use crate::map::{decode, encode};
 use crate::stream::{
-    RawSse, SseFrameReader, ToolCallAssembler, decode_stream_events, encode_stream_event,
+    RawSse, SseFrameReader, ToolCallAssembler, decode_stream_events, encode_stream_event, from_chat,
 };
 
 type ProxyBody = UnsyncBoxBody<Bytes, Infallible>;
@@ -225,17 +225,25 @@ fn json_completion_to_sse(from: Wire, body: &Bytes) -> Option<Bytes> {
         }
         events.push(IrStreamEvent::ToolCallEnd);
     }
-    let reason = if events
-        .iter()
-        .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. }))
-    {
-        "tool_calls"
-    } else {
-        "stop"
-    };
-    events.push(IrStreamEvent::FinishReason {
-        reason: reason.into(),
-    });
+    let reason = value
+        .pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            if events
+                .iter()
+                .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. }))
+            {
+                "tool_calls".into()
+            } else {
+                "stop".into()
+            }
+        });
+    events.push(IrStreamEvent::FinishReason { reason });
+    if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
+        events.push(from_chat(usage));
+    }
     events.push(IrStreamEvent::Done);
     let mut out = String::new();
     for ev in events {
