@@ -141,7 +141,8 @@ fn decode_part(part: &Value) -> Option<IrPart> {
     if let Some(text) = part.as_str() {
         return Some(IrPart::Text(text.to_string()));
     }
-    match part.get("type").and_then(Value::as_str).unwrap_or("text") {
+    let type_name = part.get("type").and_then(Value::as_str).unwrap_or("text");
+    match type_name {
         "input_text" | "output_text" | "text" => part
             .get("text")
             .and_then(Value::as_str)
@@ -159,7 +160,13 @@ fn decode_part(part: &Value) -> Option<IrPart> {
         _ => part
             .get("text")
             .and_then(Value::as_str)
-            .map(|t| IrPart::Text(t.to_string())),
+            .map(|t| IrPart::Text(t.to_string()))
+            .or_else(|| {
+                Some(IrPart::Raw {
+                    type_name: type_name.to_string(),
+                    raw: part.clone(),
+                })
+            }),
     }
 }
 
@@ -230,7 +237,31 @@ fn decode_sampling(value: &Value) -> IrSampling {
             .and_then(|r| u32_field(r, "max_tokens")),
         json_schema,
         json_schema_name,
+        include: decode_include(value),
     }
+}
+
+fn decode_include(value: &Value) -> Vec<String> {
+    let Some(arr) = value.get("include").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| item.as_str().map(str::to_string))
+        .collect()
+}
+
+fn encode_include(extras: &[String]) -> Vec<String> {
+    const ENCRYPTED: &str = "reasoning.encrypted_content";
+    let mut include = Vec::with_capacity(extras.len() + 1);
+    if !extras.iter().any(|item| item == ENCRYPTED) {
+        include.push(ENCRYPTED.to_string());
+    }
+    for extra in extras {
+        if !include.iter().any(|item| item == extra) {
+            include.push(extra.clone());
+        }
+    }
+    include
 }
 
 fn responses_json_schema(value: &Value) -> (Option<Value>, Option<String>) {
@@ -419,14 +450,6 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                 );
                 false
             }
-            IrPart::Raw { .. } => {
-                report.record(
-                    "part.raw",
-                    LossAction::Drop,
-                    "raw part has no Responses slot",
-                );
-                false
-            }
             _ => true,
         })
         .collect();
@@ -446,7 +469,8 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                     "type": "input_image",
                     "image_url": format!("data:{media_type};base64,{data}")
                 }),
-                IrPart::Thinking { .. } | IrPart::Raw { .. } => unreachable!("filtered"),
+                IrPart::Raw { raw, .. } => raw.clone(),
+                IrPart::Thinking { .. } => unreachable!("filtered"),
             })
             .collect(),
     )
@@ -509,7 +533,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if let Some(stream) = s.stream {
         body["stream"] = json!(stream);
     }
-    body["include"] = json!(["reasoning.encrypted_content"]);
+    body["include"] = json!(encode_include(&s.include));
     if let Some(effort) = s
         .reasoning_effort
         .as_deref()

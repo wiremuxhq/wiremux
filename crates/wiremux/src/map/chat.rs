@@ -162,6 +162,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         max_reasoning_tokens: u32_field(value, "max_reasoning_tokens"),
         json_schema,
         json_schema_name,
+        include: Vec::new(),
     }
 }
 

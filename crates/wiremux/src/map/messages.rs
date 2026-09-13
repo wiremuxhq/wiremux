@@ -170,7 +170,8 @@ fn decode_content_part(block: &Value) -> Option<IrPart> {
     if let Some(text) = block.as_str() {
         return Some(IrPart::Text(text.to_string()));
     }
-    match block.get("type").and_then(Value::as_str).unwrap_or("text") {
+    let type_name = block.get("type").and_then(Value::as_str).unwrap_or("text");
+    match type_name {
         "text" => block
             .get("text")
             .and_then(Value::as_str)
@@ -179,7 +180,13 @@ fn decode_content_part(block: &Value) -> Option<IrPart> {
         _ => block
             .get("text")
             .and_then(Value::as_str)
-            .map(|t| IrPart::Text(t.to_string())),
+            .map(|t| IrPart::Text(t.to_string()))
+            .or_else(|| {
+                Some(IrPart::Raw {
+                    type_name: type_name.to_string(),
+                    raw: block.clone(),
+                })
+            }),
     }
 }
 
@@ -227,6 +234,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         max_reasoning_tokens: None,
         json_schema: None,
         json_schema_name: None,
+        include: Vec::new(),
     }
 }
 

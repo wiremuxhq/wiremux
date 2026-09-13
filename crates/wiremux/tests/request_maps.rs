@@ -967,16 +967,16 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
         "unsigned thinking must not become output_text, got {body}"
     );
     assert!(
-        !dumped.contains("redacted_thinking"),
-        "raw protocol part must not be replayed, got {body}"
+        dumped.contains("redacted_thinking"),
+        "Raw part must be replayed as a content part, got {body}"
     );
     assert!(
         loss_dropped(&report, "part.thinking"),
         "thinking drop missing, got {report:?}"
     );
     assert!(
-        loss_dropped(&report, "part.raw"),
-        "raw drop missing, got {report:?}"
+        !loss_dropped(&report, "part.raw"),
+        "Raw must not be dropped, got {report:?}"
     );
 }
 
@@ -2901,5 +2901,185 @@ fn chat_encode_gpt_4o_keeps_top_p() {
             .iter()
             .any(|event| { event.path == "sampling.top_p" && event.action == LossAction::Drop }),
         "gpt-4o must not Drop top_p, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_document_part_round_trips_as_raw() {
+    let req = br#"{
+        "model": "claude-opus-4-6",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": "AAAA"
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::Raw { type_name, raw }
+                    if type_name == "document"
+                        && raw.get("type").and_then(Value::as_str) == Some("document")
+            ))
+        )),
+        "document part must become IrPart::Raw, got {:?}",
+        ir.items
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    assert!(
+        content
+            .iter()
+            .any(|block| block.get("type").and_then(Value::as_str) == Some("document")),
+        "encode Messages must keep type document, got {body}"
+    );
+}
+
+#[test]
+fn responses_input_file_part_round_trips_as_raw() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": [{
+            "role": "user",
+            "content": [{
+                "type": "input_file",
+                "file_id": "file-abc"
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::Raw { type_name, raw }
+                    if type_name == "input_file"
+                        && raw.get("file_id").and_then(Value::as_str) == Some("file-abc")
+            ))
+        )),
+        "input_file part must become IrPart::Raw, got {:?}",
+        ir.items
+    );
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/input/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    assert!(
+        content
+            .iter()
+            .any(|block| block.get("type").and_then(Value::as_str) == Some("input_file")),
+        "encode Responses must keep type input_file, got {body}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn gemini_fileData_part_round_trips_as_raw() {
+    let req = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "fileData": {
+                    "fileUri": "files/abc",
+                    "mimeType": "application/pdf"
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::Raw { type_name, raw }
+                    if type_name == "fileData"
+                        && raw.pointer("/fileData/fileUri").and_then(Value::as_str)
+                            == Some("files/abc")
+            ))
+        )),
+        "fileData part must become IrPart::Raw, got {:?}",
+        ir.items
+    );
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/fileData/fileUri")
+            .and_then(Value::as_str),
+        Some("files/abc"),
+        "encode Gemini must keep fileData, got {body}"
+    );
+}
+
+#[test]
+fn responses_include_extras_survive_remap() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": [{"role": "user", "content": "hi"}],
+        "include": ["file_search_call.results", "reasoning.encrypted_content"]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert!(
+        ir.sampling
+            .include
+            .iter()
+            .any(|item| item == "file_search_call.results"),
+        "decode must keep include extras, got {:?}",
+        ir.sampling.include
+    );
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let include = body
+        .get("include")
+        .and_then(Value::as_array)
+        .expect("include");
+    let as_str: Vec<&str> = include.iter().filter_map(Value::as_str).collect();
+    assert!(
+        as_str.contains(&"file_search_call.results"),
+        "encode must keep file_search_call.results, got {body}"
+    );
+    assert!(
+        as_str.contains(&"reasoning.encrypted_content"),
+        "encode must keep reasoning.encrypted_content, got {body}"
+    );
+}
+
+#[test]
+fn responses_include_default_still_writes_encrypted_reasoning() {
+    let ir = IrRequest {
+        model: "gpt-5".into(),
+        items: vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    assert!(
+        ir.sampling.include.is_empty(),
+        "default include must be empty"
+    );
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("include"),
+        Some(&serde_json::json!(["reasoning.encrypted_content"])),
+        "empty include must still write encrypted reasoning, got {body}"
     );
 }
