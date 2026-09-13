@@ -153,8 +153,8 @@ must exist here first.
 Canact consume of `wiremux-auth` is a later canact PR, not a wiremux
 PR and not part of this spike. A refresh-only host (canact or
 otherwise) should call `token_for_profile("anthropic-oauth")` or keep
-`provider_for_profile` for `mark_stale` / `wake`. Do not wrap host
-types here.
+`provider_for_profile` for `mark_stale` / `wake`. Those helpers take a
+catalog id, not a file path. Do not wrap host types here.
 
 ## Out of scope
 

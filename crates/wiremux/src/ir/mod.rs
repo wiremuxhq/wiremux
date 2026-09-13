@@ -13,6 +13,10 @@ pub struct IrRequest {
 pub struct IrSampling {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
+    /// Host max output tokens.
+    ///
+    /// Chat Completions encode may write `max_completion_tokens` and omit
+    /// temperature (`LossReport`) for o1/o3/o4/gpt-5; decode accepts either key.
     pub max_tokens: Option<u32>,
     pub stop: Vec<String>,
     pub tool_choice: IrToolChoice,
