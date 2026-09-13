@@ -456,7 +456,15 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         }
     }
     if let Some(p) = s.top_p {
-        body["top_p"] = json!(p);
+        if max_completion {
+            report.record(
+                "sampling.top_p",
+                LossAction::Drop,
+                "o-series and gpt-5 Chat Completions reject top_p",
+            );
+        } else {
+            body["top_p"] = json!(p);
+        }
     }
     if let Some(max) = s.max_tokens {
         if max_completion {

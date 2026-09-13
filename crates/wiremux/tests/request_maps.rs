@@ -2834,3 +2834,72 @@ fn chat_decode_reads_max_tokens_for_classic_models() {
     let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
     assert_eq!(ir.sampling.max_tokens, Some(32));
 }
+
+fn chat_sampling_ir_with_top_p(model: &str) -> IrRequest {
+    let mut ir = chat_sampling_ir(model);
+    ir.sampling.top_p = Some(0.9);
+    ir
+}
+
+#[test]
+fn chat_encode_o3_mini_omits_top_p() {
+    let (bytes, report) = encode(
+        Wire::ChatCompletions,
+        &chat_sampling_ir_with_top_p("o3-mini"),
+        &chat_profile(),
+    )
+    .expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("top_p").is_none(),
+        "o3-mini must omit top_p, got {body}"
+    );
+    assert!(
+        body.get("temperature").is_none(),
+        "o3-mini must omit temperature, got {body}"
+    );
+    assert_eq!(
+        body.get("max_completion_tokens").and_then(Value::as_u64),
+        Some(64),
+        "o3-mini must write max_completion_tokens, got {body}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| { event.path == "sampling.top_p" && event.action == LossAction::Drop }),
+        "o3-mini must Drop sampling.top_p, got {report:?}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.temperature" && event.action == LossAction::Drop
+        }),
+        "o3-mini must Drop sampling.temperature, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_encode_gpt_4o_keeps_top_p() {
+    let (bytes, report) = encode(
+        Wire::ChatCompletions,
+        &chat_sampling_ir_with_top_p("gpt-4o"),
+        &chat_profile(),
+    )
+    .expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let top_p = body
+        .get("top_p")
+        .and_then(Value::as_f64)
+        .expect("gpt-4o must write top_p");
+    assert!(
+        (top_p - 0.9).abs() < 1e-6,
+        "gpt-4o top_p={top_p}, got {body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| { event.path == "sampling.top_p" && event.action == LossAction::Drop }),
+        "gpt-4o must not Drop top_p, got {report:?}"
+    );
+}
