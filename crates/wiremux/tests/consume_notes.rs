@@ -14,9 +14,14 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         !notes.contains("has no\n`wiremux` dep") && !notes.contains("has no `wiremux` dep"),
         "Bline Cargo.toml now pins wiremux"
     );
+    let attach = notes
+        .split("```toml")
+        .nth(1)
+        .and_then(|rest| rest.split("```").next())
+        .expect("suggested attach toml fence");
     assert!(
-        notes.contains("4d939fe87cdf0a3ce9eba599810520eeaf55b6b9"),
-        "attach examples must name the first leftover-prove SHA"
+        attach.contains("tag = \"v0.1.0\""),
+        "suggested attach toml must pin tag v0.1.0, got {attach}"
     );
     assert!(
         notes.contains("default-features = false"),

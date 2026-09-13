@@ -2039,34 +2039,191 @@ fn responses_encode_does_not_invent_reasoning_for_empty_effort() {
 }
 
 #[test]
-fn messages_encode_records_loss_for_reasoning_sampling() {
+fn messages_encode_emits_thinking_from_include_thoughts_and_budget() {
     let ir = user_ir(IrSampling {
+        include_thoughts: Some(true),
+        max_reasoning_tokens: Some(2048),
         reasoning_effort: Some("high".into()),
-        max_reasoning_tokens: Some(4096),
         ..IrSampling::default()
     });
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/thinking/type").and_then(Value::as_str),
+        Some("enabled"),
+        "Messages must emit thinking, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/thinking/budget_tokens"),
+        Some(&serde_json::json!(2048)),
+        "max_reasoning_tokens wins budget_tokens, got {body}"
+    );
     assert!(
         body.get("reasoning_effort").is_none(),
         "Messages must not emit Chat-only effort, got {body}"
     );
     assert!(
-        body.get("reasoning").is_none(),
-        "Messages must not invent reasoning, got {body}"
+        !report.events.iter().any(|event| {
+            event.path.starts_with("sampling.")
+                && event.path.contains("reason")
+                && event.action == LossAction::Drop
+        }),
+        "reasoning fields have a Messages slot, got {report:?}"
     );
+}
+
+#[test]
+fn messages_encode_effort_high_maps_to_thinking_budget() {
+    let ir = user_ir(IrSampling {
+        reasoning_effort: Some("high".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/thinking/type").and_then(Value::as_str),
+        Some("enabled"),
+        "effort must enable thinking, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/thinking/budget_tokens"),
+        Some(&serde_json::json!(32768)),
+        "high effort default budget, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.reasoning_effort"),
+        "effort has a Messages slot, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_encode_disables_thinking_when_include_thoughts_false() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(false),
+        reasoning_effort: Some("high".into()),
+        max_reasoning_tokens: Some(2048),
+        ..IrSampling::default()
+    });
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/thinking/type").and_then(Value::as_str),
+        Some("disabled"),
+        "explicit include_thoughts=false must disable, got {body}"
+    );
+    assert!(
+        body.pointer("/thinking/budget_tokens").is_none(),
+        "disabled thinking must not carry budget_tokens, got {body}"
+    );
+}
+
+#[test]
+fn messages_encode_raises_max_tokens_above_budget() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(true),
+        max_reasoning_tokens: Some(2048),
+        max_tokens: Some(100),
+        ..IrSampling::default()
+    });
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("max_tokens"),
+        Some(&serde_json::json!(6144)),
+        "raise max_tokens by 4096 completion room above budget, got {body}"
+    );
+}
+
+#[test]
+fn messages_encode_does_not_invent_thinking_when_unset() {
+    let ir = user_ir(IrSampling::default());
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
         body.get("thinking").is_none(),
-        "must not invent thinking from effort, got {body}"
+        "unset sampling must omit thinking, got {body}"
+    );
+}
+
+#[test]
+fn messages_encode_empty_effort_does_not_invent_thinking() {
+    for effort in ["", "  \t"] {
+        let ir = user_ir(IrSampling {
+            reasoning_effort: Some(effort.into()),
+            ..IrSampling::default()
+        });
+        let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert!(
+            body.get("thinking").is_none(),
+            "empty or whitespace-only effort must not invent thinking, got {body}"
+        );
+    }
+}
+
+#[test]
+fn messages_encode_thinking_budget_wins_when_max_reasoning_unset() {
+    let ir = user_ir(IrSampling {
+        thinking_budget: Some(24576),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/thinking/budget_tokens"),
+        Some(&serde_json::json!(24576)),
+        "thinking_budget is the Messages slot when max_reasoning_tokens is unset, got {body}"
     );
     assert!(
-        loss_dropped(&report, "sampling.reasoning_effort"),
-        "effort drop missing, got {report:?}"
+        !loss_dropped(&report, "sampling.thinking_budget"),
+        "thinking_budget has a Messages slot, got {report:?}"
     );
-    assert!(
-        loss_dropped(&report, "sampling.max_reasoning_tokens"),
-        "max drop missing, got {report:?}"
+}
+
+#[test]
+fn messages_decode_reads_thinking_enabled() {
+    let req = br#"{
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": { "type": "enabled", "budget_tokens": 2048 },
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    assert_eq!(ir.sampling.include_thoughts, Some(true));
+    assert_eq!(ir.sampling.max_reasoning_tokens, Some(2048));
+}
+
+#[test]
+fn messages_decode_reads_thinking_disabled() {
+    let req = br#"{
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": { "type": "disabled" },
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    assert_eq!(ir.sampling.include_thoughts, Some(false));
+    assert_eq!(ir.sampling.max_reasoning_tokens, None);
+}
+
+#[test]
+fn messages_thinking_round_trips() {
+    let req = br#"{
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": { "type": "enabled", "budget_tokens": 2048 },
+        "max_tokens": 8192,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/thinking/type").and_then(Value::as_str),
+        Some("enabled")
     );
+    assert_eq!(
+        body.pointer("/thinking/budget_tokens"),
+        Some(&serde_json::json!(2048))
+    );
+    assert_eq!(body.get("max_tokens"), Some(&serde_json::json!(8192)));
 }
 
 #[test]
@@ -2100,39 +2257,38 @@ fn gemini_thinking_config_survives_reasoning_sampling_fields() {
 }
 
 #[test]
-fn gemini_thinking_ir_drops_on_chat_and_messages() {
+fn gemini_thinking_ir_drops_on_chat() {
     let ir = user_ir(IrSampling {
         include_thoughts: Some(true),
         thinking_budget: Some(24576),
         ..IrSampling::default()
     });
-    for (wire, profile) in [
-        (Wire::ChatCompletions, chat_profile()),
-        (Wire::Messages, messages_profile()),
-    ] {
-        let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
-        let body: Value = serde_json::from_slice(&bytes).expect("json");
-        assert!(
-            body.get("thinkingConfig").is_none(),
-            "{wire:?} must not invent thinkingConfig, got {body}"
-        );
-        assert!(
-            body.get("include_thoughts").is_none() && body.get("includeThoughts").is_none(),
-            "{wire:?} must not invent include_thoughts, got {body}"
-        );
-        assert!(
-            body.get("thinking_budget").is_none() && body.get("thinkingBudget").is_none(),
-            "{wire:?} must not invent thinking_budget, got {body}"
-        );
-        assert!(
-            loss_dropped(&report, "sampling.include_thoughts"),
-            "{wire:?} include_thoughts drop missing, got {report:?}"
-        );
-        assert!(
-            loss_dropped(&report, "sampling.thinking_budget"),
-            "{wire:?} thinking_budget drop missing, got {report:?}"
-        );
-    }
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("thinkingConfig").is_none(),
+        "Chat must not invent thinkingConfig, got {body}"
+    );
+    assert!(
+        body.get("include_thoughts").is_none() && body.get("includeThoughts").is_none(),
+        "Chat must not invent include_thoughts, got {body}"
+    );
+    assert!(
+        body.get("thinking_budget").is_none() && body.get("thinkingBudget").is_none(),
+        "Chat must not invent thinking_budget, got {body}"
+    );
+    assert!(
+        body.get("thinking").is_none(),
+        "Chat must not invent Messages thinking, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.include_thoughts"),
+        "Chat include_thoughts drop missing, got {report:?}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.thinking_budget"),
+        "Chat thinking_budget drop missing, got {report:?}"
+    );
 }
 
 #[test]

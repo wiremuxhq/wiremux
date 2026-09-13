@@ -26,9 +26,10 @@ pub struct IrSampling {
     pub cache: IrCache,
     /// Client asked for SSE. Grok TUI always sets this.
     pub stream: Option<bool>,
-    /// Gemini `thinkingConfig.includeThoughts` (and peers).
+    /// Gemini `thinkingConfig.includeThoughts`; Messages `thinking.type`.
     pub include_thoughts: Option<bool>,
-    /// Gemini `thinkingConfig.thinkingBudget` (and peers).
+    /// Gemini `thinkingConfig.thinkingBudget`. Messages uses this as
+    /// `thinking.budget_tokens` when `max_reasoning_tokens` is unset.
     pub thinking_budget: Option<u32>,
     /// Dialect effort string (`low`, `high`, `xhigh`). Not a host enum.
     pub reasoning_effort: Option<String>,

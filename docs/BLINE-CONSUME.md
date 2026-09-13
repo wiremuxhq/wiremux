@@ -20,11 +20,14 @@ Auth-only is still a valid first attach (`wiremux-auth` alone). Maps
 no longer have to wait.
 
 The first leftover prove is in Bline, not in this tree.
-[blineai/bline#3939](https://github.com/blineai/bline/pull/3939) pins
-both crates at
-[`4d939fe87cdf0a3ce9eba599810520eeaf55b6b9`](https://github.com/wiremuxhq/wiremux/commit/4d939fe87cdf0a3ce9eba599810520eeaf55b6b9)
-with `wiremux` `default-features = false`. Adapter swap of
-`to_resp_message` / Anthropic conversions is still later.
+[blineai/bline#3939](https://github.com/blineai/bline/pull/3939) first
+pinned both crates. Suggested attach is now GitHub release
+[v0.1.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.1.0)
+([`530e69f3e8188abf0c4cec83729124a2a979466e`](https://github.com/wiremuxhq/wiremux/commit/530e69f3e8188abf0c4cec83729124a2a979466e))
+with `wiremux` `default-features = false`. Bline draft
+[#3960](https://github.com/blineai/bline/pull/3960) is moving to that
+tag. Adapter swap of `to_resp_message` / Anthropic conversions is
+still later.
 
 The wiremux README stays:
 
@@ -72,12 +75,12 @@ This workspace has `publish = false`. crates.io is not the attach path.
 
 ## Suggested attach (Bline crate, not this repo)
 
-First leftover prove (both crates, or later `main`):
+Release v0.1.0 (both crates, or later `main`):
 
 ```toml
 [dependencies]
-wiremux-auth = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux-auth", rev = "4d939fe87cdf0a3ce9eba599810520eeaf55b6b9" }
-wiremux = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux", rev = "4d939fe87cdf0a3ce9eba599810520eeaf55b6b9", default-features = false }
+wiremux-auth = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux-auth", tag = "v0.1.0" }
+wiremux = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux", tag = "v0.1.0", default-features = false }
 ```
 
 `default-features = false` is maps plus re-exported profile types.
