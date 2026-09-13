@@ -20,12 +20,34 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         .and_then(|rest| rest.split("```").next())
         .expect("suggested attach toml fence");
     assert!(
-        attach.contains("tag = \"v0.1.0\""),
-        "suggested attach toml must pin tag v0.1.0, got {attach}"
+        attach.contains("wiremux-auth = \"0.1.0\"")
+            && attach.contains("version = \"0.1.0\"")
+            && attach.contains("default-features = false"),
+        "published-host attach must list crates.io form, got {attach}"
+    );
+    assert!(
+        notes.contains("tag = \"v0.1.0\""),
+        "Bline/unpublished attach stays on git tag v0.1.0"
     );
     assert!(
         notes.contains("default-features = false"),
         "maps pin stays maps-only"
+    );
+    assert!(
+        !notes.contains("crates.io is not the attach path"),
+        "crates.io is now an attach path for published hosts"
+    );
+    assert!(
+        notes.contains("`--provider xai`")
+            && notes.contains("`xai`")
+            && notes.contains("`anthropic`")
+            && notes.contains("`anthropic-oauth`")
+            && notes.contains("`openai`")
+            && notes.contains("`openrouter`")
+            && notes.contains("`gemini`")
+            && notes.contains("`lmstudio`")
+            && notes.contains("`vllm`"),
+        "consume notes must list catalog ids and the canact mapping"
     );
     assert!(
         notes.contains("LLM layer is wiremux"),

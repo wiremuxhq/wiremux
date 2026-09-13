@@ -91,6 +91,10 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("id-token: write", text)
         self.assertIn("crates-io-auth-action", text)
         self.assertNotIn("CARGO_REGISTRY_TOKEN: ${{ secrets.", text)
+        self.assertIn("cargo publish -p wiremux-auth", text)
+        self.assertIn("cargo publish -p wiremux", text)
+        self.assertNotIn("Refuse while unpublished", text)
+        self.assertNotIn("publish = false on crates", text)
 
     def test_msrv_is_1_95(self) -> None:
         toolchain = (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")

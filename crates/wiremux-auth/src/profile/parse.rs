@@ -104,6 +104,8 @@ pub(crate) struct RawProfile {
     pub(crate) headers: Option<BTreeMap<String, String>>,
     #[serde(default, alias = "headerMerge")]
     pub(crate) header_merge: Option<ListMerge>,
+    #[serde(default, alias = "accessEnv")]
+    pub(crate) access_env: Option<RawAccessEnv>,
     #[serde(default)]
     pub(crate) oauth: Option<RawOauth>,
     #[serde(default)]
@@ -114,6 +116,14 @@ pub(crate) struct RawProfile {
     pub(crate) beta_header: Option<String>,
     #[serde(default, alias = "betaMerge")]
     pub(crate) beta_merge: Option<ListMerge>,
+}
+
+/// Top-level `access_env`: one name or a first-wins list.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum RawAccessEnv {
+    One(String),
+    Many(Vec<String>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -302,9 +312,24 @@ pub(crate) fn resolve(raw: RawProfile) -> Result<ResolvedProfile, ProfileError> 
             header_merge: raw.header_merge.unwrap_or_default(),
         },
         oauth,
+        access_env: resolve_access_env(raw.access_env),
         fingerprint: raw.fingerprint.map(resolve_fingerprint),
         betas,
     })
+}
+
+fn resolve_access_env(raw: Option<RawAccessEnv>) -> Vec<String> {
+    match raw {
+        None => Vec::new(),
+        Some(RawAccessEnv::One(name)) => {
+            if name.is_empty() {
+                Vec::new()
+            } else {
+                vec![name]
+            }
+        }
+        Some(RawAccessEnv::Many(names)) => names.into_iter().filter(|s| !s.is_empty()).collect(),
+    }
 }
 
 fn resolve_oauth(raw: RawOauth) -> Result<OauthPack, ProfileError> {
@@ -455,6 +480,22 @@ mod tests {
             ),
             Err(ProfileError::NativeModule { .. })
         ));
+    }
+
+    #[test]
+    fn access_env_accepts_string_or_array() {
+        let one =
+            parse_profile_str("schema_version = 1\nid = \"x\"\naccess_env = \"OPENAI_API_KEY\"\n")
+                .unwrap();
+        assert_eq!(one.access_env, ["OPENAI_API_KEY"]);
+        let many = parse_profile_str(
+            "schema_version = 1\nid = \"x\"\naccess_env = [\"ANTHROPIC_AUTH_TOKEN\", \"ANTHROPIC_API_KEY\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            many.access_env,
+            ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]
+        );
     }
 
     #[test]

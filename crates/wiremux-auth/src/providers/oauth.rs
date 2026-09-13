@@ -1,4 +1,4 @@
-//! Profile-driven TokenProvider. Uses `[oauth]` only (no fingerprint / API headers).
+//! Profile-driven TokenProvider. `[oauth]`, else top-level `access_env` or `auth_scheme = none`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -21,8 +21,10 @@ use crate::helpers::{
 };
 use crate::keychain_guard::keychain_disabled;
 use crate::profile::{
-    CredsFormat, ExpiresUnit, OauthPack, ResolvedProfile, TokenRequestFormat, TokenResponse,
+    AuthScheme, CredsFormat, ExpiresUnit, OauthPack, ResolvedProfile, TokenRequestFormat,
+    TokenResponse,
 };
+use crate::providers::static_token::StaticToken;
 #[cfg(any(target_os = "macos", test, feature = "test-util"))]
 use crate::writeback::apply_tokens;
 use crate::writeback::{
@@ -141,14 +143,53 @@ impl std::fmt::Debug for ProfileTokenProvider {
     }
 }
 
-/// Build a provider from a resolved profile. Uses `[oauth]` only.
+/// Build a provider from a resolved profile.
+///
+/// `[oauth]` uses the refresh pack. Otherwise a non-empty top-level
+/// `access_env` list reads the first non-empty env. `auth_scheme = none`
+/// is an empty static token. Anything else is missing `[oauth]`.
 pub fn provider_from_profile(
     profile: &ResolvedProfile,
 ) -> Result<crate::AnyTokenProvider, AuthError> {
-    let oauth = profile.oauth.as_ref().ok_or_else(|| {
-        AuthError::MissingField(format!("profile `{}` has no [oauth] table", profile.id))
-    })?;
-    provider_from_oauth(oauth)
+    if let Some(oauth) = profile.oauth.as_ref() {
+        return provider_from_oauth(oauth);
+    }
+    if !profile.access_env.is_empty() {
+        return static_from_access_env(&profile.id, &profile.access_env);
+    }
+    if matches!(profile.http.auth_scheme, Some(AuthScheme::None)) {
+        return Ok(StaticToken::new("").into());
+    }
+    Err(AuthError::MissingField(format!(
+        "profile `{}` has no [oauth] table",
+        profile.id
+    )))
+}
+
+fn static_from_access_env(
+    id: &str,
+    names: &[String],
+) -> Result<crate::AnyTokenProvider, AuthError> {
+    let mut tried = Vec::new();
+    for name in names {
+        if name.is_empty() {
+            continue;
+        }
+        tried.push(name.as_str());
+        match StaticToken::from_env(name) {
+            Ok(token) => return Ok(token.into()),
+            Err(AuthError::MissingField(_)) => continue,
+            Err(other) => return Err(other),
+        }
+    }
+    let listed = if tried.is_empty() {
+        "(none)".to_string()
+    } else {
+        tried.join(", ")
+    };
+    Err(AuthError::MissingField(format!(
+        "profile `{id}` access_env ({listed})"
+    )))
 }
 
 /// Build a provider from an `[oauth]` pack (no fingerprint, no API headers).
@@ -2323,6 +2364,48 @@ access_env = "WIREMUX_TEST_ACCESS"
         let profile = parse_profile_str("schema_version = 1\nid = \"no-oauth\"\n").unwrap();
         let err = provider_from_profile(&profile).unwrap_err();
         assert!(err.to_string().contains("[oauth]"));
+    }
+
+    #[tokio::test]
+    async fn provider_from_profile_uses_access_env() {
+        let home = IsolatedHome::new();
+        home.set_env("XAI_API_KEY", "xai-from-env");
+        let profile = parse_profile_str(
+            "schema_version = 1\nid = \"xai\"\naccess_env = [\"XAI_API_KEY\", \"GROK_API_KEY\"]\n",
+        )
+        .unwrap();
+        let provider = provider_from_profile(&profile).expect("access_env");
+        assert_eq!(provider.get_token().await.expect("token"), "xai-from-env");
+        let _ = home;
+    }
+
+    #[test]
+    fn provider_from_profile_missing_access_env_names_tried() {
+        let home = IsolatedHome::new();
+        let profile = parse_profile_str(
+            "schema_version = 1\nid = \"xai\"\naccess_env = [\"XAI_API_KEY\", \"GROK_API_KEY\"]\n",
+        )
+        .unwrap();
+        let err = provider_from_profile(&profile).expect_err("missing envs");
+        let msg = err.to_string();
+        assert!(
+            matches!(err, AuthError::MissingField(_)),
+            "expected MissingField, got {err}"
+        );
+        assert!(
+            msg.contains("XAI_API_KEY") && msg.contains("GROK_API_KEY"),
+            "MissingField must name tried envs, got {msg}"
+        );
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn provider_from_profile_none_auth_empty_static() {
+        let profile =
+            parse_profile_str("schema_version = 1\nid = \"lmstudio\"\nauth_scheme = \"none\"\n")
+                .unwrap();
+        let provider = provider_from_profile(&profile).expect("none auth");
+        assert_eq!(provider.get_token().await.expect("empty"), "");
     }
 
     #[test]

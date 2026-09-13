@@ -12,7 +12,27 @@ pub(crate) fn documents() -> &'static [&'static str] {
         )),
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
+            "/../../presets/anthropic.toml"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../presets/gemini.toml"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../presets/grok-ollama.toml"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../presets/lmstudio.toml"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
             "/../../presets/openai-codex-oauth.toml"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../presets/openai.toml"
         )),
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -20,7 +40,15 @@ pub(crate) fn documents() -> &'static [&'static str] {
         )),
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../presets/grok-ollama.toml"
+            "/../../presets/openrouter.toml"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../presets/vllm.toml"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../presets/xai.toml"
         )),
     ]
 }

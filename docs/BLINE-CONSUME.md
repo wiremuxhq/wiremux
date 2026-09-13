@@ -71,11 +71,22 @@ Path-dep `wiremux-auth` first, then maps at the adapter boundary.
 5. Ship the Bline change behind a feature flag or a single adapter
    call site so rollback is one Bline revert. Still later.
 
-This workspace has `publish = false`. crates.io is not the attach path.
+crates.io is now an attach path for published hosts. A tag job on this
+workspace publishes `wiremux-auth` then `wiremux`. Do not claim a
+crates.io version exists until that job has run. After the next release
+tag, published hosts that cannot git-pin use:
+
+```toml
+[dependencies]
+wiremux-auth = "0.1.0"
+wiremux = { version = "0.1.0", default-features = false }
+```
 
 ## Suggested attach (Bline crate, not this repo)
 
-Release v0.1.0 (both crates, or later `main`):
+Bline and other unpublished hosts stay on GitHub release
+[v0.1.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.1.0)
+([`530e69f3e8188abf0c4cec83729124a2a979466e`](https://github.com/wiremuxhq/wiremux/commit/530e69f3e8188abf0c4cec83729124a2a979466e)):
 
 ```toml
 [dependencies]
@@ -171,9 +182,26 @@ must exist here first.
 
 Canact consume of `wiremux-auth` is a later canact PR, not a wiremux
 PR and not part of this spike. A refresh-only host (canact or
-otherwise) should call `token_for_profile("anthropic-oauth")` or keep
+otherwise) should call `token_for_profile` on a catalog id, or keep
 `provider_for_profile` for `mark_stale` / `wake`. Those helpers take a
 catalog id, not a file path. Do not wrap host types here.
+
+Shipped catalog ids and the canact mapping:
+
+| canact | wiremux catalog id |
+|--------|--------------------|
+| `--provider xai` | `xai` |
+| claude + API key | `anthropic` |
+| claude, no key | `anthropic-oauth` |
+| openai | `openai` |
+| openrouter Chat Completions | `openrouter` |
+| gemini | `gemini` |
+| lmstudio | `lmstudio` |
+| vllm | `vllm` |
+
+Also shipped, unchanged: `grok-ollama`, `openai-codex-oauth`,
+`openrouter-codex`. Key ids use top-level `access_env` (first non-empty
+wins). `lmstudio` and `vllm` are `auth_scheme = none`.
 
 ## Out of scope
 
@@ -187,6 +215,8 @@ catalog id, not a file path. Do not wrap host types here.
 
 ## Rollback
 
-This workspace is still `publish = false`. Bline stays on the last
-good path-dep SHA. Rollback of the consume spike is revert the Bline
-commit. Bline adapters remain.
+Bline stays on the last good git tag (or path-dep SHA). Rollback of
+the consume spike is revert the Bline commit. Bline adapters remain.
+crates.io is an attach path for published hosts after the next release
+tag; do not treat a crates.io version as published until that tag job
+runs.

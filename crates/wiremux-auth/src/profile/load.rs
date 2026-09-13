@@ -121,6 +121,7 @@ fn minimal_profile_for_wire(wire: Wire) -> ResolvedProfile {
             header_merge: ListMerge::default(),
         },
         oauth: None,
+        access_env: Vec::new(),
         fingerprint: None,
         betas: Betas::default_for(Some(wire), false),
     }

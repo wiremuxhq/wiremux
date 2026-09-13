@@ -1,0 +1,6 @@
+schema_version = 1
+id = "gemini"
+display_name = "Gemini generateContent"
+wire = "gemini"
+base_url = "https://generativelanguage.googleapis.com"
+access_env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]

@@ -1,0 +1,8 @@
+schema_version = 1
+id = "xai"
+display_name = "xAI Chat Completions"
+wire = "chat-completions"
+base_url = "https://api.x.ai"
+chat_path = "/v1/chat/completions"
+auth_scheme = "bearer"
+access_env = ["XAI_API_KEY", "GROK_API_KEY"]
