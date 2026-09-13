@@ -220,7 +220,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     if messages_source_has_json_schema(value) {
         report.record("sampling.json_schema", LossAction::Drop, "no slot");
     }
-    let (include_thoughts, max_reasoning_tokens) = decode_thinking(value);
+    let (include_thoughts, max_reasoning_tokens) = decode_thinking(value, report);
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
@@ -242,14 +242,17 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     }
 }
 
-fn decode_thinking(value: &Value) -> (Option<bool>, Option<u32>) {
+fn decode_thinking(value: &Value, report: &mut LossReport) -> (Option<bool>, Option<u32>) {
     let Some(thinking) = value.get("thinking") else {
         return (None, None);
     };
     match thinking.get("type").and_then(Value::as_str) {
         Some("disabled") => (Some(false), None),
         Some("enabled") => (Some(true), u32_field(thinking, "budget_tokens")),
-        _ => (None, None),
+        _ => {
+            report.record("sampling.thinking", LossAction::Drop, "unknown thinking");
+            (None, None)
+        }
     }
 }
 
@@ -1026,16 +1029,15 @@ fn encode_thinking(s: &IrSampling, body: &mut Value, report: &mut LossReport) {
 
     let want_enable = s.include_thoughts == Some(true)
         || effort.is_some()
-        || s.max_reasoning_tokens.is_some_and(|n| n > 0)
-        || s.thinking_budget.is_some_and(|n| n > 0);
+        || s.max_reasoning_tokens.is_some()
+        || s.thinking_budget.is_some();
     if !want_enable {
         return;
     }
 
     let budget = s
         .max_reasoning_tokens
-        .filter(|&n| n > 0)
-        .or(s.thinking_budget.filter(|&n| n > 0))
+        .or(s.thinking_budget)
         .unwrap_or_else(|| {
             effort
                 .map(messages_effort_budget)
@@ -1052,20 +1054,20 @@ fn encode_thinking(s: &IrSampling, body: &mut Value, report: &mut LossReport) {
             "messages thinking",
         );
     }
-    if s.max_reasoning_tokens.is_some_and(|n| n > 0) {
+    if s.max_reasoning_tokens.is_some() {
         report.record(
             "sampling.max_reasoning_tokens",
             LossAction::Preserve,
             "messages thinking.budget_tokens",
         );
-        if s.thinking_budget.is_some_and(|n| n > 0 && n != budget) {
+        if s.thinking_budget.is_some_and(|n| n != budget) {
             report.record(
                 "sampling.thinking_budget",
                 LossAction::Degrade,
                 "max_reasoning_tokens wins budget_tokens",
             );
         }
-    } else if s.thinking_budget.is_some_and(|n| n > 0) {
+    } else if s.thinking_budget.is_some() {
         report.record(
             "sampling.thinking_budget",
             LossAction::Preserve,

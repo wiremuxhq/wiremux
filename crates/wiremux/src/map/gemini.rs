@@ -479,9 +479,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if !s.stop.is_empty() {
         cfg["stopSequences"] = json!(s.stop);
     }
-    let thinking_budget = s
-        .thinking_budget
-        .or_else(|| s.max_reasoning_tokens.filter(|&n| n > 0));
+    let thinking_budget = s.thinking_budget.or(s.max_reasoning_tokens);
     if s.include_thoughts.is_some() || thinking_budget.is_some() {
         let mut tc = json!({});
         if let Some(include) = s.include_thoughts {
@@ -525,8 +523,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     {
         report.record("sampling.reasoning_effort", LossAction::Drop, "no slot");
     }
-    let used_max_as_budget =
-        s.thinking_budget.is_none() && s.max_reasoning_tokens.is_some_and(|n| n > 0);
+    let used_max_as_budget = s.thinking_budget.is_none() && s.max_reasoning_tokens.is_some();
     if s.max_reasoning_tokens.is_some() && !used_max_as_budget {
         let detail = if s.thinking_budget.is_some() {
             "thinking_budget sibling won"

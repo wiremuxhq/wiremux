@@ -2248,6 +2248,43 @@ fn messages_encode_thinking_budget_wins_when_max_reasoning_unset() {
 }
 
 #[test]
+fn messages_encode_keeps_explicit_thinking_budget_zero() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(true),
+        max_reasoning_tokens: Some(0),
+        ..IrSampling::default()
+    });
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/thinking/type").and_then(Value::as_str),
+        Some("enabled"),
+        "include_thoughts=true with budget 0 stays enabled, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/thinking/budget_tokens"),
+        Some(&serde_json::json!(0)),
+        "explicit max_reasoning_tokens 0 must not become 10240, got {body}"
+    );
+}
+
+#[test]
+fn messages_encode_thinking_budget_zero_wins_when_max_reasoning_unset() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(true),
+        thinking_budget: Some(0),
+        ..IrSampling::default()
+    });
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/thinking/budget_tokens"),
+        Some(&serde_json::json!(0)),
+        "explicit thinking_budget 0 must not become 10240, got {body}"
+    );
+}
+
+#[test]
 fn messages_decode_reads_thinking_enabled() {
     let req = br#"{
         "model": "claude-haiku-4-5-20251001",
@@ -2269,6 +2306,60 @@ fn messages_decode_reads_thinking_disabled() {
     let (ir, _) = decode(Wire::Messages, req).expect("decode");
     assert_eq!(ir.sampling.include_thoughts, Some(false));
     assert_eq!(ir.sampling.max_reasoning_tokens, None);
+}
+
+#[test]
+fn messages_decode_unknown_thinking_missing_type_drops() {
+    let req = br#"{
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": { "budget_tokens": 2048 },
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, report) = decode(Wire::Messages, req).expect("decode");
+    assert_eq!(ir.sampling.include_thoughts, None);
+    assert_eq!(ir.sampling.max_reasoning_tokens, None);
+    assert!(
+        loss_dropped(&report, "sampling.thinking"),
+        "unknown thinking object must Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_decode_unknown_thinking_array_drops() {
+    let req = br#"{
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": [],
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, report) = decode(Wire::Messages, req).expect("decode");
+    assert_eq!(ir.sampling.include_thoughts, None);
+    assert_eq!(ir.sampling.max_reasoning_tokens, None);
+    assert!(
+        loss_dropped(&report, "sampling.thinking"),
+        "array thinking must Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_decode_unknown_thinking_adaptive_drops() {
+    let req = br#"{
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": { "type": "adaptive" },
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, report) = decode(Wire::Messages, req).expect("decode");
+    assert_eq!(ir.sampling.include_thoughts, None);
+    assert_eq!(ir.sampling.max_reasoning_tokens, None);
+    assert!(
+        loss_dropped(&report, "sampling.thinking"),
+        "adaptive thinking must Drop, got {report:?}"
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("thinking").is_none(),
+        "must not invent adaptive thinking on re-encode, got {body}"
+    );
 }
 
 #[test]
@@ -2349,6 +2440,35 @@ fn gemini_thinking_budget_from_messages_max_reasoning_tokens() {
                 && event.detail.contains("no slot")
         }),
         "max_reasoning_tokens used as thinkingBudget must not Drop as no slot, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_thinking_budget_zero_from_max_reasoning_tokens() {
+    let ir = user_ir(IrSampling {
+        include_thoughts: Some(true),
+        max_reasoning_tokens: Some(0),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/thinkingConfig/thinkingBudget"),
+        Some(&serde_json::json!(0)),
+        "max_reasoning_tokens 0 is official Gemini disable, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/generationConfig/thinkingConfig/includeThoughts"),
+        Some(&Value::Bool(true)),
+        "include_thoughts must still emit, got {body}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "sampling.max_reasoning_tokens"
+                && event.action == LossAction::Drop
+                && event.detail.contains("no slot")
+        }),
+        "max_reasoning_tokens 0 has a Gemini slot, got {report:?}"
     );
 }
 
