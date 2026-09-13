@@ -171,7 +171,20 @@ pub fn provider_for_profile_opts(
                 .into(),
         ));
     }
-    let profile = load_profile(id, opts)?;
+    let profile = load_profile(id, opts).map_err(|err| match err {
+        ProfileError::NotFound { id, known } => {
+            let known = if known.is_empty() {
+                "(none)".to_string()
+            } else {
+                known.join(", ")
+            };
+            AuthError::TokenProvider(format!(
+                "profile `{id}` not found (known: {known}); \
+                 token_for_profile / provider_for_profile take a catalog id (example `anthropic-oauth`)"
+            ))
+        }
+        other => other.into(),
+    })?;
     provider_from_profile(&profile)
 }
 
@@ -223,6 +236,7 @@ mod tests {
         )
         .await
         .expect_err("empty catalog must fail closed");
+        let display = err.to_string();
         match &err {
             AuthError::TokenProvider(msg) => {
                 assert!(
@@ -232,7 +246,18 @@ mod tests {
             }
             other => panic!("expected AuthError::TokenProvider, got {other}"),
         }
-        assert_ne!(err.to_string(), "");
+        assert!(
+            display.contains("not found"),
+            "Display must include not found, got {display}"
+        );
+        assert!(
+            display.contains("catalog id") || display.contains("anthropic-oauth"),
+            "Display must name catalog id or the anthropic-oauth example, got {display}"
+        );
+        assert!(
+            !display.contains("path also works"),
+            "typo catalog id must not inherit the CLI path hint, got {display}"
+        );
         let _ = home;
     }
 
