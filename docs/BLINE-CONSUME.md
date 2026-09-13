@@ -186,6 +186,21 @@ otherwise) should call `token_for_profile` on a catalog id, or keep
 `provider_for_profile` for `mark_stale` / `wake`. Those helpers take a
 catalog id, not a file path. Do not wrap host types here.
 
+## WireClient (optional `client` feature)
+
+`default-features = false` stays maps-only. Hosts that want POST/SSE
+without clap or the `proxy` stack enable feature `client` on crate
+`wiremux` only.
+
+`WireClient::from_profile` loads a catalog id (shipped `base_url`,
+`chat_path`, `auth_scheme`, `[headers]`, `[betas]`) and
+`provider_for_profile`. `send` encodes IR, POSTs, and decodes a
+complete JSON body. `stream` remaps SSE frames. `list_models` GETs
+`{base}/models`.
+
+Refresh-only hosts still call `token_for_profile`. Do not wrap Bline
+types and do not run `wiremux proxy` for that path.
+
 Shipped catalog ids and the canact mapping:
 
 | canact | wiremux catalog id |

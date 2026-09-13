@@ -31,6 +31,8 @@ proxy = [
     "dep:reqwest",
     "dep:tokio",
 ]
+# Optional library POST/SSE. Does NOT pull clap / hyper / cli.
+client = ["dep:bytes", "dep:futures-util", "dep:reqwest", "dep:tokio"]
 
 [dependencies]
 bytes = { version = "1", optional = true }
@@ -47,3 +49,5 @@ wiremux-auth = { version = "0.1.0", path = "../wiremux-auth" }
 
 [dev-dependencies]
 tempfile = "3.23.0"
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }
+wiremux-auth = { path = "../wiremux-auth", features = ["test-util"] }

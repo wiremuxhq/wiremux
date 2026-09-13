@@ -82,4 +82,16 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
             && notes.contains("Chat Completions and Responses emit `store`"),
         "thinking / LossReport table must exist for adapters"
     );
+    assert!(
+        notes.contains("WireClient")
+            && notes.contains("from_profile")
+            && notes.contains("send")
+            && notes.contains("stream")
+            && notes.contains("list_models"),
+        "consume notes must name WireClient and from_profile / send / stream / list_models"
+    );
+    assert!(
+        notes.contains("token_for_profile"),
+        "refresh-only hosts still use token_for_profile"
+    );
 }

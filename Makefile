@@ -9,7 +9,9 @@ check: ## fmt, clippy, test, deny, stealth, trigger lock
 	RUSTFLAGS="-D warnings" cargo clippy --locked --workspace --all-targets -- -D warnings
 	RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --workspace
 	RUSTFLAGS="-D warnings" cargo test --locked --workspace
-	RUSTFLAGS="-D warnings" cargo test --locked -p wiremux --no-default-features --test request_maps --test stream_maps
+	RUSTFLAGS="-D warnings" cargo test --locked -p wiremux --no-default-features --test request_maps --test stream_maps --test response_maps
+	RUSTFLAGS="-D warnings" cargo clippy --locked -p wiremux --all-targets --no-default-features --features client -- -D warnings
+	RUSTFLAGS="-D warnings" cargo test --locked -p wiremux --no-default-features --features client --test client --test consume_notes --test response_maps
 	cargo check --locked -p wiremux --no-default-features --features proxy
 	bash scripts/assert-maps-only-deps.sh
 	cargo deny check

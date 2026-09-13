@@ -167,7 +167,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     })
 }
 
-fn map_stop_reason(reason: &str) -> &str {
+pub(super) fn map_stop_reason(reason: &str) -> &str {
     match reason {
         "refusal" => "content_filter",
         "max_tokens" => "max_tokens",

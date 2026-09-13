@@ -153,7 +153,7 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     Ok(out)
 }
 
-fn flatten_content(content: &Value) -> Option<String> {
+pub(super) fn flatten_content(content: &Value) -> Option<String> {
     if let Some(s) = content.as_str().filter(|s| !s.is_empty()) {
         return Some(s.to_string());
     }

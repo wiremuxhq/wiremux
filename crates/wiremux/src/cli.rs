@@ -538,54 +538,11 @@ pub async fn proxy_token(profile: &ResolvedProfile) -> Result<Option<String>, St
     Ok(None)
 }
 
+pub use crate::upstream::upstream_url_for_model;
+
 /// Join `base_url` + `chat_path` for the upstream request.
 pub fn upstream_url(profile: &ResolvedProfile) -> Result<String, String> {
     upstream_url_for_model(profile, None, false)
-}
-
-/// Join `base_url` + `chat_path`, substituting `{model}` when present.
-///
-/// Gemini streaming uses `:streamGenerateContent?alt=sse` when the path
-/// is the unary `:generateContent` default.
-pub fn upstream_url_for_model(
-    profile: &ResolvedProfile,
-    model: Option<&str>,
-    stream: bool,
-) -> Result<String, String> {
-    let base = profile
-        .http
-        .base_url
-        .as_deref()
-        .ok_or("profile has no base_url")?;
-    let path = profile
-        .http
-        .chat_path
-        .as_deref()
-        .or_else(|| profile.dialect.wire.map(Wire::default_chat_path))
-        .unwrap_or("/");
-    let mut path = if let Some(model) = model.filter(|m| !m.is_empty()) {
-        path.replace("{model}", model)
-    } else {
-        path.to_string()
-    };
-    if stream
-        && matches!(profile.dialect.wire, Some(Wire::Gemini))
-        && path.ends_with(":generateContent")
-    {
-        path = path.replacen(":generateContent", ":streamGenerateContent?alt=sse", 1);
-    }
-    if path.starts_with("http://") || path.starts_with("https://") {
-        return Ok(path);
-    }
-    Ok(format!(
-        "{}{}",
-        base.trim_end_matches('/'),
-        if path.starts_with('/') {
-            path
-        } else {
-            format!("/{path}")
-        }
-    ))
 }
 
 #[cfg(test)]
