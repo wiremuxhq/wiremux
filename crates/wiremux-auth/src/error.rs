@@ -3,6 +3,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::profile::ProfileError;
+
 /// Failure from credential load, refresh, or fail-closed write-back.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
@@ -72,6 +74,16 @@ fn redact_pathbuf(path: PathBuf) -> PathBuf {
 impl From<serde_json::Error> for AuthError {
     fn from(source: serde_json::Error) -> Self {
         Self::Json { path: None, source }
+    }
+}
+
+impl From<ProfileError> for AuthError {
+    fn from(err: ProfileError) -> Self {
+        match err {
+            ProfileError::MissingField(s) => Self::MissingField(s.to_string()),
+            ProfileError::Io { path, source } => Self::io(Some(path), source),
+            other => Self::TokenProvider(other.to_string()),
+        }
     }
 }
 

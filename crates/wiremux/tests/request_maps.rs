@@ -2688,3 +2688,119 @@ fn gemini_non_object_json_schema_is_dropped() {
         "Gemini has a slot; Drop detail must not be no slot, got {report:?}"
     );
 }
+
+fn chat_sampling_ir(model: &str) -> IrRequest {
+    IrRequest {
+        model: model.into(),
+        items: vec![],
+        tools: vec![],
+        sampling: IrSampling {
+            max_tokens: Some(64),
+            temperature: Some(0.2),
+            ..IrSampling::default()
+        },
+    }
+}
+
+fn assert_chat_max_completion(model: &str) {
+    let (bytes, report) = encode(
+        Wire::ChatCompletions,
+        &chat_sampling_ir(model),
+        &chat_profile(),
+    )
+    .expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("max_completion_tokens").and_then(Value::as_u64),
+        Some(64),
+        "{model} must write max_completion_tokens, got {body}"
+    );
+    assert!(
+        body.get("max_tokens").is_none(),
+        "{model} must omit max_tokens, got {body}"
+    );
+    assert!(
+        body.get("temperature").is_none(),
+        "{model} must omit temperature, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.temperature" && event.action == LossAction::Drop
+        }),
+        "{model} must Drop sampling.temperature, got {report:?}"
+    );
+}
+
+fn assert_chat_classic_max_tokens(model: &str) {
+    let (bytes, report) = encode(
+        Wire::ChatCompletions,
+        &chat_sampling_ir(model),
+        &chat_profile(),
+    )
+    .expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("max_tokens").and_then(Value::as_u64),
+        Some(64),
+        "{model} must write max_tokens, got {body}"
+    );
+    assert!(
+        body.get("max_completion_tokens").is_none(),
+        "{model} must omit max_completion_tokens, got {body}"
+    );
+    assert!(
+        body.get("temperature").is_some(),
+        "{model} must keep temperature, got {body}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "sampling.temperature" && event.action == LossAction::Drop
+        }),
+        "{model} must not Drop temperature, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_encode_o1_uses_max_completion_tokens() {
+    assert_chat_max_completion("o1");
+}
+
+#[test]
+fn chat_encode_o3_mini_uses_max_completion_tokens() {
+    assert_chat_max_completion("o3-mini");
+}
+
+#[test]
+fn chat_encode_o4_mini_uses_max_completion_tokens() {
+    assert_chat_max_completion("o4-mini");
+}
+
+#[test]
+fn chat_encode_openai_o3_mini_uses_max_completion_tokens() {
+    assert_chat_max_completion("openai/o3-mini");
+}
+
+#[test]
+fn chat_encode_gpt_5_uses_max_completion_tokens() {
+    assert_chat_max_completion("gpt-5");
+}
+
+#[test]
+fn chat_encode_gpt_5_mini_uses_max_completion_tokens() {
+    assert_chat_max_completion("gpt-5-mini");
+}
+
+#[test]
+fn chat_encode_o3_mini_casefold_uses_max_completion_tokens() {
+    assert_chat_max_completion("O3-MINI");
+}
+
+#[test]
+fn chat_encode_gpt_4o_does_not_use_max_completion_tokens() {
+    assert_chat_classic_max_tokens("gpt-4o");
+}
+
+#[test]
+fn chat_encode_o10_does_not_use_max_completion_tokens() {
+    assert_chat_classic_max_tokens("o10");
+}
