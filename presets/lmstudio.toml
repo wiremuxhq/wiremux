@@ -1,0 +1,7 @@
+schema_version = 1
+id = "lmstudio"
+display_name = "LM Studio local Chat Completions"
+wire = "chat-completions"
+base_url = "http://127.0.0.1:1234"
+chat_path = "/v1/chat/completions"
+auth_scheme = "none"

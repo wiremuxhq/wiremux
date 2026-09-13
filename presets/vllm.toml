@@ -1,0 +1,7 @@
+schema_version = 1
+id = "vllm"
+display_name = "vLLM local Chat Completions"
+wire = "chat-completions"
+base_url = "http://127.0.0.1:8000"
+chat_path = "/v1/chat/completions"
+auth_scheme = "none"

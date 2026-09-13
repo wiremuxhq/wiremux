@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Reserved."
-publish = false
+publish = true
 keywords = []
 categories = []
 

@@ -2,11 +2,17 @@
 
 #[cfg(feature = "cli")]
 pub mod cli;
+#[cfg(feature = "client")]
+pub mod client;
+#[cfg(any(feature = "proxy", feature = "client"))]
+mod headers;
 pub mod ir;
 pub mod map;
 #[cfg(feature = "proxy")]
 pub mod proxy;
 pub mod stream;
+#[cfg(any(feature = "cli", feature = "proxy", feature = "client"))]
+mod upstream;
 
 pub use ir::{
     IrCache, IrItem, IrPart, IrRequest, IrSampling, IrStreamEvent, IrTool, IrToolChoice,
@@ -15,13 +21,17 @@ pub use ir::{
 pub use map::{MapError, decode, encode};
 pub use stream::{
     MAX_CONTENT_BLOCK_INDEX, MAX_SSE_PENDING, MAX_TOOL_CALL_INDEX, RawSse, SseFrameReader,
-    ToolCallAssembler, decode_stream_event, decode_stream_events, encode_stream_event,
+    ToolCallAssembler, decode_response, decode_stream_event, decode_stream_events,
+    encode_stream_event,
 };
 pub use wiremux_auth::VERSION;
 pub use wiremux_auth::{
     LoadOptions, ResolvedProfile, StreamUnknownPolicy, ToolTypePolicy, Wire, load_profile,
     parse_profile_str,
 };
+
+#[cfg(feature = "client")]
+pub use client::{ClientError, ListedModel, WireClient};
 
 #[cfg(test)]
 mod tests {

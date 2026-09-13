@@ -1,0 +1,140 @@
+//! Complete-body maps. Stream goldens stay delta-only.
+
+use serde_json::json;
+use wiremux::{
+    IrStreamEvent, RawSse, ResolvedProfile, Wire, decode_response, decode_stream_events,
+    parse_profile_str,
+};
+
+fn chat_profile() -> ResolvedProfile {
+    parse_profile_str(
+        r#"
+schema_version = 1
+id = "test-chat"
+wire = "chat-completions"
+"#,
+    )
+    .expect("test profile parses")
+}
+
+#[test]
+fn chat_complete_message_content_finish_usage() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "hello from complete"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("complete message must decode");
+    let text = events.iter().find_map(|ev| match ev {
+        IrStreamEvent::TextDelta { text } => Some(text.as_str()),
+        _ => None,
+    });
+    assert_eq!(
+        text,
+        Some("hello from complete"),
+        "must read choices[0].message.content, not delta: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+        "finish_reason=stop missing: {events:?}"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+            }
+        )),
+        "usage missing: {events:?}"
+    );
+}
+
+#[test]
+fn chat_complete_message_tool_calls() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_complete",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": "{\"city\":\"SF\"}"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("complete tool_calls must decode");
+    let start = events.iter().find_map(|ev| match ev {
+        IrStreamEvent::ToolCallStart { id, name, .. } => Some((id.as_str(), name.as_str())),
+        _ => None,
+    });
+    assert_eq!(start, Some(("call_complete", "get_weather")));
+    let args: String = events
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { delta } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(args, r#"{"city":"SF"}"#);
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::ToolCallEnd)),
+        "complete tool_calls must emit ToolCallEnd: {events:?}"
+    );
+}
+
+#[test]
+fn stream_delta_stays_delta_only_and_complete_ignores_missing_message() {
+    let delta_only = json!({
+        "choices": [{
+            "delta": { "content": "hi from delta" }
+        }]
+    });
+    let raw = RawSse {
+        event: None,
+        data: delta_only.to_string(),
+    };
+    let streamed = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("delta-only stream body must still decode");
+    assert!(
+        streamed
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "hi from delta")),
+        "decode_stream_events must keep reading delta.content: {streamed:?}"
+    );
+
+    let body = serde_json::to_vec(&delta_only).expect("json");
+    let complete = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("delta-only complete body is not a map error");
+    assert!(
+        !complete
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "hi from delta")),
+        "decode_response must not invent a complete message from missing message: {complete:?}"
+    );
+}

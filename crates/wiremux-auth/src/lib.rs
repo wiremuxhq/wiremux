@@ -209,6 +209,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn token_for_profile_reads_xai_access_env() {
+        let home = IsolatedHome::new();
+        home.set_env("XAI_API_KEY", "xai-lib-key");
+        let token = token_for_profile("xai").await.expect("xai access_env");
+        assert_eq!(token, "xai-lib-key");
+        let _ = home;
+    }
+
+    #[tokio::test]
     async fn token_for_profile_returns_planted_claude_access() {
         let home = IsolatedHome::new();
         home.plant_credentials(PlantCredentials::Claude {

@@ -9,6 +9,7 @@ use std::time::Duration;
 use wiremux_auth::{
     AuthScheme, IsolatedHome, LoadOptions, Login, PlantCredentials, ProfileError, TokenProvider,
     TokenRequestFormat, ToolTypePolicy, Wire, list_profiles, load_profile, provider_from_profile,
+    token_for_profile,
 };
 
 fn presets_dir() -> PathBuf {
@@ -144,18 +145,237 @@ fn load_profile_grok_ollama_from_shipped_catalog() {
     assert!(profile.oauth.is_none());
 }
 
+const KEY_PROFILE_IDS: &[&str] = &[
+    "xai",
+    "openai",
+    "anthropic",
+    "openrouter",
+    "gemini",
+    "lmstudio",
+    "vllm",
+];
+
+const ALL_SHIPPED_IDS: &[&str] = &[
+    "anthropic-oauth",
+    "openai-codex-oauth",
+    "openrouter-codex",
+    "grok-ollama",
+    "xai",
+    "openai",
+    "anthropic",
+    "openrouter",
+    "gemini",
+    "lmstudio",
+    "vllm",
+];
+
+#[test]
+fn load_profile_xai_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
+    let profile = load_profile("xai", &shipped_opts()).expect("include_shipped must expose xai");
+    assert_eq!(profile.id, "xai");
+    assert_eq!(profile.dialect.wire, Some(Wire::ChatCompletions));
+    assert_eq!(profile.http.base_url.as_deref(), Some("https://api.x.ai"));
+    assert_eq!(
+        profile.http.chat_path.as_deref(),
+        Some("/v1/chat/completions")
+    );
+    assert_eq!(profile.http.auth_scheme, Some(AuthScheme::Bearer));
+    assert_eq!(profile.access_env, ["XAI_API_KEY", "GROK_API_KEY"]);
+    assert!(profile.oauth.is_none(), "xai is API-key only");
+}
+
+#[test]
+fn load_profile_openai_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
+    let profile =
+        load_profile("openai", &shipped_opts()).expect("include_shipped must expose openai");
+    assert_eq!(profile.id, "openai");
+    assert_eq!(profile.dialect.wire, Some(Wire::ChatCompletions));
+    assert_eq!(
+        profile.http.base_url.as_deref(),
+        Some("https://api.openai.com")
+    );
+    assert_eq!(
+        profile.http.chat_path.as_deref(),
+        Some("/v1/chat/completions")
+    );
+    assert_eq!(profile.access_env, ["OPENAI_API_KEY"]);
+    assert!(profile.oauth.is_none());
+}
+
+#[test]
+fn load_profile_anthropic_key_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
+    let profile =
+        load_profile("anthropic", &shipped_opts()).expect("include_shipped must expose anthropic");
+    assert_eq!(profile.id, "anthropic");
+    assert_eq!(profile.dialect.wire, Some(Wire::Messages));
+    assert_eq!(
+        profile.http.base_url.as_deref(),
+        Some("https://api.anthropic.com")
+    );
+    assert_eq!(profile.http.chat_path.as_deref(), Some("/v1/messages"));
+    assert_eq!(
+        profile
+            .http
+            .headers
+            .get("anthropic-version")
+            .map(String::as_str),
+        Some("2023-06-01")
+    );
+    assert!(
+        !profile.betas.values.iter().any(|v| v == "oauth-2025-04-20"),
+        "key profile must not ship oauth-2025-04-20, got {:?}",
+        profile.betas.values
+    );
+    assert_eq!(
+        profile.access_env,
+        ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]
+    );
+    assert!(profile.oauth.is_none(), "anthropic is API-key only");
+}
+
+#[test]
+fn load_profile_openrouter_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
+    let profile = load_profile("openrouter", &shipped_opts())
+        .expect("include_shipped must expose openrouter");
+    assert_eq!(profile.id, "openrouter");
+    assert_eq!(profile.dialect.wire, Some(Wire::ChatCompletions));
+    assert_eq!(
+        profile.http.base_url.as_deref(),
+        Some("https://openrouter.ai/api")
+    );
+    assert_eq!(
+        profile.http.chat_path.as_deref(),
+        Some("/v1/chat/completions")
+    );
+    assert_eq!(profile.access_env, ["OPENROUTER_API_KEY"]);
+    assert!(profile.oauth.is_none());
+    assert!(
+        profile
+            .fingerprint
+            .as_ref()
+            .map(|f| f.forbidden_body_fields.is_empty())
+            .unwrap_or(true),
+        "openrouter Chat Completions must not forbid store"
+    );
+}
+
+#[test]
+fn load_profile_gemini_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
+    let profile =
+        load_profile("gemini", &shipped_opts()).expect("include_shipped must expose gemini");
+    assert_eq!(profile.id, "gemini");
+    assert_eq!(profile.dialect.wire, Some(Wire::Gemini));
+    assert_eq!(
+        profile.http.base_url.as_deref(),
+        Some("https://generativelanguage.googleapis.com")
+    );
+    assert_eq!(
+        profile.http.chat_path.as_deref(),
+        Some(Wire::Gemini.default_chat_path())
+    );
+    assert!(
+        profile
+            .http
+            .chat_path
+            .as_deref()
+            .is_some_and(|p| p.contains("{model}")),
+        "gemini must keep the default {{model}} path, got {:?}",
+        profile.http.chat_path
+    );
+    assert_eq!(profile.access_env, ["GEMINI_API_KEY", "GOOGLE_API_KEY"]);
+    assert!(profile.oauth.is_none());
+}
+
+#[test]
+fn load_profile_lmstudio_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
+    let profile =
+        load_profile("lmstudio", &shipped_opts()).expect("include_shipped must expose lmstudio");
+    assert_eq!(profile.id, "lmstudio");
+    assert_eq!(profile.dialect.wire, Some(Wire::ChatCompletions));
+    assert_eq!(
+        profile.http.base_url.as_deref(),
+        Some("http://127.0.0.1:1234")
+    );
+    assert_eq!(
+        profile.http.chat_path.as_deref(),
+        Some("/v1/chat/completions")
+    );
+    assert_eq!(profile.http.auth_scheme, Some(AuthScheme::None));
+    assert!(profile.oauth.is_none());
+    assert!(profile.access_env.is_empty());
+}
+
+#[test]
+fn load_profile_vllm_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
+    let profile = load_profile("vllm", &shipped_opts()).expect("include_shipped must expose vllm");
+    assert_eq!(profile.id, "vllm");
+    assert_eq!(profile.dialect.wire, Some(Wire::ChatCompletions));
+    assert_eq!(
+        profile.http.base_url.as_deref(),
+        Some("http://127.0.0.1:8000")
+    );
+    assert_eq!(
+        profile.http.chat_path.as_deref(),
+        Some("/v1/chat/completions")
+    );
+    assert_eq!(profile.http.auth_scheme, Some(AuthScheme::None));
+    assert!(profile.oauth.is_none());
+}
+
+#[tokio::test]
+async fn token_for_profile_xai_reads_xai_api_key() {
+    let home = IsolatedHome::new();
+    home.set_env("XAI_API_KEY", "xai-shipped-key");
+    let token = token_for_profile("xai").await.expect("xai token");
+    assert_eq!(token, "xai-shipped-key");
+    let _ = home;
+}
+
+#[tokio::test]
+async fn token_for_profile_anthropic_prefers_auth_token() {
+    let home = IsolatedHome::new();
+    home.set_env("ANTHROPIC_AUTH_TOKEN", "auth-token-wins");
+    home.set_env("ANTHROPIC_API_KEY", "api-key-loses");
+    let token = token_for_profile("anthropic")
+        .await
+        .expect("anthropic token");
+    assert_eq!(token, "auth-token-wins");
+    let _ = home;
+}
+
+#[tokio::test]
+async fn token_for_profile_lmstudio_empty_static() {
+    let _home = IsolatedHome::new();
+    let token = token_for_profile("lmstudio")
+        .await
+        .expect("lmstudio none auth");
+    assert_eq!(token, "");
+}
+
+#[test]
+fn isolated_home_clears_anthropic_auth_token() {
+    let home = IsolatedHome::new();
+    assert!(
+        std::env::var("ANTHROPIC_AUTH_TOKEN").is_err(),
+        "IsolatedHome must clear ANTHROPIC_AUTH_TOKEN"
+    );
+    let _ = home;
+}
+
 #[test]
 fn include_shipped_false_hides_catalog() {
     let _home = IsolatedHome::new();
-    for id in [
-        "anthropic-oauth",
-        "openai-codex-oauth",
-        "openrouter-codex",
-        "grok-ollama",
-    ] {
+    for id in ALL_SHIPPED_IDS {
         let err = load_profile(id, &no_shipped_opts()).expect_err(id);
         assert!(
-            matches!(err, ProfileError::NotFound { id: ref found, .. } if found == id),
+            matches!(err, ProfileError::NotFound { id: ref found, .. } if found == *id),
             "{id}: {err}"
         );
     }
@@ -165,13 +385,11 @@ fn include_shipped_false_hides_catalog() {
 fn list_profiles_includes_shipped_ids() {
     let _home = IsolatedHome::new();
     let ids = list_profiles(&shipped_opts()).expect("list shipped");
-    for id in [
-        "anthropic-oauth",
-        "openai-codex-oauth",
-        "openrouter-codex",
-        "grok-ollama",
-    ] {
-        assert!(ids.iter().any(|got| got == id), "missing {id} in {ids:?}");
+    for id in ALL_SHIPPED_IDS {
+        assert!(ids.iter().any(|got| got == *id), "missing {id} in {ids:?}");
+    }
+    for id in KEY_PROFILE_IDS {
+        assert!(ids.iter().any(|got| got == *id), "missing key id {id}");
     }
 }
 

@@ -1,0 +1,11 @@
+schema_version = 1
+id = "anthropic"
+display_name = "Anthropic Messages (API key)"
+wire = "messages"
+base_url = "https://api.anthropic.com"
+chat_path = "/v1/messages"
+auth_scheme = "x-api-key"
+access_env = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]
+
+[headers]
+anthropic-version = "2023-06-01"

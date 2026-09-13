@@ -1,6 +1,7 @@
 //! SSE encode/decode for the three v1 dialects.
 
 mod chat;
+mod complete;
 mod gemini;
 mod messages;
 mod responses;
@@ -42,6 +43,7 @@ impl RawSse {
 
 #[cfg(feature = "proxy")]
 pub(crate) use chat::map_finish;
+pub use complete::decode_response;
 pub use sse::{MAX_SSE_PENDING, SseFrameReader};
 #[cfg(feature = "proxy")]
 pub(crate) use usage::from_chat;

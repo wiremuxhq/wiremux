@@ -274,7 +274,7 @@ fn unknown_profile_id_lists_catalog_and_path_hint() {
         include_shipped: true,
         include_user_config: false,
     };
-    let err = load_profile("anthropic", &opts).expect_err("typo id must miss");
+    let err = load_profile("anthropic-oath", &opts).expect_err("typo id must miss");
     let text = err.to_string();
     assert!(
         text.contains("anthropic-oauth"),

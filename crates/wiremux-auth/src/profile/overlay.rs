@@ -41,6 +41,7 @@ pub(crate) fn merge(earlier: RawProfile, later: RawProfile) -> RawProfile {
             header_merge.unwrap_or_default(),
         ),
         header_merge,
+        access_env: later.access_env.or(earlier.access_env),
         oauth: merge_oauth(earlier.oauth, later.oauth),
         fingerprint: merge_fingerprint(earlier.fingerprint, later.fingerprint),
         betas: rebuild_betas(values, header, beta_merge),

@@ -54,6 +54,8 @@ pub struct ResolvedProfile {
     pub http: Http,
     /// Optional OAuth pack.
     pub oauth: Option<OauthPack>,
+    /// Env names for a static key when `[oauth]` is absent. First non-empty wins.
+    pub access_env: Vec<String>,
     /// Optional fingerprint table.
     pub fingerprint: Option<Fingerprint>,
     /// Beta header list and merge policy.
