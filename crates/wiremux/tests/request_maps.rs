@@ -2804,3 +2804,33 @@ fn chat_encode_gpt_4o_does_not_use_max_completion_tokens() {
 fn chat_encode_o10_does_not_use_max_completion_tokens() {
     assert_chat_classic_max_tokens("o10");
 }
+
+#[test]
+fn chat_decode_reads_max_completion_tokens() {
+    let req = br#"{
+        "model": "o3-mini",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_completion_tokens": 64
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.max_tokens, Some(64));
+}
+
+#[test]
+fn chat_encode_decode_roundtrip_keeps_max_completion_tokens() {
+    let ir = chat_sampling_ir("o3-mini");
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let (decoded, _) = decode(Wire::ChatCompletions, &bytes).expect("decode");
+    assert_eq!(decoded.sampling.max_tokens, Some(64));
+}
+
+#[test]
+fn chat_decode_reads_max_tokens_for_classic_models() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 32
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.max_tokens, Some(32));
+}

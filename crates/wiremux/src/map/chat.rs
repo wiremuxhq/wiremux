@@ -147,7 +147,8 @@ fn decode_sampling(value: &Value) -> IrSampling {
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
-        max_tokens: u32_field(value, "max_tokens"),
+        max_tokens: u32_field(value, "max_completion_tokens")
+            .or_else(|| u32_field(value, "max_tokens")),
         stop: stop_values(value, &["stop"]),
         tool_choice: decode_tool_choice(value.get("tool_choice")),
         parallel_tool_calls: bool_field(value, "parallel_tool_calls"),
