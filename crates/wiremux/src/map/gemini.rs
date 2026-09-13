@@ -529,6 +529,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.parallel_tool_calls.is_some() {
         report.record("sampling.parallel_tool_calls", LossAction::Drop, "no slot");
     }
+    if !s.include.is_empty() {
+        report.record("sampling.include", LossAction::Drop, "no slot");
+    }
 }
 
 fn encode_tool_choice(choice: &IrToolChoice, body: &mut Value) {
