@@ -40,7 +40,11 @@ impl RawSse {
     }
 }
 
+#[cfg(feature = "proxy")]
+pub(crate) use chat::map_finish;
 pub use sse::{MAX_SSE_PENDING, SseFrameReader};
+#[cfg(feature = "proxy")]
+pub(crate) use usage::from_chat;
 
 /// Decode one SSE frame. `None` is a recognized no-op (ping, empty delta).
 ///
@@ -170,7 +174,8 @@ fn gemini_part_events(part: &Value) -> Vec<IrStreamEvent> {
         out.push(IrStreamEvent::ReasoningDelta {
             text: text.to_string(),
         });
-    } else if let Some(sig) = part
+    }
+    if let Some(sig) = part
         .get("thoughtSignature")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())

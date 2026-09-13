@@ -38,6 +38,8 @@ pub struct IrSampling {
     pub json_schema: Option<serde_json::Value>,
     /// Optional schema name (Responses `text.format.name` / Chat json_schema.name).
     pub json_schema_name: Option<String>,
+    /// Responses `include` extras (file_search results, etc.). Empty default.
+    pub include: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

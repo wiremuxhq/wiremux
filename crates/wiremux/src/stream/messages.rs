@@ -151,7 +151,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             "message_delta",
             json!({
                 "type": "message_delta",
-                "delta": { "stop_reason": reason, "stop_sequence": null }
+                "delta": { "stop_reason": encode_stop_reason(reason), "stop_sequence": null }
             }),
         ),
         IrStreamEvent::Done => ("message_stop", json!({ "type": "message_stop" })),
@@ -173,6 +173,13 @@ fn map_stop_reason(reason: &str) -> &str {
         "max_tokens" => "max_tokens",
         "tool_use" => "tool_calls",
         "end_turn" => "stop",
+        other => other,
+    }
+}
+
+fn encode_stop_reason(reason: &str) -> &str {
+    match reason {
+        "length" => "max_tokens",
         other => other,
     }
 }

@@ -1445,3 +1445,95 @@ fn responses_completed_failed_status_is_not_stop() {
         "usage on a failed completed body must stay, got {all:?}"
     );
 }
+
+#[test]
+fn messages_max_tokens_encodes_chat_length() {
+    let raw = RawSse {
+        event: Some("message_delta".into()),
+        data:
+            r#"{"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null}}"#
+                .into(),
+    };
+    let ev = decode_stream_event(Wire::Messages, &raw, &messages_profile())
+        .expect("decode Messages")
+        .expect("event");
+    assert!(
+        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "max_tokens"),
+        "Messages decode IR stays max_tokens, got {ev:?}"
+    );
+    let encoded = encode_stream_event(Wire::ChatCompletions, &ev).expect("encode Chat");
+    let json: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(
+        json.pointer("/choices/0/finish_reason")
+            .and_then(Value::as_str),
+        Some("length"),
+        "Chat encode must remap max_tokens to length, got {json}"
+    );
+}
+
+#[test]
+fn chat_length_encodes_messages_max_tokens() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode Chat")
+        .expect("event");
+    assert!(
+        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "length"),
+        "Chat decode IR stays length, got {ev:?}"
+    );
+    let encoded = encode_stream_event(Wire::Messages, &ev).expect("encode Messages");
+    let json: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(
+        json.pointer("/delta/stop_reason").and_then(Value::as_str),
+        Some("max_tokens"),
+        "Messages encode must remap length to max_tokens, got {json}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn chat_length_encodes_gemini_MAX_TOKENS() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode Chat")
+        .expect("event");
+    assert!(
+        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "length"),
+        "Chat decode IR stays length, got {ev:?}"
+    );
+    let encoded = encode_stream_event(Wire::Gemini, &ev).expect("encode Gemini");
+    let json: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(
+        json.pointer("/candidates/0/finishReason")
+            .and_then(Value::as_str),
+        Some("MAX_TOKENS"),
+        "Gemini encode must remap length to MAX_TOKENS, not STOP, got {json}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn gemini_thought_part_keeps_thoughtSignature() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"think","thoughtSignature":"sig-1"}]},"finishReason":"STOP"}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("fan-out");
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::ReasoningDelta { text } if text == "think")),
+        "thought text must stay, got {all:?}"
+    );
+    assert!(
+        all.iter().any(
+            |ev| matches!(ev, IrStreamEvent::ReasoningSignature { signature } if signature == "sig-1")
+        ),
+        "thoughtSignature must not drop beside thought text, got {all:?}"
+    );
+}

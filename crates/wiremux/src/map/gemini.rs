@@ -102,6 +102,17 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
                 data,
             });
         }
+        if part.get("fileData").is_some() {
+            text_parts.push(IrPart::Raw {
+                type_name: "fileData".into(),
+                raw: part.clone(),
+            });
+        } else if part.get("fileUri").is_some() {
+            text_parts.push(IrPart::Raw {
+                type_name: "fileUri".into(),
+                raw: part.clone(),
+            });
+        }
     }
     flush_parts(role, &mut text_parts, items);
 }
@@ -193,6 +204,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         max_reasoning_tokens: None,
         json_schema,
         json_schema_name: None,
+        include: Vec::new(),
     }
 }
 
@@ -420,12 +432,16 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                     "inlineData": { "mimeType": media_type, "data": data }
                 }));
             }
-            IrPart::Raw { .. } => {
-                report.record(
-                    "part.raw",
-                    LossAction::Drop,
-                    "raw part has no generateContent slot",
-                );
+            IrPart::Raw { raw, .. } => {
+                if raw.get("fileData").is_some() || raw.get("fileUri").is_some() {
+                    out.push(raw.clone());
+                } else {
+                    report.record(
+                        "part.raw",
+                        LossAction::Drop,
+                        "raw part has no generateContent slot",
+                    );
+                }
             }
             IrPart::ImageUrl(url) => {
                 if let Some(rest) = url.strip_prefix("data:")

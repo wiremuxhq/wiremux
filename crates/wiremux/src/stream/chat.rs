@@ -174,11 +174,18 @@ fn flatten_content(content: &Value) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
-fn map_finish(reason: &str) -> &str {
+pub(crate) fn map_finish(reason: &str) -> &str {
     match reason {
         "eos" => "stop",
         "function_call" => "tool_calls",
         "content_filter" | "content-filter" => "content_filter",
+        other => other,
+    }
+}
+
+fn encode_finish(reason: &str) -> &str {
+    match reason {
+        "max_tokens" => "length",
         other => other,
     }
 }
@@ -266,7 +273,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             *reasoning_tokens,
         ),
         IrStreamEvent::FinishReason { reason } => json!({
-            "choices": [{ "index": 0, "delta": {}, "finish_reason": reason }]
+            "choices": [{ "index": 0, "delta": {}, "finish_reason": encode_finish(reason) }]
         }),
         IrStreamEvent::Done => {
             return Ok(RawSse {

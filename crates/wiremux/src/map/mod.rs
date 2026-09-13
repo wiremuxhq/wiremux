@@ -202,6 +202,36 @@ fn bool_field(value: &Value, key: &str) -> Option<bool> {
     value.get(key)?.as_bool()
 }
 
+fn is_gemini_file_raw(raw: &Value) -> bool {
+    raw.get("fileData").is_some() || raw.get("fileUri").is_some()
+}
+
+fn raw_type_name(raw: &Value) -> Option<&str> {
+    raw.get("type")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+}
+
+/// Messages-shaped Raw has a nonempty `type` and no Gemini file keys.
+fn messages_raw_passthrough(raw: &Value) -> bool {
+    raw_type_name(raw).is_some() && !is_gemini_file_raw(raw)
+}
+
+/// Responses-shaped Raw has a nonempty `type` and no Gemini file keys.
+fn responses_raw_passthrough(raw: &Value) -> bool {
+    messages_raw_passthrough(raw)
+}
+
+fn off_dialect_raw_path(raw: &Value) -> &'static str {
+    if raw.get("fileData").is_some() {
+        "item.part.fileData"
+    } else if raw.get("fileUri").is_some() {
+        "item.part.fileUri"
+    } else {
+        "item.part.raw"
+    }
+}
+
 fn stop_values(value: &Value, keys: &[&str]) -> Vec<String> {
     for key in keys {
         let Some(raw) = value.get(*key) else {
