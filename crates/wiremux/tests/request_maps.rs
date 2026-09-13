@@ -809,6 +809,19 @@ fn replay_thinking_and_signature_in_assistant_json() {
         }]
     }"#;
     let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::Assistant { parts } if parts.iter().any(|part| matches!(
+                part,
+                IrPart::Thinking { text, signature }
+                    if text == "I should greet them"
+                        && signature.as_deref() == Some("sig_abc")
+            ))
+        )),
+        "decode must produce IrPart::Thinking {{ text: \"I should greet them\", signature: Some(\"sig_abc\") }}, got {:?}",
+        ir.items
+    );
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let content = body
@@ -856,6 +869,16 @@ fn unsigned_thinking_is_not_replayed_on_messages() {
             .iter()
             .all(|block| block.get("type").and_then(Value::as_str) != Some("thinking")),
         "unsigned thinking must not be replayed, got {body}"
+    );
+    assert!(
+        !body.to_string().contains("scratch"),
+        "unsigned thinking text must not leak onto the wire, got {body}"
+    );
+    assert!(
+        content
+            .iter()
+            .all(|block| block.get("text").and_then(Value::as_str) != Some("scratch")),
+        "unsigned thinking must not leak as a text block, got {body}"
     );
     assert!(
         content
@@ -2169,6 +2192,11 @@ fn messages_encode_thinking_budget_wins_when_max_reasoning_unset() {
     });
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/thinking/type").and_then(Value::as_str),
+        Some("enabled"),
+        "thinking_budget-only encode must write type enabled, got {body}"
+    );
     assert_eq!(
         body.pointer("/thinking/budget_tokens"),
         Some(&serde_json::json!(24576)),
