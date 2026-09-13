@@ -486,8 +486,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             "chat parallel_tool_calls",
         );
     }
-    if s.store.is_some() {
-        report.record("sampling.store", LossAction::Drop, "no slot");
+    if let Some(store) = s.store {
+        body["store"] = json!(store);
+        report.record("sampling.store", LossAction::Preserve, "chat store");
     }
     if s.previous_response_id.is_some() {
         report.record(

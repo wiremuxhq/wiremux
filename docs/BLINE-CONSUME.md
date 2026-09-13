@@ -135,7 +135,11 @@ Host thinking slots and `LossReport` (adapters and `bline diagnose`):
 | Signed `IrPart::Thinking` | Replay `thinking` + `signature` | `thought` + `thoughtSignature` | Peel to `reasoning` | Drop |
 | Unsigned `IrPart::Thinking` | Drop (not on wire) | `thought` (no signature) | Drop | Drop |
 | `max_reasoning_tokens` | `thinking.budget_tokens` | `thinkingBudget` when `thinking_budget` unset | Drop | Drop |
-| `include_thoughts` | `thinking.type` | `includeThoughts` | Drop | Drop |
+| `include_thoughts` | `thinking.type` | `includeThoughts` | `reasoning.summary=auto` | Drop |
+| `reasoning_effort` | Budget defaults only | `thinkingLevel` | `reasoning.effort` | `reasoning_effort` |
+
+Chat Completions and Responses emit `store`. OpenRouter
+`forbidden_body_fields` still strips it. Messages and Gemini have no slot.
 
 Diagnose should print `LossReport` for `part.thinking` and
 `sampling.max_reasoning_tokens`.

@@ -21,13 +21,14 @@ pub struct IrSampling {
     pub stop: Vec<String>,
     pub tool_choice: IrToolChoice,
     pub parallel_tool_calls: Option<bool>,
+    /// Chat Completions and Responses `store`. Messages and Gemini drop.
     pub store: Option<bool>,
     pub previous_response_id: Option<String>,
     pub cache: IrCache,
     /// Client asked for SSE. Grok TUI always sets this.
     pub stream: Option<bool>,
-    /// Gemini `thinkingConfig.includeThoughts`; Messages `thinking.type`.
-    /// Chat Completions and Responses have no emit slot.
+    /// Gemini `thinkingConfig.includeThoughts`; Messages `thinking.type`;
+    /// Responses `reasoning.summary` (`auto` when true). Chat Completions drops.
     pub include_thoughts: Option<bool>,
     /// Gemini `thinkingConfig.thinkingBudget` (decode and encode).
     /// Messages encode emits this as `thinking.budget_tokens` when
@@ -35,6 +36,8 @@ pub struct IrSampling {
     /// and writes `budget_tokens` into `max_reasoning_tokens`.
     pub thinking_budget: Option<u32>,
     /// Dialect effort string (`low`, `high`, `xhigh`). Not a host enum.
+    /// Gemini encode emits `thinkingConfig.thinkingLevel` (lowercase;
+    /// `xhigh` / `x-high` degrade to `high`).
     pub reasoning_effort: Option<String>,
     /// Host cap on reasoning tokens.
     ///
