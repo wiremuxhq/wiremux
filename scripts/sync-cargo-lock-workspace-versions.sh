@@ -3,7 +3,7 @@
 # bumps crate Cargo.toml files. Does not re-resolve the whole graph.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${SYNC_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$ROOT"
 
 echo "PLAN: refresh workspace versions in Cargo.lock"

@@ -58,11 +58,15 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertNotRegex(text, r"cargo (test|nextest|clippy|fuzz)")
         self.assertIn("sync-release-pr-versions:", text)
         self.assertIn("scripts/sync-cargo-lock-workspace-versions.sh", text)
+        self.assertIn("path: publisher", text)
+        self.assertIn("path: release", text)
+        self.assertIn("SYNC_ROOT", text)
         self.assertIn("autorelease: pending", text)
         self.assertNotIn("needs.release-please.outputs.pr != ''", text)
         script = (ROOT / "scripts" / "sync-cargo-lock-workspace-versions.sh").read_text(
             encoding="utf-8"
         )
+        self.assertIn('ROOT="${SYNC_ROOT:-', script)
         self.assertIn("cargo check -p wiremux", script)
         self.assertNotIn("cargo generate-lockfile", script)
 
