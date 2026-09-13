@@ -23,6 +23,15 @@ impl StaticToken {
     pub fn new(key: impl Into<String>) -> Self {
         Self { key: key.into() }
     }
+
+    /// Missing or whitespace-only env is an error, not an empty key.
+    pub fn from_env(var: &str) -> Result<Self, AuthError> {
+        let value = std::env::var(var).map_err(|_| AuthError::MissingField(var.to_string()))?;
+        if value.trim().is_empty() {
+            return Err(AuthError::MissingField(var.to_string()));
+        }
+        Ok(Self::new(value))
+    }
 }
 
 impl TokenProvider for StaticToken {
@@ -34,6 +43,7 @@ impl TokenProvider for StaticToken {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::isolated_home::IsolatedHome;
 
     #[tokio::test]
     async fn static_token_returns_key() {
@@ -54,5 +64,47 @@ mod tests {
         let debug = format!("{provider:?}");
         assert!(!debug.contains("sk-secret"));
         assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[tokio::test]
+    async fn from_env_reads_set_var() {
+        let home = IsolatedHome::with_extra_envs(&["WIREMUX_TEST_STATIC_KEY"]);
+        home.set_env("WIREMUX_TEST_STATIC_KEY", "sk-static-issue59");
+        let token = StaticToken::from_env("WIREMUX_TEST_STATIC_KEY").expect("set key");
+        assert_eq!(
+            token.get_token().await.expect("static key"),
+            "sk-static-issue59"
+        );
+        let debug = format!("{token:?}");
+        assert!(debug.contains("[REDACTED]"), "{debug}");
+        assert!(!debug.contains("sk-static-issue59"), "{debug}");
+        let _ = home;
+    }
+
+    #[test]
+    fn from_env_missing_var_is_error() {
+        let home = IsolatedHome::with_extra_envs(&["WIREMUX_TEST_STATIC_KEY"]);
+        let err = StaticToken::from_env("WIREMUX_TEST_STATIC_KEY").expect_err("missing");
+        match err {
+            AuthError::MissingField(name) => {
+                assert_eq!(name, "WIREMUX_TEST_STATIC_KEY");
+            }
+            other => panic!("expected MissingField, got {other}"),
+        }
+        let _ = home;
+    }
+
+    #[test]
+    fn from_env_whitespace_only_is_error() {
+        let home = IsolatedHome::with_extra_envs(&["WIREMUX_TEST_STATIC_KEY"]);
+        home.set_env("WIREMUX_TEST_STATIC_KEY", "   \t");
+        let err = StaticToken::from_env("WIREMUX_TEST_STATIC_KEY").expect_err("whitespace");
+        match err {
+            AuthError::MissingField(name) => {
+                assert_eq!(name, "WIREMUX_TEST_STATIC_KEY");
+            }
+            other => panic!("expected MissingField, got {other}"),
+        }
+        let _ = home;
     }
 }

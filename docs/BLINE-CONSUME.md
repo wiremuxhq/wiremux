@@ -151,7 +151,10 @@ once it pins a SHA that exports them. That is a Bline PR. The APIs
 must exist here first.
 
 Canact consume of `wiremux-auth` is a later canact PR, not a wiremux
-PR and not part of this spike.
+PR and not part of this spike. A refresh-only host (canact or
+otherwise) should call `token_for_profile("anthropic-oauth")` or keep
+`provider_for_profile` for `mark_stale` / `wake`. Do not wrap host
+types here.
 
 ## Out of scope
 

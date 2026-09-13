@@ -425,16 +425,44 @@ fn encode_tool(tool: &PreparedTool) -> Value {
     }
 }
 
+fn uses_max_completion_tokens(model: &str) -> bool {
+    let id = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    id == "o1"
+        || id.starts_with("o1-")
+        || id == "o3"
+        || id.starts_with("o3-")
+        || id == "o4"
+        || id.starts_with("o4-")
+        || id.starts_with("gpt-5")
+}
+
 fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     let s = &ir.sampling;
+    let max_completion = uses_max_completion_tokens(&ir.model);
     if let Some(t) = s.temperature {
-        body["temperature"] = json!(t);
+        if max_completion {
+            report.record(
+                "sampling.temperature",
+                LossAction::Drop,
+                "o-series and gpt-5 Chat Completions reject temperature",
+            );
+        } else {
+            body["temperature"] = json!(t);
+        }
     }
     if let Some(p) = s.top_p {
         body["top_p"] = json!(p);
     }
     if let Some(max) = s.max_tokens {
-        body["max_tokens"] = json!(max);
+        if max_completion {
+            body["max_completion_tokens"] = json!(max);
+        } else {
+            body["max_tokens"] = json!(max);
+        }
     }
     if !s.stop.is_empty() {
         body["stop"] = json!(s.stop);

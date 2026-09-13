@@ -140,10 +140,195 @@ impl From<AwsStsTokenProvider> for AnyTokenProvider {
     }
 }
 
+/// Default LoadOptions (shipped + user overlay).
+pub async fn token_for_profile(id: &str) -> Result<String, AuthError> {
+    token_for_profile_opts(id, &LoadOptions::default()).await
+}
+
+/// Same, with host LoadOptions (tests, IsolatedHome, no shipped).
+pub async fn token_for_profile_opts(id: &str, opts: &LoadOptions<'_>) -> Result<String, AuthError> {
+    TokenProvider::get_token(&provider_for_profile_opts(id, opts)?).await
+}
+
+/// Same load path, but keep the provider so the host can mark_stale / wake.
+pub fn provider_for_profile(id: &str) -> Result<AnyTokenProvider, AuthError> {
+    provider_for_profile_opts(id, &LoadOptions::default())
+}
+
+pub fn provider_for_profile_opts(
+    id: &str,
+    opts: &LoadOptions<'_>,
+) -> Result<AnyTokenProvider, AuthError> {
+    let profile = load_profile(id, opts)?;
+    provider_from_profile(&profile)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::isolated_home::{IsolatedHome, PlantCredentials};
+
+    const PLANTED_ACCESS: &str = "sk-ant-oat01-issue59";
+
     #[test]
     fn version_matches_package() {
         assert_eq!(super::VERSION, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn token_for_profile_returns_planted_claude_access() {
+        let home = IsolatedHome::new();
+        home.plant_credentials(PlantCredentials::Claude {
+            access: PLANTED_ACCESS,
+            refresh: Some("rt"),
+            expires_at_ms: Some(4_000_000_000_000),
+        });
+        let token = token_for_profile("anthropic-oauth")
+            .await
+            .expect("planted claude access");
+        assert_eq!(token, PLANTED_ACCESS);
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn token_for_profile_opts_without_catalog_is_not_found() {
+        let home = IsolatedHome::new();
+        let err = token_for_profile_opts(
+            "anthropic-oauth",
+            &LoadOptions {
+                include_shipped: false,
+                include_user_config: false,
+                ..LoadOptions::default()
+            },
+        )
+        .await
+        .expect_err("empty catalog must fail closed");
+        match &err {
+            AuthError::TokenProvider(msg) => {
+                assert!(
+                    msg.contains("not found"),
+                    "TokenProvider Display must include not found, got {msg}"
+                );
+            }
+            other => panic!("expected AuthError::TokenProvider, got {other}"),
+        }
+        assert_ne!(err.to_string(), "");
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn provider_for_profile_clone_returns_planted_access() {
+        let home = IsolatedHome::new();
+        home.plant_credentials(PlantCredentials::Claude {
+            access: PLANTED_ACCESS,
+            refresh: Some("rt"),
+            expires_at_ms: Some(4_000_000_000_000),
+        });
+        let provider = provider_for_profile("anthropic-oauth").expect("provider");
+        let cloned = provider.clone();
+        assert_eq!(
+            cloned.get_token().await.expect("clone get_token"),
+            PLANTED_ACCESS
+        );
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn provider_for_profile_opts_mark_stale_refreshes_via_mock() {
+        let home = IsolatedHome::new();
+        let creds = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth.json",
+            document: serde_json::json!({
+                "tokens": {
+                    "access": "first-59",
+                    "refresh": "rt-59",
+                    "expiry_unix": 4_102_444_800_i64
+                }
+            }),
+        });
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"refreshed-59","refresh_token":"rt2","expires_in":3600}"#,
+        );
+        let dir = home.path().join("profiles-59");
+        std::fs::create_dir_all(&dir).expect("mkdir extra profiles");
+        let creds_unix = creds.to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            dir.join("issue59-mock.toml"),
+            format!(
+                r#"
+schema_version = 1
+id = "issue59-mock"
+[oauth]
+token_url = "{url}"
+client_id = "issue59-client"
+token_request_format = "form"
+creds_format = "json-pointer"
+creds_path = "{creds_unix}"
+access_token_ptr = "/tokens/access"
+refresh_token_ptr = "/tokens/refresh"
+expires_ptr = "/tokens/expiry_unix"
+expires_unit = "s"
+login = "none"
+[oauth.token_response]
+access_token_ptr = "/access_token"
+refresh_token_ptr = "/refresh_token"
+expires_ptr = "/expires_in"
+expires_unit = "s"
+"#
+            ),
+        )
+        .expect("write mock profile");
+        let opts = LoadOptions {
+            include_shipped: false,
+            include_user_config: false,
+            extra_profile_dirs: vec![dir],
+            ..LoadOptions::default()
+        };
+        let provider = provider_for_profile_opts("issue59-mock", &opts).expect("provider");
+        assert_eq!(provider.get_token().await.expect("cached"), "first-59");
+        provider.mark_stale();
+        assert_eq!(
+            provider.get_token().await.expect("mock refresh"),
+            "refreshed-59"
+        );
+        let _ = handle.join();
+        let _ = home;
+    }
+
+    fn spawn_http_server(status: u16, body: &str) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        let addr = listener.local_addr().expect("local_addr");
+        let body = body.to_owned();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            loop {
+                match stream.read(&mut tmp) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&tmp[..n]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let req = String::from_utf8_lossy(&buf).into_owned();
+            let resp = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            req
+        });
+        (format!("http://{addr}/oauth/token"), handle)
     }
 }
