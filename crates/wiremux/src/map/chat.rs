@@ -147,7 +147,8 @@ fn decode_sampling(value: &Value) -> IrSampling {
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
-        max_tokens: u32_field(value, "max_tokens"),
+        max_tokens: u32_field(value, "max_completion_tokens")
+            .or_else(|| u32_field(value, "max_tokens")),
         stop: stop_values(value, &["stop"]),
         tool_choice: decode_tool_choice(value.get("tool_choice")),
         parallel_tool_calls: bool_field(value, "parallel_tool_calls"),
@@ -455,7 +456,15 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         }
     }
     if let Some(p) = s.top_p {
-        body["top_p"] = json!(p);
+        if max_completion {
+            report.record(
+                "sampling.top_p",
+                LossAction::Drop,
+                "o-series and gpt-5 Chat Completions reject top_p",
+            );
+        } else {
+            body["top_p"] = json!(p);
+        }
     }
     if let Some(max) = s.max_tokens {
         if max_completion {

@@ -140,7 +140,10 @@ impl From<AwsStsTokenProvider> for AnyTokenProvider {
     }
 }
 
-/// Default LoadOptions (shipped + user overlay).
+/// Load a catalog id (example `anthropic-oauth`) and return one access token.
+///
+/// This helper does not accept a file path. Use [`load_profile_from_cli`] then
+/// [`provider_from_profile`] for a `.toml` / `.json` profile.
 pub async fn token_for_profile(id: &str) -> Result<String, AuthError> {
     token_for_profile_opts(id, &LoadOptions::default()).await
 }
@@ -150,7 +153,9 @@ pub async fn token_for_profile_opts(id: &str, opts: &LoadOptions<'_>) -> Result<
     TokenProvider::get_token(&provider_for_profile_opts(id, opts)?).await
 }
 
-/// Same load path, but keep the provider so the host can mark_stale / wake.
+/// Same load path as [`token_for_profile`], but keep the provider so the host
+/// can `mark_stale` / `wake`. Catalog id only; paths use
+/// [`load_profile_from_cli`] then [`provider_from_profile`].
 pub fn provider_for_profile(id: &str) -> Result<AnyTokenProvider, AuthError> {
     provider_for_profile_opts(id, &LoadOptions::default())
 }
@@ -159,8 +164,36 @@ pub fn provider_for_profile_opts(
     id: &str,
     opts: &LoadOptions<'_>,
 ) -> Result<AnyTokenProvider, AuthError> {
-    let profile = load_profile(id, opts)?;
+    if looks_like_profile_path(id) {
+        return Err(AuthError::TokenProvider(
+            "token_for_profile / provider_for_profile take a catalog id (example `anthropic-oauth`); \
+             a file path should go through load_profile_from_cli then provider_from_profile"
+                .into(),
+        ));
+    }
+    let profile = load_profile(id, opts).map_err(|err| match err {
+        ProfileError::NotFound { id, known } => {
+            let known = if known.is_empty() {
+                "(none)".to_string()
+            } else {
+                known.join(", ")
+            };
+            AuthError::TokenProvider(format!(
+                "profile `{id}` not found (known: {known}); \
+                 token_for_profile / provider_for_profile take a catalog id (example `anthropic-oauth`)"
+            ))
+        }
+        other => other.into(),
+    })?;
     provider_from_profile(&profile)
+}
+
+fn looks_like_profile_path(id: &str) -> bool {
+    if id.contains('/') || id.contains('\\') {
+        return true;
+    }
+    let lower = id.to_ascii_lowercase();
+    lower.ends_with(".toml") || lower.ends_with(".json")
 }
 
 #[cfg(test)]
@@ -203,6 +236,7 @@ mod tests {
         )
         .await
         .expect_err("empty catalog must fail closed");
+        let display = err.to_string();
         match &err {
             AuthError::TokenProvider(msg) => {
                 assert!(
@@ -212,7 +246,38 @@ mod tests {
             }
             other => panic!("expected AuthError::TokenProvider, got {other}"),
         }
-        assert_ne!(err.to_string(), "");
+        assert!(
+            display.contains("not found"),
+            "Display must include not found, got {display}"
+        );
+        assert!(
+            display.contains("catalog id") || display.contains("anthropic-oauth"),
+            "Display must name catalog id or the anthropic-oauth example, got {display}"
+        );
+        assert!(
+            !display.contains("path also works"),
+            "typo catalog id must not inherit the CLI path hint, got {display}"
+        );
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn token_for_profile_path_shaped_id_is_catalog_id_error() {
+        let home = IsolatedHome::new();
+        for id in ["./mine.toml", "/tmp/mine.toml"] {
+            let err = token_for_profile(id)
+                .await
+                .expect_err("path-shaped id must not load as a catalog entry");
+            let display = err.to_string();
+            assert!(
+                display.contains("catalog id") || display.contains("load_profile_from_cli"),
+                "path-shaped `{id}` must name catalog id or load_profile_from_cli, got {display}"
+            );
+            assert!(
+                !display.contains("path also works"),
+                "path-shaped `{id}` must not inherit the CLI path hint, got {display}"
+            );
+        }
         let _ = home;
     }
 

@@ -26,9 +26,10 @@ impl StaticToken {
 
     /// Missing or whitespace-only env is an error, not an empty key.
     pub fn from_env(var: &str) -> Result<Self, AuthError> {
-        let value = std::env::var(var).map_err(|_| AuthError::MissingField(var.to_string()))?;
+        let missing = || AuthError::MissingField(format!("env `{var}`"));
+        let value = std::env::var(var).map_err(|_| missing())?;
         if value.trim().is_empty() {
-            return Err(AuthError::MissingField(var.to_string()));
+            return Err(missing());
         }
         Ok(Self::new(value))
     }
@@ -87,7 +88,10 @@ mod tests {
         let err = StaticToken::from_env("WIREMUX_TEST_STATIC_KEY").expect_err("missing");
         match err {
             AuthError::MissingField(name) => {
-                assert_eq!(name, "WIREMUX_TEST_STATIC_KEY");
+                assert!(
+                    name.contains("WIREMUX_TEST_STATIC_KEY") && name.contains("env"),
+                    "MissingField must name the env var, got {name}"
+                );
             }
             other => panic!("expected MissingField, got {other}"),
         }
@@ -101,7 +105,10 @@ mod tests {
         let err = StaticToken::from_env("WIREMUX_TEST_STATIC_KEY").expect_err("whitespace");
         match err {
             AuthError::MissingField(name) => {
-                assert_eq!(name, "WIREMUX_TEST_STATIC_KEY");
+                assert!(
+                    name.contains("WIREMUX_TEST_STATIC_KEY") && name.contains("env"),
+                    "MissingField must name the env var, got {name}"
+                );
             }
             other => panic!("expected MissingField, got {other}"),
         }
