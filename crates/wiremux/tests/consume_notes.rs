@@ -50,4 +50,11 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         notes.contains("min_cacheable_tokens"),
         "cache floor belongs on IrCache"
     );
+    assert!(
+        notes.contains("Signed `IrPart::Thinking`")
+            && notes.contains("part.thinking")
+            && notes.contains("sampling.max_reasoning_tokens")
+            && notes.contains("thinking.budget_tokens"),
+        "thinking / LossReport table must exist for adapters"
+    );
 }

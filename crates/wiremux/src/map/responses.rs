@@ -357,7 +357,7 @@ fn encode_items(
                 "content": encode_parts(parts, true, report),
             })),
             IrItem::Assistant { parts } => {
-                let rest = peel_signed_thinking(parts, &mut input);
+                let rest = peel_signed_thinking(parts, &mut input, report);
                 if !rest.is_empty() || !parts.iter().any(is_signed_thinking) {
                     input.push(json!({
                         "type": "message",
@@ -455,7 +455,11 @@ fn is_signed_thinking(part: &IrPart) -> bool {
     )
 }
 
-fn peel_signed_thinking(parts: &[IrPart], input: &mut Vec<Value>) -> Vec<IrPart> {
+fn peel_signed_thinking(
+    parts: &[IrPart],
+    input: &mut Vec<Value>,
+    report: &mut LossReport,
+) -> Vec<IrPart> {
     let mut rest = Vec::with_capacity(parts.len());
     for part in parts {
         match part {
@@ -468,6 +472,11 @@ fn peel_signed_thinking(parts: &[IrPart], input: &mut Vec<Value>) -> Vec<IrPart>
                     Some(text.as_str())
                 };
                 input.push(encode_reasoning(signature.as_deref(), summary, None));
+                report.record(
+                    "part.thinking",
+                    LossAction::Preserve,
+                    "signed thinking remapped to reasoning",
+                );
             }
             other => rest.push(other.clone()),
         }

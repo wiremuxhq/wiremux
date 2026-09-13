@@ -1033,6 +1033,13 @@ fn replay_thinking_signed_encodes_as_responses_reasoning() {
         !loss_dropped(&report, "part.thinking"),
         "signed thinking must not Drop, got {report:?}"
     );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| { event.path == "part.thinking" && event.action == LossAction::Preserve }),
+        "signed thinking remapped to reasoning must Preserve, got {report:?}"
+    );
 }
 
 #[test]
@@ -2311,8 +2318,13 @@ fn gemini_thinking_config_survives_reasoning_sampling_fields() {
         "Gemini effort drop missing, got {report:?}"
     );
     assert!(
-        loss_dropped(&report, "sampling.max_reasoning_tokens"),
-        "Gemini max drop missing, got {report:?}"
+        report.events.iter().any(|event| {
+            event.path == "sampling.max_reasoning_tokens"
+                && event.action == LossAction::Drop
+                && event.detail.contains("sibling")
+                && !event.detail.contains("no slot")
+        }),
+        "thinking_budget sibling win must not say no slot, got {report:?}"
     );
 }
 
