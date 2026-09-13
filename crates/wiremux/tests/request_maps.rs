@@ -3145,3 +3145,27 @@ fn responses_include_default_still_writes_encrypted_reasoning() {
         "empty include must still write encrypted reasoning, got {body}"
     );
 }
+
+#[test]
+fn sampling_include_drops_off_responses() {
+    let ir = user_ir(IrSampling {
+        include: vec!["file_search_call.results".into()],
+        ..IrSampling::default()
+    });
+    for (wire, profile) in [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Messages, messages_profile()),
+        (Wire::Gemini, gemini_profile()),
+    ] {
+        let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert!(
+            body.get("include").is_none(),
+            "{wire:?} must not write include, got {body}"
+        );
+        assert!(
+            loss_dropped(&report, "sampling.include"),
+            "{wire:?} include drop missing, got {report:?}"
+        );
+    }
+}

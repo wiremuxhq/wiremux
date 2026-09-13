@@ -975,6 +975,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.include_thoughts.is_some() {
         report.record("sampling.include_thoughts", LossAction::Drop, "no slot");
     }
+    if !s.include.is_empty() {
+        report.record("sampling.include", LossAction::Drop, "no slot");
+    }
     if s.thinking_budget.is_some() {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
     }
