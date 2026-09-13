@@ -220,6 +220,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     if messages_source_has_json_schema(value) {
         report.record("sampling.json_schema", LossAction::Drop, "no slot");
     }
+    let (include_thoughts, max_reasoning_tokens) = decode_thinking(value);
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
@@ -231,13 +232,24 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         previous_response_id: str_field(value, "previous_response_id"),
         cache: IrCache::default(),
         stream: bool_field(value, "stream"),
-        include_thoughts: None,
+        include_thoughts,
         thinking_budget: None,
         reasoning_effort: None,
-        max_reasoning_tokens: None,
+        max_reasoning_tokens,
         json_schema: None,
         json_schema_name: None,
         include: Vec::new(),
+    }
+}
+
+fn decode_thinking(value: &Value) -> (Option<bool>, Option<u32>) {
+    let Some(thinking) = value.get("thinking") else {
+        return (None, None);
+    };
+    match thinking.get("type").and_then(Value::as_str) {
+        Some("disabled") => (Some(false), None),
+        Some("enabled") => (Some(true), u32_field(thinking, "budget_tokens")),
+        _ => (None, None),
     }
 }
 
@@ -963,26 +975,129 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if let Some(stream) = s.stream {
         body["stream"] = json!(stream);
     }
-    if s.reasoning_effort
-        .as_deref()
-        .is_some_and(|s| !s.trim().is_empty())
-    {
-        report.record("sampling.reasoning_effort", LossAction::Drop, "no slot");
-    }
-    if s.max_reasoning_tokens.is_some() {
-        report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
-    }
-    if s.include_thoughts.is_some() {
-        report.record("sampling.include_thoughts", LossAction::Drop, "no slot");
-    }
+    encode_thinking(s, body, report);
     if !s.include.is_empty() {
         report.record("sampling.include", LossAction::Drop, "no slot");
     }
-    if s.thinking_budget.is_some() {
-        report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
-    }
     if s.json_schema.is_some() {
         report.record("sampling.json_schema", LossAction::Drop, "no slot");
+    }
+}
+
+/// Extra completion tokens when `max_tokens` must exceed `budget_tokens`.
+const MESSAGES_DEFAULT_COMPLETION_TOKENS: u32 = 4096;
+const MESSAGES_DEFAULT_THINKING_BUDGET: u32 = 10240;
+
+fn encode_thinking(s: &IrSampling, body: &mut Value, report: &mut LossReport) {
+    let effort = s
+        .reasoning_effort
+        .as_deref()
+        .filter(|effort| !effort.trim().is_empty());
+    if s.include_thoughts == Some(false) {
+        body["thinking"] = json!({ "type": "disabled" });
+        report.record(
+            "sampling.include_thoughts",
+            LossAction::Preserve,
+            "messages thinking",
+        );
+        if effort.is_some() {
+            report.record(
+                "sampling.reasoning_effort",
+                LossAction::Drop,
+                "thinking disabled",
+            );
+        }
+        if s.max_reasoning_tokens.is_some() {
+            report.record(
+                "sampling.max_reasoning_tokens",
+                LossAction::Drop,
+                "thinking disabled",
+            );
+        }
+        if s.thinking_budget.is_some() {
+            report.record(
+                "sampling.thinking_budget",
+                LossAction::Drop,
+                "thinking disabled",
+            );
+        }
+        return;
+    }
+
+    let want_enable = s.include_thoughts == Some(true)
+        || effort.is_some()
+        || s.max_reasoning_tokens.is_some_and(|n| n > 0)
+        || s.thinking_budget.is_some_and(|n| n > 0);
+    if !want_enable {
+        return;
+    }
+
+    let budget = s
+        .max_reasoning_tokens
+        .filter(|&n| n > 0)
+        .or(s.thinking_budget.filter(|&n| n > 0))
+        .unwrap_or_else(|| {
+            effort
+                .map(messages_effort_budget)
+                .unwrap_or(MESSAGES_DEFAULT_THINKING_BUDGET)
+        });
+    body["thinking"] = json!({
+        "type": "enabled",
+        "budget_tokens": budget,
+    });
+    if s.include_thoughts == Some(true) {
+        report.record(
+            "sampling.include_thoughts",
+            LossAction::Preserve,
+            "messages thinking",
+        );
+    }
+    if s.max_reasoning_tokens.is_some_and(|n| n > 0) {
+        report.record(
+            "sampling.max_reasoning_tokens",
+            LossAction::Preserve,
+            "messages thinking.budget_tokens",
+        );
+        if s.thinking_budget.is_some_and(|n| n > 0 && n != budget) {
+            report.record(
+                "sampling.thinking_budget",
+                LossAction::Degrade,
+                "max_reasoning_tokens wins budget_tokens",
+            );
+        }
+    } else if s.thinking_budget.is_some_and(|n| n > 0) {
+        report.record(
+            "sampling.thinking_budget",
+            LossAction::Preserve,
+            "messages thinking.budget_tokens",
+        );
+    }
+    if effort.is_some() {
+        report.record(
+            "sampling.reasoning_effort",
+            LossAction::Preserve,
+            "messages thinking",
+        );
+    }
+
+    let current = body.get("max_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
+    if current <= budget {
+        let raised = budget.saturating_add(MESSAGES_DEFAULT_COMPLETION_TOKENS);
+        body["max_tokens"] = json!(raised);
+        report.record(
+            "sampling.max_tokens",
+            LossAction::Preserve,
+            "raised above thinking.budget_tokens",
+        );
+    }
+}
+
+fn messages_effort_budget(effort: &str) -> u32 {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "low" => 4096,
+        "high" => 32768,
+        "xhigh" | "x-high" => 65536,
+        _ => MESSAGES_DEFAULT_THINKING_BUDGET,
     }
 }
 
