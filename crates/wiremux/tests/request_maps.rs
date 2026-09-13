@@ -1004,6 +1004,38 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
 }
 
 #[test]
+fn replay_thinking_signed_encodes_as_responses_reasoning() {
+    let req = br#"{
+        "model": "claude-opus-4-6",
+        "messages": [{
+            "role": "assistant",
+            "content": [
+                { "type": "thinking", "thinking": "I should greet them", "signature": "sig_abc" },
+                { "type": "text", "text": "Hello" }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let input = body
+        .get("input")
+        .and_then(Value::as_array)
+        .expect("Responses input");
+    assert!(
+        input.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("reasoning")
+                && item.get("encrypted_content").and_then(Value::as_str) == Some("sig_abc")
+        }),
+        "signed thinking must encode as a sibling reasoning item, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "part.thinking"),
+        "signed thinking must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn chat_stream_true_requests_include_usage() {
     let req = br#"{
         "model": "grok-4",
@@ -2281,6 +2313,30 @@ fn gemini_thinking_config_survives_reasoning_sampling_fields() {
     assert!(
         loss_dropped(&report, "sampling.max_reasoning_tokens"),
         "Gemini max drop missing, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_thinking_budget_from_messages_max_reasoning_tokens() {
+    let req = br#"{
+        "thinking": {"type": "enabled", "budget_tokens": 2048},
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/thinkingConfig/thinkingBudget"),
+        Some(&serde_json::json!(2048)),
+        "Messages budget_tokens must encode as Gemini thinkingBudget, got {body}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "sampling.max_reasoning_tokens"
+                && event.action == LossAction::Drop
+                && event.detail.contains("no slot")
+        }),
+        "max_reasoning_tokens used as thinkingBudget must not Drop as no slot, got {report:?}"
     );
 }
 
