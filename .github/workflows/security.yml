@@ -97,9 +97,14 @@ jobs:
         run: |
           set -euo pipefail
           ver=8.24.3
+          sha=9991e0b2903da4c9fd89366deaef22fcdd6695f197b03d05b8b6e9ae78a7
           dest="${HOME}/.local/bin"
           mkdir -p "$dest"
+          archive="$(mktemp)"
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" \
-            | tar xz -C "$dest" gitleaks
+            -o "$archive"
+          echo "${sha}  ${archive}" | sha256sum -c -
+          tar xz -C "$dest" -f "$archive" gitleaks
+          rm -f "$archive"
           echo "$dest" >> "$GITHUB_PATH"
       - run: gitleaks detect --source . --exit-code 1
