@@ -78,7 +78,8 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("release_created == 'true'", workflow)
         self.assertIn("apply-release-notes:", workflow)
         self.assertIn("scripts/apply-release-notes.sh", workflow)
-        self.assertIn("scripts/publish-crates.sh", workflow)
+        self.assertIn("uses: ./.github/workflows/publish-crates.yml", workflow)
+        self.assertNotIn("crates-io-auth-action", workflow)
         self.assertIn("tag_name", workflow)
 
     def test_path_dep_sync_rewrites_stale_pin(self) -> None:
@@ -127,6 +128,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         text = (WORKFLOWS / "publish-crates.yml").read_text(encoding="utf-8")
         on_block = _on_block(text)
         self.assertIn("workflow_dispatch:", on_block)
+        self.assertIn("workflow_call:", on_block)
         self.assertIn("tags:", on_block)
         self.assertNotIn("pull_request:", on_block)
         self.assertNotIn("branches:", on_block)
@@ -149,7 +151,7 @@ class WorkflowTriggerTests(unittest.TestCase):
     def test_gitleaks_tarball_is_sha_pinned(self) -> None:
         text = (WORKFLOWS / "security.yml").read_text(encoding="utf-8")
         self.assertIn(
-            "9991e0b2903da4c9fd89366deaef22fcdd6695f197b03d05b8b6e9ae78a7",
+            "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c",
             text,
         )
         self.assertIn("sha256sum -c -", text)
