@@ -19,6 +19,11 @@ pub(crate) const MAX_OAUTH_BODY_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_CREDS_BYTES: u64 = 1024 * 1024;
 /// Default lock wait.
 pub(crate) const AUTH_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+/// Connect timeout for token-URL POSTs. A missing host must not wait
+/// the full request timeout on each of `token_url` and `token_url_fallback`.
+pub(crate) const OAUTH_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Total request timeout for token-URL POSTs.
+pub(crate) const OAUTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) fn duration_from_expires_in_secs(secs: u64) -> Duration {
     Duration::from_secs(secs.min(MAX_EXPIRES_IN_SECS))
@@ -28,7 +33,8 @@ pub(crate) fn oauth_http_client() -> Result<reqwest::Client, AuthError> {
     reqwest::Client::builder()
         .user_agent(format!("wiremux-auth/{}", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30))
+        .connect_timeout(OAUTH_CONNECT_TIMEOUT)
+        .timeout(OAUTH_REQUEST_TIMEOUT)
         .build()
         .map_err(|e| AuthError::TokenProvider(format!("failed to build HTTP client: {e}")))
 }
@@ -275,6 +281,13 @@ pub fn sanitize_oauth_error_text(text: &str) -> String {
 /// Short reason plus origin only. Never format a raw `reqwest` error.
 pub fn format_oauth_transport_error(context: &str, err: &reqwest::Error, url: &str) -> String {
     format_oauth_transport_via(context, oauth_transport_reason(err), url)
+}
+
+pub(crate) fn is_oauth_transport_error(err: &AuthError) -> bool {
+    match err {
+        AuthError::TokenProvider(msg) => msg.starts_with("token refresh request failed ("),
+        _ => false,
+    }
 }
 
 pub(crate) fn format_oauth_transport_via(context: &str, reason: &str, url: &str) -> String {
@@ -726,6 +739,23 @@ pub(crate) fn remaining_from_system_time(expiry: std::time::SystemTime) -> Durat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_oauth_transport_error_matches_send_prefix_only() {
+        assert!(is_oauth_transport_error(&AuthError::TokenProvider(
+            "token refresh request failed (connect) via https://auth.example.invalid".into(),
+        )));
+        assert!(!is_oauth_transport_error(&AuthError::TokenProvider(
+            "token refresh: invalid JSON: expected value".into(),
+        )));
+        assert!(!is_oauth_transport_error(&AuthError::EmptyWriteRefused));
+    }
+
+    #[test]
+    fn oauth_connect_timeout_is_shorter_than_request_timeout() {
+        assert!(OAUTH_CONNECT_TIMEOUT <= Duration::from_secs(5));
+        assert!(OAUTH_CONNECT_TIMEOUT < OAUTH_REQUEST_TIMEOUT);
+    }
 
     #[test]
     fn sanitize_drops_raw_tokens() {

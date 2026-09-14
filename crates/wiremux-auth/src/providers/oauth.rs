@@ -14,10 +14,10 @@ use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
     AUTH_LOCK_TIMEOUT, InFlight, cached_token_on_lock_failure, duration_from_expires_in_secs,
-    expand_tilde, format_oauth_transport_error, is_token_rotation_error, jail_creds_path,
-    lead_or_follow, oauth_http_client, parse_rfc3339, read_oauth_body, redact_secret_looking,
-    redact_url_origin, remaining_from_system_time, resolve_creds_path, try_acquire_refresh_lock,
-    vendor_rejected_summary,
+    expand_tilde, format_oauth_transport_error, is_oauth_transport_error, is_token_rotation_error,
+    jail_creds_path, lead_or_follow, oauth_http_client, parse_rfc3339, read_oauth_body,
+    redact_secret_looking, redact_url_origin, remaining_from_system_time, resolve_creds_path,
+    try_acquire_refresh_lock, vendor_rejected_summary,
 };
 use crate::keychain_guard::keychain_disabled;
 use crate::profile::{
@@ -120,6 +120,7 @@ struct Inner {
     write_back: WriteBack,
     http: reqwest::Client,
     force_refresh: AtomicBool,
+    skip_http_refresh: AtomicBool,
     lock_timeout_ms: AtomicU64,
     state: RwLock<CachedToken>,
     inflight: InFlight,
@@ -261,6 +262,7 @@ impl ProfileTokenProvider {
                 write_back,
                 http: oauth_http_client()?,
                 force_refresh: AtomicBool::new(false),
+                skip_http_refresh: AtomicBool::new(false),
                 lock_timeout_ms: AtomicU64::new(AUTH_LOCK_TIMEOUT.as_millis() as u64),
                 state: RwLock::new(CachedToken {
                     access_token: loaded.access_token,
@@ -278,6 +280,12 @@ impl ProfileTokenProvider {
         self.inner
             .lock_timeout_ms
             .store(timeout.as_millis() as u64, Ordering::SeqCst);
+    }
+
+    /// Skip the token-URL POST on later [`TokenProvider::get_token`] calls.
+    /// Hosts that want a cheap "cached oat only" probe use this.
+    pub fn without_http_refresh(&self) {
+        self.inner.skip_http_refresh.store(true, Ordering::SeqCst);
     }
 
     async fn reload_from_store(
@@ -472,9 +480,18 @@ impl ProfileTokenProvider {
             rt.to_owned()
         };
 
-        let token_resp = match self.do_refresh(&refresh_token).await? {
-            Ok(resp) => resp,
-            Err((status, body, url)) => {
+        let token_resp = match self.do_refresh(&refresh_token).await {
+            Ok(Ok(resp)) => resp,
+            Err(e) if !force && is_oauth_transport_error(&e) => {
+                let cached = self.inner.state.read().await.access_token.clone();
+                if cached.trim().is_empty() {
+                    return Err(e);
+                }
+                warn!("token refresh transport failed ({e}), keeping cached token");
+                return Ok(cached);
+            }
+            Err(e) => return Err(e),
+            Ok(Err((status, body, url))) => {
                 if is_token_rotation_error(&body) {
                     match self.reload_from_store().await {
                         Ok(Some((store_token, store_rt, store_lifetime))) => {
@@ -587,6 +604,12 @@ impl TokenProvider for ProfileTokenProvider {
         // flag before the InFlight claim.
         {
             let state = self.inner.state.read().await;
+            if self.inner.skip_http_refresh.load(Ordering::SeqCst) {
+                if state.access_token.trim().is_empty() {
+                    return Err(empty_access_error(&self.inner.oauth));
+                }
+                return Ok(state.access_token.clone());
+            }
             if !self.inner.force_refresh.load(Ordering::SeqCst)
                 && !state.needs_refresh()
                 && !self.inner.inflight.is_busy()
@@ -1465,6 +1488,107 @@ login = "none"
 grant_type = "refresh_token"
 "#
         )
+    }
+
+    #[tokio::test]
+    async fn refresh_transport_error_returns_stored_access() {
+        let home = IsolatedHome::new();
+        home.plant_credentials(PlantCredentials::Claude {
+            access: "sk-ant-oat01-expired-keep",
+            refresh: Some("rt"),
+            expires_at_ms: Some(1),
+        });
+        let closed = closed_http_url();
+        let fallback = closed_http_url();
+        let oauth = pack_from_toml(&claude_toml(&closed, Some(&fallback)));
+        let p = provider(&oauth);
+        let started = Instant::now();
+        let token = p
+            .get_token()
+            .await
+            .expect("expired access must stay usable when both token URLs refuse");
+        assert_eq!(token, "sk-ant-oat01-expired-keep");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "refused token URLs must not wait the HTTP client timeout, elapsed {:?}",
+            started.elapsed()
+        );
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn refresh_garbage_json_still_fails_closed() {
+        let home = IsolatedHome::new();
+        home.plant_credentials(PlantCredentials::Claude {
+            access: "sk-ant-oat01-old",
+            refresh: Some("rt"),
+            expires_at_ms: Some(1),
+        });
+        let (url, handle) = spawn_http_server(200, "not-json");
+        let oauth = pack_from_toml(&claude_toml(&url, None));
+        let p = provider(&oauth);
+        let err = p.get_token().await.expect_err("garbage JSON");
+        let _ = handle.join();
+        assert!(
+            !matches!(err, AuthError::EmptyWriteRefused),
+            "parse fail is TokenProvider, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid JSON") || msg.contains("token refresh"),
+            "parse fail must stay an error, got {msg}"
+        );
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn forced_refresh_transport_error_does_not_keep_cache() {
+        let home = IsolatedHome::new();
+        home.plant_credentials(PlantCredentials::Claude {
+            access: "sk-ant-oat01-stale",
+            refresh: Some("rt"),
+            expires_at_ms: Some(4_000_000_000_000),
+        });
+        let oauth = pack_from_toml(&claude_toml(&closed_http_url(), None));
+        let p = provider(&oauth);
+        assert_eq!(
+            p.get_token().await.expect("fresh cache"),
+            "sk-ant-oat01-stale"
+        );
+        p.mark_stale();
+        let err = p
+            .get_token()
+            .await
+            .expect_err("forced refresh must not hide a down token URL");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("token refresh request failed"),
+            "forced path must surface transport, got {msg}"
+        );
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn skip_http_refresh_keeps_expired_access_without_post() {
+        let home = IsolatedHome::new();
+        home.plant_credentials(PlantCredentials::Claude {
+            access: "sk-ant-oat01-cached-only",
+            refresh: Some("rt"),
+            expires_at_ms: Some(1),
+        });
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"must-not-refresh","refresh_token":"rt2","expires_in":3600}"#,
+        );
+        let oauth = pack_from_toml(&claude_toml(&url, None));
+        let p = provider(&oauth);
+        p.without_http_refresh();
+        assert_eq!(
+            p.get_token().await.expect("cached access"),
+            "sk-ant-oat01-cached-only"
+        );
+        drop(handle);
+        let _ = home;
     }
 
     #[tokio::test]
