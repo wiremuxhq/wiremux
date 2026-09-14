@@ -104,4 +104,9 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         notes.contains("token_for_profile"),
         "refresh-only hosts still use token_for_profile"
     );
+    assert!(
+        notes.contains("one text block `\".\"`")
+            && notes.contains("messages_whitespace_only_assistant_becomes_dot"),
+        "notes must lock Messages empty-text as '.' (issue #90)"
+    );
 }
