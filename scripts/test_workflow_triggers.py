@@ -74,6 +74,12 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertNotIn("cargo generate-lockfile", script)
         workflow = (WORKFLOWS / "release-please.yml").read_text(encoding="utf-8")
         self.assertIn("git add Cargo.lock crates/wiremux/Cargo.toml", workflow)
+        self.assertIn("publish-crates:", workflow)
+        self.assertIn("release_created == 'true'", workflow)
+        self.assertIn("apply-release-notes:", workflow)
+        self.assertIn("scripts/apply-release-notes.sh", workflow)
+        self.assertIn("scripts/publish-crates.sh", workflow)
+        self.assertIn("tag_name", workflow)
 
     def test_path_dep_sync_rewrites_stale_pin(self) -> None:
         import subprocess
@@ -127,10 +133,62 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("id-token: write", text)
         self.assertIn("crates-io-auth-action", text)
         self.assertNotIn("CARGO_REGISTRY_TOKEN: ${{ secrets.", text)
-        self.assertIn("cargo publish -p wiremux-auth", text)
-        self.assertIn("cargo publish -p wiremux", text)
+        self.assertIn("scripts/publish-crates.sh", text)
+        self.assertIn("path: publisher", text)
+        self.assertIn("path: crate", text)
+        self.assertNotIn("cargo publish -p wiremux-auth", text)
         self.assertNotIn("Refuse while unpublished", text)
         self.assertNotIn("publish = false on crates", text)
+        script = (ROOT / "scripts" / "publish-crates.sh").read_text(encoding="utf-8")
+        self.assertIn("wiremux-auth", script)
+        self.assertIn("wiremux", script)
+        self.assertIn("already on crates.io", script)
+        self.assertIn("already uploaded", script)
+        self.assertIn("cargo publish --locked -p", script)
+
+    def test_gitleaks_tarball_is_sha_pinned(self) -> None:
+        text = (WORKFLOWS / "security.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "9991e0b2903da4c9fd89366deaef22fcdd6695f197b03d05b8b6e9ae78a7",
+            text,
+        )
+        self.assertIn("sha256sum -c -", text)
+
+    def test_scorecard_and_link_check_are_cheap(self) -> None:
+        scorecard = (WORKFLOWS / "scorecard.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", scorecard)
+        self.assertIn("ossf/scorecard-action@", scorecard)
+        self.assertNotRegex(scorecard, r"cargo (test|nextest|clippy|fuzz)")
+        links = (WORKFLOWS / "link-check.yml").read_text(encoding="utf-8")
+        self.assertIn("lycheeverse/lychee-action@", links)
+        self.assertIn("workflow_dispatch:", links)
+        self.assertIn("fail: ${{ github.event_name != 'pull_request' }}", links)
+        lychee = (ROOT / "lychee.toml").read_text(encoding="utf-8")
+        self.assertIn("exclude_path = [\"CHANGELOG.md\"]", lychee)
+        self.assertIn("github\\\\.com/blineai/bline", lychee)
+
+    def test_apply_release_notes_dry_run(self) -> None:
+        import subprocess
+        import tempfile
+
+        notes = Path(tempfile.mkdtemp()) / "RELEASE_NOTES.md"
+        notes.write_text("# wiremux 0.2.1\n", encoding="utf-8")
+        out = subprocess.check_output(
+            ["bash", str(ROOT / "scripts" / "apply-release-notes.sh")],
+            env={
+                "TAG": "v0.2.1",
+                "GH_REPO": "wiremuxhq/wiremux",
+                "DRY_RUN": "1",
+                "NOTES_FILE": str(notes),
+                "PATH": __import__("os").environ.get("PATH", ""),
+            },
+            text=True,
+        )
+        self.assertIn("DRY_RUN: would apply file:", out)
+        apply_wf = (WORKFLOWS / "apply-release-notes.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", apply_wf)
+        self.assertNotIn("pull_request:", apply_wf)
+        self.assertIn("scripts/apply-release-notes.sh", apply_wf)
 
     def test_msrv_is_1_95(self) -> None:
         toolchain = (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")

@@ -1,5 +1,8 @@
 # Agents
 
+> **Human contributors:** This file is for AI coding assistants.
+> You can safely ignore it. See README.md and CONTRIBUTING.md instead.
+
 Rust workspace. MSRV 1.95. Edition 2024.
 
 ```bash
