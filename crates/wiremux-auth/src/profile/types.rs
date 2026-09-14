@@ -65,7 +65,7 @@ pub struct ResolvedProfile {
 /// Dialect selection and stream/tool policies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dialect {
-    /// `chat-completions` | `messages` | `responses`.
+    /// `chat-completions` | `messages` | `responses` | `gemini`.
     pub wire: Option<Wire>,
     /// Recognized SSE event names (built-in list when omitted).
     pub stream_events: Vec<String>,
@@ -93,7 +93,8 @@ pub enum Wire {
 
 impl Wire {
     /// Catalog spellings. CLI `--from` also accepts `chat` for `chat-completions`.
-    const NAMES: &'static [&'static str] = &["chat-completions", "messages", "responses", "gemini"];
+    pub const NAMES: &'static [&'static str] =
+        &["chat-completions", "messages", "responses", "gemini"];
 
     /// Catalog / file spelling (`messages`, `chat-completions`, `responses`, `gemini`).
     #[must_use]

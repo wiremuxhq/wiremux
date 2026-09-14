@@ -340,6 +340,27 @@ mod tests {
     }
 
     #[test]
+    fn load_profile_unknown_id_suggests_close_match() {
+        let err = load_profile(
+            "anthropic-oath",
+            &LoadOptions {
+                include_user_config: false,
+                ..LoadOptions::default()
+            },
+        )
+        .expect_err("near-miss id must be NotFound");
+        let text = err.to_string();
+        assert!(
+            matches!(err, ProfileError::NotFound { .. }),
+            "must stay NotFound, got {text}"
+        );
+        assert!(
+            text.contains("did you mean") && text.contains("anthropic"),
+            "near-miss must suggest a shipped id, got {text}"
+        );
+    }
+
+    #[test]
     fn load_profile_for_wire_prefers_catalog_id_equal_to_wire_name() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(

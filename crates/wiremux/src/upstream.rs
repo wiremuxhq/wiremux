@@ -2,6 +2,10 @@
 
 use wiremux_auth::{ResolvedProfile, Wire};
 
+/// Shared miss text for `list_models` / `upstream_url_for_model`.
+pub(crate) const MISSING_BASE_URL: &str =
+    "profile has no base_url; set `http.base_url` on the profile";
+
 /// Join `base_url` + `chat_path`, substituting `{model}` when present.
 ///
 /// Gemini streaming uses `:streamGenerateContent?alt=sse` when the path
@@ -11,11 +15,7 @@ pub fn upstream_url_for_model(
     model: Option<&str>,
     stream: bool,
 ) -> Result<String, String> {
-    let base = profile
-        .http
-        .base_url
-        .as_deref()
-        .ok_or("profile has no base_url")?;
+    let base = profile.http.base_url.as_deref().ok_or(MISSING_BASE_URL)?;
     let path = profile
         .http
         .chat_path

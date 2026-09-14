@@ -10,7 +10,7 @@ use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 use wiremux_auth::{
     AnyTokenProvider, AuthError, LoadOptions, ProfileError, ResolvedProfile, TokenProvider, Wire,
-    load_profile, provider_for_profile_opts, redact_secret_looking,
+    load_profile, not_found_message, provider_for_profile_opts, redact_secret_looking,
 };
 
 use crate::headers::apply_profile_headers;
@@ -273,7 +273,7 @@ impl WireClient {
             .http
             .base_url
             .as_deref()
-            .ok_or_else(|| ClientError::Transport("profile has no base_url".into()))?;
+            .ok_or_else(|| ClientError::Transport(crate::upstream::MISSING_BASE_URL.into()))?;
         let chat_path = self
             .profile
             .http
@@ -370,7 +370,7 @@ impl WireClient {
             .http
             .base_url
             .as_deref()
-            .ok_or_else(|| ClientError::Transport("profile has no base_url".into()))?;
+            .ok_or_else(|| ClientError::Transport(crate::upstream::MISSING_BASE_URL.into()))?;
         let url = format!("{}/api/show", base.trim_end_matches('/'));
         let token = self.access_token().await?;
         let payload = serde_json::json!({ "name": name }).to_string().into_bytes();
@@ -532,25 +532,20 @@ async fn pull_live(
 }
 
 fn profile_wire(profile: &ResolvedProfile) -> Result<Wire, ClientError> {
-    profile
-        .dialect
-        .wire
-        .ok_or_else(|| ClientError::Map(MapError::Invalid("profile has no wire".into())))
+    profile.dialect.wire.ok_or_else(|| {
+        ClientError::Map(MapError::Invalid(format!(
+            "profile has no wire; set `wire` to `{}`",
+            Wire::NAMES.join("|")
+        )))
+    })
 }
 
 fn profile_err(err: ProfileError) -> ClientError {
     match err {
-        ProfileError::NotFound { id, known } => {
-            let known = if known.is_empty() {
-                "(none)".to_string()
-            } else {
-                known.join(", ")
-            };
-            ClientError::NotFound {
-                status: None,
-                message: format!("profile `{id}` not found (known: {known})"),
-            }
-        }
+        ProfileError::NotFound { id, known } => ClientError::NotFound {
+            status: None,
+            message: not_found_message(&id, &known),
+        },
         other => ClientError::Auth {
             status: None,
             message: other.to_string(),
@@ -1008,4 +1003,88 @@ fn vision_from_show(value: &Value) -> Option<bool> {
                 )
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremux_auth::parse_profile_str;
+
+    #[test]
+    fn missing_wire_names_legal_values() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "nowire"
+base_url = "https://example.invalid"
+"#,
+        )
+        .expect("parse");
+        let err = profile_wire(&profile).expect_err("no wire");
+        let text = err.to_string();
+        assert!(text.contains("wire"), "{text}");
+        for name in Wire::NAMES {
+            assert!(
+                text.contains(name),
+                "must list legal wire `{name}`, got {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_base_url_names_http_field() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "nobase"
+wire = "messages"
+"#,
+        )
+        .expect("parse");
+        let err = upstream_url_for_model(&profile, None, false).expect_err("no base_url");
+        assert!(
+            err.contains("http.base_url"),
+            "must name http.base_url, got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_models_missing_base_url_names_http_field() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "nobase"
+wire = "messages"
+"#,
+        )
+        .expect("parse");
+        let client = WireClient::from_resolved(
+            profile,
+            AnyTokenProvider::from(wiremux_auth::StaticToken::new("x")),
+        )
+        .expect("client");
+        let err = client.list_models().await.expect_err("no base_url");
+        let text = err.to_string();
+        assert!(
+            text.contains("http.base_url"),
+            "list_models must name http.base_url, got {text}"
+        );
+    }
+
+    #[test]
+    fn from_profile_typo_suggests_close_match() {
+        let err = WireClient::from_profile_opts(
+            "anthropic-oath",
+            &LoadOptions {
+                include_user_config: false,
+                ..LoadOptions::default()
+            },
+        )
+        .expect_err("near-miss id");
+        let text = err.to_string();
+        assert!(
+            text.contains("did you mean") && text.contains("anthropic"),
+            "profile_err must keep the catalog suggestion, got {text}"
+        );
+    }
 }

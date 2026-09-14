@@ -60,18 +60,26 @@ pub enum ProfileError {
         field: String,
     },
     /// No document in the catalog has this `id`.
-    #[error(
-        "profile `{id}` not found (known: {}); a .toml or .json path also works",
-        if known.is_empty() {
-            "(none)".to_string()
-        } else {
-            known.join(", ")
-        }
-    )]
+    #[error("{}; a .toml or .json path also works", not_found_message(id, known))]
     NotFound {
         /// Requested document id.
         id: String,
         /// Catalog ids from the same load (shipped ∪ user dir ∪ explicit file).
         known: Vec<String>,
     },
+}
+
+/// Catalog miss: known ids, plus a close-match hint when unique.
+pub fn not_found_message(id: &str, known: &[String]) -> String {
+    let listed = if known.is_empty() {
+        "(none)".to_string()
+    } else {
+        known.join(", ")
+    };
+    let mut msg = format!("profile `{id}` not found (known: {listed})");
+    let refs: Vec<&str> = known.iter().map(String::as_str).collect();
+    if let Some(suggest) = super::types::suggest_kebab(id, &refs) {
+        msg.push_str(&format!("; did you mean `{suggest}`"));
+    }
+    msg
 }
