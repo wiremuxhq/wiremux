@@ -381,7 +381,10 @@ impl WireClient {
         if !resp.status().is_success() {
             return Ok(None);
         }
-        let body = read_body(resp, MAX_SUCCESS_BODY, true).await?;
+        let body = match read_body(resp, MAX_SUCCESS_BODY, true).await {
+            Ok(b) => b,
+            Err(_) => return Ok(None),
+        };
         let value: Value = match serde_json::from_slice(&body) {
             Ok(v) => v,
             Err(_) => return Ok(None),
@@ -451,11 +454,9 @@ struct LiveStream {
 impl LiveStream {
     fn push_frames(&mut self, frames: Vec<crate::stream::RawSse>) -> Result<(), ClientError> {
         for raw in frames {
-            if !self.saw_frame {
-                self.saw_frame = true;
-                if let Some(err) = classify_sse_wrapped_error(&raw.data, self.http_status) {
-                    return Err(err);
-                }
+            self.saw_frame = true;
+            if let Some(err) = classify_sse_wrapped_error(&raw.data, self.http_status) {
+                return Err(err);
             }
             let events = decode_stream_events(self.wire, &raw, &self.profile)?;
             for ev in events {

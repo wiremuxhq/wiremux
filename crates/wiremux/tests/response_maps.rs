@@ -17,6 +17,17 @@ wire = "chat-completions"
     .expect("test profile parses")
 }
 
+fn messages_profile() -> ResolvedProfile {
+    parse_profile_str(
+        r#"
+schema_version = 1
+id = "test-messages"
+wire = "messages"
+"#,
+    )
+    .expect("test profile parses")
+}
+
 fn responses_profile() -> ResolvedProfile {
     parse_profile_str(
         r#"
@@ -212,5 +223,75 @@ fn gemini_prompt_feedback_block_reason_is_content_filter() {
             |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "content_filter")
         ),
         "unknown blockReason must be content_filter, not stop: {events:?}"
+    );
+}
+
+#[test]
+fn messages_complete_redacted_thinking_is_protocol() {
+    let body = serde_json::to_vec(&json!({
+        "content": [{ "type": "redacted_thinking", "data": "enc" }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile())
+        .expect("redacted_thinking must decode");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+            if item_type == "redacted_thinking"
+                && payload.get("data").and_then(|v| v.as_str()) == Some("enc")
+        )),
+        "complete redacted_thinking must be Protocol, got {events:?}"
+    );
+}
+
+#[test]
+fn responses_complete_reasoning_summary_is_reasoning_delta() {
+    let body = serde_json::to_vec(&json!({
+        "status": "completed",
+        "output": [{
+            "type": "reasoning",
+            "summary": [{ "type": "summary_text", "text": "hi" }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("reasoning must decode");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::ReasoningDelta { text } if text == "hi")),
+        "complete reasoning summary_text must be ReasoningDelta, got {events:?}"
+    );
+}
+
+#[test]
+fn chat_complete_non_function_tool_call_is_protocol() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_custom",
+                    "type": "custom",
+                    "custom": { "name": "browser", "input": "{}" }
+                }]
+            }
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("non-function tool_call must decode");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::Protocol { .. })),
+        "complete tool_calls type != function must be Protocol, got {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. })),
+        "must not invent a function ToolCallStart: {events:?}"
     );
 }

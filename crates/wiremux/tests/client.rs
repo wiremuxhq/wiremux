@@ -52,6 +52,22 @@ fn client_for(base: &str, token: &str) -> WireClient {
     .expect("client")
 }
 
+fn messages_client_for(base: &str, token: &str) -> WireClient {
+    let profile = parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "mock-messages"
+wire = "messages"
+auth_scheme = "none"
+base_url = "{base}"
+chat_path = "/v1/messages"
+"#
+    ))
+    .expect("messages profile");
+    WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new(token)))
+        .expect("client")
+}
+
 fn read_http_request(stream: &mut TcpStream) -> String {
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     let mut buf = Vec::new();
@@ -536,6 +552,126 @@ async fn stream_http_200_wrapped_error_is_transient() {
 }
 
 #[tokio::test]
+async fn stream_error_after_ping_is_classified() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        let sse = concat!(
+            "event: ping\ndata: {\"type\":\"ping\"}\n\n",
+            "event: error\ndata: {\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n",
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+            sse.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        req
+    });
+    let client = messages_client_for(&format!("http://{addr}"), "sk-test");
+    let mut stream = std::pin::pin!(client.stream(simple_ir("claude-3")));
+    let mut first_err = None;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(_) => {}
+            Err(err) => {
+                first_err = Some(err);
+                break;
+            }
+        }
+    }
+    let _ = handle.join();
+    match first_err {
+        Some(ClientError::Transient { status, .. } | ClientError::Vendor { status, .. }) => {
+            assert_eq!(status, Some(200));
+        }
+        Some(ClientError::Map(err)) => panic!("mid-stream Anthropic error must not be Map: {err}"),
+        Some(other) => panic!("expected Transient or Vendor, got {other:?}"),
+        None => panic!("expected Transient or Vendor, got empty success"),
+    }
+}
+
+#[tokio::test]
+async fn stream_error_after_message_start_is_classified() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        let sse = concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\"}}\n\n",
+            "event: error\ndata: {\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n",
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+            sse.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        req
+    });
+    let client = messages_client_for(&format!("http://{addr}"), "sk-test");
+    let mut stream = std::pin::pin!(client.stream(simple_ir("claude-3")));
+    let mut first_err = None;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(_) => {}
+            Err(err) => {
+                first_err = Some(err);
+                break;
+            }
+        }
+    }
+    let _ = handle.join();
+    match first_err {
+        Some(ClientError::Transient { status, .. } | ClientError::Vendor { status, .. }) => {
+            assert_eq!(status, Some(200));
+        }
+        Some(ClientError::Map(err)) => panic!("mid-stream Anthropic error must not be Map: {err}"),
+        Some(other) => panic!("expected Transient or Vendor, got {other:?}"),
+        None => panic!("expected Transient or Vendor, got empty success"),
+    }
+}
+
+#[tokio::test]
+async fn stream_error_after_chat_delta_is_transient() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: {\"error\":{\"code\":429,\"message\":\"overloaded\"}}\n\n",
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+            sse.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        req
+    });
+    let client = client_for(&format!("http://{addr}"), "sk-test");
+    let mut stream = std::pin::pin!(client.stream(simple_ir("gpt-4")));
+    let mut first_err = None;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(_) => {}
+            Err(err) => {
+                first_err = Some(err);
+                break;
+            }
+        }
+    }
+    let _ = handle.join();
+    match first_err {
+        Some(ClientError::Transient { status, .. }) => assert_eq!(status, Some(200)),
+        Some(other) => panic!("expected Transient status 200, got {other:?}"),
+        None => panic!("expected Transient status 200, got empty success"),
+    }
+}
+
+#[tokio::test]
 async fn http_401_is_auth() {
     let (base, handle) = spawn_one(401, "Unauthorized", "", r#"{"error":{"message":"nope"}}"#);
     let err = client_for(&base, "sk-test")
@@ -898,6 +1034,101 @@ chat_path = "/v1/chat/completions"
         .expect("client");
     let models = client.list_models().await.expect("list");
     let seen = handle.join().expect("join");
+    assert_eq!(models[0].id, "llama3");
+    assert!(
+        seen.iter().any(|r| r.contains("POST /api/show")),
+        "loopback :11434 must POST /api/show, got {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn list_models_survives_ollama_show_body_read_failure() {
+    let listener = match TcpListener::bind("127.0.0.1:11434") {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let handle = thread::spawn(move || {
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let Some(mut stream) = accept_timeout(&listener, Duration::from_secs(5)) else {
+                break;
+            };
+            let req = read_http_request(&mut stream);
+            if req.contains("/api/show") {
+                let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 10000\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            } else {
+                write_http(&mut stream, 200, "OK", "", r#"{"data":[{"id":"llama3"}]}"#);
+            }
+            seen.push(req);
+        }
+        seen
+    });
+    let profile = parse_profile_str(
+        r#"
+schema_version = 1
+id = "grok-ollama"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://127.0.0.1:11434"
+chat_path = "/v1/chat/completions"
+"#,
+    )
+    .expect("ollama");
+    let client = WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("")))
+        .expect("client");
+    let models = client
+        .list_models()
+        .await
+        .expect("list after show body fail");
+    let seen = handle.join().expect("join");
+    assert_eq!(models.len(), 1, "{models:?}");
+    assert_eq!(models[0].id, "llama3");
+    assert!(
+        seen.iter().any(|r| r.contains("POST /api/show")),
+        "loopback :11434 must POST /api/show, got {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn list_models_survives_ollama_show_500() {
+    let listener = match TcpListener::bind("127.0.0.1:11434") {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let handle = thread::spawn(move || {
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let Some(mut stream) = accept_timeout(&listener, Duration::from_secs(5)) else {
+                break;
+            };
+            let req = read_http_request(&mut stream);
+            if req.contains("/api/show") {
+                write_http(&mut stream, 500, "Internal Server Error", "", "nope");
+            } else {
+                write_http(&mut stream, 200, "OK", "", r#"{"data":[{"id":"llama3"}]}"#);
+            }
+            seen.push(req);
+        }
+        seen
+    });
+    let profile = parse_profile_str(
+        r#"
+schema_version = 1
+id = "grok-ollama"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://127.0.0.1:11434"
+chat_path = "/v1/chat/completions"
+"#,
+    )
+    .expect("ollama");
+    let client = WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("")))
+        .expect("client");
+    let models = client.list_models().await.expect("list after show 500");
+    let seen = handle.join().expect("join");
+    assert_eq!(models.len(), 1, "{models:?}");
     assert_eq!(models[0].id, "llama3");
     assert!(
         seen.iter().any(|r| r.contains("POST /api/show")),
