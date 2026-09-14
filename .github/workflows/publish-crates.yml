@@ -29,7 +29,15 @@ permissions:
 jobs:
   publish:
     name: Publish crates.io
-    if: github.event_name != 'push' || github.event.created
+    # workflow_call inherits the caller's event_name. A call from
+    # release-please.yml on push to main is event_name=push and
+    # event.created=false, so event_name == 'workflow_call' never
+    # matches (0.3.0 skip). inputs.tag is set on call and dispatch.
+    # Keep created so a signed-tag force-update does not republish.
+    if: >-
+      github.event_name != 'push' ||
+      github.event.created ||
+      inputs.tag != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

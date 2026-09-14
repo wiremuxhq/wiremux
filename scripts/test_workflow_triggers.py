@@ -153,6 +153,10 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("already on crates.io", script)
         self.assertIn("already uploaded", script)
         self.assertIn("cargo publish --locked -p", script)
+        self.assertIn("github.event_name != 'push'", text)
+        self.assertIn("github.event.created", text)
+        self.assertIn("inputs.tag != ''", text)
+        self.assertNotIn("github.event_name == 'workflow_call'", text)
 
     def test_gitleaks_tarball_is_sha_pinned(self) -> None:
         text = (WORKFLOWS / "security.yml").read_text(encoding="utf-8")
