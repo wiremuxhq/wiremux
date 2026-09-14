@@ -9,6 +9,21 @@ use super::usage;
 use super::{RawSse, str_field};
 
 pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
+    if value
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|c| c.first())
+        .is_none()
+        && let Some(reason) = value
+            .pointer("/promptFeedback/blockReason")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+    {
+        return Ok(Some(IrStreamEvent::FinishReason {
+            reason: map_block(reason).to_string(),
+        }));
+    }
+
     if let Some(usage) = value.get("usageMetadata").filter(|v| v.is_object())
         && value
             .pointer("/candidates/0/content/parts")
@@ -115,6 +130,13 @@ pub(super) fn map_finish(reason: &str) -> &'static str {
         "MALFORMED_FUNCTION_CALL" => "malformed_function_call",
         other if other.eq_ignore_ascii_case("stop") => "stop",
         _ => "stop",
+    }
+}
+
+fn map_block(reason: &str) -> &'static str {
+    match map_finish(reason) {
+        "stop" if !reason.eq_ignore_ascii_case("stop") => "content_filter",
+        mapped => mapped,
     }
 }
 

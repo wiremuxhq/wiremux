@@ -28,6 +28,17 @@ wire = "responses"
     .expect("test profile parses")
 }
 
+fn gemini_profile() -> ResolvedProfile {
+    parse_profile_str(
+        r#"
+schema_version = 1
+id = "test-gemini"
+wire = "gemini"
+"#,
+    )
+    .expect("test profile parses")
+}
+
 #[test]
 fn chat_complete_message_content_finish_usage() {
     let body = serde_json::to_vec(&json!({
@@ -159,5 +170,47 @@ fn responses_complete_output_text_is_text_delta() {
             |ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "hello from responses")
         ),
         "{events:?}"
+    );
+}
+
+#[test]
+fn gemini_prompt_feedback_block_reason_is_content_filter() {
+    let body = serde_json::to_vec(&json!({
+        "promptFeedback": { "blockReason": "SAFETY" }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("blocked complete must decode");
+    assert!(
+        events.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "content_filter")
+        ),
+        "complete promptFeedback.blockReason=SAFETY must be content_filter: {events:?}"
+    );
+
+    let raw = RawSse {
+        event: None,
+        data: r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#.into(),
+    };
+    let streamed = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("blocked chunk must decode");
+    assert!(
+        streamed.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "content_filter")
+        ),
+        "stream promptFeedback.blockReason=SAFETY must be content_filter: {streamed:?}"
+    );
+
+    let unknown = serde_json::to_vec(&json!({
+        "promptFeedback": { "blockReason": "NOT_A_KNOWN_REASON" }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &unknown, &gemini_profile())
+        .expect("unknown blockReason must decode");
+    assert!(
+        events.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "content_filter")
+        ),
+        "unknown blockReason must be content_filter, not stop: {events:?}"
     );
 }

@@ -390,9 +390,7 @@ impl WireClient {
     }
 
     async fn open_stream(&self, mut ir: IrRequest) -> Result<LiveStream, ClientError> {
-        if ir.sampling.stream.is_none() {
-            ir.sampling.stream = Some(true);
-        }
+        ir.sampling.stream = Some(true);
         let wire = profile_wire(&self.profile)?;
         let (encoded, _loss) = encode(wire, &ir, &self.profile)?;
         let url = upstream_url_for_model(&self.profile, Some(ir.model.as_str()), true)
@@ -425,6 +423,7 @@ impl WireClient {
             profile: self.profile.clone(),
             eof: false,
             saw_frame: false,
+            leftover: Vec::new(),
             http_status: status,
         })
     }
@@ -445,6 +444,7 @@ struct LiveStream {
     profile: ResolvedProfile,
     eof: bool,
     saw_frame: bool,
+    leftover: Vec<u8>,
     http_status: u16,
 }
 
@@ -490,16 +490,21 @@ async fn pull_live(
             return None;
         }
         match live.bytes.next().await {
-            Some(Ok(chunk)) => match live.reader.feed(&chunk) {
-                Ok(frames) => {
-                    if let Err(err) = live.push_frames(frames) {
-                        return Some((Err(err), StreamPhase::Done));
+            Some(Ok(chunk)) => {
+                if !live.saw_frame {
+                    append_capped(&mut live.leftover, &chunk, MAX_ERROR_BODY);
+                }
+                match live.reader.feed(&chunk) {
+                    Ok(frames) => {
+                        if let Err(err) = live.push_frames(frames) {
+                            return Some((Err(err), StreamPhase::Done));
+                        }
+                    }
+                    Err(err) => {
+                        return Some((Err(ClientError::Transport(err)), StreamPhase::Done));
                     }
                 }
-                Err(err) => {
-                    return Some((Err(ClientError::Transport(err)), StreamPhase::Done));
-                }
-            },
+            }
             Some(Err(err)) => {
                 return Some((Err(classify_read_err(err)), StreamPhase::Done));
             }
@@ -508,6 +513,13 @@ async fn pull_live(
                     && let Err(err) = live.push_frames(vec![last])
                 {
                     return Some((Err(err), StreamPhase::Done));
+                }
+                if !live.saw_frame {
+                    let text = String::from_utf8_lossy(&live.leftover);
+                    return Some((
+                        Err(classify_empty_stream(live.http_status, &text)),
+                        StreamPhase::Done,
+                    ));
                 }
                 for ev in live.assembler.flush() {
                     live.pending.push_back(ev);
@@ -621,6 +633,31 @@ fn classify_read_err(err: reqwest::Error) -> ClientError {
 fn looks_like_reset(message: &str) -> bool {
     let t = message.to_ascii_lowercase();
     t.contains("connection reset") || t.contains("broken pipe")
+}
+
+fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize) {
+    let room = cap.saturating_sub(buf.len());
+    if room == 0 {
+        return;
+    }
+    let take = room.min(chunk.len());
+    buf.extend_from_slice(&chunk[..take]);
+}
+
+fn classify_empty_stream(status: u16, body: &str) -> ClientError {
+    if let Some(err) = classify_http(status, body, None) {
+        return err;
+    }
+    if !body.trim().is_empty() {
+        return ClientError::Vendor {
+            status: Some(status),
+            message: error_message(body),
+        };
+    }
+    ClientError::Transient {
+        status: Some(status),
+        message: "empty stream".into(),
+    }
 }
 
 fn classify_sse_wrapped_error(data: &str, status: u16) -> Option<ClientError> {
