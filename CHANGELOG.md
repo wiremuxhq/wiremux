@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0](https://github.com/wiremuxhq/wiremux/compare/v0.2.1...v0.3.0) (2026-09-14)
+
+
+### Features
+
+* load Grok OIDC from ~/.grok/auth.json ([#100](https://github.com/wiremuxhq/wiremux/issues/100)) ([b45398a](https://github.com/wiremuxhq/wiremux/commit/b45398a13a77a9ad937402b3e3f90c860d50342a))
+
+
+### Bug Fixes
+
+* classify stream leftovers and redact ClientError Debug ([#92](https://github.com/wiremuxhq/wiremux/issues/92)) ([e2bfae2](https://github.com/wiremuxhq/wiremux/commit/e2bfae22aab7e6ad92d5a2d6f23b8e3cd8cce48f))
+* passthrough same-dialect SSE ([#99](https://github.com/wiremuxhq/wiremux/issues/99)) ([8effae2](https://github.com/wiremuxhq/wiremux/commit/8effae2eaf0ec77b61677c64f832d97d59a6a965))
+* refuse nested profile tables and name schema_version ([#94](https://github.com/wiremuxhq/wiremux/issues/94)) ([acbdf2a](https://github.com/wiremuxhq/wiremux/commit/acbdf2a9e2cce88c857d5f8bbce5207ce235ebfd))
+* send JSON Content-Type and honor access_env ([#97](https://github.com/wiremuxhq/wiremux/issues/97)) ([ca582a4](https://github.com/wiremuxhq/wiremux/commit/ca582a4dc7124d2fa8eaf226694eb3f44da14326))
+* try login account before shipped keychain names ([#96](https://github.com/wiremuxhq/wiremux/issues/96)) ([7475a3b](https://github.com/wiremuxhq/wiremux/commit/7475a3b0ea37264051fb4c2d7c375a7aac6c6fd1)), closes [#95](https://github.com/wiremuxhq/wiremux/issues/95)
+
 ## [0.2.1](https://github.com/wiremuxhq/wiremux/compare/v0.2.0...v0.2.1) (2026-09-14)
 
 
