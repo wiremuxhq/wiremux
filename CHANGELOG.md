@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/wiremuxhq/wiremux/compare/v0.2.0...v0.2.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **auth:** vendor shipped presets inside the crate ([#83](https://github.com/wiremuxhq/wiremux/issues/83)) ([ebde729](https://github.com/wiremuxhq/wiremux/commit/ebde7293a2dc1c9de0e566119b92b71da4a83b4f))
+
 ## [0.2.0](https://github.com/wiremuxhq/wiremux/compare/v0.1.0...v0.2.0) (2026-09-14)
 
 
