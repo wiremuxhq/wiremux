@@ -172,7 +172,8 @@ impl Wire {
     pub fn default_auth_scheme(self) -> AuthScheme {
         match self {
             Self::Messages => AuthScheme::XApiKey,
-            Self::ChatCompletions | Self::Responses | Self::Gemini => AuthScheme::Bearer,
+            Self::Gemini => AuthScheme::Header("x-goog-api-key".into()),
+            Self::ChatCompletions | Self::Responses => AuthScheme::Bearer,
         }
     }
 }

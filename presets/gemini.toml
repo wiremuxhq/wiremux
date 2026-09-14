@@ -3,4 +3,5 @@ id = "gemini"
 display_name = "Gemini generateContent"
 wire = "gemini"
 base_url = "https://generativelanguage.googleapis.com"
+auth_scheme = "header:x-goog-api-key"
 access_env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
