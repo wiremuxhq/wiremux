@@ -161,6 +161,12 @@ Chat Completions and Responses emit `store`. OpenRouter
 Diagnose should print `LossReport` for `part.thinking` and
 `sampling.max_reasoning_tokens`.
 
+Messages encode: an empty or whitespace-only assistant turn becomes
+one text block `"."`. Anthropic rejects empty text. The Bline host
+map uses `"[empty]"` or omits the block. After consume, adapters
+take the crate choice. Locked by
+`messages_whitespace_only_assistant_becomes_dot`.
+
 ## Stay in Bline (host only)
 
 | Stay in Bline | Why |
