@@ -21,13 +21,14 @@ no longer have to wait.
 
 The first leftover prove is in Bline, not in this tree.
 [blineai/bline#3939](https://github.com/blineai/bline/pull/3939) first
-pinned both crates. Suggested attach is now GitHub release
+pinned both crates. [blineai/bline#3960](https://github.com/blineai/bline/pull/3960)
+squash-merged the pin to GitHub release
 [v0.1.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.1.0)
 ([`530e69f3e8188abf0c4cec83729124a2a979466e`](https://github.com/wiremuxhq/wiremux/commit/530e69f3e8188abf0c4cec83729124a2a979466e))
-with `wiremux` `default-features = false`. Bline draft
-[#3960](https://github.com/blineai/bline/pull/3960) is moving to that
-tag. Adapter swap of `to_resp_message` / Anthropic conversions is
-still later.
+with `wiremux` `default-features = false`. That pin is leftover-only:
+Bline still owns TokenProviders and dialect maps. Production does not
+call `wiremux::{decode,encode}` or wrap `wiremux_auth::TokenProvider`.
+Adapter swap of `to_resp_message` / Anthropic conversions is still later.
 
 The wiremux README stays:
 
@@ -44,7 +45,9 @@ plan is executed.
 
 Dialect maps, IR, TokenProviders (OAuth, static, GCP, Azure, AWS STS,
 Copilot store and device login), profile catalog, and login engines
-live in this workspace. Bline does not keep a second copy.
+live in this workspace. After a Bline consume PR they must not keep a
+second copy. Today Bline still keeps the parallel stack (leftover-only
+pin).
 
 Bline (the host) still owns the agent loop, router, failover, wire
 logger, and `bline diagnose`. Those are not LLM wire.
@@ -61,15 +64,19 @@ independent of `LlmError`.
 Path-dep `wiremux-auth` first, then maps at the adapter boundary.
 
 1. Bline path-deps `wiremux-auth` (local path for dogfood, then a
-   pinned git SHA). Done in Bline #3939.
+   pinned git SHA). Leftover-only pin landed in Bline #3939 / #3960
+   (`v0.1.0`). Production still uses host TokenProviders.
 2. Wrap `wiremux_auth::TokenProvider` inside `bline_auth::TokenProvider`.
-   Done in Bline #3939.
-3. Map `AuthError` to `LlmError::Auth`. Done in Bline #3939.
+   Still later. Leftover-prove tests call the crate; `bline-auth`
+   production does not wrap it.
+3. Map `AuthError` to `LlmError::Auth`. Still later (same wrap PR).
 4. Map `ChatRequest` at the `bline-llm` adapter boundary
    (`wiremux::{decode,encode}`). Use `default-features = false` so
    clap, tokio, and reqwest stay off the maps crate. Still later.
 5. Ship the Bline change behind a feature flag or a single adapter
    call site so rollback is one Bline revert. Still later.
+6. Only after steps 2-5, delete Bline's parallel TokenProviders and
+   dialect conversions. Do not delete them on the leftover-only pin.
 
 crates.io is an attach path for published hosts. Current crates.io
 versions match tag
