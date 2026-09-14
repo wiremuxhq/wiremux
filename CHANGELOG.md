@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.0](https://github.com/wiremuxhq/wiremux/compare/v0.1.0...v0.2.0) (2026-09-14)
+
+
+### Features
+
+* WireClient, shipped key profiles, and crates.io publish ([#77](https://github.com/wiremuxhq/wiremux/issues/77)) ([4150e13](https://github.com/wiremuxhq/wiremux/commit/4150e1356c6e2be0a99b584b87580ae1869120e4))
+
+
+### Bug Fixes
+
+* **auth:** send Gemini keys as x-goog-api-key ([#82](https://github.com/wiremuxhq/wiremux/issues/82)) ([42086ed](https://github.com/wiremuxhq/wiremux/commit/42086ed3dc4730d0a3003c2747d0f21ca74213f4))
+* **ci:** sync wiremux-auth path-dep version on release PRs ([#78](https://github.com/wiremuxhq/wiremux/issues/78)) ([738b597](https://github.com/wiremuxhq/wiremux/commit/738b597bdeee6a47f51369d58b463905e8d1052e)), closes [#75](https://github.com/wiremuxhq/wiremux/issues/75)
+* **client:** list_models uses the chat version prefix ([#80](https://github.com/wiremuxhq/wiremux/issues/80)) ([5d82fc1](https://github.com/wiremuxhq/wiremux/commit/5d82fc11bfc16db01f27060470e1430b1973828a))
+* **client:** parse Gemini list_models catalog ([#81](https://github.com/wiremuxhq/wiremux/issues/81)) ([b302226](https://github.com/wiremuxhq/wiremux/commit/b302226a6c81c06530d9589286e2e377e642c542))
+* **client:** Responses text, stream 200 errors, oat Bearer ([#79](https://github.com/wiremuxhq/wiremux/issues/79)) ([282ef8b](https://github.com/wiremuxhq/wiremux/commit/282ef8b7d46de572d338f42d64e333db1997a348))
+* **maps:** emit Anthropic thinking on Messages ([#70](https://github.com/wiremuxhq/wiremux/issues/70)) ([d4dbfee](https://github.com/wiremuxhq/wiremux/commit/d4dbfeed20a2e995e4dc9ff16cfac824fa053660))
+* **maps:** emit Chat store, Gemini thinkingLevel, Responses summary ([#76](https://github.com/wiremuxhq/wiremux/issues/76)) ([40109c5](https://github.com/wiremuxhq/wiremux/commit/40109c5437dc567af90489686fc19731d2d6da3c))
+* **maps:** remap thinking across Gemini and Responses ([#72](https://github.com/wiremuxhq/wiremux/issues/72)) ([a8bea27](https://github.com/wiremuxhq/wiremux/commit/a8bea27b7a0cd192a99ce95729fc48fe9b73119f))
+
 ## [0.1.0](https://github.com/wiremuxhq/wiremux/compare/v0.0.1...v0.1.0) (2026-09-13)
 
 

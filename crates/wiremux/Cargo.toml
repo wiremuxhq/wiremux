@@ -1,6 +1,6 @@
 [package]
 name = "wiremux"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -45,7 +45,7 @@ reqwest = { version = "0.13", optional = true, default-features = false, feature
 serde_json = "1"
 thiserror = "2.0.20"
 tokio = { version = "1.48.0", optional = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
-wiremux-auth = { version = "0.1.0", path = "../wiremux-auth" }
+wiremux-auth = { version = "0.2.0", path = "../wiremux-auth" }
 
 [dev-dependencies]
 tempfile = "3.23.0"
