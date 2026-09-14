@@ -171,14 +171,75 @@ fn decode_responses_complete(
             json!({ "type": event, "response": value }).to_string(),
         )
     };
-    decode_stream_events(
+    let mut events = decode_stream_events(
         Wire::Responses,
         &RawSse {
             event: Some(event),
             data,
         },
         profile,
-    )
+    )?;
+    let extra = complete_responses_output_events(value);
+    if extra.is_empty() {
+        return Ok(events);
+    }
+    let insert_at = events
+        .iter()
+        .position(|ev| {
+            matches!(
+                ev,
+                IrStreamEvent::FinishReason { .. }
+                    | IrStreamEvent::Usage { .. }
+                    | IrStreamEvent::Done
+            )
+        })
+        .unwrap_or(events.len());
+    events.splice(insert_at..insert_at, extra);
+    Ok(events)
+}
+
+fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
+    let Some(items) = value
+        .get("output")
+        .and_then(Value::as_array)
+        .or_else(|| value.pointer("/response/output").and_then(Value::as_array))
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        match item.get("type").and_then(Value::as_str) {
+            Some("message") => {
+                let Some(content) = item.get("content").and_then(Value::as_array) else {
+                    continue;
+                };
+                for part in content {
+                    let ty = part.get("type").and_then(Value::as_str);
+                    if !matches!(ty, Some("output_text") | Some("text")) {
+                        continue;
+                    }
+                    if let Some(text) = str_field(part, "text").filter(|s| !s.is_empty()) {
+                        out.push(IrStreamEvent::TextDelta { text });
+                    }
+                }
+            }
+            Some("function_call") => {
+                out.push(IrStreamEvent::ToolCallStart {
+                    id: str_field(item, "call_id")
+                        .or_else(|| str_field(item, "id"))
+                        .unwrap_or_default(),
+                    name: str_field(item, "name").unwrap_or_default(),
+                    thought_signature: None,
+                });
+                if let Some(delta) = str_field(item, "arguments").filter(|s| !s.is_empty()) {
+                    out.push(IrStreamEvent::ToolCallArgDelta { delta });
+                }
+                out.push(IrStreamEvent::ToolCallEnd);
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn decode_gemini_complete(

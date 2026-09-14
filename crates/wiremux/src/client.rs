@@ -415,6 +415,8 @@ impl WireClient {
             wire,
             profile: self.profile.clone(),
             eof: false,
+            saw_frame: false,
+            http_status: status,
         })
     }
 }
@@ -433,11 +435,19 @@ struct LiveStream {
     wire: Wire,
     profile: ResolvedProfile,
     eof: bool,
+    saw_frame: bool,
+    http_status: u16,
 }
 
 impl LiveStream {
     fn push_frames(&mut self, frames: Vec<crate::stream::RawSse>) -> Result<(), ClientError> {
         for raw in frames {
+            if !self.saw_frame {
+                self.saw_frame = true;
+                if let Some(err) = classify_sse_wrapped_error(&raw.data, self.http_status) {
+                    return Err(err);
+                }
+            }
             let events = decode_stream_events(self.wire, &raw, &self.profile)?;
             for ev in events {
                 self.pending.extend(self.assembler.push(ev));
@@ -602,6 +612,23 @@ fn classify_read_err(err: reqwest::Error) -> ClientError {
 fn looks_like_reset(message: &str) -> bool {
     let t = message.to_ascii_lowercase();
     t.contains("connection reset") || t.contains("broken pipe")
+}
+
+fn classify_sse_wrapped_error(data: &str, status: u16) -> Option<ClientError> {
+    let value: Value = serde_json::from_str(data).ok()?;
+    if value.get("choices").is_some() || value.get("delta").is_some() {
+        return None;
+    }
+    let error = value.get("error").filter(|v| v.is_object())?;
+    let code = json_error_code(error);
+    let message = error_message(data);
+    Some(classify_error_payload(
+        Some(status),
+        code,
+        &message,
+        data,
+        None,
+    ))
 }
 
 fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<ClientError> {
