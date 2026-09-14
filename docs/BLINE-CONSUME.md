@@ -196,7 +196,9 @@ without clap or the `proxy` stack enable feature `client` on crate
 `chat_path`, `auth_scheme`, `[headers]`, `[betas]`) and
 `provider_for_profile`. `send` encodes IR, POSTs, and decodes a
 complete JSON body. `stream` remaps SSE frames. `list_models` GETs
-`{base}/models`.
+the models catalog. OpenAI-compat uses the chat version prefix
+(`{base}/v1/models` when `chat_path` is `/v1/chat/completions` or
+`/v1/messages`).
 
 Refresh-only hosts still call `token_for_profile`. Do not wrap Bline
 types and do not run `wiremux proxy` for that path.

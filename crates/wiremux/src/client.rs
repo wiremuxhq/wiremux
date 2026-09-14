@@ -163,7 +163,7 @@ fn redact_bearer(s: &str) -> String {
     out
 }
 
-/// One row from `GET {base}/models`.
+/// One row from the models catalog. OpenAI-compat uses the chat version prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListedModel {
     /// Vendor model id.
@@ -264,7 +264,9 @@ impl WireClient {
         })
     }
 
-    /// GET `{base}/models`. HTTP 404 is an empty list. HTTP 401 is [`ClientError::Auth`].
+    /// GET the models catalog. OpenAI-compat uses the chat version prefix
+    /// (`{base}/v1/models` for `/v1/chat/completions`). HTTP 404 is an empty
+    /// list. HTTP 401 is [`ClientError::Auth`].
     pub async fn list_models(&self) -> Result<Vec<ListedModel>, ClientError> {
         let base = self
             .profile
@@ -272,7 +274,14 @@ impl WireClient {
             .base_url
             .as_deref()
             .ok_or_else(|| ClientError::Transport("profile has no base_url".into()))?;
-        let url = format!("{}/models", base.trim_end_matches('/'));
+        let chat_path = self
+            .profile
+            .http
+            .chat_path
+            .as_deref()
+            .or_else(|| self.profile.dialect.wire.map(Wire::default_chat_path))
+            .unwrap_or("");
+        let url = models_url(base, chat_path);
         let token = self.access_token().await?;
         let resp = self
             .get_url(&url, token.as_deref())
@@ -834,6 +843,35 @@ fn parse_listed_models(bytes: &[u8]) -> Result<Vec<ListedModel>, ClientError> {
         });
     }
     Ok(out)
+}
+
+/// Catalog URL for `list_models`.
+///
+/// `/v1/chat/completions` and `/v1/messages` become `{base}/v1/models`.
+/// Gemini `/v1beta/models/{model}:generateContent` becomes `{base}/v1beta/models`.
+/// A path with no version prefix stays `{base}/models`.
+fn models_url(base: &str, chat_path: &str) -> String {
+    let base = base.trim_end_matches('/');
+    match chat_version_prefix(chat_path) {
+        Some(prefix) => format!("{base}/{prefix}/models"),
+        None => format!("{base}/models"),
+    }
+}
+
+/// First path segment when it looks like `v1` or `v1beta`.
+fn chat_version_prefix(chat_path: &str) -> Option<&str> {
+    let path = chat_path.trim().trim_start_matches('/');
+    let first = path.split('/').next().unwrap_or("");
+    let rest = first.strip_prefix('v')?;
+    let mut chars = rest.chars();
+    if !chars.next().is_some_and(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    if chars.all(|c| c.is_ascii_alphanumeric()) {
+        Some(first)
+    } else {
+        None
+    }
 }
 
 fn allows_ollama_show(base_url: &str) -> bool {
