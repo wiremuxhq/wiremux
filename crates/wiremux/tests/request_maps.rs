@@ -2511,6 +2511,24 @@ fn messages_encode_raises_max_tokens_above_budget() {
 }
 
 #[test]
+fn messages_encode_defaults_max_tokens_when_unset() {
+    let ir = user_ir(IrSampling::default());
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("max_tokens"),
+        Some(&serde_json::json!(4096)),
+        "Messages requires max_tokens; chat clients often omit it, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.max_tokens" && event.action == LossAction::Preserve
+        }),
+        "default must be recorded, got {report:?}"
+    );
+}
+
+#[test]
 fn messages_encode_does_not_invent_thinking_when_unset() {
     let ir = user_ir(IrSampling::default());
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
