@@ -36,7 +36,11 @@ pub(crate) fn apply_profile_headers(
                 req = req.header("authorization", format!("Bearer {token}"));
             }
             AuthScheme::XApiKey => {
-                req = req.header("x-api-key", token);
+                if token.starts_with("sk-ant-oat") {
+                    req = req.header("authorization", format!("Bearer {token}"));
+                } else {
+                    req = req.header("x-api-key", token);
+                }
             }
             AuthScheme::Header(name) => {
                 req = req.header(name, token);

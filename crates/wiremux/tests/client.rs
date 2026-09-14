@@ -235,6 +235,94 @@ base_url = "http://{addr}"
 }
 
 #[tokio::test]
+async fn from_profile_anthropic_auth_token_oat_is_bearer() {
+    let home = IsolatedHome::new();
+    home.set_env("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat01-client-auth");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let dir = home.path().join(".config/wiremux/profiles");
+    std::fs::create_dir_all(&dir).expect("mkdir profiles");
+    std::fs::write(
+        dir.join("anthropic.toml"),
+        format!(
+            r#"
+schema_version = 1
+id = "anthropic"
+base_url = "http://{addr}"
+"#
+        ),
+    )
+    .expect("overlay");
+
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        let body = r#"{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}"#;
+        write_http(&mut stream, 200, "OK", "", body);
+        req
+    });
+
+    let client = WireClient::from_profile("anthropic").expect("from_profile");
+    let _ = client.send(simple_ir("claude-3-5-sonnet-latest")).await;
+    let req = handle.join().expect("join");
+    assert!(
+        req.contains("Bearer sk-ant-oat01-client-auth"),
+        "AUTH_TOKEN oat must be Authorization Bearer: {req}"
+    );
+    let lower = req.to_ascii_lowercase();
+    assert!(
+        !lower.contains("x-api-key: sk-ant-oat01-client-auth"),
+        "AUTH_TOKEN oat must not be x-api-key: {req}"
+    );
+    let _ = home;
+}
+
+#[tokio::test]
+async fn from_profile_anthropic_api_key_is_x_api_key() {
+    let home = IsolatedHome::new();
+    home.set_env("ANTHROPIC_API_KEY", "sk-ant-api03-key");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let dir = home.path().join(".config/wiremux/profiles");
+    std::fs::create_dir_all(&dir).expect("mkdir profiles");
+    std::fs::write(
+        dir.join("anthropic.toml"),
+        format!(
+            r#"
+schema_version = 1
+id = "anthropic"
+base_url = "http://{addr}"
+"#
+        ),
+    )
+    .expect("overlay");
+
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        let body = r#"{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}"#;
+        write_http(&mut stream, 200, "OK", "", body);
+        req
+    });
+
+    let client = WireClient::from_profile("anthropic").expect("from_profile");
+    let _ = client.send(simple_ir("claude-3-5-sonnet-latest")).await;
+    let req = handle.join().expect("join");
+    let lower = req.to_ascii_lowercase();
+    assert!(
+        lower.contains("x-api-key: sk-ant-api03-key"),
+        "official API key must stay x-api-key: {req}"
+    );
+    assert!(
+        !req.contains("Bearer sk-ant-api03-key"),
+        "official API key must not be Bearer: {req}"
+    );
+    let _ = home;
+}
+
+#[tokio::test]
 async fn send_chat_complete_text_finish_usage() {
     let (base, handle) = spawn_one(200, "OK", "", complete_chat_body());
     let client = client_for(&base, "sk-test");
@@ -317,6 +405,31 @@ async fn stream_remaps_chat_sse_text_delta() {
     }
     let _ = handle.join();
     assert!(saw_text, "stream must remap at least one text delta");
+}
+
+#[tokio::test]
+async fn stream_http_200_wrapped_error_is_transient() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        let sse = "data: {\"error\":{\"code\":429,\"message\":\"overloaded\"}}\n\n";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+            sse.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        req
+    });
+    let client = client_for(&format!("http://{addr}"), "sk-test");
+    let mut stream = std::pin::pin!(client.stream(simple_ir("gpt-4")));
+    let first = stream.next().await.expect("first stream item");
+    let _ = handle.join();
+    match first {
+        Err(ClientError::Transient { status, .. }) => assert_eq!(status, Some(200)),
+        other => panic!("expected Transient status 200, got {other:?}"),
+    }
 }
 
 #[tokio::test]

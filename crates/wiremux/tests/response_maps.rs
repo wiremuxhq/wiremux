@@ -17,6 +17,17 @@ wire = "chat-completions"
     .expect("test profile parses")
 }
 
+fn responses_profile() -> ResolvedProfile {
+    parse_profile_str(
+        r#"
+schema_version = 1
+id = "test-responses"
+wire = "responses"
+"#,
+    )
+    .expect("test profile parses")
+}
+
 #[test]
 fn chat_complete_message_content_finish_usage() {
     let body = serde_json::to_vec(&json!({
@@ -136,5 +147,17 @@ fn stream_delta_stays_delta_only_and_complete_ignores_missing_message() {
             .iter()
             .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "hi from delta")),
         "decode_response must not invent a complete message from missing message: {complete:?}"
+    );
+}
+
+#[test]
+fn responses_complete_output_text_is_text_delta() {
+    let body = br#"{"id":"resp_1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hello from responses"}]}],"usage":{"input_tokens":3,"output_tokens":2}}"#;
+    let events = decode_response(Wire::Responses, body, &responses_profile()).unwrap();
+    assert!(
+        events.iter().any(
+            |ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "hello from responses")
+        ),
+        "{events:?}"
     );
 }
