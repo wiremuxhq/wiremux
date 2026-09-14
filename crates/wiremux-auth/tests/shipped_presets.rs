@@ -196,6 +196,7 @@ const ALL_SHIPPED_IDS: &[&str] = &[
     "openai-codex-oauth",
     "openrouter-codex",
     "grok-ollama",
+    "xai-oauth",
     "xai",
     "openai",
     "anthropic",
@@ -219,6 +220,54 @@ fn load_profile_xai_from_shipped_catalog() {
     assert_eq!(profile.http.auth_scheme, Some(AuthScheme::Bearer));
     assert_eq!(profile.access_env, ["XAI_API_KEY", "GROK_API_KEY"]);
     assert!(profile.oauth.is_none(), "xai is API-key only");
+}
+
+#[test]
+fn load_profile_xai_oauth_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
+    let profile =
+        load_profile("xai-oauth", &shipped_opts()).expect("include_shipped must expose xai-oauth");
+    assert_eq!(profile.id, "xai-oauth");
+    assert_eq!(profile.dialect.wire, Some(Wire::ChatCompletions));
+    assert_eq!(profile.http.base_url.as_deref(), Some("https://api.x.ai"));
+    assert_eq!(
+        profile.http.chat_path.as_deref(),
+        Some("/v1/chat/completions")
+    );
+    assert_eq!(profile.http.auth_scheme, Some(AuthScheme::Bearer));
+    let oauth = profile.oauth.as_ref().expect("xai-oauth has [oauth]");
+    assert_eq!(
+        oauth.creds_format,
+        Some(wiremux_auth::CredsFormat::OidcAuthJson)
+    );
+    assert_eq!(oauth.creds_path.as_deref(), Some("~/.grok/auth.json"));
+    assert_eq!(oauth.token_url.as_str(), "https://auth.x.ai/oauth2/token");
+    let client = oauth.client_id.as_deref().map(str::trim).unwrap_or("");
+    assert!(
+        client.is_empty(),
+        "must not ship a product client id, got {client}"
+    );
+    assert_eq!(oauth.login, Some(Login::None));
+}
+
+#[tokio::test]
+async fn token_for_profile_xai_oauth_reads_grok_auth_json() {
+    let home = IsolatedHome::new();
+    home.plant_credentials(PlantCredentials::JsonPointer {
+        relative_path: ".grok/auth.json",
+        document: serde_json::json!({
+            "https://auth.x.ai::planted-test-client": {
+                "key": "grok-file-access",
+                "refresh_token": "grok-file-rt",
+                "expires_at": "2099-01-01T00:00:00Z"
+            }
+        }),
+    });
+    let token = token_for_profile("xai-oauth")
+        .await
+        .expect("xai-oauth token");
+    assert_eq!(token, "grok-file-access");
+    let _ = home;
 }
 
 #[test]

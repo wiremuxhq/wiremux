@@ -222,6 +222,7 @@ struct Loaded {
 
 impl ProfileTokenProvider {
     fn from_loaded(mut oauth: OauthPack, loaded: Loaded) -> Result<Self, AuthError> {
+        adopt_oidc_client_id(&mut oauth, &loaded.layout.access_ptr);
         if loaded.access_token.trim().is_empty() {
             return Err(empty_access_error(&oauth));
         }
@@ -609,6 +610,30 @@ struct ParsedTokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: Option<u64>,
+}
+
+fn adopt_oidc_client_id(oauth: &mut OauthPack, access_ptr: &str) {
+    if oauth
+        .client_id
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+    {
+        return;
+    }
+    let Some(id) = client_id_from_oidc_access_ptr(access_ptr) else {
+        return;
+    };
+    oauth.client_id = Some(id);
+}
+
+fn client_id_from_oidc_access_ptr(access_ptr: &str) -> Option<String> {
+    let rest = access_ptr.strip_prefix('/')?;
+    let entry = rest.strip_suffix("/key")?;
+    let entry = entry.replace("~1", "/").replace("~0", "~");
+    let (_, client) = entry.split_once("::")?;
+    let client = client.split('@').next()?.trim();
+    (!client.is_empty()).then(|| client.to_owned())
 }
 
 fn refresh_request_body(oauth: &OauthPack, refresh_token: &str) -> BTreeMap<String, String> {
@@ -2157,7 +2182,7 @@ expires_unit = "s"
     }
 
     #[test]
-    fn oidc_auth_json_empty_client_id_fails_closed() {
+    fn oidc_auth_json_empty_client_id_does_not_guess_other_issuer() {
         let home = IsolatedHome::new();
         let path = home.plant_credentials(PlantCredentials::JsonPointer {
             relative_path: ".config/wiremux/auth-openai.json",
@@ -2169,17 +2194,110 @@ expires_unit = "s"
                 }
             }),
         });
-        let oauth = pack_from_toml(&oidc_toml(&closed_http_url(), &path, ""));
-        let err = provider_from_oauth(&oauth).expect_err("empty client_id");
+        let oauth = pack_from_toml(&format!(
+            r#"
+schema_version = 1
+id = "other-issuer"
+[oauth]
+token_url = "{}"
+authorize_url = "https://auth.other.example/oauth/authorize"
+client_id = ""
+token_request_format = "form"
+creds_format = "oidc-auth-json"
+creds_path = "{}"
+login = "none"
+"#,
+            closed_http_url(),
+            path.to_string_lossy().replace('\\', "/")
+        ));
+        let err = provider_from_oauth(&oauth).expect_err("other issuer");
         let msg = err.to_string();
         assert!(
-            msg.contains("client_id"),
-            "must fail closed on empty client_id, got {msg}"
+            !msg.contains("must-not-guess"),
+            "must not leak a guessed token: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oidc_auth_json_empty_client_id_matches_sole_issuer_entry() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".grok/auth.json",
+            document: serde_json::json!({
+                "https://auth.x.ai::planted-test-client": {
+                    "key": "grok-oidc-access",
+                    "refresh_token": "grok-oidc-rt",
+                    "expires_at": "2099-01-01T00:00:00Z"
+                }
+            }),
+        });
+        let oauth = pack_from_toml(&format!(
+            r#"
+schema_version = 1
+id = "xai-oauth"
+[oauth]
+token_url = "https://auth.x.ai/oauth2/token"
+authorize_url = "https://auth.x.ai/oauth2/authorize"
+client_id = ""
+token_request_format = "form"
+creds_format = "oidc-auth-json"
+creds_path = "{}"
+login = "none"
+"#,
+            path.to_string_lossy().replace('\\', "/")
+        ));
+        let p = provider(&oauth);
+        assert_eq!(
+            p.get_token().await.expect("issuer match"),
+            "grok-oidc-access"
+        );
+        let _ = home;
+    }
+
+    #[test]
+    fn oidc_auth_json_empty_client_id_ambiguous_issuer_fails_closed() {
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".grok/auth.json",
+            document: serde_json::json!({
+                "https://auth.x.ai::one": {
+                    "key": "first-must-not-guess",
+                    "refresh_token": "rt-one",
+                    "expires_at": "2099-01-01T00:00:00Z"
+                },
+                "https://auth.x.ai::two": {
+                    "key": "second-must-not-guess",
+                    "refresh_token": "rt-two",
+                    "expires_at": "2099-01-01T00:00:00Z"
+                }
+            }),
+        });
+        let oauth = pack_from_toml(&format!(
+            r#"
+schema_version = 1
+id = "xai-oauth"
+[oauth]
+token_url = "https://auth.x.ai/oauth2/token"
+authorize_url = "https://auth.x.ai/oauth2/authorize"
+client_id = ""
+token_request_format = "form"
+creds_format = "oidc-auth-json"
+creds_path = "{}"
+login = "none"
+"#,
+            path.to_string_lossy().replace('\\', "/")
+        ));
+        let err = provider_from_oauth(&oauth).expect_err("ambiguous issuer");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("client_id") && msg.contains("2"),
+            "ambiguous issuer must name client_id, got {msg}"
         );
         assert!(
             !msg.contains("must-not-guess"),
             "must not leak a guessed token: {msg}"
         );
+        let _ = home;
     }
 
     fn copilot_toml(creds: &std::path::Path) -> String {

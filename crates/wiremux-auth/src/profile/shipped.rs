@@ -41,6 +41,10 @@ pub(crate) fn documents() -> &'static [&'static str] {
             "/presets/openrouter.toml"
         )),
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/presets/vllm.toml")),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/presets/xai-oauth.toml"
+        )),
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/presets/xai.toml")),
     ]
 }

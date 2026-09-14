@@ -1,0 +1,23 @@
+# presets/xai-oauth.toml
+schema_version = 1
+id = "xai-oauth"
+display_name = "xAI / Grok OIDC"
+wire = "chat-completions"
+base_url = "https://api.x.ai"
+chat_path = "/v1/chat/completions"
+auth_scheme = "bearer"
+header_merge = "union"
+
+[oauth]
+# Discovery: https://auth.x.ai/.well-known/openid-configuration
+authorize_url = "https://auth.x.ai/oauth2/authorize"
+token_url = "https://auth.x.ai/oauth2/token"
+# Empty: match the single {issuer}:: entry in ~/.grok/auth.json.
+# Do not ship a product client id.
+client_id = ""
+refresh_grant = "refresh_token"
+token_request_format = "form"
+creds_format = "oidc-auth-json"
+creds_path = "~/.grok/auth.json"
+login = "none"
+setup_token_hint = "log in with Grok or set XAI_API_KEY on profile xai"
