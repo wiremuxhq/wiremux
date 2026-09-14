@@ -79,6 +79,16 @@ pub enum AnyTokenProvider {
     AwsSts(AwsStsTokenProvider),
 }
 
+impl AnyTokenProvider {
+    /// Skip token-URL POSTs on later [`TokenProvider::get_token`] calls.
+    /// No-op for static / cloud STS providers.
+    pub fn without_http_refresh(&self) {
+        if let Self::Profile(p) = self {
+            p.without_http_refresh();
+        }
+    }
+}
+
 impl TokenProvider for AnyTokenProvider {
     fn mark_stale(&self) {
         match self {
@@ -143,6 +153,12 @@ impl From<AwsStsTokenProvider> for AnyTokenProvider {
 
 /// Load a catalog id (example `anthropic-oauth`) and return one access token.
 ///
+/// This is not a cheap "is login present?" probe. It may block on OS
+/// keychain and on one or two HTTP refreshes (`token_url`, then
+/// `token_url_fallback`) when the stored access is expired. Use
+/// [`token_for_profile_cached`] when the host only wants the stored
+/// Bearer and will `mark_stale` on a later 401.
+///
 /// This helper does not accept a file path. Use [`load_profile_from_cli`] then
 /// [`provider_from_profile`] for a `.toml` / `.json` profile.
 pub async fn token_for_profile(id: &str) -> Result<String, AuthError> {
@@ -152,6 +168,23 @@ pub async fn token_for_profile(id: &str) -> Result<String, AuthError> {
 /// Same, with host LoadOptions (tests, IsolatedHome, no shipped).
 pub async fn token_for_profile_opts(id: &str, opts: &LoadOptions<'_>) -> Result<String, AuthError> {
     TokenProvider::get_token(&provider_for_profile_opts(id, opts)?).await
+}
+
+/// Load a catalog id and return the stored Bearer without POSTing
+/// `token_url`. Empty access still fails closed. [`token_for_profile`]
+/// may still block on keychain plus one or two HTTP refreshes.
+pub async fn token_for_profile_cached(id: &str) -> Result<String, AuthError> {
+    token_for_profile_opts_cached(id, &LoadOptions::default()).await
+}
+
+/// Same as [`token_for_profile_cached`], with host [`LoadOptions`].
+pub async fn token_for_profile_opts_cached(
+    id: &str,
+    opts: &LoadOptions<'_>,
+) -> Result<String, AuthError> {
+    let provider = provider_for_profile_opts(id, opts)?;
+    provider.without_http_refresh();
+    TokenProvider::get_token(&provider).await
 }
 
 /// Same load path as [`token_for_profile`], but keep the provider so the host
@@ -223,6 +256,66 @@ mod tests {
             .await
             .expect("planted claude access");
         assert_eq!(token, PLANTED_ACCESS);
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn token_for_profile_cached_does_not_refresh_expired_access() {
+        let home = IsolatedHome::new();
+        let creds = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/auth.json",
+            document: serde_json::json!({
+                "tokens": {
+                    "access": "expired-keep",
+                    "refresh": "rt-keep",
+                    "expiry_unix": 1
+                }
+            }),
+        });
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"must-not-refresh","refresh_token":"rt2","expires_in":3600}"#,
+        );
+        let dir = home.path().join("profiles-cached");
+        std::fs::create_dir_all(&dir).expect("mkdir extra profiles");
+        let creds_unix = creds.to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            dir.join("cached-mock.toml"),
+            format!(
+                r#"
+schema_version = 1
+id = "cached-mock"
+[oauth]
+token_url = "{url}"
+client_id = "cached-client"
+token_request_format = "form"
+creds_format = "json-pointer"
+creds_path = "{creds_unix}"
+access_token_ptr = "/tokens/access"
+refresh_token_ptr = "/tokens/refresh"
+expires_ptr = "/tokens/expiry_unix"
+expires_unit = "s"
+login = "none"
+[oauth.token_response]
+access_token_ptr = "/access_token"
+refresh_token_ptr = "/refresh_token"
+expires_ptr = "/expires_in"
+expires_unit = "s"
+"#
+            ),
+        )
+        .expect("write mock profile");
+        let opts = LoadOptions {
+            include_shipped: false,
+            include_user_config: false,
+            extra_profile_dirs: vec![dir],
+            ..LoadOptions::default()
+        };
+        let token = token_for_profile_opts_cached("cached-mock", &opts)
+            .await
+            .expect("cached helper");
+        assert_eq!(token, "expired-keep");
+        drop(handle);
         let _ = home;
     }
 
