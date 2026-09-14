@@ -11,6 +11,7 @@ use serde_json::Value;
 use wiremux_auth::{
     AnyTokenProvider, AuthError, LoadOptions, ProfileError, ResolvedProfile, TokenProvider, Wire,
     load_profile, not_found_message, provider_for_profile_opts, redact_secret_looking,
+    redact_url_origin, sanitize_oauth_error_text,
 };
 
 use crate::headers::apply_profile_headers;
@@ -22,8 +23,7 @@ use crate::upstream::upstream_url_for_model;
 const MAX_SUCCESS_BODY: usize = 16 * 1024 * 1024;
 const MAX_ERROR_BODY: usize = 64 * 1024;
 
-/// Matchable HTTP / map / transport failure. Display redacts secrets.
-#[derive(Debug)]
+/// Matchable HTTP / map / transport failure. Display and Debug redact secrets.
 pub enum ClientError {
     /// HTTP 401, or 400/403 whose body looks like a bad or missing key.
     Auth {
@@ -66,6 +66,51 @@ pub enum ClientError {
     Map(MapError),
     /// reqwest build, or a body read after status classification.
     Transport(String),
+}
+
+impl fmt::Debug for ClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auth { status, message } => f
+                .debug_struct("Auth")
+                .field("status", status)
+                .field("message", &redact_client_text(message))
+                .finish(),
+            Self::NotFound { status, message } => f
+                .debug_struct("NotFound")
+                .field("status", status)
+                .field("message", &redact_client_text(message))
+                .finish(),
+            Self::RateLimit {
+                status,
+                retry_after,
+                message,
+            } => f
+                .debug_struct("RateLimit")
+                .field("status", status)
+                .field("retry_after", retry_after)
+                .field("message", &redact_client_text(message))
+                .finish(),
+            Self::Transient { status, message } => f
+                .debug_struct("Transient")
+                .field("status", status)
+                .field("message", &redact_client_text(message))
+                .finish(),
+            Self::Vendor { status, message } => f
+                .debug_struct("Vendor")
+                .field("status", status)
+                .field("message", &redact_client_text(message))
+                .finish(),
+            Self::Map(err) => f
+                .debug_tuple("Map")
+                .field(&redact_client_text(&err.to_string()))
+                .finish(),
+            Self::Transport(message) => f
+                .debug_tuple("Transport")
+                .field(&redact_client_text(message))
+                .finish(),
+        }
+    }
 }
 
 impl fmt::Display for ClientError {
@@ -120,7 +165,8 @@ fn redact_client_text(s: &str) -> String {
     let mut out = redact_secret_looking(s);
     out = redact_prefixed(&out, "gsk_");
     out = redact_prefixed(&out, "xai-");
-    redact_bearer(&out)
+    out = redact_bearer(&out);
+    redact_embedded_url(&out)
 }
 
 fn redact_prefixed(s: &str, prefix: &str) -> String {
@@ -818,22 +864,37 @@ fn looks_like_overload(text: &str) -> bool {
 }
 
 fn error_message(body: &str) -> String {
-    if let Ok(value) = serde_json::from_str::<Value>(body) {
+    let extracted = if let Ok(value) = serde_json::from_str::<Value>(body) {
         if let Some(msg) = value
             .pointer("/error/message")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
         {
-            return msg.to_string();
-        }
-        if let Some(msg) = value
+            msg.to_string()
+        } else if let Some(msg) = value
             .get("message")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
         {
-            return msg.to_string();
+            msg.to_string()
+        } else {
+            fallback_error_text(body)
         }
+    } else {
+        fallback_error_text(body)
+    };
+    redact_embedded_url(&sanitize_oauth_error_text(&extracted))
+}
+
+fn redact_embedded_url(s: &str) -> String {
+    if s.contains("://") {
+        redact_url_origin(s)
+    } else {
+        s.to_string()
     }
+}
+
+fn fallback_error_text(body: &str) -> String {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         "request failed".into()

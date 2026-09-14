@@ -1156,12 +1156,49 @@ async fn display_redacts_secrets_and_debug_hides_token() {
     let err = client.send(simple_ir("gpt-4")).await.expect_err("401");
     let _ = handle.join();
     let display = format!("{err}");
+    let dbg_err = format!("{err:?}");
     assert!(
         !display.contains(PLANTED_SK) && !display.contains(PLANTED_XAI),
         "Display must redact sk-/xai- secrets: {display}"
     );
     assert!(
+        !dbg_err.contains(PLANTED_SK) && !dbg_err.contains(PLANTED_XAI),
+        "Debug must not print raw secrets: {dbg_err}"
+    );
+    assert!(
         display.contains("[redacted]"),
         "Display should mark redaction: {display}"
     );
+}
+
+#[tokio::test]
+async fn stream_http_200_leftover_vendor_body_redacts_secret_and_userinfo() {
+    let planted_url = "https://user:s3cret@evil.test/x?k=1";
+    let body = format!(r#"{{"error":{{"message":"bad {PLANTED_SK} and {planted_url}"}}}}"#);
+    let (base, handle) = spawn_one(200, "OK", "", body);
+    let client = client_for(&base, "sk-test");
+    let mut stream = std::pin::pin!(client.stream(simple_ir("gpt-4")));
+    let first = stream.next().await.expect("first stream item");
+    let _ = handle.join();
+    let err = first.expect_err("200 leftover JSON error");
+    match &err {
+        ClientError::Vendor { status, .. } | ClientError::Transient { status, .. } => {
+            assert_eq!(*status, Some(200));
+        }
+        other => panic!("expected Vendor or Transient, got {other:?}"),
+    }
+    let display = format!("{err}");
+    let dbg = format!("{err:?}");
+    assert!(!dbg.is_empty(), "Debug must show variant: {dbg}");
+    assert!(
+        dbg.contains("Vendor") || dbg.contains("Transient"),
+        "Debug must name Vendor or Transient: {dbg}"
+    );
+    for leaked in [PLANTED_SK, "s3cret", planted_url] {
+        assert!(
+            !display.contains(leaked),
+            "Display must not leak {leaked}: {display}"
+        );
+        assert!(!dbg.contains(leaked), "Debug must not leak {leaked}: {dbg}");
+    }
 }
