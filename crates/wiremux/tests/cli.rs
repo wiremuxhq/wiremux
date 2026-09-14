@@ -788,6 +788,87 @@ chat_path = "/v1/chat/completions"
 }
 
 #[test]
+fn proxy_same_dialect_sse_keeps_message_start() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-haiku\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"pong\"}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "claude-sse.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "claude-sse"
+wire = "messages"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/messages"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "messages",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"claude-haiku","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("event: message_start"),
+        "same-dialect SSE must keep message_start, got: {resp}"
+    );
+    assert!(
+        resp.contains("pong"),
+        "passthrough must keep assistant text, got: {resp}"
+    );
+}
+
+#[test]
 fn proxy_grok_stream_true_reaches_upstream_and_json_becomes_sse() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");

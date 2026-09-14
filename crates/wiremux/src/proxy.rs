@@ -179,7 +179,11 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     );
 
     if content_type.contains("text/event-stream") {
-        return map_sse_stream(state, target, status_from_reqwest(status), resp);
+        let status = status_from_reqwest(status);
+        if target == state.from {
+            return passthrough_sse(status, resp);
+        }
+        return map_sse_stream(state, target, status, resp);
     }
     let body = match resp.bytes().await {
         Ok(b) => b,
@@ -350,6 +354,31 @@ fn assistant_text(wire: Wire, value: &Value) -> Option<String> {
             (!text.is_empty()).then_some(text)
         }
     }
+}
+
+fn passthrough_sse(status: StatusCode, resp: reqwest::Response) -> Response<ProxyBody> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(16);
+    tokio::spawn(async move {
+        let mut stream = resp.bytes_stream();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(bytes) => {
+                    if tx.send(Ok(Frame::data(bytes))).await.is_err() {
+                        return;
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+    });
+    let body_stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
+    Response::builder()
+        .status(status)
+        .header("content-type", "text/event-stream")
+        .body(StreamBody::new(body_stream).boxed_unsync())
+        .unwrap_or_else(|_| Response::new(boxed_full("{}\n")))
 }
 
 fn map_sse_stream(
