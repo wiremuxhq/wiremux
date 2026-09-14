@@ -626,6 +626,39 @@ chat_path = "/v1beta/models/{{model}}:generateContent"
 }
 
 #[tokio::test]
+async fn list_models_gemini_parses_models_array() {
+    let (base, handle) = spawn_one(
+        200,
+        "OK",
+        "",
+        r#"{"models":[{"name":"models/gemini-2.0-flash","inputTokenLimit":1048576}]}"#,
+    );
+    let profile = parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "mock-gemini"
+wire = "gemini"
+auth_scheme = "bearer"
+base_url = "{base}"
+chat_path = "/v1beta/models/{{model}}:generateContent"
+"#
+    ))
+    .expect("gemini");
+    let client =
+        WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("sk-test")))
+            .expect("client");
+    let models = client.list_models().await.expect("list");
+    let _ = handle.join();
+    assert_eq!(
+        models.len(),
+        1,
+        "gemini models[] must not parse as empty: {models:?}"
+    );
+    assert_eq!(models[0].id, "gemini-2.0-flash");
+    assert_eq!(models[0].context_tokens, Some(1_048_576));
+}
+
+#[tokio::test]
 async fn list_models_no_version_prefix_gets_models() {
     let (base, handle) = spawn_one(404, "Not Found", "", "missing");
     let profile = parse_profile_str(&format!(

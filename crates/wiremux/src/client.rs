@@ -166,9 +166,9 @@ fn redact_bearer(s: &str) -> String {
 /// One row from the models catalog. OpenAI-compat uses the chat version prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListedModel {
-    /// Vendor model id.
+    /// Vendor model id. Gemini `name` drops a leading `models/` prefix.
     pub id: String,
-    /// `context_length` or Anthropic `max_input_tokens` when present.
+    /// `context_length`, Anthropic `max_input_tokens`, or Gemini `inputTokenLimit`.
     pub context_tokens: Option<u32>,
     /// True when `architecture.input_modalities` includes `image` or `vision`.
     pub vision: Option<bool>,
@@ -812,9 +812,16 @@ fn error_message(body: &str) -> String {
 fn parse_listed_models(bytes: &[u8]) -> Result<Vec<ListedModel>, ClientError> {
     let value: Value =
         serde_json::from_slice(bytes).map_err(|err| ClientError::Transport(err.to_string()))?;
-    let Some(data) = value.get("data").and_then(Value::as_array) else {
-        return Ok(Vec::new());
-    };
+    if let Some(data) = value.get("data").and_then(Value::as_array) {
+        return Ok(parse_openai_listed_models(data));
+    }
+    if let Some(models) = value.get("models").and_then(Value::as_array) {
+        return Ok(parse_gemini_listed_models(models));
+    }
+    Ok(Vec::new())
+}
+
+fn parse_openai_listed_models(data: &[Value]) -> Vec<ListedModel> {
     let mut out = Vec::new();
     for item in data {
         let Some(id) = item
@@ -842,7 +849,56 @@ fn parse_listed_models(bytes: &[u8]) -> Result<Vec<ListedModel>, ClientError> {
             vision,
         });
     }
-    Ok(out)
+    out
+}
+
+fn parse_gemini_listed_models(models: &[Value]) -> Vec<ListedModel> {
+    let mut out = Vec::new();
+    for item in models {
+        let Some(id) = item
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|name| name.strip_prefix("models/").unwrap_or(name))
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let context_tokens = item
+            .get("inputTokenLimit")
+            .or_else(|| item.get("input_token_limit"))
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok());
+        // generateContent is the text/multimodal send method, not a vision flag.
+        // Leave vision None unless a field is clearly image input.
+        let vision = gemini_listed_vision(item);
+        out.push(ListedModel {
+            id: id.to_string(),
+            context_tokens,
+            vision,
+        });
+    }
+    out
+}
+
+fn gemini_listed_vision(item: &Value) -> Option<bool> {
+    const KEYS: &[&str] = &[
+        "supportedInputModalities",
+        "supported_input_modalities",
+        "inputModalities",
+        "input_modalities",
+    ];
+    for key in KEYS {
+        let Some(mods) = item.get(*key).and_then(Value::as_array) else {
+            continue;
+        };
+        return Some(mods.iter().any(|m| {
+            matches!(
+                m.as_str().map(str::to_ascii_lowercase).as_deref(),
+                Some("image" | "vision")
+            )
+        }));
+    }
+    None
 }
 
 /// Catalog URL for `list_models`.
