@@ -495,11 +495,27 @@ pub fn parse_wire(s: &str) -> Result<Wire, String> {
         other => {
             let listed = "responses|messages|chat-completions|gemini";
             let mut msg = format!("unknown --from `{other}` ({listed})");
-            if let Some(suggest) = Wire::suggest(other) {
+            if let Some(suggest) = suggest_from(other) {
                 msg.push_str(&format!("; did you mean `{suggest}`"));
             }
             Err(msg)
         }
+    }
+}
+
+fn suggest_from(s: &str) -> Option<&'static str> {
+    if let Some(name) = Wire::suggest(s) {
+        return Some(name);
+    }
+    let folded: String = s
+        .chars()
+        .filter(|c| *c != '_' && *c != '-')
+        .flat_map(char::to_lowercase)
+        .collect();
+    if folded.starts_with("chat") {
+        Some("chat")
+    } else {
+        None
     }
 }
 
@@ -690,6 +706,7 @@ login = "none"
             ("chat_completions", "chat-completions"),
             ("ChatCompletions", "chat-completions"),
             ("response", "responses"),
+            ("chatt", "chat"),
         ] {
             let err = parse_wire(input).expect_err(input);
             assert!(
