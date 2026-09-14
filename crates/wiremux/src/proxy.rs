@@ -147,7 +147,11 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         Err(err) => return text(StatusCode::UNAUTHORIZED, format!("{err}\n")),
     };
 
-    let mut upstream = state.client.post(&url).body(encoded);
+    let mut upstream = state
+        .client
+        .post(&url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(encoded);
     upstream = apply_profile_headers(upstream, &state.profile, token.as_deref());
 
     let resp = match upstream.send().await {
