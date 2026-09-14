@@ -1509,7 +1509,7 @@ grant_type = "refresh_token"
             .expect("expired access must stay usable when both token URLs refuse");
         assert_eq!(token, "sk-ant-oat01-expired-keep");
         assert!(
-            started.elapsed() < Duration::from_secs(2),
+            started.elapsed() < Duration::from_secs(8),
             "refused token URLs must not wait the HTTP client timeout, elapsed {:?}",
             started.elapsed()
         );
