@@ -14,6 +14,7 @@ check: ## fmt, clippy, test, deny, stealth, trigger lock
 	RUSTFLAGS="-D warnings" cargo test --locked -p wiremux --no-default-features --features client --test client --test consume_notes --test response_maps
 	cargo check --locked -p wiremux --no-default-features --features proxy
 	bash scripts/assert-maps-only-deps.sh
+	bash scripts/check-cargo-package.sh
 	cargo deny check
 	python3 scripts/test_workflow_triggers.py
 	bash scripts/assert-stealth.sh wiremuxhq/wiremux

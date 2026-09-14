@@ -1,0 +1,58 @@
+# presets/anthropic-oauth.toml
+# Same schema as a user gist. Deleting this file does not remove the engine.
+
+schema_version = 1
+id = "anthropic-oauth"
+display_name = "Anthropic OAuth (first-party host)"
+
+wire = "messages"
+# Default Messages SSE list; omit to use the built-in table.
+# stream_events = ["message_start", "content_block_start", ...]
+tool_type_policy = "hard-error"
+
+base_url = "https://api.anthropic.com"
+chat_path = "/v1/messages"
+auth_scheme = "bearer"
+header_merge = "union"
+
+[headers]
+anthropic-version = "2023-06-01"
+# User-Agent left unset on purpose. A first-party host may set it.
+# Do not ship a Claude Code UA impersonation preset.
+
+[oauth]
+token_url = "https://platform.claude.com/v1/oauth/token"
+token_url_fallback = "https://console.anthropic.com/v1/oauth/token"
+# authorize_url intentionally omitted: shipped login is setup-token.
+client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+refresh_grant = "refresh_token"
+token_request_format = "json"
+pkce = true
+creds_path = "~/.claude/.credentials.json"
+creds_format = "claude-credentials"
+# Alias of json-pointer: /claudeAiOauth/accessToken|refreshToken|expiresAt, expires_unit = "ms"
+access_env = "CLAUDE_CODE_OAUTH_TOKEN"
+login = "setup-token"
+setup_token_hint = "run `claude setup-token` (Bline and wiremux do not implement Anthropic login in the shipped profile)"
+keychain_service = "Claude Code-credentials"
+keychain_accounts = ["Claude Code", "credentials"]
+
+[oauth.refresh_body]
+grant_type = "refresh_token"
+# client_id is sent from oauth.client_id; do not duplicate secrets here.
+
+[betas]
+# Table form so merge policy is adjacent.
+# (Equivalent list form: betas = ["oauth-2025-04-20", "prompt-caching-2024-07-31", "extended-cache-ttl-2025-04-11"])
+values = [
+  "oauth-2025-04-20",
+  "prompt-caching-2024-07-31",
+  "extended-cache-ttl-2025-04-11",
+]
+header = "anthropic-beta"
+merge = "verbatim"
+
+[fingerprint]
+# Empty on purpose. A first-party host or a user gist may fill this.
+# forbidden_body_fields = []
+# user_agent = ""

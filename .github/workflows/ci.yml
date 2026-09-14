@@ -73,6 +73,11 @@ jobs:
           startsWith(github.head_ref, 'release-please')
         run: cargo check --locked --workspace --all-targets
       - run: cargo deny check
+      - name: Cargo package
+        if: >-
+          github.event_name != 'pull_request' ||
+          !startsWith(github.head_ref, 'release-please')
+        run: bash scripts/check-cargo-package.sh
       - run: python3 scripts/test_workflow_triggers.py
 
   workflows:

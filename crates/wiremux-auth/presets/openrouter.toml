@@ -1,0 +1,8 @@
+schema_version = 1
+id = "openrouter"
+display_name = "OpenRouter Chat Completions"
+wire = "chat-completions"
+base_url = "https://openrouter.ai/api"
+chat_path = "/v1/chat/completions"
+auth_scheme = "bearer"
+access_env = "OPENROUTER_API_KEY"
