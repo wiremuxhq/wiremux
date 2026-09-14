@@ -29,7 +29,7 @@ pub enum ProfileError {
         max: u32,
     },
     /// A required field is missing after env substitution.
-    #[error("missing required field {0}")]
+    #[error("{}", missing_required_field(.0))]
     MissingField(&'static str),
     /// A key name is reserved for code-exec (data-only profiles).
     #[error("refused: forbidden key name `{0}`")]
@@ -67,6 +67,17 @@ pub enum ProfileError {
         /// Catalog ids from the same load (shipped ∪ user dir ∪ explicit file).
         known: Vec<String>,
     },
+}
+
+fn missing_required_field(field: &&str) -> String {
+    if *field == "schema_version" {
+        format!(
+            "missing required field schema_version (set to 1; crate max {})",
+            super::types::SCHEMA_VERSION_MAX
+        )
+    } else {
+        format!("missing required field {field}")
+    }
 }
 
 /// Catalog miss: known ids, plus a close-match hint when unique.

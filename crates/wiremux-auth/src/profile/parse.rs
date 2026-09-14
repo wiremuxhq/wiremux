@@ -36,8 +36,10 @@ pub(crate) fn parse_layer_str(text: &str) -> Result<RawProfile, ProfileError> {
 fn parse_layer_text(text: &str, path: Option<&Path>) -> Result<RawProfile, ProfileError> {
     let value = parse_to_value(text, path)?;
     refuse::scan(&value)?;
+    refuse_nested_struct_tables(&value)?;
     let value = envsubst::walk(value);
     refuse::scan(&value)?;
+    refuse_nested_struct_tables(&value)?;
     let raw: RawProfile = serde_json::from_value(value).map_err(|e| parse_error(path, e))?;
     if let Some(found) = raw.schema_version
         && found > SCHEMA_VERSION_MAX
@@ -67,6 +69,29 @@ fn parse_to_value(text: &str, path: Option<&Path>) -> Result<Value, ProfileError
     } else {
         toml::from_str(text).map_err(|e| parse_error(path, e))
     }
+}
+
+/// Shipped presets are flat. Nested `[dialect]` / `[http]` / `[auth]`
+/// tables match the Rust structs and are otherwise dropped by serde.
+fn refuse_nested_struct_tables(value: &Value) -> Result<(), ProfileError> {
+    let Some(obj) = value.as_object() else {
+        return Ok(());
+    };
+    for (key, hint) in [
+        (
+            "dialect",
+            "set top-level `wire` (chat-completions|messages|responses|gemini)",
+        ),
+        ("http", "set top-level `base_url` and `chat_path`"),
+        ("auth", "set top-level `auth_scheme` and `access_env`"),
+    ] {
+        if obj.get(key).is_some_and(Value::is_object) {
+            return Err(ProfileError::Parse(format!(
+                "unknown table `{key}`; {hint}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn parse_error(path: Option<&Path>, err: impl std::fmt::Display) -> ProfileError {
@@ -435,6 +460,43 @@ mod tests {
     fn unknown_keys_ignored() {
         let p = parse_profile_str("schema_version = 1\nid = \"x\"\nfuture_field = 1\n").unwrap();
         assert_eq!(p.id, "x");
+    }
+
+    #[test]
+    fn nested_dialect_http_auth_tables_are_refused() {
+        let err =
+            parse_profile_str("schema_version = 1\nid = \"x\"\n[dialect]\nwire = \"chatt\"\n")
+                .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("unknown table `dialect`") && text.contains("top-level `wire`"),
+            "nested [dialect] must fail closed, got {text}"
+        );
+        let err = parse_profile_str(
+            "schema_version = 1\nid = \"x\"\n[http]\nbase_url = \"https://api.example.test\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("unknown table `http`"),
+            "nested [http] must fail closed, got {err}"
+        );
+        let err =
+            parse_profile_str("schema_version = 1\nid = \"x\"\n[auth]\nscheme = \"bearer\"\n")
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("unknown table `auth`"),
+            "nested [auth] must fail closed, got {err}"
+        );
+    }
+
+    #[test]
+    fn missing_schema_version_names_legal_value() {
+        let err = parse_profile_str("id = \"x\"\n").unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("schema_version") && text.contains("set to 1"),
+            "missing schema_version must name the legal value, got {text}"
+        );
     }
 
     #[test]
