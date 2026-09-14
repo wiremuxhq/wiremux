@@ -20,8 +20,8 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         .and_then(|rest| rest.split("```").next())
         .expect("suggested attach toml fence");
     assert!(
-        attach.contains("wiremux-auth = \"0.1.0\"")
-            && attach.contains("version = \"0.1.0\"")
+        attach.contains("wiremux-auth = \"0.2.1\"")
+            && attach.contains("version = \"0.2.1\"")
             && attach.contains("default-features = false"),
         "published-host attach must list crates.io form, got {attach}"
     );

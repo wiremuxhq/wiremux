@@ -71,15 +71,14 @@ Path-dep `wiremux-auth` first, then maps at the adapter boundary.
 5. Ship the Bline change behind a feature flag or a single adapter
    call site so rollback is one Bline revert. Still later.
 
-crates.io is now an attach path for published hosts. A tag job on this
-workspace publishes `wiremux-auth` then `wiremux`. Do not claim a
-crates.io version exists until that job has run. After the next release
-tag, published hosts that cannot git-pin use:
+crates.io is an attach path for published hosts. Current crates.io
+versions match tag
+[v0.2.1](https://github.com/wiremuxhq/wiremux/releases/tag/v0.2.1):
 
 ```toml
 [dependencies]
-wiremux-auth = "0.1.0"
-wiremux = { version = "0.1.0", default-features = false }
+wiremux-auth = "0.2.1"
+wiremux = { version = "0.2.1", default-features = false }
 ```
 
 ## Suggested attach (Bline crate, not this repo)
@@ -234,6 +233,6 @@ wins). `lmstudio` and `vllm` are `auth_scheme = none`.
 
 Bline stays on the last good git tag (or path-dep SHA). Rollback of
 the consume spike is revert the Bline commit. Bline adapters remain.
-crates.io is an attach path for published hosts after the next release
-tag; do not treat a crates.io version as published until that tag job
-runs.
+crates.io versions `0.2.1` match tag `v0.2.1`. Published hosts pin
+those versions. Bline may keep the git tag until it wants a crates.io
+pin.
