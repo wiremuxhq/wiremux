@@ -323,6 +323,51 @@ base_url = "http://{addr}"
 }
 
 #[tokio::test]
+async fn from_profile_gemini_api_key_is_x_goog_api_key() {
+    let home = IsolatedHome::new();
+    home.set_env("GEMINI_API_KEY", "AIza-test");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let dir = home.path().join(".config/wiremux/profiles");
+    std::fs::create_dir_all(&dir).expect("mkdir profiles");
+    std::fs::write(
+        dir.join("gemini.toml"),
+        format!(
+            r#"
+schema_version = 1
+id = "gemini"
+base_url = "http://{addr}"
+"#
+        ),
+    )
+    .expect("overlay");
+
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        let body =
+            r#"{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"#;
+        write_http(&mut stream, 200, "OK", "", body);
+        req
+    });
+
+    let client = WireClient::from_profile("gemini").expect("from_profile");
+    let _ = client.send(simple_ir("gemini-2.0-flash")).await;
+    let req = handle.join().expect("join");
+    let lower = req.to_ascii_lowercase();
+    assert!(
+        lower.contains("x-goog-api-key: aiza-test"),
+        "Studio API key must be x-goog-api-key: {req}"
+    );
+    assert!(
+        !req.contains("Bearer AIza-test"),
+        "Studio API key must not be Bearer: {req}"
+    );
+    let _ = home;
+}
+
+#[tokio::test]
 async fn send_chat_complete_text_finish_usage() {
     let (base, handle) = spawn_one(200, "OK", "", complete_chat_body());
     let client = client_for(&base, "sk-test");

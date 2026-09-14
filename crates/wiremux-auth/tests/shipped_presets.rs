@@ -288,6 +288,10 @@ fn load_profile_gemini_from_shipped_catalog() {
         profile.http.chat_path
     );
     assert_eq!(profile.access_env, ["GEMINI_API_KEY", "GOOGLE_API_KEY"]);
+    assert_eq!(
+        profile.http.auth_scheme,
+        Some(AuthScheme::Header("x-goog-api-key".into()))
+    );
     assert!(profile.oauth.is_none());
 }
 
