@@ -87,7 +87,10 @@ fn complete_chat_tool_call(call: &Value) -> Vec<IrStreamEvent> {
     if let Some(ty) = call.get("type").and_then(Value::as_str)
         && ty != "function"
     {
-        return Vec::new();
+        return vec![IrStreamEvent::Protocol {
+            item_type: "chunk".into(),
+            payload: call.clone(),
+        }];
     }
     let func = call.get("function").unwrap_or(call);
     let id = str_field(call, "id").unwrap_or_default();
@@ -137,7 +140,13 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
                     }
                     out.push(IrStreamEvent::ToolCallEnd);
                 }
-                _ => {}
+                Some(ty) => {
+                    out.push(IrStreamEvent::Protocol {
+                        item_type: ty.to_string(),
+                        payload: block.clone(),
+                    });
+                }
+                None => {}
             }
         }
     }
@@ -215,11 +224,21 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                 };
                 for part in content {
                     let ty = part.get("type").and_then(Value::as_str);
-                    if !matches!(ty, Some("output_text") | Some("text")) {
-                        continue;
-                    }
-                    if let Some(text) = str_field(part, "text").filter(|s| !s.is_empty()) {
-                        out.push(IrStreamEvent::TextDelta { text });
+                    match ty {
+                        Some("output_text") | Some("text") => {
+                            if let Some(text) = str_field(part, "text").filter(|s| !s.is_empty()) {
+                                out.push(IrStreamEvent::TextDelta { text });
+                            }
+                        }
+                        Some("refusal") => {
+                            if let Some(text) = str_field(part, "refusal")
+                                .or_else(|| str_field(part, "text"))
+                                .filter(|s| !s.is_empty())
+                            {
+                                out.push(IrStreamEvent::TextDelta { text });
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -235,6 +254,18 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                     out.push(IrStreamEvent::ToolCallArgDelta { delta });
                 }
                 out.push(IrStreamEvent::ToolCallEnd);
+            }
+            Some("reasoning") => {
+                if let Some(parts) = item.get("summary").and_then(Value::as_array) {
+                    for part in parts {
+                        let ty = part.get("type").and_then(Value::as_str);
+                        if matches!(ty, Some("summary_text") | Some("text"))
+                            && let Some(text) = str_field(part, "text").filter(|s| !s.is_empty())
+                        {
+                            out.push(IrStreamEvent::ReasoningDelta { text });
+                        }
+                    }
+                }
             }
             _ => {}
         }

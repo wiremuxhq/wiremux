@@ -31,6 +31,12 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertNotIn("push:", on_block)
         self.assertNotIn("tags:", on_block)
 
+    def test_ci_covers_client_and_maps_only_response_maps(self) -> None:
+        text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("--features client", text)
+        self.assertIn("--test response_maps", text)
+        self.assertIn("--test client", text)
+
     def test_actionlint_is_not_an_install_action_tool(self) -> None:
         text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
         self.assertNotIn("tool: actionlint@", text)

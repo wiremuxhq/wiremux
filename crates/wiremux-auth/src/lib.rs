@@ -26,7 +26,8 @@ pub use profile::{
     AuthScheme, Betas, CredsFormat, Dialect, ExpiresUnit, Fingerprint, ForbiddenFieldPolicy, Http,
     ListMerge, LoadOptions, Login, OauthPack, ProfileError, ResolvedProfile, SCHEMA_VERSION_MAX,
     StreamUnknownPolicy, TokenRequestFormat, TokenResponse, ToolNameCase, ToolTypePolicy, Wire,
-    list_profiles, load_profile, load_profile_for_wire, load_profile_from_cli, parse_profile_str,
+    list_profiles, load_profile, load_profile_for_wire, load_profile_from_cli, not_found_message,
+    parse_profile_str,
 };
 pub use providers::aws::{
     AwsCredentials, AwsSignParams, AwsStsConfig, AwsStsTokenProvider, sign_aws_request,
@@ -172,17 +173,10 @@ pub fn provider_for_profile_opts(
         ));
     }
     let profile = load_profile(id, opts).map_err(|err| match err {
-        ProfileError::NotFound { id, known } => {
-            let known = if known.is_empty() {
-                "(none)".to_string()
-            } else {
-                known.join(", ")
-            };
-            AuthError::TokenProvider(format!(
-                "profile `{id}` not found (known: {known}); \
-                 token_for_profile / provider_for_profile take a catalog id (example `anthropic-oauth`)"
-            ))
-        }
+        ProfileError::NotFound { id, known } => AuthError::TokenProvider(format!(
+            "{}; token_for_profile / provider_for_profile take a catalog id (example `anthropic-oauth`)",
+            not_found_message(&id, &known)
+        )),
         other => other.into(),
     })?;
     provider_from_profile(&profile)
@@ -262,6 +256,24 @@ mod tests {
         assert!(
             display.contains("catalog id") || display.contains("anthropic-oauth"),
             "Display must name catalog id or the anthropic-oauth example, got {display}"
+        );
+        assert!(
+            !display.contains("path also works"),
+            "typo catalog id must not inherit the CLI path hint, got {display}"
+        );
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn token_for_profile_typo_suggests_close_match() {
+        let home = IsolatedHome::new();
+        let err = token_for_profile("anthropic-oath")
+            .await
+            .expect_err("near-miss id must fail");
+        let display = err.to_string();
+        assert!(
+            display.contains("did you mean") && display.contains("anthropic"),
+            "token_for_profile must keep the catalog suggestion, got {display}"
         );
         assert!(
             !display.contains("path also works"),

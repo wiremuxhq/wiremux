@@ -10,7 +10,8 @@ use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 use wiremux_auth::{
     AnyTokenProvider, AuthError, LoadOptions, ProfileError, ResolvedProfile, TokenProvider, Wire,
-    load_profile, provider_for_profile_opts, redact_secret_looking,
+    load_profile, not_found_message, provider_for_profile_opts, redact_secret_looking,
+    redact_url_origin, sanitize_oauth_error_text,
 };
 
 use crate::headers::apply_profile_headers;
@@ -22,8 +23,7 @@ use crate::upstream::upstream_url_for_model;
 const MAX_SUCCESS_BODY: usize = 16 * 1024 * 1024;
 const MAX_ERROR_BODY: usize = 64 * 1024;
 
-/// Matchable HTTP / map / transport failure. Display redacts secrets.
-#[derive(Debug)]
+/// Matchable HTTP / map / transport failure. Display and Debug redact secrets.
 pub enum ClientError {
     /// HTTP 401, or 400/403 whose body looks like a bad or missing key.
     Auth {
@@ -66,6 +66,51 @@ pub enum ClientError {
     Map(MapError),
     /// reqwest build, or a body read after status classification.
     Transport(String),
+}
+
+impl fmt::Debug for ClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auth { status, message } => f
+                .debug_struct("Auth")
+                .field("status", status)
+                .field("message", &redact_client_text(message))
+                .finish(),
+            Self::NotFound { status, message } => f
+                .debug_struct("NotFound")
+                .field("status", status)
+                .field("message", &redact_client_text(message))
+                .finish(),
+            Self::RateLimit {
+                status,
+                retry_after,
+                message,
+            } => f
+                .debug_struct("RateLimit")
+                .field("status", status)
+                .field("retry_after", retry_after)
+                .field("message", &redact_client_text(message))
+                .finish(),
+            Self::Transient { status, message } => f
+                .debug_struct("Transient")
+                .field("status", status)
+                .field("message", &redact_client_text(message))
+                .finish(),
+            Self::Vendor { status, message } => f
+                .debug_struct("Vendor")
+                .field("status", status)
+                .field("message", &redact_client_text(message))
+                .finish(),
+            Self::Map(err) => f
+                .debug_tuple("Map")
+                .field(&redact_client_text(&err.to_string()))
+                .finish(),
+            Self::Transport(message) => f
+                .debug_tuple("Transport")
+                .field(&redact_client_text(message))
+                .finish(),
+        }
+    }
 }
 
 impl fmt::Display for ClientError {
@@ -120,7 +165,8 @@ fn redact_client_text(s: &str) -> String {
     let mut out = redact_secret_looking(s);
     out = redact_prefixed(&out, "gsk_");
     out = redact_prefixed(&out, "xai-");
-    redact_bearer(&out)
+    out = redact_bearer(&out);
+    redact_embedded_url(&out)
 }
 
 fn redact_prefixed(s: &str, prefix: &str) -> String {
@@ -225,8 +271,9 @@ impl WireClient {
     /// Encode, POST a complete body, decode via [`decode_response`].
     pub async fn send(
         &self,
-        ir: IrRequest,
+        mut ir: IrRequest,
     ) -> Result<(Vec<IrStreamEvent>, LossReport), ClientError> {
+        ir.sampling.stream = Some(false);
         let wire = profile_wire(&self.profile)?;
         let (encoded, loss) = encode(wire, &ir, &self.profile)?;
         let url = upstream_url_for_model(&self.profile, Some(ir.model.as_str()), false)
@@ -273,7 +320,7 @@ impl WireClient {
             .http
             .base_url
             .as_deref()
-            .ok_or_else(|| ClientError::Transport("profile has no base_url".into()))?;
+            .ok_or_else(|| ClientError::Transport(crate::upstream::MISSING_BASE_URL.into()))?;
         let chat_path = self
             .profile
             .http
@@ -370,7 +417,7 @@ impl WireClient {
             .http
             .base_url
             .as_deref()
-            .ok_or_else(|| ClientError::Transport("profile has no base_url".into()))?;
+            .ok_or_else(|| ClientError::Transport(crate::upstream::MISSING_BASE_URL.into()))?;
         let url = format!("{}/api/show", base.trim_end_matches('/'));
         let token = self.access_token().await?;
         let payload = serde_json::json!({ "name": name }).to_string().into_bytes();
@@ -381,7 +428,10 @@ impl WireClient {
         if !resp.status().is_success() {
             return Ok(None);
         }
-        let body = read_body(resp, MAX_SUCCESS_BODY, true).await?;
+        let body = match read_body(resp, MAX_SUCCESS_BODY, true).await {
+            Ok(b) => b,
+            Err(_) => return Ok(None),
+        };
         let value: Value = match serde_json::from_slice(&body) {
             Ok(v) => v,
             Err(_) => return Ok(None),
@@ -390,9 +440,7 @@ impl WireClient {
     }
 
     async fn open_stream(&self, mut ir: IrRequest) -> Result<LiveStream, ClientError> {
-        if ir.sampling.stream.is_none() {
-            ir.sampling.stream = Some(true);
-        }
+        ir.sampling.stream = Some(true);
         let wire = profile_wire(&self.profile)?;
         let (encoded, _loss) = encode(wire, &ir, &self.profile)?;
         let url = upstream_url_for_model(&self.profile, Some(ir.model.as_str()), true)
@@ -425,6 +473,7 @@ impl WireClient {
             profile: self.profile.clone(),
             eof: false,
             saw_frame: false,
+            leftover: Vec::new(),
             http_status: status,
         })
     }
@@ -445,17 +494,16 @@ struct LiveStream {
     profile: ResolvedProfile,
     eof: bool,
     saw_frame: bool,
+    leftover: Vec<u8>,
     http_status: u16,
 }
 
 impl LiveStream {
     fn push_frames(&mut self, frames: Vec<crate::stream::RawSse>) -> Result<(), ClientError> {
         for raw in frames {
-            if !self.saw_frame {
-                self.saw_frame = true;
-                if let Some(err) = classify_sse_wrapped_error(&raw.data, self.http_status) {
-                    return Err(err);
-                }
+            self.saw_frame = true;
+            if let Some(err) = classify_sse_wrapped_error(&raw.data, self.http_status) {
+                return Err(err);
             }
             let events = decode_stream_events(self.wire, &raw, &self.profile)?;
             for ev in events {
@@ -490,16 +538,21 @@ async fn pull_live(
             return None;
         }
         match live.bytes.next().await {
-            Some(Ok(chunk)) => match live.reader.feed(&chunk) {
-                Ok(frames) => {
-                    if let Err(err) = live.push_frames(frames) {
-                        return Some((Err(err), StreamPhase::Done));
+            Some(Ok(chunk)) => {
+                if !live.saw_frame {
+                    append_capped(&mut live.leftover, &chunk, MAX_ERROR_BODY);
+                }
+                match live.reader.feed(&chunk) {
+                    Ok(frames) => {
+                        if let Err(err) = live.push_frames(frames) {
+                            return Some((Err(err), StreamPhase::Done));
+                        }
+                    }
+                    Err(err) => {
+                        return Some((Err(ClientError::Transport(err)), StreamPhase::Done));
                     }
                 }
-                Err(err) => {
-                    return Some((Err(ClientError::Transport(err)), StreamPhase::Done));
-                }
-            },
+            }
             Some(Err(err)) => {
                 return Some((Err(classify_read_err(err)), StreamPhase::Done));
             }
@@ -508,6 +561,13 @@ async fn pull_live(
                     && let Err(err) = live.push_frames(vec![last])
                 {
                     return Some((Err(err), StreamPhase::Done));
+                }
+                if !live.saw_frame {
+                    let text = String::from_utf8_lossy(&live.leftover);
+                    return Some((
+                        Err(classify_empty_stream(live.http_status, &text)),
+                        StreamPhase::Done,
+                    ));
                 }
                 for ev in live.assembler.flush() {
                     live.pending.push_back(ev);
@@ -519,25 +579,20 @@ async fn pull_live(
 }
 
 fn profile_wire(profile: &ResolvedProfile) -> Result<Wire, ClientError> {
-    profile
-        .dialect
-        .wire
-        .ok_or_else(|| ClientError::Map(MapError::Invalid("profile has no wire".into())))
+    profile.dialect.wire.ok_or_else(|| {
+        ClientError::Map(MapError::Invalid(format!(
+            "profile has no wire; set `wire` to `{}`",
+            Wire::NAMES.join("|")
+        )))
+    })
 }
 
 fn profile_err(err: ProfileError) -> ClientError {
     match err {
-        ProfileError::NotFound { id, known } => {
-            let known = if known.is_empty() {
-                "(none)".to_string()
-            } else {
-                known.join(", ")
-            };
-            ClientError::NotFound {
-                status: None,
-                message: format!("profile `{id}` not found (known: {known})"),
-            }
-        }
+        ProfileError::NotFound { id, known } => ClientError::NotFound {
+            status: None,
+            message: not_found_message(&id, &known),
+        },
         other => ClientError::Auth {
             status: None,
             message: other.to_string(),
@@ -621,6 +676,31 @@ fn classify_read_err(err: reqwest::Error) -> ClientError {
 fn looks_like_reset(message: &str) -> bool {
     let t = message.to_ascii_lowercase();
     t.contains("connection reset") || t.contains("broken pipe")
+}
+
+fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize) {
+    let room = cap.saturating_sub(buf.len());
+    if room == 0 {
+        return;
+    }
+    let take = room.min(chunk.len());
+    buf.extend_from_slice(&chunk[..take]);
+}
+
+fn classify_empty_stream(status: u16, body: &str) -> ClientError {
+    if let Some(err) = classify_http(status, body, None) {
+        return err;
+    }
+    if !body.trim().is_empty() {
+        return ClientError::Vendor {
+            status: Some(status),
+            message: error_message(body),
+        };
+    }
+    ClientError::Transient {
+        status: Some(status),
+        message: "empty stream".into(),
+    }
 }
 
 fn classify_sse_wrapped_error(data: &str, status: u16) -> Option<ClientError> {
@@ -785,22 +865,37 @@ fn looks_like_overload(text: &str) -> bool {
 }
 
 fn error_message(body: &str) -> String {
-    if let Ok(value) = serde_json::from_str::<Value>(body) {
+    let extracted = if let Ok(value) = serde_json::from_str::<Value>(body) {
         if let Some(msg) = value
             .pointer("/error/message")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
         {
-            return msg.to_string();
-        }
-        if let Some(msg) = value
+            msg.to_string()
+        } else if let Some(msg) = value
             .get("message")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
         {
-            return msg.to_string();
+            msg.to_string()
+        } else {
+            fallback_error_text(body)
         }
+    } else {
+        fallback_error_text(body)
+    };
+    redact_embedded_url(&sanitize_oauth_error_text(&extracted))
+}
+
+fn redact_embedded_url(s: &str) -> String {
+    if s.contains("://") {
+        redact_url_origin(s)
+    } else {
+        s.to_string()
     }
+}
+
+fn fallback_error_text(body: &str) -> String {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         "request failed".into()
@@ -970,4 +1065,88 @@ fn vision_from_show(value: &Value) -> Option<bool> {
                 )
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremux_auth::parse_profile_str;
+
+    #[test]
+    fn missing_wire_names_legal_values() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "nowire"
+base_url = "https://example.invalid"
+"#,
+        )
+        .expect("parse");
+        let err = profile_wire(&profile).expect_err("no wire");
+        let text = err.to_string();
+        assert!(text.contains("wire"), "{text}");
+        for name in Wire::NAMES {
+            assert!(
+                text.contains(name),
+                "must list legal wire `{name}`, got {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_base_url_names_http_field() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "nobase"
+wire = "messages"
+"#,
+        )
+        .expect("parse");
+        let err = upstream_url_for_model(&profile, None, false).expect_err("no base_url");
+        assert!(
+            err.contains("http.base_url"),
+            "must name http.base_url, got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_models_missing_base_url_names_http_field() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "nobase"
+wire = "messages"
+"#,
+        )
+        .expect("parse");
+        let client = WireClient::from_resolved(
+            profile,
+            AnyTokenProvider::from(wiremux_auth::StaticToken::new("x")),
+        )
+        .expect("client");
+        let err = client.list_models().await.expect_err("no base_url");
+        let text = err.to_string();
+        assert!(
+            text.contains("http.base_url"),
+            "list_models must name http.base_url, got {text}"
+        );
+    }
+
+    #[test]
+    fn from_profile_typo_suggests_close_match() {
+        let err = WireClient::from_profile_opts(
+            "anthropic-oath",
+            &LoadOptions {
+                include_user_config: false,
+                ..LoadOptions::default()
+            },
+        )
+        .expect_err("near-miss id");
+        let text = err.to_string();
+        assert!(
+            text.contains("did you mean") && text.contains("anthropic"),
+            "profile_err must keep the catalog suggestion, got {text}"
+        );
+    }
 }

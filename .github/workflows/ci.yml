@@ -61,7 +61,10 @@ jobs:
         if: >-
           github.event_name != 'pull_request' ||
           !startsWith(github.head_ref, 'release-please')
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo clippy --locked -p wiremux --all-targets --no-default-features --features client -- -D warnings
       - name: Rustdoc
         if: >-
           github.event_name != 'pull_request' ||
@@ -141,7 +144,8 @@ jobs:
           mkdir -p "$out"
           cargo nextest run --locked --workspace --profile ci
           cp target/nextest/ci/junit.xml "${out}/default.xml"
-          cargo test --locked -p wiremux --no-default-features --test request_maps --test stream_maps
+          cargo test --locked -p wiremux --no-default-features --test request_maps --test stream_maps --test response_maps
+          cargo test --locked -p wiremux --no-default-features --features client --test client --test consume_notes --test response_maps
           cargo check --locked -p wiremux --no-default-features --features proxy
           bash scripts/assert-maps-only-deps.sh
       - name: Doc tests

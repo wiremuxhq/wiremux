@@ -485,7 +485,7 @@ pub fn parse_listen(s: &str) -> Result<SocketAddr, String> {
     }
 }
 
-/// Parse `--from` dialect name.
+/// Parse `--from` dialect name (`chat-completions` / `chat`, `messages`, `responses`, `gemini`).
 pub fn parse_wire(s: &str) -> Result<Wire, String> {
     match s {
         "responses" => Ok(Wire::Responses),

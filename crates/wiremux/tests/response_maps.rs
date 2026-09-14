@@ -17,12 +17,34 @@ wire = "chat-completions"
     .expect("test profile parses")
 }
 
+fn messages_profile() -> ResolvedProfile {
+    parse_profile_str(
+        r#"
+schema_version = 1
+id = "test-messages"
+wire = "messages"
+"#,
+    )
+    .expect("test profile parses")
+}
+
 fn responses_profile() -> ResolvedProfile {
     parse_profile_str(
         r#"
 schema_version = 1
 id = "test-responses"
 wire = "responses"
+"#,
+    )
+    .expect("test profile parses")
+}
+
+fn gemini_profile() -> ResolvedProfile {
+    parse_profile_str(
+        r#"
+schema_version = 1
+id = "test-gemini"
+wire = "gemini"
 "#,
     )
     .expect("test profile parses")
@@ -159,5 +181,165 @@ fn responses_complete_output_text_is_text_delta() {
             |ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "hello from responses")
         ),
         "{events:?}"
+    );
+}
+
+#[test]
+fn responses_complete_refusal_is_text_delta() {
+    let body = serde_json::to_vec(&json!({
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "content": [{ "type": "refusal", "refusal": "nope" }]
+        }]
+    }))
+    .expect("json");
+    let events =
+        decode_response(Wire::Responses, &body, &responses_profile()).expect("refusal must decode");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "nope")),
+        "complete refusal must be TextDelta, got {events:?}"
+    );
+}
+
+#[test]
+fn gemini_prompt_feedback_block_reason_is_content_filter() {
+    let body = serde_json::to_vec(&json!({
+        "promptFeedback": { "blockReason": "SAFETY" }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("blocked complete must decode");
+    assert!(
+        events.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "content_filter")
+        ),
+        "complete promptFeedback.blockReason=SAFETY must be content_filter: {events:?}"
+    );
+
+    let raw = RawSse {
+        event: None,
+        data: r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#.into(),
+    };
+    let streamed = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("blocked chunk must decode");
+    assert!(
+        streamed.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "content_filter")
+        ),
+        "stream promptFeedback.blockReason=SAFETY must be content_filter: {streamed:?}"
+    );
+
+    let unknown = serde_json::to_vec(&json!({
+        "promptFeedback": { "blockReason": "NOT_A_KNOWN_REASON" }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &unknown, &gemini_profile())
+        .expect("unknown blockReason must decode");
+    assert!(
+        events.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "content_filter")
+        ),
+        "unknown blockReason must be content_filter, not stop: {events:?}"
+    );
+}
+
+#[test]
+fn messages_complete_redacted_thinking_is_protocol() {
+    let body = serde_json::to_vec(&json!({
+        "content": [{ "type": "redacted_thinking", "data": "enc" }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile())
+        .expect("redacted_thinking must decode");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+            if item_type == "redacted_thinking"
+                && payload.get("data").and_then(|v| v.as_str()) == Some("enc")
+        )),
+        "complete redacted_thinking must be Protocol, got {events:?}"
+    );
+}
+
+#[test]
+fn responses_complete_reasoning_summary_is_reasoning_delta() {
+    let body = serde_json::to_vec(&json!({
+        "status": "completed",
+        "output": [{
+            "type": "reasoning",
+            "summary": [{ "type": "summary_text", "text": "hi" }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("reasoning must decode");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::ReasoningDelta { text } if text == "hi")),
+        "complete reasoning summary_text must be ReasoningDelta, got {events:?}"
+    );
+}
+
+#[test]
+fn responses_complete_encrypted_reasoning_is_one_protocol() {
+    let body = serde_json::to_vec(&json!({
+        "status": "completed",
+        "usage": { "input_tokens": 1, "output_tokens": 1 },
+        "output": [{
+            "type": "reasoning",
+            "encrypted_content": "enc"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("encrypted reasoning must decode");
+    let protocols = events
+        .iter()
+        .filter(|ev| {
+            matches!(
+                ev,
+                IrStreamEvent::Protocol { item_type, .. } if item_type == "reasoning"
+            )
+        })
+        .count();
+    assert_eq!(
+        protocols, 1,
+        "encrypted reasoning must be one Protocol, got {events:?}"
+    );
+}
+
+#[test]
+fn chat_complete_non_function_tool_call_is_protocol() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_custom",
+                    "type": "custom",
+                    "custom": { "name": "browser", "input": "{}" }
+                }]
+            }
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("non-function tool_call must decode");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::Protocol { .. })),
+        "complete tool_calls type != function must be Protocol, got {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. })),
+        "must not invent a function ToolCallStart: {events:?}"
     );
 }

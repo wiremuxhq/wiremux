@@ -1,4 +1,4 @@
-//! SSE encode/decode for the three v1 dialects.
+//! SSE encode/decode for the four v1 dialects.
 
 mod chat;
 mod complete;
