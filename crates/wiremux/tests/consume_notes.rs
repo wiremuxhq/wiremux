@@ -30,6 +30,16 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         "Bline/unpublished attach stays on git tag v0.1.0"
     );
     assert!(
+        notes.contains("leftover-only")
+            && notes.contains("Production still uses host TokenProviders")
+            && notes.contains("production does not wrap it"),
+        "notes must not claim the leftover pin already wraps TokenProvider"
+    );
+    assert!(
+        !notes.contains("Wrap `wiremux_auth::TokenProvider` inside `bline_auth::TokenProvider`.\n   Done in Bline"),
+        "wrap is still later; leftover-only pin is not consume"
+    );
+    assert!(
         notes.contains("default-features = false"),
         "maps pin stays maps-only"
     );
