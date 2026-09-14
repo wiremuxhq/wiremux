@@ -500,6 +500,20 @@ async fn stream_http_200_garbage_body_is_vendor() {
 }
 
 #[tokio::test]
+async fn send_forces_stream_false_even_when_ir_says_true() {
+    let (base, handle) = spawn_one(200, "OK", "", complete_chat_body());
+    let client = client_for(&base, "sk-test");
+    let mut ir = simple_ir("gpt-4");
+    ir.sampling.stream = Some(true);
+    let _ = client.send(ir).await.expect("send");
+    let req = handle.join().expect("join");
+    assert!(
+        req.contains("\"stream\":false") || req.contains("\"stream\": false"),
+        "send() must force stream=false, got {req}"
+    );
+}
+
+#[tokio::test]
 async fn stream_forces_stream_true_even_when_ir_says_false() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");

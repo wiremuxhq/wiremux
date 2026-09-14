@@ -271,8 +271,9 @@ impl WireClient {
     /// Encode, POST a complete body, decode via [`decode_response`].
     pub async fn send(
         &self,
-        ir: IrRequest,
+        mut ir: IrRequest,
     ) -> Result<(Vec<IrStreamEvent>, LossReport), ClientError> {
+        ir.sampling.stream = Some(false);
         let wire = profile_wire(&self.profile)?;
         let (encoded, loss) = encode(wire, &ir, &self.profile)?;
         let url = upstream_url_for_model(&self.profile, Some(ir.model.as_str()), false)

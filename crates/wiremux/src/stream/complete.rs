@@ -224,11 +224,21 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                 };
                 for part in content {
                     let ty = part.get("type").and_then(Value::as_str);
-                    if !matches!(ty, Some("output_text") | Some("text")) {
-                        continue;
-                    }
-                    if let Some(text) = str_field(part, "text").filter(|s| !s.is_empty()) {
-                        out.push(IrStreamEvent::TextDelta { text });
+                    match ty {
+                        Some("output_text") | Some("text") => {
+                            if let Some(text) = str_field(part, "text").filter(|s| !s.is_empty()) {
+                                out.push(IrStreamEvent::TextDelta { text });
+                            }
+                        }
+                        Some("refusal") => {
+                            if let Some(text) = str_field(part, "refusal")
+                                .or_else(|| str_field(part, "text"))
+                                .filter(|s| !s.is_empty())
+                            {
+                                out.push(IrStreamEvent::TextDelta { text });
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

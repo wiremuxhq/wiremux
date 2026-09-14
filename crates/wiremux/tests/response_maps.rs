@@ -185,6 +185,26 @@ fn responses_complete_output_text_is_text_delta() {
 }
 
 #[test]
+fn responses_complete_refusal_is_text_delta() {
+    let body = serde_json::to_vec(&json!({
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "content": [{ "type": "refusal", "refusal": "nope" }]
+        }]
+    }))
+    .expect("json");
+    let events =
+        decode_response(Wire::Responses, &body, &responses_profile()).expect("refusal must decode");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "nope")),
+        "complete refusal must be TextDelta, got {events:?}"
+    );
+}
+
+#[test]
 fn gemini_prompt_feedback_block_reason_is_content_filter() {
     let body = serde_json::to_vec(&json!({
         "promptFeedback": { "blockReason": "SAFETY" }
