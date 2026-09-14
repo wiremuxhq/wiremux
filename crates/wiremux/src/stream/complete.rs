@@ -266,16 +266,6 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                         }
                     }
                 }
-                if item
-                    .get("encrypted_content")
-                    .and_then(Value::as_str)
-                    .is_some_and(|s| !s.is_empty())
-                {
-                    out.push(IrStreamEvent::Protocol {
-                        item_type: "reasoning".into(),
-                        payload: item.clone(),
-                    });
-                }
             }
             _ => {}
         }

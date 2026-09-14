@@ -286,6 +286,34 @@ fn responses_complete_reasoning_summary_is_reasoning_delta() {
 }
 
 #[test]
+fn responses_complete_encrypted_reasoning_is_one_protocol() {
+    let body = serde_json::to_vec(&json!({
+        "status": "completed",
+        "usage": { "input_tokens": 1, "output_tokens": 1 },
+        "output": [{
+            "type": "reasoning",
+            "encrypted_content": "enc"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("encrypted reasoning must decode");
+    let protocols = events
+        .iter()
+        .filter(|ev| {
+            matches!(
+                ev,
+                IrStreamEvent::Protocol { item_type, .. } if item_type == "reasoning"
+            )
+        })
+        .count();
+    assert_eq!(
+        protocols, 1,
+        "encrypted reasoning must be one Protocol, got {events:?}"
+    );
+}
+
+#[test]
 fn chat_complete_non_function_tool_call_is_protocol() {
     let body = serde_json::to_vec(&json!({
         "choices": [{
