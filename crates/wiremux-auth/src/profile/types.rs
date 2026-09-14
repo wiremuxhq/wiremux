@@ -527,7 +527,8 @@ pub enum CredsFormat {
     /// Pointers: `/{issuer}::{client_id}/key` (access), `/refresh_token`,
     /// `/expires_at` (RFC 3339). `issuer` is the origin of `authorize_url`,
     /// else `token_url`. A `{issuer}::{client_id}@{name}` suffix matches
-    /// when the exact key is absent.
+    /// when the exact key is absent. Empty `client_id` matches the single
+    /// `{issuer}::` entry; two or more issuer entries fail closed.
     OidcAuthJson,
     /// GitHub Copilot `hosts.json` / `apps.json` layout.
     ///

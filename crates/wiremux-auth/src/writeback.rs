@@ -51,14 +51,31 @@ fn escape_pointer_token(token: &str) -> String {
 }
 
 /// Exact `{issuer}::{client_id}`, else `{issuer}::{client_id}@{name}`.
-pub(crate) fn select_oidc_entry_key(doc: Option<&Value>, want: &str) -> String {
+///
+/// Empty `client_id` (`want` ends with `::`) matches the single store
+/// key for that issuer. Zero matches keep `want`. Two or more fail
+/// closed so we do not guess a client.
+pub(crate) fn select_oidc_entry_key(doc: Option<&Value>, want: &str) -> Result<String, AuthError> {
     let Some(obj) = doc.and_then(Value::as_object) else {
-        return want.to_owned();
+        return Ok(want.to_owned());
     };
     if obj.contains_key(want) {
-        return want.to_owned();
+        return Ok(want.to_owned());
     }
-    obj.keys()
+    if let Some(issuer) = want.strip_suffix("::").filter(|s| !s.is_empty()) {
+        let prefix = format!("{issuer}::");
+        let matches: Vec<&String> = obj.keys().filter(|key| key.starts_with(&prefix)).collect();
+        return match matches.as_slice() {
+            [] => Ok(want.to_owned()),
+            [one] => Ok((*one).clone()),
+            many => Err(AuthError::MissingField(format!(
+                "oauth.client_id ({} issuer entries; set client_id to pick one)",
+                many.len()
+            ))),
+        };
+    }
+    Ok(obj
+        .keys()
         .find(|key| {
             key.strip_prefix(want)
                 .and_then(|rest| rest.strip_prefix('@'))
@@ -67,7 +84,7 @@ pub(crate) fn select_oidc_entry_key(doc: Option<&Value>, want: &str) -> String {
                 })
         })
         .cloned()
-        .unwrap_or_else(|| want.to_owned())
+        .unwrap_or_else(|| want.to_owned()))
 }
 
 fn oidc_issuer_and_client(oauth: &OauthPack) -> Result<(String, String), AuthError> {
@@ -76,7 +93,7 @@ fn oidc_issuer_and_client(oauth: &OauthPack) -> Result<(String, String), AuthErr
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| AuthError::MissingField("oauth.client_id".into()))?
+        .unwrap_or("")
         .to_owned();
     let issuer = oauth
         .authorize_url
@@ -101,8 +118,11 @@ pub(crate) fn oidc_store_pointers(
         return Ok(None);
     }
     let (issuer, client) = oidc_issuer_and_client(oauth)?;
+    if client.is_empty() && doc.is_none() {
+        return Err(AuthError::MissingField("oauth.client_id".into()));
+    }
     let want = oidc_profile_key(&issuer, &client);
-    let entry = select_oidc_entry_key(doc, &want);
+    let entry = select_oidc_entry_key(doc, &want)?;
     let escaped = escape_pointer_token(&entry);
     Ok(Some((
         format!("/{escaped}/key"),
@@ -284,7 +304,7 @@ pub async fn remove_store_entry(oauth: &OauthPack) -> Result<(), AuthError> {
     }
     let (issuer, client) = oidc_issuer_and_client(oauth)?;
     let want = oidc_profile_key(&issuer, &client);
-    let key = select_oidc_entry_key(Some(&doc), &want);
+    let key = select_oidc_entry_key(Some(&doc), &want)?;
     let obj = doc.as_object_mut().expect("object");
     if obj.remove(&key).is_none() {
         return Err(AuthError::TokenProvider(format!(
@@ -677,8 +697,31 @@ mod tests {
                     "https://auth.openai.com::wiremux-cli@work": {"key": "x"}
                 })),
                 "https://auth.openai.com::wiremux-cli"
-            ),
+            )
+            .expect("named suffix"),
             "https://auth.openai.com::wiremux-cli@work"
+        );
+        assert_eq!(
+            select_oidc_entry_key(
+                Some(&serde_json::json!({
+                    "https://auth.x.ai::only": {"key": "x"}
+                })),
+                "https://auth.x.ai::"
+            )
+            .expect("sole issuer"),
+            "https://auth.x.ai::only"
+        );
+        let err = select_oidc_entry_key(
+            Some(&serde_json::json!({
+                "https://auth.x.ai::one": {"key": "a"},
+                "https://auth.x.ai::two": {"key": "b"}
+            })),
+            "https://auth.x.ai::",
+        )
+        .expect_err("ambiguous");
+        assert!(
+            err.to_string().contains("client_id"),
+            "ambiguous issuer must name client_id, got {err}"
         );
     }
 
