@@ -13,7 +13,43 @@ use wiremux_auth::{
 };
 
 fn presets_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("presets")
+}
+
+fn workspace_presets_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../presets")
+}
+
+#[test]
+fn crate_presets_match_workspace_and_stay_inside_package() {
+    let crate_dir = presets_dir();
+    let workspace_dir = workspace_presets_dir();
+    let shipped_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/profile/shipped.rs"
+    ));
+    assert!(
+        !shipped_src.contains("/../../presets/"),
+        "include_str! must not escape the package root"
+    );
+    let mut crate_names: Vec<String> = fs::read_dir(&crate_dir)
+        .expect("crate presets")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".toml"))
+        .collect();
+    let mut workspace_names: Vec<String> = fs::read_dir(&workspace_dir)
+        .expect("workspace presets")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".toml"))
+        .collect();
+    crate_names.sort();
+    workspace_names.sort();
+    assert_eq!(crate_names, workspace_names, "preset file set drifted");
+    for name in &crate_names {
+        let crate_bytes = fs::read(crate_dir.join(name)).expect(name);
+        let workspace_bytes = fs::read(workspace_dir.join(name)).expect(name);
+        assert_eq!(crate_bytes, workspace_bytes, "{name} drifted");
+    }
 }
 
 fn shipped_opts() -> LoadOptions<'static> {

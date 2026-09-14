@@ -1,0 +1,33 @@
+# presets/openai-codex-oauth.toml
+schema_version = 1
+id = "openai-codex-oauth"
+display_name = "Official ChatGPT / Codex OAuth"
+wire = "responses"
+tool_type_policy = "hard-error"
+stream_unknown_policy = "hard-error"
+base_url = "https://api.openai.com"
+chat_path = "/v1/responses"
+auth_scheme = "bearer"
+header_merge = "union"
+
+[oauth]
+# URLs from Bline known_providers() "openai" (auth.rs).
+authorize_url = "https://auth.openai.com/oauth/authorize"
+device_auth_url = "https://auth.openai.com/oauth/device/code"
+token_url = "https://auth.openai.com/oauth/token"
+# Do not impersonate Bline's client id "bline-cli". Empty after subst:
+# `wiremux auth login` exits 2 (not-ready). A later greenfield legal pass
+# may set a wiremux public client and flip login to "pkce".
+client_id = ""
+redirect_uri = "http://localhost:19284/callback"
+scopes = ["openid", "profile", "offline_access"]
+list_merge = "union"
+pkce = true
+refresh_grant = "refresh_token"
+token_request_format = "form"
+creds_format = "oidc-auth-json"
+creds_path = "~/.config/wiremux/auth-openai.json"
+login = "none"
+
+[oauth.refresh_body]
+# grant_type and client_id filled by the engine when omitted.
