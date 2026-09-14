@@ -828,6 +828,33 @@ fn load_from_env(oauth: &OauthPack) -> Result<Option<Loaded>, AuthError> {
     }))
 }
 
+fn process_login_account() -> Option<String> {
+    for key in ["USER", "USERNAME"] {
+        if let Ok(v) = std::env::var(key) {
+            let t = v.trim();
+            if !t.is_empty() {
+                return Some(t.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn keychain_accounts_to_try(oauth: &OauthPack) -> Vec<String> {
+    let mut accounts = Vec::new();
+    if let Some(login) = process_login_account() {
+        accounts.push(login);
+    }
+    for account in &oauth.keychain_accounts {
+        let t = account.trim();
+        if t.is_empty() || accounts.iter().any(|a| a == t) {
+            continue;
+        }
+        accounts.push(t.to_owned());
+    }
+    accounts
+}
+
 fn load_from_keychain(oauth: &OauthPack) -> Result<Option<Loaded>, AuthError> {
     let Some(service) = oauth
         .keychain_service
@@ -837,11 +864,11 @@ fn load_from_keychain(oauth: &OauthPack) -> Result<Option<Loaded>, AuthError> {
     else {
         return Ok(None);
     };
-    for account in &oauth.keychain_accounts {
+    for account in keychain_accounts_to_try(oauth) {
         if account.is_empty() {
             continue;
         }
-        let Ok(secret) = read_keychain(service, account) else {
+        let Ok(secret) = read_keychain(service, &account) else {
             continue;
         };
         if secret.trim().is_empty() {
@@ -1212,12 +1239,7 @@ fn attempted_cred_stores(oauth: &OauthPack) -> String {
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        let accounts: Vec<&str> = oauth
-            .keychain_accounts
-            .iter()
-            .map(|s| s.as_str().trim())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let accounts = keychain_accounts_to_try(oauth);
         if accounts.is_empty() {
             tried.push(format!("keychain service={service}"));
         } else {
@@ -1457,6 +1479,68 @@ grant_type = "refresh_token"
             doc["claudeAiOauth"]["refreshToken"].as_str(),
             Some("rt-new")
         );
+    }
+
+    fn claude_code_keychain_toml(token_url: &str) -> String {
+        format!(
+            r#"
+schema_version = 1
+id = "kc-login"
+[oauth]
+token_url = "{token_url}"
+client_id = "test-client"
+token_request_format = "json"
+creds_format = "claude-credentials"
+keychain_service = "Claude Code-credentials"
+keychain_accounts = ["Claude Code", "credentials"]
+login = "none"
+[oauth.refresh_body]
+grant_type = "refresh_token"
+"#
+        )
+    }
+
+    #[tokio::test]
+    async fn keychain_accounts_username_fallback_loads_planted_token() {
+        let home = IsolatedHome::with_extra_envs(&["USER", "USERNAME"]);
+        home.set_env("USER", "");
+        home.set_env("USERNAME", "win-login");
+        home.plant_keychain(
+            "Claude Code-credentials",
+            "win-login",
+            &serde_json::json!({
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat01-win-login",
+                    "refreshToken": "rt",
+                    "expiresAt": 4_102_444_800_000_i64
+                }
+            }),
+        );
+        let oauth = pack_from_toml(&claude_code_keychain_toml(&closed_http_url()));
+        let p = provider(&oauth);
+        assert_eq!(
+            p.get_token().await.expect("USERNAME keychain account"),
+            "sk-ant-oat01-win-login"
+        );
+    }
+
+    #[test]
+    fn keychain_accounts_to_try_does_not_duplicate_listed_login() {
+        let home = IsolatedHome::with_extra_envs(&["USER", "USERNAME"]);
+        home.set_env("USER", "Claude Code");
+        let oauth = pack_from_toml(&claude_code_keychain_toml(&closed_http_url()));
+        let tried = keychain_accounts_to_try(&oauth);
+        assert_eq!(
+            tried,
+            vec!["Claude Code".to_string(), "credentials".to_string()]
+        );
+        assert_eq!(tried.iter().filter(|a| *a == "Claude Code").count(), 1);
+        let listed = attempted_cred_stores(&oauth);
+        assert!(
+            listed.contains("accounts=Claude Code,credentials"),
+            "{listed}"
+        );
+        let _ = home;
     }
 
     fn spawn_counting_http_server(

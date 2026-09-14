@@ -391,6 +391,59 @@ async fn token_for_profile_anthropic_prefers_auth_token() {
 }
 
 #[tokio::test]
+async fn token_for_profile_anthropic_oauth_reads_login_keychain_account() {
+    let home = IsolatedHome::new();
+    let login = ["USER", "USERNAME"].into_iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|v| v.trim().to_owned())
+            .filter(|s| !s.is_empty())
+    });
+    let login = login.expect("USER or USERNAME must be set to plant the live login account");
+    home.plant_keychain(
+        "Claude Code-credentials",
+        &login,
+        &serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "sk-ant-oat01-login-acct",
+                "refreshToken": "rt",
+                "expiresAt": 4_102_444_800_000_i64
+            }
+        }),
+    );
+    let token = token_for_profile("anthropic-oauth")
+        .await
+        .expect("login keychain account");
+    assert_eq!(token, "sk-ant-oat01-login-acct");
+    let _ = home;
+}
+
+#[test]
+fn anthropic_oauth_shipped_toml_keeps_static_keychain_accounts() {
+    let toml = fs::read_to_string(presets_dir().join("anthropic-oauth.toml"))
+        .expect("crate anthropic-oauth.toml");
+    assert!(
+        toml.contains(r#"keychain_accounts = ["Claude Code", "credentials"]"#),
+        "shipped keychain_accounts must stay Claude Code and credentials"
+    );
+    assert!(
+        !toml.contains("$USER"),
+        "literal $USER is not a keychain account"
+    );
+    for key in ["USER", "USERNAME"] {
+        if let Ok(v) = std::env::var(key) {
+            let t = v.trim();
+            if !t.is_empty() && t != "Claude Code" && t != "credentials" {
+                assert!(
+                    !toml.contains(t),
+                    "shipped TOML must not contain machine username {t:?}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn token_for_profile_lmstudio_empty_static() {
     let _home = IsolatedHome::new();
     let token = token_for_profile("lmstudio")
