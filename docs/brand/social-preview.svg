@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img">
+  <title>wiremux</title>
+  <defs>
+    <radialGradient id="field" cx="640" cy="300" r="720" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#161A20"/>
+      <stop offset="1" stop-color="#09090B"/>
+    </radialGradient>
+    <linearGradient id="bus" x1="80" y1="320" x2="1180" y2="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F4F7FB"/>
+      <stop offset="0.62" stop-color="#C9D7E4"/>
+      <stop offset="1" stop-color="#3BE6A0"/>
+    </linearGradient>
+    <linearGradient id="tap" x1="280" y1="40" x2="1040" y2="600" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8EC4E4"/>
+      <stop offset="1" stop-color="#3A6F96"/>
+    </linearGradient>
+    <radialGradient id="out" cx="1160" cy="320" r="90" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#C8FFE6"/>
+      <stop offset="0.45" stop-color="#2EE59D"/>
+      <stop offset="1" stop-color="#0E7A52"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#field)"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g stroke="url(#tap)" stroke-width="36">
+      <path d="M360 48 V200"/>
+      <path d="M360 592 V440"/>
+      <path d="M820 270 L1020 90"/>
+      <path d="M820 370 L1020 550"/>
+    </g>
+    <g stroke="url(#bus)" stroke-width="52">
+      <path d="M90 200 H360 L520 270 H820"/>
+      <path d="M70 320 H1100"/>
+      <path d="M90 440 H360 L520 370 H820"/>
+    </g>
+  </g>
+  <circle cx="360" cy="48" r="36" fill="url(#tap)"/>
+  <circle cx="360" cy="592" r="36" fill="url(#tap)"/>
+  <circle cx="1020" cy="90" r="36" fill="url(#tap)"/>
+  <circle cx="1020" cy="550" r="36" fill="url(#tap)"/>
+  <circle cx="90" cy="200" r="48" fill="#F4F7FB"/>
+  <circle cx="70" cy="320" r="48" fill="#F4F7FB"/>
+  <circle cx="90" cy="440" r="48" fill="#F4F7FB"/>
+  <circle cx="1160" cy="320" r="64" fill="url(#out)"/>
+</svg>
