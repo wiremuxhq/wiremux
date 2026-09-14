@@ -979,6 +979,14 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         body["stream"] = json!(stream);
     }
     encode_thinking(s, body, report);
+    if body.get("max_tokens").is_none() {
+        body["max_tokens"] = json!(MESSAGES_DEFAULT_COMPLETION_TOKENS);
+        report.record(
+            "sampling.max_tokens",
+            LossAction::Preserve,
+            "messages requires max_tokens",
+        );
+    }
     if !s.include.is_empty() {
         report.record("sampling.include", LossAction::Drop, "no slot");
     }

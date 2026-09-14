@@ -432,24 +432,19 @@ pub fn token_status(profile: &ResolvedProfile) -> TokenStatus {
             detail: "header credential present".into(),
         };
     }
-    if let Some(oauth) = &profile.oauth {
-        match provider_from_profile(profile) {
-            Ok(_) => {
-                return TokenStatus {
-                    id: profile.id.clone(),
-                    available: true,
-                    detail: "credentials loaded".into(),
-                };
-            }
-            Err(err) => {
-                let _ = oauth;
-                return TokenStatus {
-                    id: profile.id.clone(),
-                    available: false,
-                    detail: redact_secret_looking(&err.to_string()),
-                };
-            }
-        }
+    if profile.oauth.is_some() || !profile.access_env.is_empty() {
+        return match provider_from_profile(profile) {
+            Ok(_) => TokenStatus {
+                id: profile.id.clone(),
+                available: true,
+                detail: "credentials loaded".into(),
+            },
+            Err(err) => TokenStatus {
+                id: profile.id.clone(),
+                available: false,
+                detail: redact_secret_looking(&err.to_string()),
+            },
+        };
     }
     TokenStatus {
         id: profile.id.clone(),
@@ -546,7 +541,7 @@ pub async fn proxy_token(profile: &ResolvedProfile) -> Result<Option<String>, St
             .to_string();
         return Ok(Some(token));
     }
-    if profile.oauth.is_some() {
+    if profile.oauth.is_some() || !profile.access_env.is_empty() {
         let provider = provider_from_profile(profile).map_err(|e| e.to_string())?;
         let token = provider.get_token().await.map_err(|e| e.to_string())?;
         return Ok(Some(token));
@@ -564,7 +559,7 @@ pub fn upstream_url(profile: &ResolvedProfile) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremux_auth::parse_profile_str;
+    use wiremux_auth::{IsolatedHome, parse_profile_str};
 
     #[test]
     fn redact_printed_url_keeps_origin_only() {
@@ -756,6 +751,30 @@ base_url = "https://generativelanguage.googleapis.com"
         assert!(parse_listen("0.0.0.0:0").is_err());
         let addr = parse_listen("127.0.0.1:0").expect("loopback ephemeral listen");
         assert_eq!(addr, "127.0.0.1:0".parse().expect("socket addr"));
+    }
+
+    #[test]
+    fn token_status_access_env_is_available() {
+        let _home = IsolatedHome::new();
+        _home.set_env("XAI_API_KEY", "xai-status-must-not-print");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "xai"
+wire = "chat-completions"
+auth_scheme = "bearer"
+access_env = ["XAI_API_KEY", "GROK_API_KEY"]
+base_url = "https://api.x.ai"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile);
+        assert!(status.available, "{}", status.detail);
+        assert!(
+            !status.detail.contains("xai-status-must-not-print"),
+            "status leaked the token: {}",
+            status.detail
+        );
     }
 
     #[test]

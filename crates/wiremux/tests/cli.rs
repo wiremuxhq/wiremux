@@ -22,8 +22,11 @@ fn isolated_home() -> (tempfile::TempDir, Command) {
     cmd.env("XDG_CONFIG_HOME", home.path().join("config"));
     cmd.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
     cmd.env_remove("ANTHROPIC_API_KEY");
+    cmd.env_remove("ANTHROPIC_AUTH_TOKEN");
     cmd.env_remove("OPENAI_API_KEY");
     cmd.env_remove("OPENROUTER_API_KEY");
+    cmd.env_remove("XAI_API_KEY");
+    cmd.env_remove("GROK_API_KEY");
     cmd.env_remove("WIREMUX_NO_SHIPPED_PRESETS");
     cmd.env_remove("WIREMUX_PROFILE_DIR");
     (home, cmd)
@@ -257,6 +260,28 @@ fn auth_login_openai_exits_2_until_client_id() {
 }
 
 #[test]
+fn auth_status_xai_access_env_is_available() {
+    let (_home, mut cmd) = isolated_home();
+    let secret = "xai-test-must-not-print-this-value";
+    let out = cmd
+        .env("XAI_API_KEY", secret)
+        .args(["auth", "status", "--profile", "xai"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "{:?}", out);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!text.contains(secret), "status printed the token: {text}");
+    assert!(
+        text.to_ascii_lowercase().contains("available"),
+        "shipped xai must honor access_env, got: {text}"
+    );
+}
+
+#[test]
 fn auth_status_does_not_print_token() {
     let (_home, mut cmd) = isolated_home();
     let secret = "sk-ant-test-must-not-print-this-value";
@@ -366,6 +391,11 @@ fn proxy_maps_request_to_profile_upstream() {
         let n = stream.read(&mut buf).unwrap_or(0);
         let req = String::from_utf8_lossy(&buf[..n]);
         assert!(req.contains("POST /v1/responses"), "upstream path: {req}");
+        assert!(
+            req.to_ascii_lowercase()
+                .contains("content-type: application/json"),
+            "upstream POST must label JSON; xAI returns 415 without it, got: {req}"
+        );
         let body = r#"{"id":"resp_proxy","object":"response"}"#;
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -425,6 +455,164 @@ chat_path = "/v1/responses"
     assert!(
         resp.contains("resp_proxy"),
         "proxy should return upstream body, got: {resp}"
+    );
+}
+
+#[test]
+fn proxy_forwards_upstream_error_on_cross_dialect() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            req.contains("\"max_tokens\""),
+            "messages encode must send max_tokens, got: {req}"
+        );
+        let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"missing max_tokens"}}"#;
+        let resp = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "claude-proxy.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "claude-proxy"
+wire = "messages"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/messages"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body =
+        r#"{"model":"claude-haiku-4-5","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("400") && resp.contains("missing max_tokens"),
+        "cross-dialect must forward upstream 400, not 501, got: {resp}"
+    );
+    assert!(
+        !resp.contains("not mapped"),
+        "must not hide the vendor error behind 501, got: {resp}"
+    );
+}
+
+#[test]
+fn proxy_sends_access_env_bearer() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            req.to_ascii_lowercase()
+                .contains("authorization: bearer xai-proxy-must-send"),
+            "upstream must see access_env bearer, got: {req}"
+        );
+        let body = r#"{"id":"chatcmpl-auth","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "xai-env.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "xai-env"
+wire = "chat-completions"
+auth_scheme = "bearer"
+access_env = ["XAI_API_KEY", "GROK_API_KEY"]
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .env("XAI_API_KEY", "xai-proxy-must-send")
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"grok-4","stream":false,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("chatcmpl-auth") && resp.contains("pong"),
+        "proxy should return upstream completion, got: {resp}"
     );
 }
 
