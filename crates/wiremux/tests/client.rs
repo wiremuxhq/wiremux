@@ -594,8 +594,64 @@ async fn list_models_404_is_empty() {
     let req = handle.join().expect("join");
     assert!(models.is_empty(), "{models:?}");
     assert!(
+        req.contains("GET /v1/models"),
+        "list_models must GET /v1/models: {req}"
+    );
+}
+
+#[tokio::test]
+async fn list_models_gemini_uses_v1beta() {
+    let (base, handle) = spawn_one(404, "Not Found", "", "missing");
+    let profile = parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "mock-gemini"
+wire = "gemini"
+auth_scheme = "bearer"
+base_url = "{base}"
+chat_path = "/v1beta/models/{{model}}:generateContent"
+"#
+    ))
+    .expect("gemini");
+    let client =
+        WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("sk-test")))
+            .expect("client");
+    let models = client.list_models().await.expect("404 list");
+    let req = handle.join().expect("join");
+    assert!(models.is_empty(), "{models:?}");
+    assert!(
+        req.contains("GET /v1beta/models"),
+        "gemini list_models must GET /v1beta/models: {req}"
+    );
+}
+
+#[tokio::test]
+async fn list_models_no_version_prefix_gets_models() {
+    let (base, handle) = spawn_one(404, "Not Found", "", "missing");
+    let profile = parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "mock-bare"
+wire = "chat-completions"
+auth_scheme = "bearer"
+base_url = "{base}"
+chat_path = "/chat/completions"
+"#
+    ))
+    .expect("bare");
+    let client =
+        WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("sk-test")))
+            .expect("client");
+    let models = client.list_models().await.expect("404 list");
+    let req = handle.join().expect("join");
+    assert!(models.is_empty(), "{models:?}");
+    assert!(
         req.contains("GET /models"),
-        "list_models must GET /models: {req}"
+        "list_models without a version prefix must GET /models: {req}"
+    );
+    assert!(
+        !req.contains("GET /v1/models"),
+        "must not invent a version prefix: {req}"
     );
 }
 
@@ -652,7 +708,7 @@ chat_path = "/v1/chat/completions"
     let (req, extra) = handle.join().expect("join");
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].id, "grok-3");
-    assert!(req.contains("GET /models"), "{req}");
+    assert!(req.contains("GET /v1/models"), "{req}");
     assert!(
         !req.contains("/api/show"),
         "xAI-shaped loopback test port must not POST /api/show: {req}"
