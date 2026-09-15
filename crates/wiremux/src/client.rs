@@ -1094,7 +1094,7 @@ base_url = "https://example.invalid"
     }
 
     #[test]
-    fn missing_base_url_names_http_field() {
+    fn missing_base_url_names_top_level_field() {
         let profile = parse_profile_str(
             r#"
 schema_version = 1
@@ -1104,14 +1104,15 @@ wire = "messages"
         )
         .expect("parse");
         let err = upstream_url_for_model(&profile, None, false).expect_err("no base_url");
+        assert!(err.contains("base_url"), "must name base_url, got {err}");
         assert!(
-            err.contains("http.base_url"),
-            "must name http.base_url, got {err}"
+            !err.contains("http.base_url"),
+            "must not tell the user to set http.base_url, got {err}"
         );
     }
 
     #[tokio::test]
-    async fn list_models_missing_base_url_names_http_field() {
+    async fn list_models_missing_base_url_names_top_level_field() {
         let profile = parse_profile_str(
             r#"
 schema_version = 1
@@ -1128,8 +1129,12 @@ wire = "messages"
         let err = client.list_models().await.expect_err("no base_url");
         let text = err.to_string();
         assert!(
-            text.contains("http.base_url"),
-            "list_models must name http.base_url, got {text}"
+            text.contains("base_url"),
+            "list_models must name base_url, got {text}"
+        );
+        assert!(
+            !text.contains("http.base_url"),
+            "list_models must not tell the user to set http.base_url, got {text}"
         );
     }
 

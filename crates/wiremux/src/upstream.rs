@@ -4,7 +4,7 @@ use wiremux_auth::{ResolvedProfile, Wire};
 
 /// Shared miss text for `list_models` / `upstream_url_for_model`.
 pub(crate) const MISSING_BASE_URL: &str =
-    "profile has no base_url; set `http.base_url` on the profile";
+    "profile has no base_url; set top-level `base_url` on the profile";
 
 /// Join `base_url` + `chat_path`, substituting `{model}` when present.
 ///
