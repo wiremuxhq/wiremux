@@ -249,7 +249,8 @@ Shipped catalog ids and the canact mapping:
 Also shipped: `grok-ollama`, `openai-codex-oauth`, `openrouter-codex`,
 `xai-oauth` (`https://api.x.ai`), and `xai-grok-build` (Grok Build CLI
 proxy `https://cli-chat-proxy.grok.com`, same empty-client
-`oidc-auth-json` pack as `xai-oauth`). Key ids use top-level
+`oidc-auth-json` pack as `xai-oauth`, plus `x-grok-client-version =
+0.1.202` so the proxy does not return HTTP 426). Key ids use top-level
 `access_env` (first non-empty wins). `lmstudio` and `vllm` are
 `auth_scheme = none`. Do not ship a product client id on either xAI
 OAuth profile.

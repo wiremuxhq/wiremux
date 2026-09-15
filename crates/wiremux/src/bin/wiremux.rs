@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use wiremux::cli::{
-    EXIT_ERROR, EXIT_NOT_READY, EXIT_OK, format_status, load_cli_profile, parse_wire, run_login,
-    token_status, validate_report,
+    EXIT_ERROR, EXIT_NOT_READY, EXIT_OK, format_status, list_cli_profiles, load_cli_profile,
+    parse_wire, run_login, token_status, validate_report,
 };
 
 #[derive(Parser)]
@@ -63,6 +63,8 @@ enum AuthCommand {
 
 #[derive(Subcommand)]
 enum ProfileCommand {
+    /// Print catalog ids (shipped plus user overlay dirs).
+    List,
     /// Gist lint: refuse code-exec, print resolved URLs with secrets redacted.
     Validate {
         /// Profile id or file path.
@@ -74,6 +76,9 @@ enum ProfileCommand {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let code = match cli.command {
+        Command::Profile {
+            command: ProfileCommand::List,
+        } => cmd_list(),
         Command::Profile {
             command: ProfileCommand::Validate { path },
         } => cmd_validate(&path),
@@ -91,6 +96,21 @@ async fn main() -> ExitCode {
         } => cmd_proxy(&listen, &from, &profile, dump_loss).await,
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))
+}
+
+fn cmd_list() -> i32 {
+    match list_cli_profiles() {
+        Ok(ids) => {
+            for id in ids {
+                println!("{id}");
+            }
+            EXIT_OK
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            EXIT_ERROR
+        }
+    }
 }
 
 fn cmd_validate(path: &std::path::Path) -> i32 {

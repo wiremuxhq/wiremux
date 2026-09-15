@@ -305,6 +305,45 @@ fn auth_status_does_not_print_token() {
 }
 
 #[test]
+fn profile_list_includes_shipped_xai_grok_build() {
+    let (_home, mut cmd) = isolated_home();
+    let out = cmd.args(["profile", "list"]).output().expect("run");
+    assert_eq!(out.status.code(), Some(0), "{:?}", out);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.lines().any(|l| l == "xai-grok-build"),
+        "expected xai-grok-build in catalog list, got: {text}"
+    );
+    assert!(
+        text.lines().any(|l| l == "xai-oauth"),
+        "expected xai-oauth in catalog list, got: {text}"
+    );
+}
+
+#[test]
+fn auth_status_xai_grok_build_unavailable_does_not_say_missing_no() {
+    let (_home, mut cmd) = isolated_home();
+    let out = cmd
+        .args(["auth", "status", "--profile", "xai-grok-build"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2), "{:?}", out);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !text.contains("missing no credentials"),
+        "awkward missing+no wording, got: {text}"
+    );
+    assert!(
+        text.contains("no credentials") && text.contains("creds_path="),
+        "expected no credentials + creds_path, got: {text}"
+    );
+}
+
+#[test]
 fn auth_status_reports_unavailable_without_creds() {
     let (_home, mut cmd) = isolated_home();
     let out = cmd

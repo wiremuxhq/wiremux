@@ -1261,7 +1261,7 @@ fn empty_access_error(oauth: &OauthPack) -> AuthError {
 }
 
 fn missing_creds(oauth: &OauthPack) -> AuthError {
-    AuthError::MissingField(format!(
+    AuthError::TokenProvider(format!(
         "no credentials ({}); {}",
         attempted_cred_stores(oauth),
         setup_hint(oauth)
