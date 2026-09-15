@@ -361,6 +361,27 @@ mod tests {
     }
 
     #[test]
+    fn load_profile_xai_grok_bild_suggests_xai_grok_build() {
+        let err = load_profile(
+            "xai-grok-bild",
+            &LoadOptions {
+                include_user_config: false,
+                ..LoadOptions::default()
+            },
+        )
+        .expect_err("typo must be NotFound");
+        let text = err.to_string();
+        assert!(
+            text.contains("did you mean `xai-grok-build`"),
+            "one-letter typo must prefer xai-grok-build over xai, got {text}"
+        );
+        assert!(
+            !text.contains("did you mean `xai`"),
+            "must not prefer the short prefix, got {text}"
+        );
+    }
+
+    #[test]
     fn load_profile_for_wire_prefers_catalog_id_equal_to_wire_name() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
