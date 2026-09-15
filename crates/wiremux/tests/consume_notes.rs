@@ -20,24 +20,30 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         .and_then(|rest| rest.split("```").next())
         .expect("suggested attach toml fence");
     assert!(
-        attach.contains("wiremux-auth = \"0.2.1\"")
-            && attach.contains("version = \"0.2.1\"")
+        attach.contains("wiremux-auth = \"0.3.0\"")
+            && attach.contains("version = \"0.3.0\"")
             && attach.contains("default-features = false"),
         "published-host attach must list crates.io form, got {attach}"
     );
     assert!(
-        notes.contains("tag = \"v0.1.0\""),
-        "Bline/unpublished attach stays on git tag v0.1.0"
+        !notes.contains("tag = \"v0.1.0\""),
+        "Bline attach is crates.io 0.3.0, not git tag v0.1.0"
     );
     assert!(
-        notes.contains("leftover-only")
-            && notes.contains("Production still uses host TokenProviders")
-            && notes.contains("production does not wrap it"),
-        "notes must not claim the leftover pin already wraps TokenProvider"
+        !notes.contains("leftover-only")
+            && !notes.contains("Production still uses host TokenProviders")
+            && !notes.contains("production does not wrap it"),
+        "notes must not still describe the leftover-only pin as current"
     );
     assert!(
-        !notes.contains("Wrap `wiremux_auth::TokenProvider` inside `bline_auth::TokenProvider`.\n   Done in Bline"),
-        "wrap is still later; leftover-only pin is not consume"
+        notes.contains("Wrap `wiremux_auth::TokenProvider` inside `bline_auth::TokenProvider`.\n   Done in Bline #3992")
+            && notes.contains("Bline production now wraps")
+            && notes.contains("21b56488"),
+        "notes must record the live Bline wrap, not leftover-only"
+    );
+    assert!(
+        notes.contains("Bline pins crates.io `0.3.0`") && notes.contains("3996"),
+        "notes must record the live Bline 0.3.0 pin (#3996)"
     );
     assert!(
         notes.contains("default-features = false"),
