@@ -15,9 +15,7 @@ pub fn encode_response(wire: Wire, events: &[IrStreamEvent]) -> Result<Value, Ma
         Wire::ChatCompletions => Ok(encode_chat_complete(events)),
         Wire::Messages => Ok(encode_messages_complete(events)),
         Wire::Gemini => Ok(encode_gemini_complete(events)),
-        other => Err(MapError::Invalid(format!(
-            "non-stream encode has no slot on {other:?}"
-        ))),
+        Wire::Responses => Ok(encode_responses_complete(events)),
     }
 }
 
@@ -330,6 +328,120 @@ fn gemini_function_call_value(id: &str, name: &str, args: &str) -> Value {
             "name": n,
             "args": serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({})),
         }
+    })
+}
+
+fn encode_responses_complete(events: &[IrStreamEvent]) -> Value {
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    let mut reasoning_signature = None;
+    let mut finish = None;
+    let mut usage = None;
+    let mut tool_calls = Vec::new();
+    let mut current: Option<(String, String, String)> = None;
+    for ev in events {
+        match ev {
+            IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
+            IrStreamEvent::ReasoningSignature { signature } => {
+                reasoning_signature = Some(signature.clone());
+            }
+            IrStreamEvent::FinishReason { reason } => {
+                finish = Some(responses_complete_status(reason).to_string());
+            }
+            IrStreamEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+                cache_read_tokens,
+                reasoning_tokens,
+                ..
+            } => {
+                usage = Some((
+                    *prompt_tokens,
+                    *completion_tokens,
+                    *cache_read_tokens,
+                    *reasoning_tokens,
+                ));
+            }
+            IrStreamEvent::ToolCallStart { id, name, .. } => {
+                if let Some((id, name, args)) = current.take() {
+                    tool_calls.push(responses_function_call_value(&id, &name, &args));
+                }
+                current = Some((id.clone(), name.clone(), String::new()));
+            }
+            IrStreamEvent::ToolCallArgDelta { delta } => {
+                if let Some((_, _, args)) = current.as_mut() {
+                    args.push_str(delta);
+                }
+            }
+            IrStreamEvent::ToolCallEnd => {
+                if let Some((id, name, args)) = current.take() {
+                    tool_calls.push(responses_function_call_value(&id, &name, &args));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some((id, name, args)) = current.take() {
+        tool_calls.push(responses_function_call_value(&id, &name, &args));
+    }
+
+    let mut output = Vec::new();
+    if !reasoning.is_empty() || reasoning_signature.is_some() {
+        let mut item = json!({ "type": "reasoning" });
+        if !reasoning.is_empty() {
+            item["summary"] = json!([{ "type": "summary_text", "text": reasoning }]);
+        }
+        if let Some(signature) = reasoning_signature {
+            item["signature"] = json!(signature);
+        }
+        output.push(item);
+    }
+    if !text.is_empty() {
+        output.push(json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": text }],
+        }));
+    }
+    output.extend(tool_calls);
+
+    let status = finish.unwrap_or_else(|| "completed".into());
+    let mut out = json!({
+        "id": "resp_wiremux",
+        "object": "response",
+        "status": status,
+        "output": output,
+    });
+    if !text.is_empty() {
+        out["output_text"] = json!(text);
+    }
+    if let Some((prompt, completion, cache_read, reasoning_tokens)) = usage {
+        let encoded =
+            super::usage::encode_responses(prompt, completion, cache_read, reasoning_tokens);
+        if let Some(u) = encoded.pointer("/response/usage") {
+            out["usage"] = u.clone();
+        }
+    }
+    out
+}
+
+fn responses_complete_status(reason: &str) -> &str {
+    match reason {
+        "failed" => "failed",
+        "incomplete" | "length" | "max_tokens" => "incomplete",
+        "stop" => "completed",
+        other => other,
+    }
+}
+
+fn responses_function_call_value(id: &str, name: &str, args: &str) -> Value {
+    json!({
+        "type": "function_call",
+        "id": id,
+        "call_id": id,
+        "name": name,
+        "arguments": args,
     })
 }
 

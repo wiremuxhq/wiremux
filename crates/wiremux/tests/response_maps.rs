@@ -410,6 +410,76 @@ fn gemini_complete_from_chat_events() {
 }
 
 #[test]
+fn responses_complete_from_chat_events() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "pong"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 3,
+            "completion_tokens": 1
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile()).expect("decode");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode Responses");
+    let text = mapped
+        .get("output_text")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            mapped
+                .get("output")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|items| {
+                    items.iter().find_map(|item| {
+                        item.get("content")
+                            .and_then(serde_json::Value::as_array)
+                            .and_then(|parts| {
+                                parts.iter().find_map(|part| {
+                                    part.get("text").and_then(serde_json::Value::as_str)
+                                })
+                            })
+                    })
+                })
+        });
+    assert_eq!(
+        text,
+        Some("pong"),
+        "Responses complete must carry Chat text, got {mapped}"
+    );
+    assert_eq!(
+        mapped.get("status").and_then(|v| v.as_str()),
+        Some("completed"),
+        "Chat stop must encode as Responses completed, got {mapped}"
+    );
+}
+
+#[test]
+fn responses_complete_length_is_incomplete() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "pong"
+            },
+            "finish_reason": "length"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile()).expect("decode");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode Responses");
+    assert_eq!(
+        mapped.get("status").and_then(|v| v.as_str()),
+        Some("incomplete"),
+        "Chat length must encode as Responses incomplete, got {mapped}"
+    );
+}
+
+#[test]
 fn responses_complete_reasoning_summary_is_reasoning_delta() {
     let body = serde_json::to_vec(&json!({
         "status": "completed",
