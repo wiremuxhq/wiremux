@@ -245,6 +245,8 @@ fn decode_sampling(value: &Value) -> IrSampling {
         json_schema,
         json_schema_name,
         include: decode_include(value),
+        prompt_cache_key: str_field(value, "prompt_cache_key").filter(|s| !s.trim().is_empty()),
+        service_tier: str_field(value, "service_tier").filter(|s| !s.trim().is_empty()),
     }
 }
 
@@ -592,6 +594,26 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.cache.enabled {
         report.record("sampling.cache", LossAction::Drop, "no slot");
+    }
+    if let Some(key) = s
+        .prompt_cache_key
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        body["prompt_cache_key"] = json!(key);
+        report.record(
+            "sampling.prompt_cache_key",
+            LossAction::Preserve,
+            "responses prompt_cache_key",
+        );
+    }
+    if let Some(tier) = s.service_tier.as_deref().filter(|s| !s.trim().is_empty()) {
+        body["service_tier"] = json!(tier);
+        report.record(
+            "sampling.service_tier",
+            LossAction::Preserve,
+            "responses service_tier",
+        );
     }
     if let Some(stream) = s.stream {
         body["stream"] = json!(stream);
