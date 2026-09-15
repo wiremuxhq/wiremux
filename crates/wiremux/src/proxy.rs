@@ -22,8 +22,8 @@ use crate::headers::apply_profile_headers;
 use crate::ir::{IrStreamEvent, LossReport};
 use crate::map::{decode, encode};
 use crate::stream::{
-    RawSse, SseFrameReader, ToolCallAssembler, decode_stream_events, encode_stream_event,
-    from_chat, map_finish,
+    RawSse, SseFrameReader, ToolCallAssembler, decode_response, decode_stream_events,
+    encode_response, encode_stream_event, event_has_slot, from_chat, map_finish,
 };
 use crate::upstream::upstream_url_for_model;
 
@@ -205,6 +205,20 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     }
     if target == state.from || !status.is_success() {
         return bytes_response(status_from_reqwest(status), &content_type, body);
+    }
+    match decode_response(target, &body, &state.profile) {
+        Ok(events) => {
+            if let Ok(mapped) = encode_response(state.from, &events) {
+                let bytes = Bytes::from(mapped.to_string());
+                return bytes_response(status_from_reqwest(status), "application/json", bytes);
+            }
+        }
+        Err(err) => {
+            return text(
+                StatusCode::BAD_GATEWAY,
+                format!("decode upstream body: {err}\n"),
+            );
+        }
     }
     text(
         StatusCode::NOT_IMPLEMENTED,
@@ -423,6 +437,9 @@ fn map_sse_stream(
             let _ = push_mapped_frames(&state, target, &tx, vec![last], &mut assembler).await;
         }
         for ev in assembler.flush() {
+            if !event_has_slot(state.from, &ev) {
+                continue;
+            }
             if let Ok(mapped) = encode_stream_event(state.from, &ev) {
                 let _ = tx
                     .send(Ok(Frame::data(Bytes::from(format_sse(&mapped)))))
@@ -451,6 +468,9 @@ async fn push_mapped_frames(
         match decode_stream_events(target, &raw, &state.profile) {
             Ok(events) => {
                 for ev in events.into_iter().flat_map(|ev| assembler.push(ev)) {
+                    if !event_has_slot(state.from, &ev) {
+                        continue;
+                    }
                     match encode_stream_event(state.from, &ev) {
                         Ok(mapped) => {
                             if tx
