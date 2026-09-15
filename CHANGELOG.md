@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0](https://github.com/wiremuxhq/wiremux/compare/v0.3.0...v0.4.0) (2026-09-15)
+
+
+### Features
+
+* ship xai-grok-build Grok Build CLI proxy profile ([#108](https://github.com/wiremuxhq/wiremux/issues/108)) ([022f229](https://github.com/wiremuxhq/wiremux/commit/022f22907ec63ddb84d3216d39683a8169d4acb6)), closes [#104](https://github.com/wiremuxhq/wiremux/issues/104)
+
+
+### Bug Fixes
+
+* fail fast on expired oauth refresh transport ([#105](https://github.com/wiremuxhq/wiremux/issues/105)) ([46ec132](https://github.com/wiremuxhq/wiremux/commit/46ec13250c9f893675584b268caec2ec77e402a1))
+* map cross-dialect chat proxy responses ([#111](https://github.com/wiremuxhq/wiremux/issues/111)) ([feba1a0](https://github.com/wiremuxhq/wiremux/commit/feba1a0eb4757df8e41ff3a50df6d80ee3f4b0d3))
+* map non-stream Chat bodies to all client wires ([#113](https://github.com/wiremuxhq/wiremux/issues/113)) ([8c793fa](https://github.com/wiremuxhq/wiremux/commit/8c793fabd89abd08bc084b08598b665a3cce406a))
+* prefer edit distance for catalog id did-you-mean ([#110](https://github.com/wiremuxhq/wiremux/issues/110)) ([091994c](https://github.com/wiremuxhq/wiremux/commit/091994c4cfedb283ed534dd2c61dc1e51e570ccc))
+* Protocol slot, login hints, and proxy body cap ([#112](https://github.com/wiremuxhq/wiremux/issues/112)) ([aff90ff](https://github.com/wiremuxhq/wiremux/commit/aff90ffddc9a8f682d656da742ca4dc1f9c9b993))
+* send Grok CLI version header on xai-grok-build ([#109](https://github.com/wiremuxhq/wiremux/issues/109)) ([9dd6558](https://github.com/wiremuxhq/wiremux/commit/9dd65582052f4cd4a49abd7d697427ddb23480c4)), closes [#104](https://github.com/wiremuxhq/wiremux/issues/104)
+
 ## [0.3.0](https://github.com/wiremuxhq/wiremux/compare/v0.2.1...v0.3.0) (2026-09-14)
 
 
