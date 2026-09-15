@@ -249,6 +249,10 @@ fn load_profile_xai_oauth_from_shipped_catalog() {
         "must not ship a product client id, got {client}"
     );
     assert_eq!(oauth.login, Some(Login::None));
+    assert!(
+        !profile.http.headers.contains_key("x-grok-client-version"),
+        "xai-oauth chats at api.x.ai and must not send a Grok CLI version header"
+    );
 }
 
 #[test]
@@ -280,6 +284,23 @@ fn load_profile_xai_grok_build_from_shipped_catalog() {
         "must not ship a product client id, got {client}"
     );
     assert_eq!(oauth.login, Some(Login::None));
+    assert_eq!(
+        profile
+            .http
+            .headers
+            .get("x-grok-client-version")
+            .map(String::as_str),
+        Some("0.1.202"),
+        "cli-chat-proxy rejects requests with no Grok CLI version (HTTP 426)"
+    );
+    assert_eq!(
+        profile
+            .http
+            .headers
+            .get("x-grok-client-identifier")
+            .map(String::as_str),
+        Some("wiremux")
+    );
 }
 
 #[test]

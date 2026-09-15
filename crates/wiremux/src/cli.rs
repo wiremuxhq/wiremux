@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use wiremux_auth::{
     AuthScheme, LoadOptions, Login, OauthPack, ProfileError, ResolvedProfile, TokenProvider, Wire,
-    load_profile_from_cli, persist_login_tokens, provider_from_profile, redact_secret_looking,
-    redact_url_origin, sanitize_oauth_error_text,
+    list_profiles, load_profile_from_cli, persist_login_tokens, provider_from_profile,
+    redact_secret_looking, redact_url_origin, sanitize_oauth_error_text,
 };
 
 /// Process exit: success.
@@ -20,6 +20,11 @@ pub const EXIT_NOT_READY: i32 = 2;
 /// Load `--profile` as an id or a file path.
 pub fn load_cli_profile(profile_arg: &str) -> Result<ResolvedProfile, ProfileError> {
     load_profile_from_cli(profile_arg, &LoadOptions::default())
+}
+
+/// Catalog ids from shipped presets plus user overlay dirs.
+pub fn list_cli_profiles() -> Result<Vec<String>, ProfileError> {
+    list_profiles(&LoadOptions::default())
 }
 
 /// Gist lint output: resolved URLs with secrets redacted.

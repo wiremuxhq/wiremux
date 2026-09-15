@@ -8,6 +8,13 @@ chat_path = "/v1/chat/completions"
 auth_scheme = "bearer"
 header_merge = "union"
 
+# cli-chat-proxy.grok.com returns HTTP 426 when this header is absent
+# ("Grok CLI version (none)"). 0.1.202 is the live floor. Identifier is
+# this crate, not a Grok product client id.
+[headers]
+x-grok-client-version = "0.1.202"
+x-grok-client-identifier = "wiremux"
+
 [oauth]
 # Same pack as xai-oauth. Discovery: https://auth.x.ai/.well-known/openid-configuration
 authorize_url = "https://auth.x.ai/oauth2/authorize"
