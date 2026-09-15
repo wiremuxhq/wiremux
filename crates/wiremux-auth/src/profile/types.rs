@@ -345,30 +345,61 @@ fn fold_enum_key(s: &str) -> String {
     s.to_ascii_lowercase().replace(['_', '-'], "")
 }
 
-/// Close match after folding case and `_`/`-`.
+/// Folded exact match, else edit distance <= 2, else a unique prefix/suffix.
 pub(crate) fn suggest_kebab<'a>(input: &str, legal: &[&'a str]) -> Option<&'a str> {
     let folded = fold_enum_key(input);
     if folded.is_empty() {
         return None;
     }
-    let mut close = Vec::new();
+    let mut best: Option<(&'a str, usize)> = None;
+    let mut prefix = Vec::new();
     for &opt in legal {
         let candidate = fold_enum_key(opt);
         if candidate == folded {
             return Some(opt);
+        }
+        let dist = edit_distance(&folded, &candidate);
+        if dist > 0 && dist <= 2 {
+            match best {
+                None => best = Some((opt, dist)),
+                Some((_, best_dist)) if dist < best_dist => best = Some((opt, dist)),
+                Some((best_opt, best_dist)) if dist == best_dist && opt.len() > best_opt.len() => {
+                    best = Some((opt, dist));
+                }
+                _ => {}
+            }
         }
         if candidate.starts_with(&folded)
             || folded.starts_with(&candidate)
             || candidate.ends_with(&folded)
             || folded.ends_with(&candidate)
         {
-            close.push(opt);
+            prefix.push(opt);
         }
     }
-    match close.as_slice() {
+    if let Some((opt, _)) = best {
+        return Some(opt);
+    }
+    match prefix.as_slice() {
         [only] => Some(*only),
         _ => None,
     }
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
 }
 
 fn unknown_kebab(field: &str, got: &str, legal: &[&str]) -> String {
