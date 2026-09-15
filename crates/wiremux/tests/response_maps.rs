@@ -3,7 +3,7 @@
 use serde_json::json;
 use wiremux::{
     IrStreamEvent, RawSse, ResolvedProfile, Wire, decode_response, decode_stream_events,
-    parse_profile_str,
+    encode_response, parse_profile_str,
 };
 
 fn chat_profile() -> ResolvedProfile {
@@ -262,6 +262,70 @@ fn messages_complete_redacted_thinking_is_protocol() {
                 && payload.get("data").and_then(|v| v.as_str()) == Some("enc")
         )),
         "complete redacted_thinking must be Protocol, got {events:?}"
+    );
+}
+
+#[test]
+fn messages_complete_encodes_chat_completion() {
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_json",
+        "type": "message",
+        "role": "assistant",
+        "content": [{ "type": "text", "text": "pong" }],
+        "stop_reason": "end_turn",
+        "usage": { "input_tokens": 3, "output_tokens": 1 }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile()).expect("decode");
+    let mapped = encode_response(Wire::ChatCompletions, &events).expect("encode Chat");
+    assert_eq!(
+        mapped
+            .pointer("/choices/0/message/content")
+            .and_then(|v| v.as_str()),
+        Some("pong"),
+        "Chat complete must carry Messages text, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/choices/0/finish_reason")
+            .and_then(|v| v.as_str()),
+        Some("stop"),
+        "end_turn must encode as Chat stop, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/usage/completion_tokens")
+            .and_then(|v| v.as_u64()),
+        Some(1),
+        "Chat usage must keep output tokens, got {mapped}"
+    );
+}
+
+#[test]
+fn messages_complete_thinking_keeps_chat_signature() {
+    let body = serde_json::to_vec(&json!({
+        "content": [
+            { "type": "thinking", "thinking": "plan", "signature": "sig-1" },
+            { "type": "text", "text": "pong" }
+        ],
+        "stop_reason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile()).expect("decode");
+    let mapped = encode_response(Wire::ChatCompletions, &events).expect("encode Chat");
+    assert_eq!(
+        mapped
+            .pointer("/choices/0/message/reasoning_content")
+            .and_then(|v| v.as_str()),
+        Some("plan"),
+        "Chat complete must keep thinking text, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/choices/0/message/reasoning_signature")
+            .and_then(|v| v.as_str()),
+        Some("sig-1"),
+        "Chat complete must keep thinking signature, got {mapped}"
     );
 }
 

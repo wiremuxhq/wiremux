@@ -183,7 +183,7 @@ pub(crate) fn map_finish(reason: &str) -> &str {
     }
 }
 
-fn encode_finish(reason: &str) -> &str {
+pub(super) fn encode_finish(reason: &str) -> &str {
     match reason {
         "max_tokens" => "length",
         other => other,

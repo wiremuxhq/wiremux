@@ -43,7 +43,7 @@ impl RawSse {
 
 #[cfg(feature = "proxy")]
 pub(crate) use chat::map_finish;
-pub use complete::decode_response;
+pub use complete::{decode_response, encode_response};
 pub use sse::{MAX_SSE_PENDING, SseFrameReader};
 #[cfg(feature = "proxy")]
 pub(crate) use usage::from_chat;
@@ -417,6 +417,23 @@ impl ToolCallAssembler {
                 }
             }
         }
+    }
+}
+
+/// Whether this IR event has a slot on `wire` SSE.
+///
+/// Protocol names are dialect-specific. A Messages `message_start` must
+/// not become `event: message_start` on a Chat Completions client.
+#[cfg(feature = "proxy")]
+#[must_use]
+pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
+    match ev {
+        IrStreamEvent::Protocol { item_type, .. } => wire
+            .default_stream_events()
+            .iter()
+            .any(|name| *name == item_type),
+        IrStreamEvent::Unknown { .. } => matches!(wire, Wire::Messages | Wire::Responses),
+        _ => true,
     }
 }
 
