@@ -4158,3 +4158,57 @@ fn other_wires_do_not_append_continue_on_assistant_last() {
         "Responses must not append Continue., got {resp}"
     );
 }
+
+#[test]
+fn messages_encode_object_tool_schema_emits_required_array() {
+    let ir = IrRequest {
+        model: "grok-4".into(),
+        items: vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+        tools: vec![
+            IrTool::Function {
+                name: "lookup".into(),
+                description: "lookup".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+            IrTool::Function {
+                name: "null_required".into(),
+                description: "null required".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": null
+                }),
+            },
+            IrTool::Function {
+                name: "keep".into(),
+                description: "keep listed required".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"]
+                }),
+            },
+        ],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let tools = body.get("tools").and_then(Value::as_array).expect("tools");
+    assert_eq!(
+        tools[0].pointer("/input_schema/required"),
+        Some(&serde_json::json!([])),
+        "omitted required becomes [], else Grok Build Messages 400s, got {body}"
+    );
+    assert_eq!(
+        tools[1].pointer("/input_schema/required"),
+        Some(&serde_json::json!([])),
+        "null required becomes [], else Grok Build Messages 400s, got {body}"
+    );
+    assert_eq!(
+        tools[2].pointer("/input_schema/required"),
+        Some(&serde_json::json!(["q"])),
+        "listed required must stay, got {body}"
+    );
+}
