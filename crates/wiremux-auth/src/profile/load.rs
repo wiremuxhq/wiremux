@@ -173,11 +173,11 @@ struct Layer {
 fn collect_layers(opts: &LoadOptions<'_>) -> Result<Vec<Layer>, ProfileError> {
     let mut layers = Vec::new();
     if include_shipped(opts) {
-        for text in shipped::documents() {
-            let profile = parse_layer_str(text)?;
-            if let Some(id) = catalog_id(&profile, None) {
+        for doc in shipped::documents() {
+            let profile = parse_layer_str(doc.document)?;
+            if catalog_id(&profile, None).is_some() {
                 layers.push(Layer {
-                    id,
+                    id: doc.id.to_owned(),
                     profile,
                     from_shipped: true,
                 });

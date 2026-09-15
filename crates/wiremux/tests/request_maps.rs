@@ -3994,3 +3994,167 @@ fn sampling_include_drops_off_responses() {
         );
     }
 }
+
+fn messages_roles(body: &Value) -> Vec<(String, Option<String>)> {
+    body.get("messages")
+        .and_then(Value::as_array)
+        .expect("messages")
+        .iter()
+        .map(|msg| {
+            let role = msg
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let text = msg
+                .pointer("/content/0/text")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            (role, text)
+        })
+        .collect()
+}
+
+#[test]
+fn messages_encode_appends_continue_on_assistant_last() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![
+            IrItem::User {
+                parts: vec![IrPart::Text("hi".into())],
+            },
+            IrItem::Assistant {
+                parts: vec![IrPart::Text("hello".into())],
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let roles = messages_roles(&body);
+    assert_eq!(
+        roles.last(),
+        Some(&("user".into(), Some("Continue.".into()))),
+        "assistant-last must append Continue., got {body}"
+    );
+    assert_eq!(roles.len(), 3, "user + assistant + Continue., got {body}");
+}
+
+#[test]
+fn messages_encode_appends_continue_on_function_call_last() {
+    let ir = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![IrItem::FunctionCall {
+            call_id: "call_1".into(),
+            name: "lookup".into(),
+            arguments: "{}".into(),
+            thought_signature: None,
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let roles = messages_roles(&body);
+    assert_eq!(
+        roles.last(),
+        Some(&("user".into(), Some("Continue.".into()))),
+        "function-call-last must append Continue., got {body}"
+    );
+}
+
+#[test]
+fn messages_encode_skips_continue_when_user_last_or_empty() {
+    let user_last = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Messages, &user_last, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let roles = messages_roles(&body);
+    assert_eq!(
+        roles,
+        vec![("user".into(), Some("hi".into()))],
+        "user-last must stay unchanged, got {body}"
+    );
+
+    let empty = IrRequest {
+        model: "claude-opus-4-6".into(),
+        items: vec![],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Messages, &empty, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    assert!(messages.is_empty(), "empty IR must stay empty, got {body}");
+}
+
+#[test]
+fn other_wires_do_not_append_continue_on_assistant_last() {
+    let ir = IrRequest {
+        model: "gpt-4".into(),
+        items: vec![
+            IrItem::User {
+                parts: vec![IrPart::Text("hi".into())],
+            },
+            IrItem::Assistant {
+                parts: vec![IrPart::Text("hello".into())],
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (chat_bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    let chat_msgs = chat
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("chat messages");
+    assert_eq!(
+        chat_msgs.len(),
+        2,
+        "Chat must not append Continue., got {chat}"
+    );
+    assert_eq!(
+        chat_msgs
+            .last()
+            .and_then(|m| m.get("role"))
+            .and_then(Value::as_str),
+        Some("assistant"),
+        "Chat last role, got {chat}"
+    );
+
+    let (gemini_bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("gemini");
+    let gemini: Value = serde_json::from_slice(&gemini_bytes).expect("json");
+    let contents = gemini
+        .get("contents")
+        .and_then(Value::as_array)
+        .expect("gemini contents");
+    assert_eq!(
+        contents.len(),
+        2,
+        "Gemini must not append Continue., got {gemini}"
+    );
+
+    let (resp_bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("responses");
+    let resp: Value = serde_json::from_slice(&resp_bytes).expect("json");
+    let input = resp
+        .get("input")
+        .and_then(Value::as_array)
+        .expect("responses input");
+    assert!(
+        !serde_json::to_string(&input)
+            .expect("ser")
+            .contains("Continue."),
+        "Responses must not append Continue., got {resp}"
+    );
+}

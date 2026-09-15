@@ -27,7 +27,7 @@ pub use profile::{
     ListMerge, LoadOptions, Login, OauthPack, ProfileError, ResolvedProfile, SCHEMA_VERSION_MAX,
     StreamUnknownPolicy, TokenRequestFormat, TokenResponse, ToolNameCase, ToolTypePolicy, Wire,
     list_profiles, load_profile, load_profile_for_wire, load_profile_from_cli, not_found_message,
-    parse_profile_str,
+    parse_profile_str, shipped_profile_ids,
 };
 pub use providers::aws::{
     AwsCredentials, AwsSignParams, AwsStsConfig, AwsStsTokenProvider, sign_aws_request,

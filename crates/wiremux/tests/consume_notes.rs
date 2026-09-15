@@ -20,14 +20,14 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         .and_then(|rest| rest.split("```").next())
         .expect("suggested attach toml fence");
     assert!(
-        attach.contains("wiremux-auth = \"0.3.0\"")
-            && attach.contains("version = \"0.3.0\"")
+        attach.contains("wiremux-auth = \"0.4.0\"")
+            && attach.contains("version = \"0.4.0\"")
             && attach.contains("default-features = false"),
         "published-host attach must list crates.io form, got {attach}"
     );
     assert!(
         !notes.contains("tag = \"v0.1.0\""),
-        "Bline attach is crates.io 0.3.0, not git tag v0.1.0"
+        "Bline attach is crates.io 0.4.0, not git tag v0.1.0"
     );
     assert!(
         !notes.contains("leftover-only")
@@ -42,8 +42,12 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         "notes must record the live Bline wrap, not leftover-only"
     );
     assert!(
-        notes.contains("Bline pins crates.io `0.3.0`") && notes.contains("3996"),
-        "notes must record the live Bline 0.3.0 pin (#3996)"
+        notes.contains("crates.io is `0.4.0`")
+            && notes.contains("v0.4.0")
+            && notes.contains("3996")
+            && notes.contains("4010")
+            && notes.contains("not in crates.io `0.4.0`"),
+        "notes must name crates.io 0.4.0 and keep the Bline pin history"
     );
     assert!(
         notes.contains("default-features = false"),
@@ -65,8 +69,11 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
             && notes.contains("`vllm`")
             && notes.contains("`xai-oauth`")
             && notes.contains("`xai-grok-build`")
+            && notes.contains("`xai-grok-build-messages`")
             && notes.contains("cli-chat-proxy.grok.com")
-            && notes.contains("x-grok-client-version"),
+            && notes.contains("x-grok-client-version")
+            && notes.contains("x-grok-model-override")
+            && notes.contains("shipped_profile_ids"),
         "consume notes must list catalog ids and the canact mapping"
     );
     assert!(
@@ -111,8 +118,22 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         "consume notes must name WireClient and from_profile / send / stream / list_models"
     );
     assert!(
-        notes.contains("token_for_profile"),
-        "refresh-only hosts still use token_for_profile"
+        notes.contains("token_for_profile_cached")
+            && notes.contains("token_for_profile")
+            && !notes.contains("should call `token_for_profile` on a catalog id")
+            && !notes.contains("Refresh-only hosts still call `token_for_profile`"),
+        "refresh-only hosts must be told to call token_for_profile_cached"
+    );
+    assert!(
+        notes.contains("URL-first host")
+            && notes.contains("cli-chat-proxy.grok.com")
+            && notes.contains("handmade"),
+        "URL-first hosts must still get the Grok Build header pack"
+    );
+    assert!(
+        notes.contains("Continue.")
+            && notes.contains("messages_encode_appends_continue_on_assistant_last"),
+        "notes must lock Messages assistant-last Continue."
     );
     assert!(
         notes.contains("one text block `\".\"`")

@@ -9,7 +9,7 @@ use std::time::Duration;
 use wiremux_auth::{
     AuthScheme, IsolatedHome, LoadOptions, Login, PlantCredentials, ProfileError, TokenProvider,
     TokenRequestFormat, ToolTypePolicy, Wire, list_profiles, load_profile, provider_from_profile,
-    token_for_profile,
+    shipped_profile_ids, token_for_profile,
 };
 
 fn presets_dir() -> PathBuf {
@@ -18,6 +18,26 @@ fn presets_dir() -> PathBuf {
 
 fn workspace_presets_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../presets")
+}
+
+#[test]
+fn shipped_profile_ids_match_preset_files() {
+    let mut file_ids: Vec<String> = fs::read_dir(presets_dir())
+        .expect("crate presets")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.extension().and_then(|ext| ext.to_str()) == Some("toml"))
+        .map(|p| p.file_stem().expect("stem").to_string_lossy().into_owned())
+        .collect();
+    file_ids.sort();
+    let mut table_ids: Vec<String> = shipped_profile_ids()
+        .iter()
+        .map(|id| (*id).to_owned())
+        .collect();
+    table_ids.sort();
+    assert_eq!(
+        table_ids, file_ids,
+        "shipped_profile_ids must match every presets/*.toml stem"
+    );
 }
 
 #[test]
@@ -191,22 +211,6 @@ const KEY_PROFILE_IDS: &[&str] = &[
     "vllm",
 ];
 
-const ALL_SHIPPED_IDS: &[&str] = &[
-    "anthropic-oauth",
-    "openai-codex-oauth",
-    "openrouter-codex",
-    "grok-ollama",
-    "xai-oauth",
-    "xai-grok-build",
-    "xai",
-    "openai",
-    "anthropic",
-    "openrouter",
-    "gemini",
-    "lmstudio",
-    "vllm",
-];
-
 #[test]
 fn load_profile_xai_from_shipped_catalog() {
     let _home = IsolatedHome::new();
@@ -318,6 +322,73 @@ fn load_profile_xai_grok_build_reuses_xai_oauth_pack() {
         grok.oauth, xai.oauth,
         "same empty-client oidc-auth-json pack"
     );
+}
+
+#[test]
+fn load_profile_xai_grok_build_messages_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
+    let profile = load_profile("xai-grok-build-messages", &shipped_opts())
+        .expect("include_shipped must expose xai-grok-build-messages");
+    assert_eq!(profile.id, "xai-grok-build-messages");
+    assert_eq!(profile.dialect.wire, Some(Wire::Messages));
+    assert_eq!(
+        profile.http.base_url.as_deref(),
+        Some("https://cli-chat-proxy.grok.com")
+    );
+    assert_eq!(profile.http.chat_path.as_deref(), Some("/v1/messages"));
+    assert_eq!(
+        profile
+            .http
+            .headers
+            .get("x-grok-client-version")
+            .map(String::as_str),
+        Some("0.1.202")
+    );
+    assert_eq!(
+        profile
+            .http
+            .headers
+            .get("x-grok-client-identifier")
+            .map(String::as_str),
+        Some("wiremux")
+    );
+    let oauth = profile
+        .oauth
+        .as_ref()
+        .expect("xai-grok-build-messages has [oauth]");
+    let client = oauth.client_id.as_deref().map(str::trim).unwrap_or("");
+    assert!(
+        client.is_empty(),
+        "must not ship a product client id, got {client}"
+    );
+    let xai = load_profile("xai-oauth", &shipped_opts()).expect("xai-oauth");
+    assert_eq!(
+        profile.oauth, xai.oauth,
+        "same empty-client oidc-auth-json pack"
+    );
+}
+
+#[test]
+fn xai_grok_build_messages_headers_hold_model_override() {
+    let overlay = r#"
+schema_version = 1
+id = "xai-grok-build-messages"
+header_merge = "union"
+
+[headers]
+x-grok-model-override = "sxs-test-model"
+"#;
+    let parsed = wiremux_auth::parse_profile_str(overlay).expect("overlay parses");
+    assert_eq!(
+        parsed
+            .http
+            .headers
+            .get("x-grok-model-override")
+            .map(String::as_str),
+        Some("sxs-test-model"),
+        "[headers] must hold x-grok-model-override"
+    );
+    assert_eq!(parsed.id, "xai-grok-build-messages");
 }
 
 #[tokio::test]
@@ -604,7 +675,7 @@ fn isolated_home_clears_anthropic_auth_token() {
 #[test]
 fn include_shipped_false_hides_catalog() {
     let _home = IsolatedHome::new();
-    for id in ALL_SHIPPED_IDS {
+    for id in shipped_profile_ids() {
         let err = load_profile(id, &no_shipped_opts()).expect_err(id);
         assert!(
             matches!(err, ProfileError::NotFound { id: ref found, .. } if found == *id),
@@ -617,7 +688,7 @@ fn include_shipped_false_hides_catalog() {
 fn list_profiles_includes_shipped_ids() {
     let _home = IsolatedHome::new();
     let ids = list_profiles(&shipped_opts()).expect("list shipped");
-    for id in ALL_SHIPPED_IDS {
+    for id in shipped_profile_ids() {
         assert!(ids.iter().any(|got| got == *id), "missing {id} in {ids:?}");
     }
     for id in KEY_PROFILE_IDS {

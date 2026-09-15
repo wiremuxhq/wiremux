@@ -431,6 +431,13 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
         }
     }
 
+    if messages_need_continue(ir) {
+        messages.push(json!({
+            "role": "user",
+            "content": [text_block("Continue.", false, None)],
+        }));
+    }
+
     let system = if system_blocks.is_empty() {
         None
     } else if system_blocks.len() == 1
@@ -442,6 +449,13 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
         Some(Value::Array(system_blocks))
     };
     (system, Value::Array(messages))
+}
+
+fn messages_need_continue(ir: &IrRequest) -> bool {
+    matches!(
+        ir.items.last(),
+        Some(IrItem::Assistant { .. } | IrItem::FunctionCall { .. })
+    )
 }
 
 fn encode_user(

@@ -341,6 +341,10 @@ fn profile_list_includes_shipped_xai_grok_build() {
         text.lines().any(|l| l == "xai-oauth"),
         "expected xai-oauth in catalog list, got: {text}"
     );
+    assert!(
+        text.lines().any(|l| l == "xai-grok-build-messages"),
+        "expected xai-grok-build-messages in catalog list, got: {text}"
+    );
 }
 
 #[test]

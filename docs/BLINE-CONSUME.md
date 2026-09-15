@@ -36,12 +36,21 @@ TokenProviders and named host conversions.
 [blineai/bline#3988](https://github.com/blineai/bline/issues/3988)
 is CLOSED.
 
-Bline pins crates.io `0.3.0` with `wiremux` `default-features = false`
-after [blineai/bline#3996](https://github.com/blineai/bline/pull/3996)
+Published crates.io is `0.4.0` / tag
+[v0.4.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.4.0).
+Bline leftover-prove first pinned crates.io `0.3.0` after
+[blineai/bline#3996](https://github.com/blineai/bline/pull/3996)
 ([`934e6235`](https://github.com/blineai/bline/commit/934e6235135b79a61730215d615d7f731ad07138)).
-That leftover-prove filed no new crate bugs. [#104](https://github.com/wiremuxhq/wiremux/issues/104)
-was already open. [#103](https://github.com/wiremuxhq/wiremux/issues/103)
-was already tracked and is now CLOSED.
+The 0.4.0 leftover-prove tracker is
+[blineai/bline#4010](https://github.com/blineai/bline/issues/4010).
+Do not implement that Bline bump here. [#104](https://github.com/wiremuxhq/wiremux/issues/104)
+and [#103](https://github.com/wiremuxhq/wiremux/issues/103)
+are CLOSED.
+
+`shipped_profile_ids()`, `xai-grok-build-messages`, URL-first Grok
+Build headers, and Messages `Continue.` are on this tree. They are
+not in crates.io `0.4.0`. Pin the next crates.io cut (or git HEAD)
+for those surfaces.
 
 The wiremux README stays:
 
@@ -99,18 +108,21 @@ Path-dep `wiremux-auth` first, then maps at the adapter boundary.
    structs remain as test fixtures. Claude Code oat, IsolatedHome,
    `secret_store`, and host SigV4 Bedrock signing stay in Bline.
 
-crates.io is an attach path for published hosts. Bline and other
-published hosts pin tag
-[v0.3.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.3.0):
+crates.io is an attach path for published hosts. Pin the current
+published tag
+[v0.4.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.4.0)
+until the next cut:
 
 ```toml
 [dependencies]
-wiremux-auth = "0.3.0"
-wiremux = { version = "0.3.0", default-features = false }
+wiremux-auth = "0.4.0"
+wiremux = { version = "0.4.0", default-features = false }
 ```
 
 Bline #3991 leftover-prove used `0.2.1`. Bline #3996 bumped the
-workspace pin to `0.3.0` after wrap.
+workspace pin to `0.3.0` after wrap. Published hosts that still
+name `0.3.0` miss `xai-grok-build` and `encode_response` Messages /
+Gemini / Responses.
 
 ## Suggested attach (Bline crate, not this repo)
 
@@ -182,6 +194,12 @@ host map used `"[empty]"` or omitted the block. After consume,
 adapters take the crate choice. Locked by
 `messages_whitespace_only_assistant_becomes_dot`.
 
+Messages encode also appends one user text turn `Continue.` when the
+last IR item is Assistant or FunctionCall. xAI sxs-claude on the Grok
+Build proxy rejects assistant-last. Empty and user-last IR stay
+unchanged. Chat Completions, Gemini, and Responses do not append.
+Locked by `messages_encode_appends_continue_on_assistant_last`.
+
 ## Stay in Bline (host only)
 
 | Stay in Bline | Why |
@@ -204,17 +222,24 @@ Do **not** leave these in Bline:
 
 ## Host follow-up (Bline, after this crate has the APIs)
 
-Bline already wraps TokenProvider and encodes through this crate on
-crates.io `0.3.0`. leftover-prove tests stay in Bline
-(`leftover_wiremux` / `leftover_3988`). The 0.2.1 wrap landed in
-#3992; the 0.3.0 pin landed in #3996. Do not implement a Bline
-bump here.
+Bline already wraps TokenProvider and encodes through this crate.
+leftover-prove tests stay in Bline (`leftover_wiremux` /
+`leftover_3988`). The 0.2.1 wrap landed in #3992; the 0.3.0 pin
+landed in #3996. The 0.4.0 leftover-prove is Bline #4010. Do not
+implement a Bline bump here.
 
 Canact consume of `wiremux-auth` is a later canact PR, not a wiremux
 PR and not part of this spike. A refresh-only host (canact or
-otherwise) should call `token_for_profile` on a catalog id, or keep
-`provider_for_profile` for `mark_stale` / `wake`. Those helpers take a
-catalog id, not a file path. Do not wrap host types here.
+otherwise) should call `token_for_profile_cached` on a catalog id
+when it only wants the stored Bearer ("is login present?"). That
+helper does not POST `token_url`. Call `token_for_profile` when the
+host wants a refresh. Keep `provider_for_profile` for `mark_stale` /
+`wake`. Those helpers take a catalog id, not a file path. Do not wrap
+host types here.
+
+On a version bump, pin-lock `wiremux_auth::shipped_profile_ids()`
+instead of copying catalog names by hand. The list is the same table
+`load_profile` walks.
 
 ## WireClient (optional `client` feature)
 
@@ -230,8 +255,12 @@ the models catalog. OpenAI-compat uses the chat version prefix
 (`{base}/v1/models` when `chat_path` is `/v1/chat/completions` or
 `/v1/messages`).
 
-Refresh-only hosts still call `token_for_profile`. Do not wrap Bline
-types and do not run `wiremux proxy` for that path.
+Refresh-only hosts call `token_for_profile_cached`. Do not wrap Bline
+types and do not run `wiremux proxy` for that path. A URL-first host
+whose `base_url` host is `cli-chat-proxy.grok.com` (trailing-dot FQDN
+too) still gets the Grok Build header pack (`x-grok-client-version`
+and `x-grok-client-identifier`) even when the profile is handmade or
+an overlay. `https://api.x.ai` does not get those headers.
 
 Shipped catalog ids and the canact mapping:
 
@@ -247,10 +276,14 @@ Shipped catalog ids and the canact mapping:
 | vllm | `vllm` |
 
 Also shipped: `grok-ollama`, `openai-codex-oauth`, `openrouter-codex`,
-`xai-oauth` (`https://api.x.ai`), and `xai-grok-build` (Grok Build CLI
-proxy `https://cli-chat-proxy.grok.com`, same empty-client
-`oidc-auth-json` pack as `xai-oauth`, plus `x-grok-client-version =
-0.1.202` so the proxy does not return HTTP 426). Key ids use top-level
+`xai-oauth` (`https://api.x.ai`), `xai-grok-build` (Grok Build CLI
+proxy `https://cli-chat-proxy.grok.com`, Chat Completions, same
+empty-client `oidc-auth-json` pack as `xai-oauth`, plus
+`x-grok-client-version = 0.1.202` so the proxy does not return HTTP
+426), and `xai-grok-build-messages` (same host and pack, Messages at
+`/v1/messages`). Hosts that need a non-default sxs / composer model
+set `x-grok-model-override` on `[headers]`. Do not ship leftover
+Bline model ids. Key ids use top-level
 `access_env` (first non-empty wins). `lmstudio` and `vllm` are
 `auth_scheme = none`. Do not ship a product client id on either xAI
 OAuth profile.
@@ -267,8 +300,7 @@ OAuth profile.
 
 ## Rollback
 
-Bline stays on crates.io `0.3.0`. Rollback of the consume spike is
-revert the Bline #3992 commit (then the #3996 pin if needed).
-leftover-prove tests remain. crates.io versions `0.3.0` match tag
-`v0.3.0`. Published hosts pin those versions until they choose a
-later crates.io cut.
+Published hosts pin crates.io `0.4.0` (tag `v0.4.0`). Rollback of
+the consume spike is revert the Bline #3992 commit (then the #3996
+pin if needed). leftover-prove tests remain. Published hosts stay on
+`0.4.0` until they choose a later crates.io cut.
