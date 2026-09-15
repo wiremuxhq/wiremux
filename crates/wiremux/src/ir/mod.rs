@@ -53,6 +53,12 @@ pub struct IrSampling {
     pub json_schema_name: Option<String>,
     /// Responses `include` extras (file_search results, etc.). Empty default.
     pub include: Vec<String>,
+    /// OpenAI / Codex `prompt_cache_key`. Chat Completions and Responses
+    /// emit it. Messages and Gemini drop.
+    pub prompt_cache_key: Option<String>,
+    /// OpenAI / Codex `service_tier` (`flex`, `priority`, `auto`).
+    /// Chat Completions and Responses emit it. Messages and Gemini drop.
+    pub service_tier: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

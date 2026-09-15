@@ -296,6 +296,88 @@ fn messages_and_gemini_do_not_invent_store() {
 }
 
 #[test]
+fn responses_and_chat_round_trip_codex_cache_key_and_tier() {
+    let req = br#"{
+        "model": "gpt-5",
+        "prompt_cache_key": "sess-1",
+        "service_tier": "flex",
+        "input": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode responses");
+    assert_eq!(ir.sampling.prompt_cache_key.as_deref(), Some("sess-1"));
+    assert_eq!(ir.sampling.service_tier.as_deref(), Some("flex"));
+
+    let (bytes, report) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(body["prompt_cache_key"], "sess-1");
+    assert_eq!(body["service_tier"], "flex");
+    assert!(
+        !loss_dropped(&report, "sampling.prompt_cache_key"),
+        "Responses prompt_cache_key must not Drop, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.service_tier"),
+        "Responses service_tier must not Drop, got {report:?}"
+    );
+
+    let chat_req = br#"{
+        "model": "gpt-5",
+        "prompt_cache_key": "sess-1",
+        "service_tier": "priority",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (chat_ir, _) = decode(Wire::ChatCompletions, chat_req).expect("decode chat");
+    assert_eq!(chat_ir.sampling.prompt_cache_key.as_deref(), Some("sess-1"));
+    assert_eq!(chat_ir.sampling.service_tier.as_deref(), Some("priority"));
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &chat_ir, &chat_profile()).expect("encode chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    assert_eq!(chat["prompt_cache_key"], "sess-1");
+    assert_eq!(chat["service_tier"], "priority");
+    assert!(
+        !loss_dropped(&chat_report, "sampling.prompt_cache_key"),
+        "Chat prompt_cache_key must not Drop, got {chat_report:?}"
+    );
+}
+
+#[test]
+fn messages_and_gemini_drop_codex_cache_key_and_tier() {
+    let ir = user_ir(IrSampling {
+        prompt_cache_key: Some("sess-1".into()),
+        service_tier: Some("flex".into()),
+        ..IrSampling::default()
+    });
+    let (msg_bytes, msg_report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let msg: Value = serde_json::from_slice(&msg_bytes).expect("json");
+    assert!(
+        msg.get("prompt_cache_key").is_none() && msg.get("service_tier").is_none(),
+        "Messages must not invent Codex cache/tier, got {msg}"
+    );
+    assert!(
+        loss_dropped(&msg_report, "sampling.prompt_cache_key"),
+        "Messages prompt_cache_key drop missing, got {msg_report:?}"
+    );
+    assert!(
+        loss_dropped(&msg_report, "sampling.service_tier"),
+        "Messages service_tier drop missing, got {msg_report:?}"
+    );
+    let (gem_bytes, gem_report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let gem: Value = serde_json::from_slice(&gem_bytes).expect("json");
+    assert!(
+        gem.get("prompt_cache_key").is_none() && gem.get("service_tier").is_none(),
+        "Gemini must not invent Codex cache/tier, got {gem}"
+    );
+    assert!(
+        loss_dropped(&gem_report, "sampling.prompt_cache_key"),
+        "Gemini prompt_cache_key drop missing, got {gem_report:?}"
+    );
+    assert!(
+        loss_dropped(&gem_report, "sampling.service_tier"),
+        "Gemini service_tier drop missing, got {gem_report:?}"
+    );
+}
+
+#[test]
 fn developer_degrades_to_system_on_messages() {
     let bytes = golden("developer_chat.json");
     let (ir, _loss) = decode(Wire::ChatCompletions, &bytes).expect("decode Chat");
