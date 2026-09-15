@@ -330,6 +330,156 @@ fn messages_complete_thinking_keeps_chat_signature() {
 }
 
 #[test]
+fn messages_complete_from_chat_events() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "pong"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 3,
+            "completion_tokens": 1
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile()).expect("decode");
+    let mapped = encode_response(Wire::Messages, &events).expect("encode Messages");
+    let text = mapped
+        .pointer("/content")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|blocks| {
+            blocks.iter().find_map(|block| {
+                (block.get("type").and_then(|v| v.as_str()) == Some("text"))
+                    .then(|| block.get("text").and_then(|v| v.as_str()))
+                    .flatten()
+            })
+        });
+    assert_eq!(
+        text,
+        Some("pong"),
+        "Messages complete must carry Chat text, got {mapped}"
+    );
+    assert_eq!(
+        mapped.get("stop_reason").and_then(|v| v.as_str()),
+        Some("end_turn"),
+        "Chat stop must encode as Messages end_turn, got {mapped}"
+    );
+}
+
+#[test]
+fn gemini_complete_from_chat_events() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "pong"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 3,
+            "completion_tokens": 1
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile()).expect("decode");
+    let mapped = encode_response(Wire::Gemini, &events).expect("encode Gemini");
+    let text = mapped
+        .pointer("/candidates/0/content/parts")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|parts| {
+            parts
+                .iter()
+                .find_map(|part| part.get("text").and_then(|v| v.as_str()))
+        });
+    assert_eq!(
+        text,
+        Some("pong"),
+        "Gemini complete must carry Chat text, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/candidates/0/finishReason")
+            .and_then(|v| v.as_str()),
+        Some("STOP"),
+        "Chat stop must encode as Gemini STOP, got {mapped}"
+    );
+}
+
+#[test]
+fn responses_complete_from_chat_events() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "pong"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 3,
+            "completion_tokens": 1
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile()).expect("decode");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode Responses");
+    let text = mapped
+        .get("output_text")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            mapped
+                .get("output")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|items| {
+                    items.iter().find_map(|item| {
+                        item.get("content")
+                            .and_then(serde_json::Value::as_array)
+                            .and_then(|parts| {
+                                parts.iter().find_map(|part| {
+                                    part.get("text").and_then(serde_json::Value::as_str)
+                                })
+                            })
+                    })
+                })
+        });
+    assert_eq!(
+        text,
+        Some("pong"),
+        "Responses complete must carry Chat text, got {mapped}"
+    );
+    assert_eq!(
+        mapped.get("status").and_then(|v| v.as_str()),
+        Some("completed"),
+        "Chat stop must encode as Responses completed, got {mapped}"
+    );
+}
+
+#[test]
+fn responses_complete_length_is_incomplete() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "pong"
+            },
+            "finish_reason": "length"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile()).expect("decode");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode Responses");
+    assert_eq!(
+        mapped.get("status").and_then(|v| v.as_str()),
+        Some("incomplete"),
+        "Chat length must encode as Responses incomplete, got {mapped}"
+    );
+}
+
+#[test]
 fn responses_complete_reasoning_summary_is_reasoning_delta() {
     let body = serde_json::to_vec(&json!({
         "status": "completed",

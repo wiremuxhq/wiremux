@@ -223,7 +223,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     })
 }
 
-fn encode_finish(reason: &str) -> &'static str {
+pub(super) fn encode_finish(reason: &str) -> &'static str {
     match reason {
         "max_tokens" | "length" => "MAX_TOKENS",
         "content_filter" => "SAFETY",
