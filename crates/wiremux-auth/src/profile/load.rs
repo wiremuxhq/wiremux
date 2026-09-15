@@ -14,6 +14,19 @@ use super::types::{
     ToolTypePolicy, Wire,
 };
 
+/// Overlay directories `load_profile` walks (XDG, then macOS Application
+/// Support, then `WIREMUX_PROFILE_DIR`). Later dirs win on the same id.
+pub fn user_profile_dirs() -> Vec<PathBuf> {
+    discover_user_profile_dirs()
+}
+
+/// Directory `wiremux profile ingest` writes when `--dir` is omitted.
+/// Last [`user_profile_dirs`] entry so `WIREMUX_PROFILE_DIR` and the
+/// macOS Application Support path win the same way load does.
+pub fn default_user_profile_dir() -> Option<PathBuf> {
+    user_profile_dirs().into_iter().next_back()
+}
+
 /// List document ids from shipped ∪ user dir ∪ explicit file.
 pub fn list_profiles(opts: &LoadOptions<'_>) -> Result<Vec<String>, ProfileError> {
     let mut ids = BTreeSet::new();

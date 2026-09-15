@@ -1,4 +1,4 @@
-//! Thin CLI: profile validate, auth login/status, optional local proxy.
+//! Thin CLI: profile validate/ingest, auth login/status, optional local proxy.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -7,6 +7,9 @@ use clap::{Parser, Subcommand};
 use wiremux::cli::{
     EXIT_ERROR, EXIT_NOT_READY, EXIT_OK, format_status, list_cli_profiles, load_cli_profile,
     parse_wire, run_login, token_status, validate_report,
+};
+use wiremux::ingest::{
+    CatalogKind, IngestAction, IngestRequest, fetch_catalog_url, ingest_catalog,
 };
 
 #[derive(Parser)]
@@ -70,6 +73,30 @@ enum ProfileCommand {
         /// Profile id or file path.
         path: PathBuf,
     },
+    /// Write user-dir TOML from a public vendor catalog (not shipped presets).
+    Ingest {
+        /// `models-dev` (default) or `litellm`.
+        #[arg(long, default_value = "models-dev")]
+        source: String,
+        /// Local catalog JSON. Do not fetch.
+        #[arg(long)]
+        from_file: Option<PathBuf>,
+        /// Catalog ids. Repeat. Default: groq, deepseek, togetherai, fireworks-ai, mistral, cerebras.
+        #[arg(long = "vendor")]
+        vendors: Vec<String>,
+        /// Every openai-compat row the catalog can resolve (still skips Azure/Bedrock/Copilot).
+        #[arg(long)]
+        all_compatible: bool,
+        /// Destination directory (default: user overlay dir).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Print paths; do not write.
+        #[arg(long)]
+        dry_run: bool,
+        /// Overwrite an existing file or a shipped id.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[tokio::main]
@@ -82,6 +109,29 @@ async fn main() -> ExitCode {
         Command::Profile {
             command: ProfileCommand::Validate { path },
         } => cmd_validate(&path),
+        Command::Profile {
+            command:
+                ProfileCommand::Ingest {
+                    source,
+                    from_file,
+                    vendors,
+                    all_compatible,
+                    dir,
+                    dry_run,
+                    force,
+                },
+        } => {
+            cmd_ingest(
+                &source,
+                from_file.as_deref(),
+                &vendors,
+                all_compatible,
+                dir.as_deref(),
+                dry_run,
+                force,
+            )
+            .await
+        }
         Command::Auth {
             command: AuthCommand::Login { profile },
         } => cmd_login(&profile).await,
@@ -103,6 +153,66 @@ fn cmd_list() -> i32 {
         Ok(ids) => {
             for id in ids {
                 println!("{id}");
+            }
+            EXIT_OK
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            EXIT_ERROR
+        }
+    }
+}
+
+async fn cmd_ingest(
+    source: &str,
+    from_file: Option<&std::path::Path>,
+    vendors: &[String],
+    all_compatible: bool,
+    dir: Option<&std::path::Path>,
+    dry_run: bool,
+    force: bool,
+) -> i32 {
+    let kind = match CatalogKind::parse_name(source) {
+        Ok(kind) => kind,
+        Err(err) => {
+            eprintln!("{err}");
+            return EXIT_ERROR;
+        }
+    };
+    let text = match from_file {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!("{}: {err}", path.display());
+                return EXIT_ERROR;
+            }
+        },
+        None => match fetch_catalog_url(kind.default_url()).await {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!("{err}");
+                return EXIT_ERROR;
+            }
+        },
+    };
+    let req = IngestRequest {
+        kind,
+        vendors: vendors.to_vec(),
+        all_compatible,
+        dir: dir.map(PathBuf::from),
+        dry_run,
+        force,
+    };
+    match ingest_catalog(&text, &req) {
+        Ok(report) => {
+            for action in &report.actions {
+                match action {
+                    IngestAction::Wrote(path) => println!("wrote {}", path.display()),
+                    IngestAction::DryRun(path) => println!("dry-run {}", path.display()),
+                    IngestAction::Skipped { vendor, reason } => {
+                        println!("skip {vendor}: {reason}");
+                    }
+                }
             }
             EXIT_OK
         }

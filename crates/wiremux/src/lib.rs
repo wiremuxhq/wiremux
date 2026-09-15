@@ -6,6 +6,8 @@ pub mod cli;
 pub mod client;
 #[cfg(any(feature = "proxy", feature = "client"))]
 mod headers;
+#[cfg(feature = "cli")]
+pub mod ingest;
 pub mod ir;
 pub mod map;
 #[cfg(feature = "proxy")]

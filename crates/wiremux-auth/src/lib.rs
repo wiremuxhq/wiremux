@@ -26,8 +26,9 @@ pub use profile::{
     AuthScheme, Betas, CredsFormat, Dialect, ExpiresUnit, Fingerprint, ForbiddenFieldPolicy, Http,
     ListMerge, LoadOptions, Login, OauthPack, ProfileError, ResolvedProfile, SCHEMA_VERSION_MAX,
     StreamUnknownPolicy, TokenRequestFormat, TokenResponse, ToolNameCase, ToolTypePolicy, Wire,
-    list_profiles, load_profile, load_profile_for_wire, load_profile_from_cli, not_found_message,
-    parse_profile_str, shipped_profile_ids,
+    default_user_profile_dir, list_profiles, load_profile, load_profile_for_wire,
+    load_profile_from_cli, not_found_message, parse_profile_str, shipped_profile_ids,
+    user_profile_dirs,
 };
 pub use providers::aws::{
     AwsCredentials, AwsSignParams, AwsStsConfig, AwsStsTokenProvider, sign_aws_request,
