@@ -237,6 +237,29 @@ fn auth_login_anthropic_prints_setup_token_hint_and_exits_2() {
 }
 
 #[test]
+fn auth_login_xai_oauth_prints_grok_store_hint_and_exits_2() {
+    let (_home, mut cmd) = isolated_home();
+    let out = cmd
+        .args(["auth", "login", "--profile", "xai-oauth"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2), "{:?}", out);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("XAI_API_KEY") || text.contains("Grok"),
+        "expected Grok store or XAI_API_KEY hint, got: {text}"
+    );
+    assert!(
+        !text.contains("openai-codex-oauth"),
+        "empty-client xai-oauth must not print openai-codex-oauth overlay text, got: {text}"
+    );
+}
+
+#[test]
 fn auth_login_openai_exits_2_until_client_id() {
     let (_home, mut cmd) = isolated_home();
     let out = cmd
@@ -417,6 +440,56 @@ fn proxy_rejects_non_loopback_listen() {
     assert!(
         text.contains("127.0.0.1") || text.to_ascii_lowercase().contains("loopback"),
         "expected loopback refusal, got: {text}"
+    );
+}
+
+#[test]
+fn proxy_rejects_oversized_content_length_before_collect() {
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "cl-cap.toml",
+        r#"
+schema_version = 1
+id = "cl-cap"
+wire = "responses"
+auth_scheme = "none"
+base_url = "http://127.0.0.1:1"
+chat_path = "/v1/responses"
+"#,
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "responses",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let req = "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 16000000\r\nConnection: close\r\n\r\n";
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let lower = resp.to_ascii_lowercase();
+    assert!(
+        resp.contains("413") || lower.contains("too large"),
+        "oversized Content-Length must 413 before collect, got: {resp:?}"
     );
 }
 

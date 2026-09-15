@@ -248,7 +248,7 @@ fn load_profile_xai_oauth_from_shipped_catalog() {
         client.is_empty(),
         "must not ship a product client id, got {client}"
     );
-    assert_eq!(oauth.login, Some(Login::None));
+    assert_eq!(oauth.login, Some(Login::SetupToken));
     assert!(
         !profile.http.headers.contains_key("x-grok-client-version"),
         "xai-oauth chats at api.x.ai and must not send a Grok CLI version header"
@@ -283,7 +283,7 @@ fn load_profile_xai_grok_build_from_shipped_catalog() {
         client.is_empty(),
         "must not ship a product client id, got {client}"
     );
-    assert_eq!(oauth.login, Some(Login::None));
+    assert_eq!(oauth.login, Some(Login::SetupToken));
     assert_eq!(
         profile
             .http
