@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use wiremux_auth::{
     CredsFormat, IsolatedHome, ListMerge, LoadOptions, PlantCredentials, ProfileError,
-    TokenProvider, load_profile, load_profile_from_cli, provider_from_profile,
+    TokenProvider, default_user_profile_dir, load_profile, load_profile_from_cli,
+    provider_from_profile,
 };
 
 fn gists_dir() -> PathBuf {
@@ -645,6 +646,18 @@ base_url = "https://env.example.invalid"
         profile.http.base_url.as_deref(),
         Some("https://env.example.invalid")
     );
+}
+
+#[test]
+fn default_user_profile_dir_is_last_overlay() {
+    let home = IsolatedHome::new();
+    let extra = home.path().join("ingest-dest");
+    fs::create_dir_all(&extra).expect("dest");
+    home.set_env(
+        "WIREMUX_PROFILE_DIR",
+        extra.to_str().expect("utf8 extra dir"),
+    );
+    assert_eq!(default_user_profile_dir().as_deref(), Some(extra.as_path()));
 }
 
 #[cfg(target_os = "macos")]

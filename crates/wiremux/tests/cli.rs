@@ -1729,3 +1729,95 @@ fn read_listen_addr(stdout: &mut impl Read) -> std::net::SocketAddr {
         String::from_utf8_lossy(&buf)
     );
 }
+
+const INGEST_FIXTURE: &str = r#"
+{
+  "groq": {
+    "id": "groq",
+    "name": "Groq",
+    "env": ["GROQ_API_KEY"],
+    "npm": "@ai-sdk/groq"
+  },
+  "deepseek": {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "env": ["DEEPSEEK_API_KEY"],
+    "npm": "@ai-sdk/openai-compatible",
+    "api": "https://api.deepseek.com"
+  },
+  "azure": {
+    "id": "azure",
+    "name": "Azure",
+    "env": ["AZURE_API_KEY"],
+    "npm": "@ai-sdk/azure"
+  }
+}
+"#;
+
+#[test]
+fn profile_ingest_from_file_writes_user_dir() {
+    let scratch = unique_scratch();
+    let catalog = scratch.join("catalog.json");
+    std::fs::write(&catalog, INGEST_FIXTURE).expect("catalog");
+    let dest = scratch.join("profiles");
+    let (_home, mut cmd) = isolated_home();
+    let out = cmd
+        .args([
+            "profile",
+            "ingest",
+            "--from-file",
+            catalog.to_str().expect("utf8"),
+            "--vendor",
+            "groq",
+            "--vendor",
+            "deepseek",
+            "--dir",
+            dest.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "{:?}", out);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("wrote"), "{stdout}");
+    let groq = std::fs::read_to_string(dest.join("groq.toml")).expect("groq");
+    assert!(groq.contains("id = \"groq\""));
+    assert!(groq.contains("https://api.groq.com"));
+    assert!(groq.contains("/openai/v1/chat/completions"));
+    let (_home, mut list) = isolated_home();
+    list.env("WIREMUX_PROFILE_DIR", &dest);
+    let listed = list.args(["profile", "list"]).output().expect("list");
+    assert_eq!(listed.status.code(), Some(0), "{:?}", listed);
+    let ids = String::from_utf8_lossy(&listed.stdout);
+    assert!(ids.contains("groq"), "{ids}");
+    assert!(ids.contains("deepseek"), "{ids}");
+}
+
+#[test]
+fn profile_ingest_refuses_azure() {
+    let scratch = unique_scratch();
+    let catalog = scratch.join("catalog.json");
+    std::fs::write(&catalog, INGEST_FIXTURE).expect("catalog");
+    let dest = scratch.join("profiles");
+    let (_home, mut cmd) = isolated_home();
+    let out = cmd
+        .args([
+            "profile",
+            "ingest",
+            "--from-file",
+            catalog.to_str().expect("utf8"),
+            "--vendor",
+            "azure",
+            "--dir",
+            dest.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("run");
+    assert_ne!(out.status.code(), Some(0), "azure must fail closed");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("azure"), "{err}");
+    assert!(
+        err.contains("not a simple"),
+        "expected fail-closed reason, got: {err}"
+    );
+    assert!(!dest.join("azure.toml").exists());
+}
