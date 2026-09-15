@@ -330,6 +330,46 @@ fn messages_complete_thinking_keeps_chat_signature() {
 }
 
 #[test]
+fn messages_complete_from_chat_events() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "pong"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 3,
+            "completion_tokens": 1
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile()).expect("decode");
+    let mapped = encode_response(Wire::Messages, &events).expect("encode Messages");
+    let text = mapped
+        .pointer("/content")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|blocks| {
+            blocks.iter().find_map(|block| {
+                (block.get("type").and_then(|v| v.as_str()) == Some("text"))
+                    .then(|| block.get("text").and_then(|v| v.as_str()))
+                    .flatten()
+            })
+        });
+    assert_eq!(
+        text,
+        Some("pong"),
+        "Messages complete must carry Chat text, got {mapped}"
+    );
+    assert_eq!(
+        mapped.get("stop_reason").and_then(|v| v.as_str()),
+        Some("end_turn"),
+        "Chat stop must encode as Messages end_turn, got {mapped}"
+    );
+}
+
+#[test]
 fn responses_complete_reasoning_summary_is_reasoning_delta() {
     let body = serde_json::to_vec(&json!({
         "status": "completed",

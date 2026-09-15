@@ -177,9 +177,11 @@ pub(super) fn map_stop_reason(reason: &str) -> &str {
     }
 }
 
-fn encode_stop_reason(reason: &str) -> &str {
+pub(super) fn encode_stop_reason(reason: &str) -> &str {
     match reason {
-        "length" => "max_tokens",
+        "stop" | "end_turn" => "end_turn",
+        "length" | "max_tokens" => "max_tokens",
+        "tool_calls" | "tool_use" => "tool_use",
         other => other,
     }
 }
