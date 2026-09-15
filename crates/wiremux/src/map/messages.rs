@@ -945,12 +945,47 @@ fn encode_tool(tool: &PreparedTool) -> Value {
             name,
             description,
             parameters,
-        } => json!({
-            "name": name,
-            "description": description,
-            "input_schema": parameters,
-        }),
-        PreparedTool::Raw(raw) => raw.clone(),
+        } => {
+            let mut schema = parameters.clone();
+            normalize_object_schema_required(&mut schema);
+            json!({
+                "name": name,
+                "description": description,
+                "input_schema": schema,
+            })
+        }
+        PreparedTool::Raw(raw) => {
+            let mut raw = raw.clone();
+            if let Some(schema) = raw.get_mut("input_schema") {
+                normalize_object_schema_required(schema);
+            }
+            raw
+        }
+    }
+}
+
+/// Grok Build Messages rejects `required: null` (and treats a missing
+/// `required` the same way): HTTP 400 `/required: null is not of type "array"`.
+fn normalize_object_schema_required(schema: &mut Value) {
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+    let is_object =
+        obj.get("type").and_then(Value::as_str) == Some("object") || obj.contains_key("properties");
+    if !is_object {
+        if matches!(obj.get("required"), Some(Value::Null)) {
+            obj.insert("required".into(), json!([]));
+        }
+        return;
+    }
+    match obj.get("required") {
+        None | Some(Value::Null) => {
+            obj.insert("required".into(), json!([]));
+        }
+        Some(Value::Array(_)) => {}
+        Some(_) => {
+            obj.insert("required".into(), json!([]));
+        }
     }
 }
 
