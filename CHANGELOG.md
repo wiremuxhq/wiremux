@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/wiremuxhq/wiremux/compare/v0.4.0...v0.5.0) (2026-09-15)
+
+
+### Features
+
+* Messages Grok Build catalog, Continue., and shipped ids ([#120](https://github.com/wiremuxhq/wiremux/issues/120)) ([64fd644](https://github.com/wiremuxhq/wiremux/commit/64fd644ab5b2efd9ddf1f4c0b4a4671ba106552b)), closes [#114](https://github.com/wiremuxhq/wiremux/issues/114) [#115](https://github.com/wiremuxhq/wiremux/issues/115) [#116](https://github.com/wiremuxhq/wiremux/issues/116) [#117](https://github.com/wiremuxhq/wiremux/issues/117) [#118](https://github.com/wiremuxhq/wiremux/issues/118) [#119](https://github.com/wiremuxhq/wiremux/issues/119)
+
 ## [0.4.0](https://github.com/wiremuxhq/wiremux/compare/v0.3.0...v0.4.0) (2026-09-15)
 
 
