@@ -62,7 +62,10 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
             && notes.contains("`openrouter`")
             && notes.contains("`gemini`")
             && notes.contains("`lmstudio`")
-            && notes.contains("`vllm`"),
+            && notes.contains("`vllm`")
+            && notes.contains("`xai-oauth`")
+            && notes.contains("`xai-grok-build`")
+            && notes.contains("cli-chat-proxy.grok.com"),
         "consume notes must list catalog ids and the canact mapping"
     );
     assert!(
