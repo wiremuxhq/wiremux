@@ -1,8 +1,10 @@
 # Bline consume spike notes
 
-Written plan only. No Bline code lands in this repository. The first
-leftover prove already landed in Bline. Adapter swap is a later Bline
-PR against `blineai/bline`.
+Written plan only. No Bline code lands in this repository. Bline wrap,
+adapter swap, and leftover delete already landed in
+[blineai/bline#3992](https://github.com/blineai/bline/pull/3992)
+([`21b56488`](https://github.com/blineai/bline/commit/21b56488a94f338682f1c69a1d541053da8f8481)).
+Do not dest-parent-copy Bline sources here.
 
 ## Status
 
@@ -19,16 +21,27 @@ and a Chat id-then-name assembler.
 Auth-only is still a valid first attach (`wiremux-auth` alone). Maps
 no longer have to wait.
 
-The first leftover prove is in Bline, not in this tree.
-[blineai/bline#3939](https://github.com/blineai/bline/pull/3939) first
-pinned both crates. [blineai/bline#3960](https://github.com/blineai/bline/pull/3960)
-squash-merged the pin to GitHub release
+Bline leftover-prove first pinned both crates in
+[blineai/bline#3939](https://github.com/blineai/bline/pull/3939), then
+git tag
 [v0.1.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.1.0)
-([`530e69f3e8188abf0c4cec83729124a2a979466e`](https://github.com/wiremuxhq/wiremux/commit/530e69f3e8188abf0c4cec83729124a2a979466e))
-with `wiremux` `default-features = false`. That pin is leftover-only:
-Bline still owns TokenProviders and dialect maps. Production does not
-call `wiremux::{decode,encode}` or wrap `wiremux_auth::TokenProvider`.
-Adapter swap of `to_resp_message` / Anthropic conversions is still later.
+in [blineai/bline#3960](https://github.com/blineai/bline/pull/3960).
+[blineai/bline#3991](https://github.com/blineai/bline/pull/3991)
+re-pinned leftover-prove to crates.io `0.2.1` (`default-features =
+false`). That leftover-prove reported no new crate map or auth bugs.
+[blineai/bline#3992](https://github.com/blineai/bline/pull/3992)
+then wrapped `wiremux_auth::TokenProvider`, swapped adapters onto
+`wiremux::{decode,encode}`, and deleted leftover production
+TokenProviders and named host conversions.
+[blineai/bline#3988](https://github.com/blineai/bline/issues/3988)
+is CLOSED.
+
+Bline pins crates.io `0.3.0` with `wiremux` `default-features = false`
+after [blineai/bline#3996](https://github.com/blineai/bline/pull/3996)
+([`934e6235`](https://github.com/blineai/bline/commit/934e6235135b79a61730215d615d7f731ad07138)).
+That leftover-prove filed no new crate bugs. [#104](https://github.com/wiremuxhq/wiremux/issues/104)
+was already open. [#103](https://github.com/wiremuxhq/wiremux/issues/103)
+was already tracked and is now CLOSED.
 
 The wiremux README stays:
 
@@ -45,9 +58,10 @@ plan is executed.
 
 Dialect maps, IR, TokenProviders (OAuth, static, GCP, Azure, AWS STS,
 Copilot store and device login), profile catalog, and login engines
-live in this workspace. After a Bline consume PR they must not keep a
-second copy. Today Bline still keeps the parallel stack (leftover-only
-pin).
+live in this workspace. After the Bline consume PR they must not keep
+a second production copy. Bline production now wraps
+`wiremux_auth::TokenProvider` and encodes through
+`wiremux::{decode,encode}`. leftover-prove tests stay in Bline.
 
 Bline (the host) still owns the agent loop, router, failover, wire
 logger, and `bline diagnose`. Those are not LLM wire.
@@ -64,59 +78,60 @@ independent of `LlmError`.
 Path-dep `wiremux-auth` first, then maps at the adapter boundary.
 
 1. Bline path-deps `wiremux-auth` (local path for dogfood, then a
-   pinned git SHA). Leftover-only pin landed in Bline #3939 / #3960
-   (`v0.1.0`). Production still uses host TokenProviders.
+   pinned git SHA). First leftover prove pin landed in Bline #3939 /
+   #3960 (`v0.1.0`). Crates.io leftover-prove re-pin landed in Bline
+   #3991 (`0.2.1`).
 2. Wrap `wiremux_auth::TokenProvider` inside `bline_auth::TokenProvider`.
-   Still later. Leftover-prove tests call the crate; `bline-auth`
-   production does not wrap it.
-3. Map `AuthError` to `LlmError::Auth`. Still later (same wrap PR).
+   Done in Bline #3992. leftover-prove tests still call the crate;
+   `bline-auth` production now wraps it.
+3. Map `AuthError` to `LlmError::Auth`. Done in Bline #3992 (same
+   wrap PR). LockTimeout / EmptyWriteRefused / VendorRejected stay
+   distinguishable.
 4. Map `ChatRequest` at the `bline-llm` adapter boundary
    (`wiremux::{decode,encode}`). Use `default-features = false` so
-   clap, tokio, and reqwest stay off the maps crate. Still later.
+   clap, tokio, and reqwest stay off the maps crate. Done in Bline
+   #3992.
 5. Ship the Bline change behind a feature flag or a single adapter
-   call site so rollback is one Bline revert. Still later.
-6. Only after steps 2-5, delete Bline's parallel TokenProviders and
-   dialect conversions. Do not delete them on the leftover-only pin.
+   call site so rollback is one Bline revert. Done in Bline #3992
+   (adapter call site).
+6. After steps 2-5, delete Bline's parallel TokenProviders and
+   dialect conversions. Done in Bline #3992. Host leftover request
+   structs remain as test fixtures. Claude Code oat, IsolatedHome,
+   `secret_store`, and host SigV4 Bedrock signing stay in Bline.
 
-crates.io is an attach path for published hosts. Current crates.io
-versions match tag
-[v0.2.1](https://github.com/wiremuxhq/wiremux/releases/tag/v0.2.1):
+crates.io is an attach path for published hosts. Bline and other
+published hosts pin tag
+[v0.3.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.3.0):
 
 ```toml
 [dependencies]
-wiremux-auth = "0.2.1"
-wiremux = { version = "0.2.1", default-features = false }
+wiremux-auth = "0.3.0"
+wiremux = { version = "0.3.0", default-features = false }
 ```
+
+Bline #3991 leftover-prove used `0.2.1`. Bline #3996 bumped the
+workspace pin to `0.3.0` after wrap.
 
 ## Suggested attach (Bline crate, not this repo)
 
-Bline and other unpublished hosts stay on GitHub release
-[v0.1.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.1.0)
-([`530e69f3e8188abf0c4cec83729124a2a979466e`](https://github.com/wiremuxhq/wiremux/commit/530e69f3e8188abf0c4cec83729124a2a979466e)):
-
-```toml
-[dependencies]
-wiremux-auth = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux-auth", tag = "v0.1.0" }
-wiremux = { git = "https://github.com/wiremuxhq/wiremux", package = "wiremux", tag = "v0.1.0", default-features = false }
-```
-
-`default-features = false` is maps plus re-exported profile types.
-It does not pull clap, a fat tokio, or reqwest on the `wiremux`
-crate. `wiremux-auth` still has its own reqwest for TokenProvider.
+Bline is on the crates.io form above. Other unpublished hosts may
+still git-pin a tag. `default-features = false` is maps plus
+re-exported profile types. It does not pull clap, a fat tokio, or
+reqwest on the `wiremux` crate. `wiremux-auth` still has its own
+reqwest for TokenProvider.
 
 Bline `deny.toml` has `unknown-git = deny` and `allow-git` for workpen
-only. A git pin needs `https://github.com/wiremuxhq/wiremux` on that
-allow list. That change lives in Bline, not this repo.
+only. Bline #3991 dropped the `wiremuxhq/wiremux` git allow row.
 
 Local dogfood may use a path dependency on `crates/wiremux-auth`
 instead.
 
-Wrapper sketch (illustrative; do not land it here):
+Wrapper that landed in Bline #3992 (do not land it here):
 
 - `bline_auth` owns a `wiremux_auth::AnyTokenProvider` (or
   `ProfileTokenProvider`) behind the existing Bline `TokenProvider`
   trait.
-- `get_token` and `mark_stale` forward.
+- `get_token`, `mark_stale`, and `wake` forward.
 - Every `AuthError` becomes `LlmError::Auth`. Typed variants
   (`LockTimeout`, `EmptyWriteRefused`, `VendorRejected`) stay
   distinguishable in the mapped message or a host-side match so
@@ -162,9 +177,9 @@ Diagnose should print `LossReport` for `part.thinking` and
 `sampling.max_reasoning_tokens`.
 
 Messages encode: an empty or whitespace-only assistant turn becomes
-one text block `"."`. Anthropic rejects empty text. The Bline host
-map uses `"[empty]"` or omits the block. After consume, adapters
-take the crate choice. Locked by
+one text block `"."`. Anthropic rejects empty text. The old Bline
+host map used `"[empty]"` or omitted the block. After consume,
+adapters take the crate choice. Locked by
 `messages_whitespace_only_assistant_becomes_dot`.
 
 ## Stay in Bline (host only)
@@ -175,6 +190,7 @@ take the crate choice. Locked by
 | Router, failover, wire logger, diagnose, `repair.rs` | Host control plane. |
 | OS wake watcher | Host installs the watcher. It must call `TokenProvider::wake` (or `mark_stale`) on the wiremux provider. Do not keep a Bline TokenProvider just for wake. |
 | Account / `ProviderConfig` UI | Host config. Values feed a wiremux profile. |
+| Claude Code oat, IsolatedHome, `secret_store`, SigV4 Bedrock | Host-only after #3992. |
 
 Do **not** leave these in Bline:
 
@@ -188,9 +204,11 @@ Do **not** leave these in Bline:
 
 ## Host follow-up (Bline, after this crate has the APIs)
 
-Bline deletes its parallel TokenProviders and dialect conversions
-once it pins a SHA that exports them. That is a Bline PR. The APIs
-must exist here first.
+Bline already wraps TokenProvider and encodes through this crate on
+crates.io `0.3.0`. leftover-prove tests stay in Bline
+(`leftover_wiremux` / `leftover_3988`). The 0.2.1 wrap landed in
+#3992; the 0.3.0 pin landed in #3996. Do not implement a Bline
+bump here.
 
 Canact consume of `wiremux-auth` is a later canact PR, not a wiremux
 PR and not part of this spike. A refresh-only host (canact or
@@ -244,8 +262,8 @@ wins). `lmstudio` and `vllm` are `auth_scheme = none`.
 
 ## Rollback
 
-Bline stays on the last good git tag (or path-dep SHA). Rollback of
-the consume spike is revert the Bline commit. Bline adapters remain.
-crates.io versions `0.2.1` match tag `v0.2.1`. Published hosts pin
-those versions. Bline may keep the git tag until it wants a crates.io
-pin.
+Bline stays on crates.io `0.3.0`. Rollback of the consume spike is
+revert the Bline #3992 commit (then the #3996 pin if needed).
+leftover-prove tests remain. crates.io versions `0.3.0` match tag
+`v0.3.0`. Published hosts pin those versions until they choose a
+later crates.io cut.
