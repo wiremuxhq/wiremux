@@ -14,6 +14,7 @@ pub fn encode_response(wire: Wire, events: &[IrStreamEvent]) -> Result<Value, Ma
     match wire {
         Wire::ChatCompletions => Ok(encode_chat_complete(events)),
         Wire::Messages => Ok(encode_messages_complete(events)),
+        Wire::Gemini => Ok(encode_gemini_complete(events)),
         other => Err(MapError::Invalid(format!(
             "non-stream encode has no slot on {other:?}"
         ))),
@@ -229,6 +230,106 @@ fn messages_tool_use_value(id: &str, name: &str, args: &str) -> Value {
         "id": id,
         "name": name,
         "input": serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({})),
+    })
+}
+
+fn encode_gemini_complete(events: &[IrStreamEvent]) -> Value {
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    let mut reasoning_signature = None;
+    let mut finish = None;
+    let mut usage = None;
+    let mut tool_calls = Vec::new();
+    let mut current: Option<(String, String, String)> = None;
+    for ev in events {
+        match ev {
+            IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
+            IrStreamEvent::ReasoningSignature { signature } => {
+                reasoning_signature = Some(signature.clone());
+            }
+            IrStreamEvent::FinishReason { reason } => {
+                finish = Some(super::gemini::encode_finish(reason).to_string());
+            }
+            IrStreamEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+                cache_read_tokens,
+                reasoning_tokens,
+                ..
+            } => {
+                usage = Some((
+                    *prompt_tokens,
+                    *completion_tokens,
+                    *cache_read_tokens,
+                    *reasoning_tokens,
+                ));
+            }
+            IrStreamEvent::ToolCallStart { id, name, .. } => {
+                if let Some((id, name, args)) = current.take() {
+                    tool_calls.push(gemini_function_call_value(&id, &name, &args));
+                }
+                current = Some((id.clone(), name.clone(), String::new()));
+            }
+            IrStreamEvent::ToolCallArgDelta { delta } => {
+                if let Some((_, _, args)) = current.as_mut() {
+                    args.push_str(delta);
+                }
+            }
+            IrStreamEvent::ToolCallEnd => {
+                if let Some((id, name, args)) = current.take() {
+                    tool_calls.push(gemini_function_call_value(&id, &name, &args));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some((id, name, args)) = current.take() {
+        tool_calls.push(gemini_function_call_value(&id, &name, &args));
+    }
+
+    let mut parts = Vec::new();
+    if !reasoning.is_empty() || reasoning_signature.is_some() {
+        let mut part = json!({ "text": reasoning, "thought": true });
+        if let Some(signature) = reasoning_signature {
+            part["thoughtSignature"] = json!(signature);
+        }
+        parts.push(part);
+    }
+    if !text.is_empty() {
+        parts.push(json!({ "text": text }));
+    }
+    parts.extend(tool_calls);
+
+    let mut candidate = json!({
+        "content": {
+            "role": "model",
+            "parts": parts,
+        }
+    });
+    if let Some(reason) = finish {
+        candidate["finishReason"] = json!(reason);
+    }
+
+    let mut out = json!({
+        "candidates": [candidate],
+    });
+    if let Some((prompt, completion, cache_read, reasoning_tokens)) = usage {
+        let encoded = super::usage::encode_gemini(prompt, completion, cache_read, reasoning_tokens);
+        if let Some(meta) = encoded.get("usageMetadata") {
+            out["usageMetadata"] = meta.clone();
+        }
+    }
+    out
+}
+
+fn gemini_function_call_value(id: &str, name: &str, args: &str) -> Value {
+    let n = if name.is_empty() { id } else { name };
+    json!({
+        "functionCall": {
+            "name": n,
+            "args": serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({})),
+        }
     })
 }
 

@@ -370,6 +370,46 @@ fn messages_complete_from_chat_events() {
 }
 
 #[test]
+fn gemini_complete_from_chat_events() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "pong"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 3,
+            "completion_tokens": 1
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile()).expect("decode");
+    let mapped = encode_response(Wire::Gemini, &events).expect("encode Gemini");
+    let text = mapped
+        .pointer("/candidates/0/content/parts")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|parts| {
+            parts
+                .iter()
+                .find_map(|part| part.get("text").and_then(|v| v.as_str()))
+        });
+    assert_eq!(
+        text,
+        Some("pong"),
+        "Gemini complete must carry Chat text, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/candidates/0/finishReason")
+            .and_then(|v| v.as_str()),
+        Some("STOP"),
+        "Chat stop must encode as Gemini STOP, got {mapped}"
+    );
+}
+
+#[test]
 fn responses_complete_reasoning_summary_is_reasoning_delta() {
     let body = serde_json::to_vec(&json!({
         "status": "completed",
