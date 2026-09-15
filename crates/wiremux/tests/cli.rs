@@ -444,6 +444,56 @@ fn proxy_rejects_non_loopback_listen() {
 }
 
 #[test]
+fn proxy_rejects_oversized_content_length_before_collect() {
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "cl-cap.toml",
+        r#"
+schema_version = 1
+id = "cl-cap"
+wire = "responses"
+auth_scheme = "none"
+base_url = "http://127.0.0.1:1"
+chat_path = "/v1/responses"
+"#,
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "responses",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let req = "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 16000000\r\nConnection: close\r\n\r\n";
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let lower = resp.to_ascii_lowercase();
+    assert!(
+        resp.contains("413") || lower.contains("too large"),
+        "oversized Content-Length must 413 before collect, got: {resp:?}"
+    );
+}
+
+#[test]
 fn proxy_maps_request_to_profile_upstream() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");

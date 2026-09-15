@@ -30,6 +30,7 @@ use crate::upstream::upstream_url_for_model;
 type ProxyBody = UnsyncBoxBody<Bytes, Infallible>;
 
 const MAX_BODY: usize = 8 * 1024 * 1024;
+const MAX_UPSTREAM_BODY: usize = 16 * 1024 * 1024;
 
 /// Bind 127.0.0.1 and serve until the process is signaled.
 pub async fn run(
@@ -104,6 +105,15 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
 
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
+    if let Some(len) = req
+        .headers()
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        && len > MAX_BODY as u64
+    {
+        return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
+    }
     let collected = match req.collect().await {
         Ok(c) => c.to_bytes(),
         Err(err) => return text(StatusCode::BAD_REQUEST, format!("read body: {err}\n")),
@@ -185,16 +195,10 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         }
         return map_sse_stream(state, target, status, resp);
     }
-    let body = match resp.bytes().await {
+    let body = match read_capped_upstream(resp, MAX_UPSTREAM_BODY).await {
         Ok(b) => b,
         Err(err) => {
-            return text(
-                StatusCode::BAD_GATEWAY,
-                format!(
-                    "{}\n",
-                    format_oauth_transport_error("upstream body", &err, &url)
-                ),
-            );
+            return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
         }
     };
     if ir.sampling.stream == Some(true)
@@ -224,6 +228,28 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         StatusCode::NOT_IMPLEMENTED,
         "non-stream cross-dialect responses are not mapped\n",
     )
+}
+
+async fn read_capped_upstream(resp: reqwest::Response, cap: usize) -> Result<Bytes, String> {
+    let url = resp.url().to_string();
+    if let Some(len) = resp.content_length()
+        && len > cap as u64
+    {
+        return Err(format!(
+            "upstream body too large (Content-Length: {len} bytes)"
+        ));
+    }
+    let mut stream = resp.bytes_stream();
+    let mut buf = Vec::new();
+    while let Some(item) = stream.next().await {
+        let chunk =
+            item.map_err(|err| format_oauth_transport_error("upstream body", &err, &url))?;
+        if buf.len().saturating_add(chunk.len()) > cap {
+            return Err(format!("upstream body exceeds {cap} bytes"));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(Bytes::from(buf))
 }
 
 /// Grok (and other always-SSE clients) still get SSE when the upstream
