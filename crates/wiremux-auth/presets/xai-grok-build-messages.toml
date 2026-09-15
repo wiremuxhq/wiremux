@@ -1,0 +1,30 @@
+# presets/xai-grok-build-messages.toml
+schema_version = 1
+id = "xai-grok-build-messages"
+display_name = "xAI / Grok Build CLI proxy (Messages)"
+wire = "messages"
+base_url = "https://cli-chat-proxy.grok.com"
+chat_path = "/v1/messages"
+auth_scheme = "bearer"
+header_merge = "union"
+
+# cli-chat-proxy.grok.com returns HTTP 426 when this header is absent
+# ("Grok CLI version (none)"). 0.1.202 is the live floor. Identifier is
+# this crate, not a Grok product client id.
+[headers]
+x-grok-client-version = "0.1.202"
+x-grok-client-identifier = "wiremux"
+
+[oauth]
+# Same pack as xai-oauth. Discovery: https://auth.x.ai/.well-known/openid-configuration
+authorize_url = "https://auth.x.ai/oauth2/authorize"
+token_url = "https://auth.x.ai/oauth2/token"
+# Empty: match the single {issuer}:: entry in ~/.grok/auth.json.
+# Do not ship a product client id.
+client_id = ""
+refresh_grant = "refresh_token"
+token_request_format = "form"
+creds_format = "oidc-auth-json"
+creds_path = "~/.grok/auth.json"
+login = "setup-token"
+setup_token_hint = "log in with Grok or set XAI_API_KEY on profile xai"
