@@ -280,10 +280,7 @@ impl WireClient {
         let url = upstream_url_for_model(&self.profile, Some(ir.model.as_str()), false)
             .map_err(ClientError::Transport)?;
         let token = self.access_token().await?;
-        let resp = self
-            .post_json(&url, encoded, token.as_deref())
-            .await
-            .map_err(classify_send_err)?;
+        let resp = self.post_json(&url, encoded, token.as_deref()).await?;
         let status = resp.status().as_u16();
         let retry_after = retry_after_secs(&resp);
         let success = resp.status().is_success();
@@ -387,16 +384,17 @@ impl WireClient {
         url: &str,
         body: Vec<u8>,
         token: Option<&str>,
-    ) -> Result<reqwest::Response, reqwest::Error> {
+    ) -> Result<reqwest::Response, ClientError> {
         let req = self
             .http
             .post(url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.clone());
         let req = apply_profile_headers(req, &self.profile, token);
-        apply_aws_sigv4(&self.profile, url, "POST", &body, req)
+        apply_aws_sigv4(&self.profile, url, "POST", &body, req)?
             .send()
             .await
+            .map_err(classify_send_err)
     }
 
     async fn get_url(
@@ -448,10 +446,7 @@ impl WireClient {
         let url = upstream_url_for_model(&self.profile, Some(ir.model.as_str()), true)
             .map_err(ClientError::Transport)?;
         let token = self.access_token().await?;
-        let resp = self
-            .post_json(&url, encoded, token.as_deref())
-            .await
-            .map_err(classify_send_err)?;
+        let resp = self.post_json(&url, encoded, token.as_deref()).await?;
         let status = resp.status().as_u16();
         let retry_after = retry_after_secs(&resp);
         if !resp.status().is_success() {
@@ -1069,32 +1064,42 @@ fn vision_from_show(value: &Value) -> Option<bool> {
         })
 }
 
-fn apply_aws_sigv4(
+#[derive(Debug)]
+struct AwsSigV4Headers {
+    authorization: String,
+    amz_date: String,
+    session_token: String,
+}
+
+/// Skip when `aws_service` or keys are absent. Fail closed if keys are set
+/// and the URL cannot be parsed, has no host, or signing fails.
+fn prepare_aws_sigv4(
     profile: &ResolvedProfile,
     url: &str,
     method: &str,
     body: &[u8],
-    req: reqwest::RequestBuilder,
-) -> reqwest::RequestBuilder {
+    creds: Option<&AwsCredentials>,
+    amz_date: &str,
+) -> Result<Option<AwsSigV4Headers>, ClientError> {
     let Some(service) = profile
         .http
         .aws_service
         .as_deref()
         .filter(|s| !s.is_empty())
     else {
-        return req;
+        return Ok(None);
     };
-    let access = std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_default();
-    let secret = std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_default();
-    if access.is_empty() || secret.is_empty() {
-        return req;
-    }
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return req;
+    let Some(creds) =
+        creds.filter(|c| !c.access_key_id.is_empty() && !c.secret_access_key.is_empty())
+    else {
+        return Ok(None);
     };
-    let Some(host) = parsed.host_str().map(str::to_string) else {
-        return req;
-    };
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|err| ClientError::Transport(format!("aws sigv4 url: {err}")))?;
+    let host = parsed
+        .host_str()
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| ClientError::Transport("aws sigv4 url has no host".into()))?;
     let path = if parsed.path().is_empty() {
         "/"
     } else {
@@ -1107,38 +1112,64 @@ fn apply_aws_sigv4(
         .clone()
         .or_else(|| std::env::var("AWS_REGION").ok())
         .unwrap_or_else(|| "us-east-1".into());
-    let session = std::env::var("AWS_SESSION_TOKEN").unwrap_or_default();
-    let amz_date = amz_date_now();
-    let creds = AwsCredentials {
-        access_key_id: access,
-        secret_access_key: secret,
-        session_token: session.clone(),
-        expiration: None,
-    };
     let extra = [("content-type", "application/json")];
-    let Ok(authorization) = sign_aws_request(
-        &creds,
+    let authorization = sign_aws_request(
+        creds,
         &AwsSignParams {
             method,
-            host: &host,
+            host,
             path,
             query,
             region: &region,
             service,
             extra_headers: &extra,
             payload: body,
-            amz_date: &amz_date,
+            amz_date,
         },
-    ) else {
-        return req;
+    )
+    .map_err(|err| ClientError::Auth {
+        status: None,
+        message: err.to_string(),
+    })?;
+    Ok(Some(AwsSigV4Headers {
+        authorization,
+        amz_date: amz_date.to_string(),
+        session_token: creds.session_token.clone(),
+    }))
+}
+
+fn apply_aws_sigv4(
+    profile: &ResolvedProfile,
+    url: &str,
+    method: &str,
+    body: &[u8],
+    req: reqwest::RequestBuilder,
+) -> Result<reqwest::RequestBuilder, ClientError> {
+    let access = std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_default();
+    let secret = std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_default();
+    let session = std::env::var("AWS_SESSION_TOKEN").unwrap_or_default();
+    let creds = if access.is_empty() || secret.is_empty() {
+        None
+    } else {
+        Some(AwsCredentials {
+            access_key_id: access,
+            secret_access_key: secret,
+            session_token: session,
+            expiration: None,
+        })
+    };
+    let Some(headers) =
+        prepare_aws_sigv4(profile, url, method, body, creds.as_ref(), &amz_date_now())?
+    else {
+        return Ok(req);
     };
     let mut req = req
-        .header("x-amz-date", amz_date)
-        .header("authorization", authorization);
-    if !session.is_empty() {
-        req = req.header("x-amz-security-token", session);
+        .header("x-amz-date", headers.amz_date)
+        .header("authorization", headers.authorization);
+    if !headers.session_token.is_empty() {
+        req = req.header("x-amz-security-token", headers.session_token);
     }
-    req
+    Ok(req)
 }
 
 fn amz_date_now() -> String {
@@ -1250,5 +1281,97 @@ wire = "messages"
             text.contains("did you mean") && text.contains("anthropic"),
             "profile_err must keep the catalog suggestion, got {text}"
         );
+    }
+
+    fn bedrock_sigv4_profile() -> ResolvedProfile {
+        parse_profile_str(
+            r#"
+schema_version = 1
+id = "amazon-bedrock"
+wire = "converse"
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+"#,
+        )
+        .expect("parse")
+    }
+
+    fn test_aws_creds() -> AwsCredentials {
+        AwsCredentials {
+            access_key_id: "AKIATEST".into(),
+            secret_access_key: "secret".into(),
+            session_token: String::new(),
+            expiration: None,
+        }
+    }
+
+    fn assert_sign_closed(result: Result<Option<AwsSigV4Headers>, ClientError>, what: &str) {
+        let err = match result {
+            Err(e) => e,
+            Ok(v) => panic!("{what}: expected Err, got Ok({v:?})"),
+        };
+        match err {
+            ClientError::Transport(msg) => {
+                assert!(!msg.is_empty(), "{what}: empty Transport");
+            }
+            ClientError::Auth { message, .. } => {
+                assert!(!message.is_empty(), "{what}: empty Auth");
+            }
+            other => panic!("{what}: expected Transport or Auth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aws_sigv4_bad_url_with_keys_is_error() {
+        let result = prepare_aws_sigv4(
+            &bedrock_sigv4_profile(),
+            "not a url",
+            "POST",
+            b"{}",
+            Some(&test_aws_creds()),
+            "20260915T000000Z",
+        );
+        assert_sign_closed(result, "keys + bad url");
+    }
+
+    #[test]
+    fn aws_sigv4_missing_host_with_keys_is_error() {
+        let result = prepare_aws_sigv4(
+            &bedrock_sigv4_profile(),
+            "file:///tmp/bedrock",
+            "POST",
+            b"{}",
+            Some(&test_aws_creds()),
+            "20260915T000000Z",
+        );
+        assert_sign_closed(result, "keys + missing host");
+    }
+
+    #[test]
+    fn aws_sigv4_sign_failure_with_keys_is_error() {
+        let result = prepare_aws_sigv4(
+            &bedrock_sigv4_profile(),
+            "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse",
+            "POST",
+            b"{}",
+            Some(&test_aws_creds()),
+            "short",
+        );
+        assert_sign_closed(result, "keys + sign failure");
+    }
+
+    #[test]
+    fn aws_sigv4_missing_keys_skips_sign() {
+        let out = prepare_aws_sigv4(
+            &bedrock_sigv4_profile(),
+            "not a url",
+            "POST",
+            b"{}",
+            None,
+            "20260915T000000Z",
+        )
+        .expect("missing keys skip even if url is bad");
+        assert!(out.is_none(), "Bearer-only Bedrock must skip sign");
     }
 }

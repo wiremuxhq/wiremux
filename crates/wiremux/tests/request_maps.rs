@@ -4308,6 +4308,34 @@ aws_region = "us-east-1"
 }
 
 #[test]
+fn converse_encode_does_not_invent_empty_function_call_args() {
+    let ir = IrRequest {
+        model: "amazon.nova-lite-v1:0".into(),
+        items: vec![IrItem::FunctionCall {
+            call_id: "t1".into(),
+            name: "lookup".into(),
+            arguments: "not-json".into(),
+            thought_signature: None,
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let input = body.pointer("/messages/0/content/0/toolUse/input");
+    assert_ne!(
+        input,
+        Some(&serde_json::json!({})),
+        "invalid JSON must not become empty object, got {body}"
+    );
+    assert_eq!(
+        input,
+        Some(&Value::String("not-json".into())),
+        "invalid JSON must stay a string, got {body}"
+    );
+}
+
+#[test]
 fn converse_round_trip_text_and_tool() {
     let req = br#"{
       "modelId": "amazon.nova-lite-v1:0",

@@ -287,7 +287,8 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 arguments,
                 ..
             } => {
-                let input: Value = serde_json::from_str(arguments).unwrap_or(json!({}));
+                let input: Value =
+                    serde_json::from_str(arguments).unwrap_or_else(|_| json!(arguments));
                 let block = json!({
                     "toolUse": {
                         "toolUseId": call_id,
