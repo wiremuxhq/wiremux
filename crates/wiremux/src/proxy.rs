@@ -414,6 +414,7 @@ fn assistant_text(wire: Wire, value: &Value) -> Option<String> {
 }
 
 fn passthrough_sse(status: StatusCode, resp: reqwest::Response) -> Response<ProxyBody> {
+    let url = resp.url().to_string();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(16);
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
@@ -424,7 +425,15 @@ fn passthrough_sse(status: StatusCode, resp: reqwest::Response) -> Response<Prox
                         return;
                     }
                 }
-                Err(_) => return,
+                Err(err) => {
+                    let _ = tx
+                        .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
+                            event: Some("error".into()),
+                            data: format_oauth_transport_error("upstream stream", &err, &url),
+                        })))))
+                        .await;
+                    return;
+                }
             }
         }
     });
