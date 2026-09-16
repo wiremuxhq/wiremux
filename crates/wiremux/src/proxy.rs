@@ -467,7 +467,10 @@ fn map_sse_stream(
                 Ok(f) => f,
                 Err(err) => {
                     let _ = tx
-                        .send(Ok(Frame::data(Bytes::from(format!("{err}\n")))))
+                        .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
+                            event: Some("error".into()),
+                            data: err,
+                        })))))
                         .await;
                     return;
                 }

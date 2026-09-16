@@ -462,6 +462,41 @@ fn chat_top_level_cached_tokens_alias_is_read() {
 }
 
 #[test]
+fn gemini_error_chunk_is_hard_error() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"error":{"code":400,"message":"INVALID_ARGUMENT: bad fileUri"}}"#.into(),
+    };
+    let err = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
+        .expect_err("Gemini error object must be HardError, not Ok empty");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "error");
+            assert!(
+                detail.contains("INVALID_ARGUMENT") && detail.contains("bad fileUri"),
+                "HardError must keep the vendor message, detail={detail}"
+            );
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+}
+
+#[test]
+fn gemini_candidate_text_chunk_still_decodes() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"pong"}]}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode")
+        .expect("event");
+    match ev {
+        IrStreamEvent::TextDelta { text } => assert_eq!(text, "pong"),
+        other => panic!("expected TextDelta, got {other:?}"),
+    }
+}
+
+#[test]
 fn gemini_stream_text_usage_and_thought() {
     let profile = profile(
         r#"
