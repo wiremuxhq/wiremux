@@ -1188,4 +1188,103 @@ mod tests {
         assert!(creds.is_none(), "expected None, got {creds:?}");
         let _ = home;
     }
+
+    #[test]
+    fn cached_creds_stale_after_eighty_percent_of_ttl() {
+        let creds = AwsCredentials {
+            access_key_id: "A".into(),
+            secret_access_key: "B".into(),
+            session_token: String::new(),
+            expiration: Some(SystemTime::now() + Duration::from_secs(100)),
+        };
+        let stale = CachedCreds {
+            creds: creds.clone(),
+            acquired_at: Instant::now() - Duration::from_secs(81),
+            lifetime: Some(Duration::from_secs(100)),
+        };
+        assert!(!stale.fresh(), "creds must refresh after 80 percent of TTL");
+        let fresh = CachedCreds {
+            creds,
+            acquired_at: Instant::now() - Duration::from_secs(10),
+            lifetime: Some(Duration::from_secs(100)),
+        };
+        assert!(fresh.fresh(), "creds inside 80 percent of TTL stay cached");
+    }
+
+    #[tokio::test]
+    async fn imds_token_failure_is_remembered() {
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let home = IsolatedHome::with_extra_envs(extra_aws_envs());
+        clear_aws_credential_cache();
+        HITS.store(0, Ordering::SeqCst);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                HITS.fetch_add(1, Ordering::SeqCst);
+                stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                let _ = read_headers(&mut stream);
+                write_http(&mut stream, 500, "");
+            }
+        });
+        home.set_env(
+            "AWS_EC2_METADATA_SERVICE_ENDPOINT",
+            &format!("http://{addr}"),
+        );
+        let first = resolve_aws_credentials().await.expect("resolve1");
+        assert!(
+            first.is_none(),
+            "failed IMDS must yield None, got {first:?}"
+        );
+        let second = resolve_aws_credentials().await.expect("resolve2");
+        assert!(
+            second.is_none(),
+            "remembered IMDS miss must stay None, got {second:?}"
+        );
+        assert_eq!(
+            HITS.load(Ordering::SeqCst),
+            1,
+            "IMDS miss must be remembered for the process"
+        );
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn ecs_credential_http_does_not_follow_redirect() {
+        let home = IsolatedHome::with_extra_envs(extra_aws_envs());
+        clear_aws_credential_cache();
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let secret =
+            r#"{"AccessKeyId":"AKIAREDIR","SecretAccessKey":"redirsecret","Token":"redir"}"#;
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                let _ = read_headers(&mut stream);
+                let loc = format!("http://{addr}/stolen");
+                let resp = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+            if let Ok((mut stream, _)) = listener.accept() {
+                stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                let _ = read_headers(&mut stream);
+                write_http(&mut stream, 200, secret);
+            }
+        });
+        home.set_env(
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            &format!("http://{addr}/creds"),
+        );
+        let err = resolve_aws_credentials()
+            .await
+            .expect_err("redirect must not yield credentials");
+        assert!(
+            err.to_string().contains("302"),
+            "expected ECS HTTP 302, got {err}"
+        );
+        let _ = home;
+    }
 }
