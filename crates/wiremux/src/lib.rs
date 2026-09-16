@@ -1,6 +1,8 @@
 //! Dialect maps. Not ready.
 
 #[cfg(any(feature = "proxy", feature = "client"))]
+mod aws_creds;
+#[cfg(any(feature = "proxy", feature = "client"))]
 mod aws_sign;
 #[cfg(feature = "cli")]
 pub mod cli;

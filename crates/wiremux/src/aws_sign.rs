@@ -3,6 +3,8 @@
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use wiremux_auth::{AwsCredentials, AwsSignParams, ResolvedProfile, sign_aws_request};
 
+use crate::aws_creds::{missing_creds_message, resolve_aws_credentials, resolve_aws_region};
+
 const AMZ_DATE: HeaderName = HeaderName::from_static("x-amz-date");
 const AMZ_SECURITY_TOKEN: HeaderName = HeaderName::from_static("x-amz-security-token");
 
@@ -25,154 +27,6 @@ pub(crate) struct AwsSigV4Headers {
     authorization: String,
     amz_date: String,
     session_token: String,
-}
-
-/// Env keys first, then `AWS_PROFILE` / `~/.aws/credentials`.
-/// No SSO, IMDS, or `credential_process`.
-pub(crate) fn resolve_aws_credentials() -> Result<Option<AwsCredentials>, AwsSignError> {
-    if let Some(creds) = creds_from_env() {
-        return Ok(Some(creds));
-    }
-    creds_from_shared_files()
-}
-
-fn creds_from_env() -> Option<AwsCredentials> {
-    let access = env_nonempty("AWS_ACCESS_KEY_ID")?;
-    let secret = env_nonempty("AWS_SECRET_ACCESS_KEY")?;
-    Some(AwsCredentials {
-        access_key_id: access,
-        secret_access_key: secret,
-        session_token: env_nonempty("AWS_SESSION_TOKEN").unwrap_or_default(),
-        expiration: None,
-    })
-}
-
-fn creds_from_shared_files() -> Result<Option<AwsCredentials>, AwsSignError> {
-    let profile = aws_profile_name();
-    let Some(text) = read_optional(&credentials_path()?)? else {
-        return Ok(None);
-    };
-    let section = match ini_section(&text, &profile)
-        .or_else(|| ini_section(&text, &format!("profile {profile}")))
-    {
-        Some(s) => s,
-        None => return Ok(None),
-    };
-    let access = section
-        .get("aws_access_key_id")
-        .cloned()
-        .filter(|s| !s.is_empty());
-    let secret = section
-        .get("aws_secret_access_key")
-        .cloned()
-        .filter(|s| !s.is_empty());
-    let (Some(access), Some(secret)) = (access, secret) else {
-        return Ok(None);
-    };
-    Ok(Some(AwsCredentials {
-        access_key_id: access,
-        secret_access_key: secret,
-        session_token: section
-            .get("aws_session_token")
-            .cloned()
-            .unwrap_or_default(),
-        expiration: None,
-    }))
-}
-
-pub(crate) fn resolve_aws_region(profile: &ResolvedProfile) -> String {
-    if let Some(region) = profile.http.aws_region.as_deref().filter(|s| !s.is_empty()) {
-        return region.to_string();
-    }
-    if let Some(region) = env_nonempty("AWS_REGION").or_else(|| env_nonempty("AWS_DEFAULT_REGION"))
-    {
-        return region;
-    }
-    region_from_config().unwrap_or_else(|| "us-east-1".into())
-}
-
-fn region_from_config() -> Option<String> {
-    let text = read_optional(&config_path().ok()?).ok().flatten()?;
-    let profile = aws_profile_name();
-    let section = ini_section(&text, &format!("profile {profile}"))
-        .or_else(|| ini_section(&text, &profile))?;
-    section.get("region").cloned().filter(|s| !s.is_empty())
-}
-
-fn aws_profile_name() -> String {
-    env_nonempty("AWS_PROFILE")
-        .or_else(|| env_nonempty("AWS_DEFAULT_PROFILE"))
-        .unwrap_or_else(|| "default".into())
-}
-
-fn credentials_path() -> Result<std::path::PathBuf, AwsSignError> {
-    if let Some(path) = env_nonempty("AWS_SHARED_CREDENTIALS_FILE") {
-        return Ok(std::path::PathBuf::from(path));
-    }
-    Ok(aws_home()?.join(".aws").join("credentials"))
-}
-
-fn config_path() -> Result<std::path::PathBuf, AwsSignError> {
-    if let Some(path) = env_nonempty("AWS_CONFIG_FILE") {
-        return Ok(std::path::PathBuf::from(path));
-    }
-    Ok(aws_home()?.join(".aws").join("config"))
-}
-
-fn aws_home() -> Result<std::path::PathBuf, AwsSignError> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| AwsSignError::Auth("HOME is unset; cannot read ~/.aws/credentials".into()))
-}
-
-fn read_optional(path: &std::path::Path) -> Result<Option<String>, AwsSignError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(AwsSignError::Auth(format!(
-            "read {}: {err}",
-            path.display()
-        ))),
-    }
-}
-
-fn env_nonempty(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|s| !s.trim().is_empty())
-}
-
-fn ini_section(text: &str, name: &str) -> Option<std::collections::BTreeMap<String, String>> {
-    let want = name.trim();
-    let mut current = None;
-    let mut out = std::collections::BTreeMap::new();
-    let mut found = false;
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
-            continue;
-        }
-        if let Some(section) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            current = Some(section.trim().to_string());
-            continue;
-        }
-        if current.as_deref() != Some(want) {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        found = true;
-        out.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
-    }
-    found.then_some(out)
-}
-
-fn missing_creds_message(profile: &ResolvedProfile) -> String {
-    format!(
-        "profile `{}` aws_service={} needs a bearer token or IAM keys (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or AWS_PROFILE / ~/.aws/credentials)",
-        profile.id,
-        profile.http.aws_service.as_deref().unwrap_or("bedrock")
-    )
 }
 
 /// Skip when `aws_service` is absent. Fail closed if it is set and keys
@@ -236,7 +90,7 @@ pub(crate) fn prepare_aws_sigv4(
 
 /// Sign after the final body is known. Bearer wins: skip SigV4 when a
 /// bearer token was already applied. Header insert replaces, never appends.
-pub(crate) fn apply_aws_sigv4(
+pub(crate) async fn apply_aws_sigv4(
     profile: &ResolvedProfile,
     url: &str,
     method: &str,
@@ -258,7 +112,8 @@ pub(crate) fn apply_aws_sigv4(
     {
         return Ok(built);
     }
-    let creds = resolve_aws_credentials()?
+    let creds = resolve_aws_credentials()
+        .await?
         .ok_or_else(|| AwsSignError::Auth(missing_creds_message(profile)))?;
     let Some(headers) =
         prepare_aws_sigv4(profile, url, method, body, Some(&creds), &amz_date_now())?
@@ -445,8 +300,8 @@ base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
         assert_eq!(out.amz_date, "20150830T123600Z");
     }
 
-    #[test]
-    fn apply_skips_sigv4_when_bearer_applied() {
+    #[tokio::test]
+    async fn apply_skips_sigv4_when_bearer_applied() {
         let http = reqwest::Client::new();
         let url = "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse";
         let req = http
@@ -454,6 +309,7 @@ base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
             .header(AUTHORIZATION, "Bearer bedrock-bearer-tok")
             .body("{}");
         let built = apply_aws_sigv4(&bedrock_sigv4_profile(), url, "POST", b"{}", req, true)
+            .await
             .expect("build");
         let auths: Vec<_> = built
             .headers()

@@ -1558,6 +1558,68 @@ async fn aws_profile_file_credentials_sign() {
 }
 
 #[tokio::test]
+async fn aws_credential_process_signs() {
+    let home = IsolatedHome::new();
+    home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+    let script = {
+        #[cfg(windows)]
+        {
+            let json_path = home.path().join("proc.json");
+            std::fs::write(
+                &json_path,
+                r#"{"Version":1,"AccessKeyId":"AKIAPROC","SecretAccessKey":"procsecret"}"#,
+            )
+            .expect("write json");
+            let cmd_path = home.path().join("credproc.cmd");
+            std::fs::write(
+                &cmd_path,
+                format!("@echo off\r\ntype \"{}\"\r\n", json_path.display()),
+            )
+            .expect("write cmd");
+            cmd_path
+        }
+        #[cfg(not(windows))]
+        {
+            let path = home.path().join("credproc.sh");
+            std::fs::write(
+                &path,
+                "#!/bin/sh\nprintf '%s\\n' '{\"Version\":1,\"AccessKeyId\":\"AKIAPROC\",\"SecretAccessKey\":\"procsecret\"}'\n",
+            )
+            .expect("write sh");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            path
+        }
+    };
+    let config = home.path().join("config");
+    std::fs::write(
+        &config,
+        format!("[profile dev]\ncredential_process = {}\n", script.display()),
+    )
+    .expect("write config");
+    home.set_env("AWS_PROFILE", "dev");
+    home.set_env("AWS_CONFIG_FILE", config.to_str().expect("utf8"));
+
+    let (base, handle) = spawn_one(200, "OK", "", converse_complete_body());
+    let profile = bedrock_profile(&base, r#"auth_scheme = "none""#);
+    let client = WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("")))
+        .expect("client");
+    let _ = client.send(simple_ir("amazon.titan")).await;
+    let req = handle.join().expect("join");
+    let auths = authorization_lines(&req);
+    assert_eq!(
+        auths.len(),
+        1,
+        "credential_process must produce one Authorization, got {auths:?} in {req}"
+    );
+    assert!(
+        auths[0].contains("AKIAPROC"),
+        "credential must use process access key: {auths:?}"
+    );
+    let _ = home;
+}
+
+#[tokio::test]
 async fn aws_service_without_keys_is_local_auth_error() {
     let home = IsolatedHome::with_extra_envs(&[
         "AWS_SESSION_TOKEN",
@@ -1565,6 +1627,7 @@ async fn aws_service_without_keys_is_local_auth_error() {
         "AWS_BEARER_TOKEN_BEDROCK",
         "AWS_REGION",
     ]);
+    home.set_env("AWS_EC2_METADATA_DISABLED", "true");
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let handle = thread::spawn(move || {
