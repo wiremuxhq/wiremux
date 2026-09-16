@@ -592,11 +592,7 @@ c+5RXVheoFNjzJpbLyOIeEEttw==
             r#"{"access_token":"ya29.adc","expires_in":3600,"token_type":"Bearer"}"#,
         );
         let home = IsolatedHome::new();
-        let adc = home
-            .path()
-            .join(".config")
-            .join("gcloud")
-            .join("application_default_credentials.json");
+        let adc = default_adc_path().expect("default adc path");
         std::fs::create_dir_all(adc.parent().expect("parent")).expect("mkdir");
         std::fs::write(&adc, authorized_user_json(&url)).expect("write adc");
         let profile = parse_profile_str(

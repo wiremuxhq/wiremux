@@ -85,6 +85,8 @@ impl IsolatedHome {
         names.extend_from_slice(extra);
         names.push("HOME");
         names.push("USERPROFILE");
+        names.push("APPDATA");
+        names.push("LOCALAPPDATA");
 
         let mut saved = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
@@ -102,6 +104,8 @@ impl IsolatedHome {
         unsafe {
             std::env::set_var("HOME", dir.path());
             std::env::set_var("USERPROFILE", dir.path());
+            std::env::set_var("APPDATA", dir.path());
+            std::env::set_var("LOCALAPPDATA", dir.path());
             for name in COMMON_ENVS.iter().chain(extra.iter()) {
                 std::env::remove_var(name);
             }
