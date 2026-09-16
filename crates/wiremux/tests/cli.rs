@@ -1696,6 +1696,166 @@ chat_path = "/v1/chat/completions"
     );
 }
 
+#[test]
+fn proxy_converse_stream_sends_eventstream_accept() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            req.contains("POST /model/amazon.nova-lite-v1:0/converse-stream"),
+            "upstream path: {req}"
+        );
+        assert!(
+            req.to_ascii_lowercase()
+                .contains("accept: application/vnd.amazon.eventstream"),
+            "converse-stream must set Event Stream Accept, got: {req}"
+        );
+        let body = r#"{"output":{"message":{"role":"assistant","content":[{"text":"hi"}]}}}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "bedrock-proxy.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "bedrock-proxy"
+wire = "converse"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/model/{{model}}/converse"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"amazon.nova-lite-v1:0","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("200") || resp.contains("hi"),
+        "proxy should reach converse-stream, got: {resp}"
+    );
+}
+
+#[test]
+fn proxy_eventstream_content_type_uses_stream_mapper() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let payload = br#"{"delta":{"text":"hi"},"contentBlockIndex":0}"#;
+        let body = wiremux::stream::encode_eventstream_message("contentBlockDelta", payload);
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.amazon.eventstream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(&body);
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "bedrock-eventstream.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "bedrock-eventstream"
+wire = "converse"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/model/{{model}}/converse"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"amazon.nova-lite-v1:0","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        !resp.contains("decode upstream body"),
+        "eventstream must not be collected as a JSON body, got: {resp}"
+    );
+    assert!(
+        resp.contains("text/event-stream"),
+        "eventstream must go through the stream mapper, got: {resp}"
+    );
+    assert!(
+        resp.contains("hi"),
+        "stream mapper must remap Converse text delta, got: {resp}"
+    );
+}
+
 fn read_listen_addr(stdout: &mut impl Read) -> std::net::SocketAddr {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut buf = Vec::new();

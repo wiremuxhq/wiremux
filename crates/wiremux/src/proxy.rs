@@ -162,6 +162,9 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         .post(&url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(encoded);
+    if url.contains("/converse-stream") {
+        upstream = upstream.header("accept", "application/vnd.amazon.eventstream");
+    }
     upstream = apply_profile_headers(upstream, &state.profile, token.as_deref());
     if let Ok(provider) = provider_from_profile(&state.profile) {
         upstream = apply_provider_headers(upstream, &state.profile, &provider);
@@ -191,7 +194,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         status.as_u16()
     );
 
-    if content_type.contains("text/event-stream") {
+    if content_type.contains("text/event-stream") || content_type.contains("eventstream") {
         let status = status_from_reqwest(status);
         if target == state.from {
             return passthrough_sse(status, resp);
