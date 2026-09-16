@@ -97,20 +97,12 @@ fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), M
     let mut parts = Vec::new();
     for block in arr {
         if let Some(result) = block.get("toolResult") {
+            flush_user(&mut parts, items);
             let id = result
                 .get("toolUseId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| MapError::Invalid("toolResult omitted toolUseId".into()))?;
-            let output = result
-                .get("content")
-                .and_then(Value::as_array)
-                .map(|c| {
-                    c.iter()
-                        .filter_map(|p| p.get("text").and_then(Value::as_str))
-                        .collect::<Vec<_>>()
-                        .join("")
-                })
-                .unwrap_or_default();
+            let output = tool_result_output(result);
             items.push(IrItem::FunctionOutput {
                 call_id: id.to_string(),
                 output,
@@ -121,10 +113,16 @@ fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), M
             parts.push(part);
         }
     }
-    if !parts.is_empty() {
-        items.push(IrItem::User { parts });
-    }
+    flush_user(&mut parts, items);
     Ok(())
+}
+
+fn flush_user(parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
+    if !parts.is_empty() {
+        items.push(IrItem::User {
+            parts: std::mem::take(parts),
+        });
+    }
 }
 
 fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), MapError> {
@@ -177,6 +175,25 @@ fn flush_assistant(parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
     }
 }
 
+fn tool_result_output(result: &Value) -> String {
+    result
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|c| {
+            c.iter()
+                .filter_map(|p| {
+                    if let Some(v) = p.get("json") {
+                        Some(v.to_string())
+                    } else {
+                        p.get("text").and_then(Value::as_str).map(str::to_string)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default()
+}
+
 fn decode_part(block: &Value) -> Option<IrPart> {
     if let Some(text) = block.get("text").and_then(Value::as_str) {
         return Some(IrPart::Text(text.to_string()));
@@ -185,9 +202,14 @@ fn decode_part(block: &Value) -> Option<IrPart> {
         .pointer("/reasoningContent/reasoningText/text")
         .and_then(Value::as_str)
     {
+        let signature = block
+            .pointer("/reasoningContent/reasoningText/signature")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         return Some(IrPart::Thinking {
             text: reason.to_string(),
-            signature: None,
+            signature,
         });
     }
     None
@@ -275,18 +297,34 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                     .iter()
                     .filter_map(|p| encode_part(p, report))
                     .collect();
-                if !blocks.is_empty() {
-                    messages.push(json!({ "role": "user", "content": blocks }));
+                if blocks.is_empty() {
+                    continue;
                 }
+                if last_user_has_tool_result(&messages)
+                    && let Some(last) = messages.last_mut()
+                    && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)
+                {
+                    arr.extend(blocks);
+                    continue;
+                }
+                messages.push(json!({ "role": "user", "content": blocks }));
             }
             IrItem::Assistant { parts } => {
                 let blocks: Vec<Value> = parts
                     .iter()
                     .filter_map(|p| encode_part(p, report))
                     .collect();
-                if !blocks.is_empty() {
-                    messages.push(json!({ "role": "assistant", "content": blocks }));
+                if blocks.is_empty() {
+                    continue;
                 }
+                if let Some(last) = messages.last_mut()
+                    && last.get("role").and_then(Value::as_str) == Some("assistant")
+                    && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)
+                {
+                    arr.extend(blocks);
+                    continue;
+                }
+                messages.push(json!({ "role": "assistant", "content": blocks }));
             }
             IrItem::FunctionCall {
                 call_id,
@@ -313,15 +351,25 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 messages.push(json!({ "role": "assistant", "content": [block] }));
             }
             IrItem::FunctionOutput { call_id, output } => {
-                messages.push(json!({
-                    "role": "user",
-                    "content": [{
-                        "toolResult": {
-                            "toolUseId": call_id,
-                            "content": [{ "text": output }]
-                        }
-                    }]
-                }));
+                let text = if output.trim().is_empty() {
+                    "."
+                } else {
+                    output.as_str()
+                };
+                let block = json!({
+                    "toolResult": {
+                        "toolUseId": call_id,
+                        "content": [{ "text": text }]
+                    }
+                });
+                if last_is_user(&messages)
+                    && let Some(last) = messages.last_mut()
+                    && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)
+                {
+                    arr.push(block);
+                    continue;
+                }
+                messages.push(json!({ "role": "user", "content": [block] }));
             }
             IrItem::Reasoning { summary, .. } => {
                 if let Some(text) = summary {
@@ -362,12 +410,38 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
     (system, Value::Array(messages))
 }
 
+fn last_is_user(messages: &[Value]) -> bool {
+    messages
+        .last()
+        .and_then(|m| m.get("role"))
+        .and_then(Value::as_str)
+        == Some("user")
+}
+
+fn last_user_has_tool_result(messages: &[Value]) -> bool {
+    if !last_is_user(messages) {
+        return false;
+    }
+    messages
+        .last()
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+        .is_some_and(|arr| arr.iter().any(|b| b.get("toolResult").is_some()))
+}
+
 fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
     match part {
+        IrPart::Text(text) if text.trim().is_empty() => None,
         IrPart::Text(text) => Some(json!({ "text": text })),
-        IrPart::Thinking { text, .. } => Some(json!({
-            "reasoningContent": { "reasoningText": { "text": text } }
-        })),
+        IrPart::Thinking { text, signature } => {
+            let mut reasoning_text = json!({ "text": text });
+            if let Some(sig) = signature.as_deref().filter(|s| !s.is_empty()) {
+                reasoning_text["signature"] = json!(sig);
+            }
+            Some(json!({
+                "reasoningContent": { "reasoningText": reasoning_text }
+            }))
+        }
         IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. } | IrPart::Raw { .. } => {
             report.record("content", LossAction::Drop, "converse image/raw dropped");
             None

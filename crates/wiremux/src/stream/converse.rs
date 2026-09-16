@@ -249,7 +249,7 @@ fn flush_text(text: &mut String, content: &mut Vec<Value>) {
 }
 
 fn tool_use(id: &str, name: &str, args: &str) -> Value {
-    let input: Value = serde_json::from_str(args).unwrap_or(json!({}));
+    let input: Value = serde_json::from_str(args).unwrap_or_else(|_| json!(args));
     json!({
         "toolUse": {
             "toolUseId": id,
@@ -261,9 +261,11 @@ fn tool_use(id: &str, name: &str, args: &str) -> Value {
 
 fn finish_reason(reason: &str) -> &'static str {
     match reason {
-        "tool_use" | "tool-use" => "tool_use",
+        "tool_use" | "tool-use" | "tool_calls" => "tool_use",
         "max_tokens" | "length" => "max_tokens",
         "content_filtered" => "content_filtered",
+        "stop_sequence" => "stop_sequence",
+        "guardrail_intervened" => "guardrail_intervened",
         _ => "end_turn",
     }
 }

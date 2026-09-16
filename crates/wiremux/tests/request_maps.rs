@@ -4445,3 +4445,322 @@ fn converse_decode_tool_result_missing_id_fails() {
         "{msg}"
     );
 }
+
+#[test]
+fn converse_parallel_function_outputs_encode_one_user_message() {
+    let ir = IrRequest {
+        model: "amazon.nova-lite-v1:0".into(),
+        items: vec![
+            IrItem::FunctionOutput {
+                call_id: "t1".into(),
+                output: "one".into(),
+            },
+            IrItem::FunctionOutput {
+                call_id: "t2".into(),
+                output: "two".into(),
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages must be an array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "parallel toolResults must be one user turn, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "user");
+    let content = messages[0]["content"]
+        .as_array()
+        .expect("content must be an array");
+    assert_eq!(
+        content.len(),
+        2,
+        "expected two toolResult blocks, got {body}"
+    );
+    assert_eq!(content[0]["toolResult"]["toolUseId"], "t1");
+    assert_eq!(content[0]["toolResult"]["content"][0]["text"], "one");
+    assert_eq!(content[1]["toolResult"]["toolUseId"], "t2");
+    assert_eq!(content[1]["toolResult"]["content"][0]["text"], "two");
+}
+
+#[test]
+fn converse_mixed_assistant_tool_use_then_text_round_trips_one_message() {
+    let req = br#"{
+      "modelId": "amazon.nova-lite-v1:0",
+      "messages": [
+        {"role": "assistant", "content": [
+          {"toolUse": {"toolUseId": "t1", "name": "lookup", "input": {"q": "x"}}},
+          {"text": "done looking."}
+        ]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode mixed assistant");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages must be an array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "re-encode must stay one assistant message, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "assistant");
+    let content = messages[0]["content"]
+        .as_array()
+        .expect("content must be an array");
+    assert_eq!(content.len(), 2, "expected toolUse then text, got {body}");
+    assert_eq!(content[0]["toolUse"]["toolUseId"], "t1");
+    assert_eq!(content[0]["toolUse"]["name"], "lookup");
+    assert_eq!(content[1]["text"], "done looking.");
+}
+
+#[test]
+fn converse_decode_tool_result_json_round_trips_nonempty() {
+    let req = br#"{
+      "modelId": "amazon.nova-lite-v1:0",
+      "messages": [
+        {"role": "user", "content": [{
+          "toolResult": {
+            "toolUseId": "t1",
+            "content": [{ "json": { "ok": true, "n": 1 } }]
+          }
+        }]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode json toolResult");
+    let output = ir.items.iter().find_map(|item| match item {
+        IrItem::FunctionOutput { call_id, output } if call_id == "t1" => Some(output.as_str()),
+        _ => None,
+    });
+    let output = output.expect("FunctionOutput t1");
+    assert!(
+        !output.is_empty(),
+        "json toolResult must not decode to empty string, got {output:?}"
+    );
+    assert!(
+        output.contains("ok") && output.contains("true"),
+        "json payload must be serialized, got {output:?}"
+    );
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let arr = body
+        .pointer("/messages/0/content/0/toolResult/content")
+        .and_then(Value::as_array)
+        .expect("toolResult content");
+    assert!(
+        !arr.is_empty(),
+        "re-encode must keep toolResult content, got {body}"
+    );
+    let lost = arr.iter().all(|p| {
+        p.get("text")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+            && p.get("json").is_none()
+    });
+    assert!(
+        !lost,
+        "re-encode must not be empty text-only loss, got {body}"
+    );
+}
+
+#[test]
+fn converse_whitespace_only_assistant_text_with_tool_use_omits_blank_text() {
+    let ir = IrRequest {
+        model: "amazon.nova-lite-v1:0".into(),
+        items: vec![
+            IrItem::Assistant {
+                parts: vec![IrPart::Text("  \n\t  ".into())],
+            },
+            IrItem::FunctionCall {
+                call_id: "t1".into(),
+                name: "lookup".into(),
+                arguments: r#"{"q":"x"}"#.into(),
+                thought_signature: None,
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages must be an array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "whitespace text plus toolUse must stay one assistant turn, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "assistant");
+    let content = messages[0]["content"]
+        .as_array()
+        .expect("content must be an array");
+    assert_eq!(
+        content.len(),
+        1,
+        "blank text block must be omitted; only toolUse remains, got {body}"
+    );
+    assert!(
+        content[0].get("text").is_none(),
+        "must not emit a blank text contentBlock, got {body}"
+    );
+    assert_eq!(content[0]["toolUse"]["toolUseId"], "t1");
+    assert_eq!(content[0]["toolUse"]["name"], "lookup");
+}
+
+#[test]
+fn converse_empty_function_output_encodes_nonempty_tool_result_text() {
+    let ir = IrRequest {
+        model: "amazon.nova-lite-v1:0".into(),
+        items: vec![IrItem::FunctionOutput {
+            call_id: "t1".into(),
+            output: String::new(),
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let text = body
+        .pointer("/messages/0/content/0/toolResult/content/0/text")
+        .and_then(Value::as_str);
+    let text = text.expect("toolResult text");
+    assert!(
+        !text.trim().is_empty(),
+        "empty FunctionOutput must not emit blank toolResult text, got {body}"
+    );
+    assert_eq!(
+        text, ".",
+        "empty tool result uses the same '.' placeholder as Messages, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/toolUseId")
+            .and_then(Value::as_str),
+        Some("t1"),
+        "toolUseId must stay, got {body}"
+    );
+}
+
+#[test]
+fn converse_mixed_user_tool_result_then_text_round_trips_one_message() {
+    let req = br#"{
+      "modelId": "anthropic.claude-sonnet-4-20250514-v1:0",
+      "messages": [
+        {"role": "user", "content": [
+          {"toolResult": {"toolUseId": "t1", "content": [{"text": "ok"}]}},
+          {"text": "thanks"}
+        ]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode mixed user");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages must be an array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "re-encode must stay one user message, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "user");
+    let content = messages[0]["content"]
+        .as_array()
+        .expect("content must be an array");
+    assert_eq!(
+        content.len(),
+        2,
+        "expected toolResult then text, got {body}"
+    );
+    assert_eq!(content[0]["toolResult"]["toolUseId"], "t1");
+    assert_eq!(content[0]["toolResult"]["content"][0]["text"], "ok");
+    assert_eq!(content[1]["text"], "thanks");
+}
+
+#[test]
+fn converse_mixed_user_text_then_tool_result_round_trips_one_message() {
+    let req = br#"{
+      "modelId": "anthropic.claude-sonnet-4-20250514-v1:0",
+      "messages": [
+        {"role": "user", "content": [
+          {"text": "here is the result"},
+          {"toolResult": {"toolUseId": "t1", "content": [{"text": "ok"}]}}
+        ]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode mixed user");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages must be an array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "re-encode must stay one user message, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "user");
+    let content = messages[0]["content"]
+        .as_array()
+        .expect("content must be an array");
+    assert_eq!(
+        content.len(),
+        2,
+        "expected text then toolResult, got {body}"
+    );
+    assert_eq!(content[0]["text"], "here is the result");
+    assert_eq!(content[1]["toolResult"]["toolUseId"], "t1");
+    assert_eq!(content[1]["toolResult"]["content"][0]["text"], "ok");
+}
+
+#[test]
+fn converse_reasoning_text_signature_round_trips() {
+    let req = br#"{
+      "modelId": "anthropic.claude-sonnet-4-20250514-v1:0",
+      "messages": [
+        {"role": "assistant", "content": [
+          {"reasoningContent": {"reasoningText": {"text": "plan", "signature": "sig_abc"}}},
+          {"text": "done"}
+        ]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode signed reasoning");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::Assistant { parts } if parts.iter().any(|part| matches!(
+                part,
+                IrPart::Thinking { text, signature }
+                    if text == "plan" && signature.as_deref() == Some("sig_abc")
+            ))
+        )),
+        "decode must produce IrPart::Thinking {{ text: \"plan\", signature: Some(\"sig_abc\") }}, got {:?}",
+        ir.items
+    );
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    assert!(
+        content.iter().any(|block| {
+            block
+                .pointer("/reasoningContent/reasoningText/text")
+                .and_then(Value::as_str)
+                == Some("plan")
+                && block
+                    .pointer("/reasoningContent/reasoningText/signature")
+                    .and_then(Value::as_str)
+                    == Some("sig_abc")
+        }),
+        "replay must keep reasoningText.signature, got {body}"
+    );
+    assert_eq!(content[1]["text"], "done");
+}

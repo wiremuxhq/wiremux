@@ -598,3 +598,95 @@ fn converse_complete_round_trip_text() {
         "got {mapped}"
     );
 }
+
+#[test]
+fn converse_complete_tool_calls_finish_stays_tool_use() {
+    let events = [
+        IrStreamEvent::ToolCallStart {
+            id: "t1".into(),
+            name: "lookup".into(),
+            thought_signature: None,
+        },
+        IrStreamEvent::ToolCallArgDelta {
+            delta: r#"{"q":"x"}"#.into(),
+        },
+        IrStreamEvent::ToolCallEnd,
+        IrStreamEvent::FinishReason {
+            reason: "tool_calls".into(),
+        },
+    ];
+    let mapped = encode_response(Wire::Converse, &events).expect("encode");
+    assert_eq!(
+        mapped.get("stopReason").and_then(serde_json::Value::as_str),
+        Some("tool_use"),
+        "tool_calls must map to tool_use, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/output/message/content/0/toolUse/input"),
+        Some(&json!({"q": "x"})),
+        "got {mapped}"
+    );
+}
+
+#[test]
+fn converse_complete_keeps_stop_sequence_and_guardrail() {
+    let stop = encode_response(
+        Wire::Converse,
+        &[IrStreamEvent::FinishReason {
+            reason: "stop_sequence".into(),
+        }],
+    )
+    .expect("encode stop_sequence");
+    assert_eq!(
+        stop.get("stopReason").and_then(serde_json::Value::as_str),
+        Some("stop_sequence"),
+        "got {stop}"
+    );
+    let guard = encode_response(
+        Wire::Converse,
+        &[IrStreamEvent::FinishReason {
+            reason: "guardrail_intervened".into(),
+        }],
+    )
+    .expect("encode guardrail");
+    assert_eq!(
+        guard.get("stopReason").and_then(serde_json::Value::as_str),
+        Some("guardrail_intervened"),
+        "got {guard}"
+    );
+}
+
+#[test]
+fn converse_complete_non_json_tool_input_stays_string() {
+    let events = [
+        IrStreamEvent::ToolCallStart {
+            id: "t1".into(),
+            name: "lookup".into(),
+            thought_signature: None,
+        },
+        IrStreamEvent::ToolCallArgDelta {
+            delta: "not-json".into(),
+        },
+        IrStreamEvent::ToolCallEnd,
+        IrStreamEvent::FinishReason {
+            reason: "tool_calls".into(),
+        },
+    ];
+    let mapped = encode_response(Wire::Converse, &events).expect("encode");
+    let input = mapped.pointer("/output/message/content/0/toolUse/input");
+    assert_ne!(
+        input,
+        Some(&json!({})),
+        "invalid JSON must not become empty object, got {mapped}"
+    );
+    assert_eq!(
+        input,
+        Some(&json!("not-json")),
+        "invalid JSON must stay a string, got {mapped}"
+    );
+    assert_eq!(
+        mapped.get("stopReason").and_then(serde_json::Value::as_str),
+        Some("tool_use"),
+        "got {mapped}"
+    );
+}
