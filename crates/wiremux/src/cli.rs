@@ -485,15 +485,16 @@ pub fn parse_listen(s: &str) -> Result<SocketAddr, String> {
     }
 }
 
-/// Parse `--from` dialect name (`chat-completions` / `chat`, `messages`, `responses`, `gemini`).
+/// Parse `--from` dialect name (`chat-completions` / `chat`, `messages`, `responses`, `gemini`, `converse`).
 pub fn parse_wire(s: &str) -> Result<Wire, String> {
     match s {
         "responses" => Ok(Wire::Responses),
         "messages" => Ok(Wire::Messages),
         "chat-completions" | "chat" => Ok(Wire::ChatCompletions),
         "gemini" => Ok(Wire::Gemini),
+        "converse" => Ok(Wire::Converse),
         other => {
-            let listed = "responses|messages|chat-completions|gemini";
+            let listed = "responses|messages|chat-completions|gemini|converse";
             let mut msg = format!("unknown --from `{other}` ({listed})");
             if let Some(suggest) = suggest_from(other) {
                 msg.push_str(&format!("; did you mean `{suggest}`"));
@@ -525,6 +526,7 @@ pub fn wire_name(wire: Wire) -> &'static str {
         Wire::Messages => "messages",
         Wire::Responses => "responses",
         Wire::Gemini => "gemini",
+        Wire::Converse => "converse",
     }
 }
 

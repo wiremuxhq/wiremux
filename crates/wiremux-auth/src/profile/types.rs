@@ -65,7 +65,7 @@ pub struct ResolvedProfile {
 /// Dialect selection and stream/tool policies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dialect {
-    /// `chat-completions` | `messages` | `responses` | `gemini`.
+    /// `chat-completions` | `messages` | `responses` | `gemini` | `converse`.
     pub wire: Option<Wire>,
     /// Recognized SSE event names (built-in list when omitted).
     pub stream_events: Vec<String>,
@@ -89,12 +89,19 @@ pub enum Wire {
     Responses,
     /// Google Gemini generateContent.
     Gemini,
+    /// Amazon Bedrock Converse.
+    Converse,
 }
 
 impl Wire {
     /// Catalog spellings. CLI `--from` also accepts `chat` for `chat-completions`.
-    pub const NAMES: &'static [&'static str] =
-        &["chat-completions", "messages", "responses", "gemini"];
+    pub const NAMES: &'static [&'static str] = &[
+        "chat-completions",
+        "messages",
+        "responses",
+        "gemini",
+        "converse",
+    ];
 
     /// Catalog / file spelling (`messages`, `chat-completions`, `responses`, `gemini`).
     #[must_use]
@@ -104,6 +111,7 @@ impl Wire {
             Self::Messages => "messages",
             Self::Responses => "responses",
             Self::Gemini => "gemini",
+            Self::Converse => "converse",
         }
     }
 
@@ -113,6 +121,7 @@ impl Wire {
             "messages" => Ok(Self::Messages),
             "responses" => Ok(Self::Responses),
             "gemini" => Ok(Self::Gemini),
+            "converse" => Ok(Self::Converse),
             other => Err(unknown_kebab("wire", other, Self::NAMES)),
         }
     }
@@ -154,6 +163,14 @@ impl Wire {
                 "response.incomplete",
             ],
             Self::Gemini => &["chunk"],
+            Self::Converse => &[
+                "messageStart",
+                "contentBlockStart",
+                "contentBlockDelta",
+                "contentBlockStop",
+                "messageStop",
+                "metadata",
+            ],
         }
     }
 
@@ -165,6 +182,7 @@ impl Wire {
             Self::Messages => "/v1/messages",
             Self::Responses => "/v1/responses",
             Self::Gemini => "/v1beta/models/{model}:generateContent",
+            Self::Converse => "/model/{model}/converse",
         }
     }
 
@@ -174,7 +192,7 @@ impl Wire {
         match self {
             Self::Messages => AuthScheme::XApiKey,
             Self::Gemini => AuthScheme::Header("x-goog-api-key".into()),
-            Self::ChatCompletions | Self::Responses => AuthScheme::Bearer,
+            Self::ChatCompletions | Self::Responses | Self::Converse => AuthScheme::Bearer,
         }
     }
 }
@@ -294,6 +312,10 @@ pub struct Http {
     pub headers: BTreeMap<String, String>,
     /// Merge policy for `headers`.
     pub header_merge: ListMerge,
+    /// When set (`bedrock`), the HTTP client SigV4-signs the POST.
+    pub aws_service: Option<String>,
+    /// Region for SigV4 (`us-east-1`). `{env:AWS_REGION}` is allowed.
+    pub aws_region: Option<String>,
 }
 
 /// API auth scheme. `none` sends no `Authorization` and no `x-api-key`.

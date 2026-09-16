@@ -4294,3 +4294,46 @@ fn messages_encode_object_tool_schema_emits_required_array() {
         "listed required must stay, got {body}"
     );
 }
+
+fn converse_profile() -> ResolvedProfile {
+    profile(
+        r#"
+schema_version = 1
+id = "amazon-bedrock"
+wire = "converse"
+aws_service = "bedrock"
+aws_region = "us-east-1"
+"#,
+    )
+}
+
+#[test]
+fn converse_round_trip_text_and_tool() {
+    let req = br#"{
+      "modelId": "amazon.nova-lite-v1:0",
+      "system": [{"text": "sys"}],
+      "messages": [
+        {"role": "user", "content": [{"text": "hi"}]},
+        {"role": "assistant", "content": [{"toolUse": {"toolUseId": "t1", "name": "lookup", "input": {"q": "x"}}}]},
+        {"role": "user", "content": [{"toolResult": {"toolUseId": "t1", "content": [{"text": "ok"}]}}]}
+      ],
+      "inferenceConfig": {"maxTokens": 32, "temperature": 0.2},
+      "toolConfig": {
+        "tools": [{"toolSpec": {"name": "lookup", "description": "d", "inputSchema": {"json": {"type": "object"}}}}],
+        "toolChoice": {"auto": {}}
+      }
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode converse");
+    assert_eq!(ir.model, "amazon.nova-lite-v1:0");
+    assert!(matches!(&ir.items[0], IrItem::System { text } if text == "sys"));
+    assert_eq!(ir.sampling.max_tokens, Some(32));
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert_eq!(
+        body["messages"][1]["content"][0]["toolUse"]["name"],
+        "lookup"
+    );
+    assert_eq!(body["inferenceConfig"]["maxTokens"], 32);
+    assert!(body["toolConfig"]["tools"][0]["toolSpec"]["name"] == "lookup");
+}

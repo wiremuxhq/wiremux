@@ -151,9 +151,9 @@ pub fn parse_catalog(kind: CatalogKind, text: &str) -> Result<Vec<CatalogVendor>
 
 /// Build profile TOML for one catalog row, or explain why not.
 pub fn profile_toml(vendor: &CatalogVendor) -> Result<String, IngestError> {
-    let (base_url, chat_path) = endpoint_for(vendor)?;
+    let draft = draft_for(vendor)?;
     refuse_bad_id(&vendor.id)?;
-    if vendor.env.is_empty() {
+    if draft.access_env.is_empty() {
         return Err(vendor_err(&vendor.id, "catalog row has no env key"));
     }
     let display = if vendor.display_name.trim().is_empty() {
@@ -165,12 +165,171 @@ pub fn profile_toml(vendor: &CatalogVendor) -> Result<String, IngestError> {
     out.push_str("schema_version = 1\n");
     out.push_str(&format!("id = {}\n", toml_string(&vendor.id)));
     out.push_str(&format!("display_name = {}\n", toml_string(&display)));
-    out.push_str("wire = \"chat-completions\"\n");
-    out.push_str(&format!("base_url = {}\n", toml_string(&base_url)));
-    out.push_str(&format!("chat_path = {}\n", toml_string(&chat_path)));
-    out.push_str("auth_scheme = \"bearer\"\n");
-    out.push_str(&format!("access_env = {}\n", toml_access_env(&vendor.env)));
+    out.push_str(&format!("wire = {}\n", toml_string(draft.wire.toml_name())));
+    out.push_str(&format!("base_url = {}\n", toml_string(&draft.base_url)));
+    out.push_str(&format!("chat_path = {}\n", toml_string(&draft.chat_path)));
+    out.push_str(&format!(
+        "auth_scheme = {}\n",
+        toml_string(draft.auth_scheme)
+    ));
+    out.push_str(&format!(
+        "access_env = {}\n",
+        toml_access_env(&draft.access_env)
+    ));
+    if let Some(service) = draft.aws_service {
+        out.push_str(&format!("aws_service = {}\n", toml_string(service)));
+    }
+    if let Some(region) = draft.aws_region {
+        out.push_str(&format!("aws_region = {}\n", toml_string(&region)));
+    }
+    if !draft.headers.is_empty() {
+        out.push_str("\n[headers]\n");
+        for (k, v) in &draft.headers {
+            out.push_str(&format!("{k} = {}\n", toml_string(v)));
+        }
+    }
     Ok(out)
+}
+
+struct ProfileDraft {
+    wire: EmitWire,
+    base_url: String,
+    chat_path: String,
+    auth_scheme: &'static str,
+    access_env: Vec<String>,
+    headers: Vec<(String, String)>,
+    aws_service: Option<&'static str>,
+    aws_region: Option<String>,
+}
+
+fn draft_for(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestError> {
+    if let Some(reason) = skip_reason_opt(&vendor.id, vendor.npm.as_deref()) {
+        return Err(vendor_err(&vendor.id, reason));
+    }
+    if vendor.id == "azure" || vendor.id == "azure-cognitive-services" {
+        return Ok(azure_draft(vendor));
+    }
+    if vendor.id == "google-vertex" {
+        return Ok(vertex_gemini_draft(vendor));
+    }
+    if vendor.id == "google-vertex-anthropic" {
+        return Ok(vertex_anthropic_draft(vendor));
+    }
+    if vendor.id == "amazon-bedrock" {
+        return Ok(bedrock_draft(vendor));
+    }
+    let wire = emit_wire(vendor)?;
+    let (base_url, chat_path) = endpoint_for(vendor, wire)?;
+    let auth_scheme = if wire == EmitWire::Messages {
+        "x-api-key"
+    } else {
+        wire.auth_scheme()
+    };
+    Ok(ProfileDraft {
+        wire,
+        base_url,
+        chat_path,
+        auth_scheme,
+        access_env: vendor.env.clone(),
+        headers: Vec::new(),
+        aws_service: None,
+        aws_region: None,
+    })
+}
+
+fn azure_draft(vendor: &CatalogVendor) -> ProfileDraft {
+    let resource = vendor
+        .env
+        .iter()
+        .find(|n| n.contains("RESOURCE_NAME"))
+        .map(String::as_str)
+        .unwrap_or("AZURE_RESOURCE_NAME");
+    let key = vendor
+        .env
+        .iter()
+        .find(|n| n.ends_with("API_KEY") || n.ends_with("_KEY"))
+        .cloned()
+        .unwrap_or_else(|| "AZURE_API_KEY".into());
+    ProfileDraft {
+        wire: EmitWire::ChatCompletions,
+        base_url: format!("https://{{env:{resource}}}.openai.azure.com"),
+        chat_path: "/openai/deployments/{model}/chat/completions?api-version=2024-10-21".into(),
+        auth_scheme: "header:api-key",
+        access_env: vec![key],
+        headers: Vec::new(),
+        aws_service: None,
+        aws_region: None,
+    }
+}
+
+fn vertex_gemini_draft(vendor: &CatalogVendor) -> ProfileDraft {
+    ProfileDraft {
+        wire: EmitWire::Gemini,
+        base_url: "https://{env:GOOGLE_VERTEX_LOCATION}-aiplatform.googleapis.com".into(),
+        chat_path: "/v1/projects/{env:GOOGLE_VERTEX_PROJECT}/locations/{env:GOOGLE_VERTEX_LOCATION}/publishers/google/models/{model}:generateContent".into(),
+        auth_scheme: "bearer",
+        access_env: vertex_access_env(vendor),
+        headers: Vec::new(),
+        aws_service: None,
+        aws_region: None,
+    }
+}
+
+fn vertex_anthropic_draft(vendor: &CatalogVendor) -> ProfileDraft {
+    ProfileDraft {
+        wire: EmitWire::Messages,
+        base_url: "https://{env:GOOGLE_VERTEX_LOCATION}-aiplatform.googleapis.com".into(),
+        chat_path: "/v1/projects/{env:GOOGLE_VERTEX_PROJECT}/locations/{env:GOOGLE_VERTEX_LOCATION}/publishers/anthropic/models/{model}:rawPredict".into(),
+        auth_scheme: "bearer",
+        access_env: vertex_access_env(vendor),
+        headers: vec![("anthropic-version".into(), "2023-06-01".into())],
+        aws_service: None,
+        aws_region: None,
+    }
+}
+
+fn vertex_access_env(vendor: &CatalogVendor) -> Vec<String> {
+    let mut env = vec!["GOOGLE_OAUTH_ACCESS_TOKEN".into()];
+    for name in &vendor.env {
+        if name.contains("API_KEY") || name.contains("TOKEN") {
+            env.push(name.clone());
+        }
+    }
+    env
+}
+
+fn bedrock_draft(vendor: &CatalogVendor) -> ProfileDraft {
+    let mut env = vec!["AWS_BEARER_TOKEN_BEDROCK".into()];
+    for name in &vendor.env {
+        if name.contains("BEARER") || name.contains("TOKEN") {
+            env.push(name.clone());
+        }
+    }
+    env.dedup();
+    ProfileDraft {
+        wire: EmitWire::Converse,
+        base_url: "https://bedrock-runtime.{env:AWS_REGION}.amazonaws.com".into(),
+        chat_path: "/model/{model}/converse".into(),
+        auth_scheme: "bearer",
+        access_env: env,
+        headers: Vec::new(),
+        aws_service: Some("bedrock"),
+        aws_region: Some("{env:AWS_REGION}".into()),
+    }
+}
+
+fn emit_wire(vendor: &CatalogVendor) -> Result<EmitWire, IngestError> {
+    match vendor.npm.as_deref() {
+        Some("@ai-sdk/anthropic") => Ok(EmitWire::Messages),
+        Some("@ai-sdk/google") => Ok(EmitWire::Gemini),
+        Some("@ai-sdk/cohere") => Ok(EmitWire::ChatCompletions),
+        Some(npm) if openai_compat_npm(npm) => Ok(EmitWire::ChatCompletions),
+        Some(npm) => Err(vendor_err(
+            &vendor.id,
+            &format!("npm package `{npm}` is not a known HTTP dialect"),
+        )),
+        None => Ok(EmitWire::ChatCompletions),
+    }
 }
 
 /// Emit profiles from an already-loaded catalog body.
@@ -386,18 +545,7 @@ fn parse_litellm(value: &Value) -> Result<Vec<CatalogVendor>, IngestError> {
     Ok(out)
 }
 
-fn endpoint_for(vendor: &CatalogVendor) -> Result<(String, String), IngestError> {
-    if let Some(reason) = skip_reason_opt(&vendor.id, vendor.npm.as_deref()) {
-        return Err(vendor_err(&vendor.id, reason));
-    }
-    if let Some(npm) = vendor.npm.as_deref()
-        && !openai_compat_npm(npm)
-    {
-        return Err(vendor_err(
-            &vendor.id,
-            "npm package is not OpenAI-compatible HTTP (not a new wire)",
-        ));
-    }
+fn endpoint_for(vendor: &CatalogVendor, wire: EmitWire) -> Result<(String, String), IngestError> {
     let raw = vendor
         .api
         .as_deref()
@@ -411,7 +559,48 @@ fn endpoint_for(vendor: &CatalogVendor) -> Result<(String, String), IngestError>
                 "no api URL in catalog and no well-known OpenAI-compat endpoint",
             )
         })?;
-    split_openai_compat_api(&raw).map_err(|reason| vendor_err(&vendor.id, &reason))
+    let raw = rewrite_catalog_placeholders(&raw);
+    split_openai_compat_api(&raw, wire).map_err(|reason| vendor_err(&vendor.id, &reason))
+}
+
+/// Catalog `${VAR}` (and `$VAR`) become `{env:VAR}` so load-time subst matches shipped profiles.
+fn rewrite_catalog_placeholders(input: &str) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    let bytes = input.as_bytes();
+    while i < input.len() {
+        if input[i..].starts_with("{env:")
+            && let Some(end) = input[i + 5..].find('}')
+        {
+            out.push_str(&input[i..i + 5 + end + 1]);
+            i += 5 + end + 1;
+            continue;
+        }
+        if input[i..].starts_with("${")
+            && let Some(end) = input[i + 2..].find('}')
+        {
+            let var = &input[i + 2..i + 2 + end];
+            if is_env_ident(var) {
+                out.push_str("{env:");
+                out.push_str(var);
+                out.push('}');
+                i += 2 + end + 1;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+fn is_env_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn openai_compat_npm(npm: &str) -> bool {
@@ -427,6 +616,7 @@ fn openai_compat_npm(npm: &str) -> bool {
             | "@ai-sdk/xai"
             | "@ai-sdk/deepinfra"
             | "@openrouter/ai-sdk-provider"
+            | "@ai-sdk/cohere"
     )
 }
 
@@ -442,11 +632,51 @@ fn well_known_api(id: &str, npm: Option<&str>) -> Option<&'static str> {
         (Some("@ai-sdk/perplexity"), _) | (_, "perplexity") => Some("https://api.perplexity.ai"),
         (Some("@ai-sdk/xai"), _) | (_, "xai") => Some("https://api.x.ai/v1"),
         (Some("@ai-sdk/deepinfra"), _) | (_, "deepinfra") => Some("https://api.deepinfra.com/v1"),
+        (Some("@ai-sdk/cohere"), _) | (_, "cohere") => {
+            Some("https://api.cohere.ai/compatibility/v1")
+        }
         _ => None,
     }
 }
 
-fn split_openai_compat_api(raw: &str) -> Result<(String, String), String> {
+/// Catalog dialect we can emit without a new compiled map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmitWire {
+    ChatCompletions,
+    Messages,
+    Gemini,
+    Converse,
+}
+
+impl EmitWire {
+    fn toml_name(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat-completions",
+            Self::Messages => "messages",
+            Self::Gemini => "gemini",
+            Self::Converse => "converse",
+        }
+    }
+
+    fn auth_scheme(self) -> &'static str {
+        match self {
+            Self::Messages => "x-api-key",
+            Self::Gemini => "header:x-goog-api-key",
+            Self::ChatCompletions | Self::Converse => "bearer",
+        }
+    }
+
+    fn chat_suffix(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "/chat/completions",
+            Self::Messages => "/messages",
+            Self::Gemini => "/models/{model}:generateContent",
+            Self::Converse => "/converse",
+        }
+    }
+}
+
+fn split_openai_compat_api(raw: &str, wire: EmitWire) -> Result<(String, String), String> {
     let raw = raw.trim().trim_end_matches('/');
     let (scheme, rest) = raw
         .split_once("://")
@@ -460,24 +690,36 @@ fn split_openai_compat_api(raw: &str) -> Result<(String, String), String> {
         Some((h, p)) => (h, format!("/{p}")),
         None => (rest, String::new()),
     };
-    let host = host_port.split(':').next().unwrap_or(host_port);
-    if scheme == "http" && !is_loopback_host(host) {
+    let host = host_port
+        .split(':')
+        .next()
+        .unwrap_or(host_port)
+        .split('{')
+        .next()
+        .unwrap_or(host_port);
+    if scheme == "http" && !is_loopback_host(host) && !host.is_empty() {
         return Err("http is only allowed for loopback hosts".into());
     }
-    if host.is_empty() {
+    if host_port.is_empty() {
         return Err("URL has no host".into());
     }
     let origin = format!("{scheme}://{host_port}");
-    let chat_path = if path.is_empty() || path == "/" {
-        if host.eq_ignore_ascii_case("api.perplexity.ai") {
-            "/chat/completions".into()
-        } else {
-            "/v1/chat/completions".into()
+    let suffix = if host.eq_ignore_ascii_case("api.perplexity.ai")
+        && matches!(wire, EmitWire::ChatCompletions)
+        && (path.is_empty() || path == "/")
+    {
+        "/chat/completions".into()
+    } else if path.is_empty() || path == "/" {
+        match wire {
+            EmitWire::ChatCompletions => "/v1/chat/completions".into(),
+            EmitWire::Messages => "/v1/messages".into(),
+            EmitWire::Gemini => "/v1beta/models/{model}:generateContent".into(),
+            EmitWire::Converse => "/model/{model}/converse".into(),
         }
     } else {
-        format!("{path}/chat/completions")
+        format!("{path}{}", wire.chat_suffix())
     };
-    Ok((origin, chat_path))
+    Ok((origin, suffix))
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -496,21 +738,7 @@ fn skip_reason_opt(id: &str, npm: Option<&str>) -> Option<&'static str> {
     if id == "github-copilot" || id.contains("copilot") {
         return Some("subscription / product-terms host; no shipped Copilot preset");
     }
-    if matches!(
-        id,
-        "azure"
-            | "azure-cognitive-services"
-            | "amazon-bedrock"
-            | "google-vertex"
-            | "google-vertex-anthropic"
-    ) || npm.is_some_and(|n| {
-        matches!(
-            n,
-            "@ai-sdk/azure" | "@ai-sdk/amazon-bedrock" | "@ai-sdk/google-vertex"
-        ) || n.starts_with("@ai-sdk/google-vertex/")
-    }) {
-        return Some("not a simple OpenAI-compatible base_url");
-    }
+    let _ = npm;
     None
 }
 
@@ -658,8 +886,60 @@ mod tests {
       "azure": {
         "id": "azure",
         "name": "Azure",
-        "env": ["AZURE_API_KEY"],
+        "env": ["AZURE_RESOURCE_NAME", "AZURE_API_KEY"],
         "npm": "@ai-sdk/azure"
+      },
+      "minimax": {
+        "id": "minimax",
+        "name": "MiniMax",
+        "env": ["MINIMAX_API_KEY"],
+        "npm": "@ai-sdk/anthropic",
+        "api": "https://api.minimax.io/anthropic/v1"
+      },
+      "kimi-for-coding": {
+        "id": "kimi-for-coding",
+        "name": "Kimi for coding",
+        "env": ["KIMI_API_KEY"],
+        "npm": "@ai-sdk/anthropic",
+        "api": "https://api.kimi.com/coding/v1"
+      },
+      "cloudflare-workers-ai": {
+        "id": "cloudflare-workers-ai",
+        "name": "Cloudflare Workers AI",
+        "env": ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_KEY"],
+        "npm": "@ai-sdk/openai-compatible",
+        "api": "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1"
+      },
+      "databricks": {
+        "id": "databricks",
+        "name": "Databricks",
+        "env": ["DATABRICKS_HOST", "DATABRICKS_TOKEN"],
+        "npm": "@ai-sdk/openai-compatible",
+        "api": "https://${DATABRICKS_HOST}/ai-gateway/mlflow/v1"
+      },
+      "google-vertex": {
+        "id": "google-vertex",
+        "name": "Vertex",
+        "env": ["GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION"],
+        "npm": "@ai-sdk/google-vertex"
+      },
+      "google-vertex-anthropic": {
+        "id": "google-vertex-anthropic",
+        "name": "Vertex Anthropic",
+        "env": ["GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION"],
+        "npm": "@ai-sdk/google-vertex/anthropic"
+      },
+      "amazon-bedrock": {
+        "id": "amazon-bedrock",
+        "name": "Amazon Bedrock",
+        "env": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK"],
+        "npm": "@ai-sdk/amazon-bedrock"
+      },
+      "cohere": {
+        "id": "cohere",
+        "name": "Cohere",
+        "env": ["COHERE_API_KEY"],
+        "npm": "@ai-sdk/cohere"
       },
       "openai": {
         "id": "openai",
@@ -717,17 +997,103 @@ mod tests {
     }
 
     #[test]
-    fn azure_and_copilot_fail_closed() {
+    fn copilot_still_fail_closed() {
         let rows = parse_catalog(CatalogKind::ModelsDev, MODELS_DEV_FIXTURE).unwrap();
-        let azure = rows.iter().find(|r| r.id == "azure").unwrap();
-        let err = profile_toml(azure).unwrap_err().to_string();
-        assert!(err.contains("not a simple"), "{err}");
         let copilot = rows.iter().find(|r| r.id == "github-copilot").unwrap();
         let err = profile_toml(copilot).unwrap_err().to_string();
         assert!(
             err.contains("product-terms") || err.contains("Copilot"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn minimax_and_kimi_emit_messages_wire() {
+        let rows = parse_catalog(CatalogKind::ModelsDev, MODELS_DEV_FIXTURE).unwrap();
+        let mini = rows.iter().find(|r| r.id == "minimax").unwrap();
+        let toml = profile_toml(mini).unwrap();
+        assert!(toml.contains("wire = \"messages\""), "{toml}");
+        assert!(toml.contains("base_url = \"https://api.minimax.io\""));
+        assert!(toml.contains("chat_path = \"/anthropic/v1/messages\""));
+        assert!(toml.contains("auth_scheme = \"x-api-key\""));
+        parse_profile_str(&toml).unwrap();
+
+        let kimi = rows.iter().find(|r| r.id == "kimi-for-coding").unwrap();
+        let toml = profile_toml(kimi).unwrap();
+        assert!(toml.contains("wire = \"messages\""));
+        assert!(toml.contains("https://api.kimi.com"));
+        assert!(toml.contains("/coding/v1/messages"));
+        parse_profile_str(&toml).unwrap();
+    }
+
+    #[test]
+    fn catalog_dollar_env_becomes_env_placeholder() {
+        let rows = parse_catalog(CatalogKind::ModelsDev, MODELS_DEV_FIXTURE).unwrap();
+        let cf = rows
+            .iter()
+            .find(|r| r.id == "cloudflare-workers-ai")
+            .unwrap();
+        let toml = profile_toml(cf).unwrap();
+        assert!(
+            toml.contains("/accounts/{env:CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions"),
+            "{toml}"
+        );
+        assert!(!toml.contains("${CLOUDFLARE_ACCOUNT_ID}"), "{toml}");
+        parse_profile_str(&toml).unwrap();
+
+        let db = rows.iter().find(|r| r.id == "databricks").unwrap();
+        let toml = profile_toml(db).unwrap();
+        assert!(
+            toml.contains("base_url = \"https://{env:DATABRICKS_HOST}\""),
+            "{toml}"
+        );
+        assert!(toml.contains("/ai-gateway/mlflow/v1/chat/completions"));
+        parse_profile_str(&toml).unwrap();
+    }
+
+    #[test]
+    fn azure_emits_deployment_path_template() {
+        let rows = parse_catalog(CatalogKind::ModelsDev, MODELS_DEV_FIXTURE).unwrap();
+        let azure = rows.iter().find(|r| r.id == "azure").unwrap();
+        let toml = profile_toml(azure).unwrap();
+        assert!(toml.contains("https://{env:AZURE_RESOURCE_NAME}.openai.azure.com"));
+        assert!(toml.contains("/openai/deployments/{model}/chat/completions?api-version="));
+        assert!(toml.contains("auth_scheme = \"header:api-key\""));
+        parse_profile_str(&toml).unwrap();
+    }
+
+    #[test]
+    fn vertex_and_bedrock_and_cohere_emit() {
+        let rows = parse_catalog(CatalogKind::ModelsDev, MODELS_DEV_FIXTURE).unwrap();
+        let vertex = rows.iter().find(|r| r.id == "google-vertex").unwrap();
+        let toml = profile_toml(vertex).unwrap();
+        assert!(toml.contains("wire = \"gemini\""), "{toml}");
+        assert!(toml.contains("{env:GOOGLE_VERTEX_PROJECT}"));
+        assert!(toml.contains(":generateContent"));
+        parse_profile_str(&toml).unwrap();
+
+        let vanth = rows
+            .iter()
+            .find(|r| r.id == "google-vertex-anthropic")
+            .unwrap();
+        let toml = profile_toml(vanth).unwrap();
+        assert!(toml.contains("wire = \"messages\""));
+        assert!(toml.contains(":rawPredict"));
+        assert!(toml.contains("anthropic-version"));
+        parse_profile_str(&toml).unwrap();
+
+        let bedrock = rows.iter().find(|r| r.id == "amazon-bedrock").unwrap();
+        let toml = profile_toml(bedrock).unwrap();
+        assert!(toml.contains("wire = \"converse\""), "{toml}");
+        assert!(toml.contains("/model/{model}/converse"));
+        assert!(toml.contains("aws_service = \"bedrock\""));
+        parse_profile_str(&toml).unwrap();
+
+        let cohere = rows.iter().find(|r| r.id == "cohere").unwrap();
+        let toml = profile_toml(cohere).unwrap();
+        assert!(toml.contains("https://api.cohere.ai"));
+        assert!(toml.contains("/compatibility/v1/chat/completions"));
+        parse_profile_str(&toml).unwrap();
     }
 
     #[test]
