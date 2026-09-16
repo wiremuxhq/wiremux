@@ -13,8 +13,12 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
-use wiremux_auth::{ResolvedProfile, Wire, format_oauth_transport_error, provider_from_profile};
+use wiremux_auth::{
+    AnyTokenProvider, ResolvedProfile, StaticToken, Wire, format_oauth_transport_error,
+    provider_from_profile,
+};
 
+use crate::aws_sign::{apply_aws_sigv4, bearer_token_applied};
 use crate::cli::{parse_listen, proxy_token};
 use crate::headers::{apply_profile_headers, apply_provider_headers};
 use crate::ir::LossReport;
@@ -48,10 +52,30 @@ pub async fn run(
     println!("listening on {bound}");
     let _ = std::io::stdout().flush();
 
+    let provider = match provider_from_profile(&profile) {
+        Ok(p) => Ok(p),
+        Err(err) => {
+            if profile
+                .http
+                .aws_service
+                .as_deref()
+                .is_some_and(|s| !s.is_empty())
+                || matches!(
+                    profile.http.auth_scheme,
+                    Some(wiremux_auth::AuthScheme::None)
+                )
+            {
+                Ok(AnyTokenProvider::from(StaticToken::new("")))
+            } else {
+                Err(err.to_string())
+            }
+        }
+    };
     let state = Arc::new(ProxyState {
         from,
         profile,
         dump_loss,
+        provider,
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(30))
@@ -83,6 +107,7 @@ struct ProxyState {
     from: Wire,
     profile: ResolvedProfile,
     dump_loss: bool,
+    provider: Result<AnyTokenProvider, String>,
     client: reqwest::Client,
 }
 
@@ -91,6 +116,25 @@ async fn handle(
     req: Request<Incoming>,
 ) -> Result<Response<ProxyBody>, Infallible> {
     Ok(handle_inner(state, req).await)
+}
+
+async fn resolve_proxy_token(state: &ProxyState) -> Result<Option<String>, String> {
+    match &state.provider {
+        Ok(provider) => proxy_token(&state.profile, provider).await,
+        Err(err) => {
+            if state
+                .profile
+                .http
+                .aws_service
+                .as_deref()
+                .is_some_and(|s| !s.is_empty())
+            {
+                Ok(None)
+            } else {
+                Err(err.clone())
+            }
+        }
+    }
 }
 
 /// Loopback Host only. Rejects DNS-rebinding names, trailing dots,
@@ -229,7 +273,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         Ok(u) => u,
         Err(err) => return text(StatusCode::BAD_GATEWAY, format!("{err}\n")),
     };
-    let token = match proxy_token(&state.profile).await {
+    let token = match resolve_proxy_token(&state).await {
         Ok(t) => t,
         Err(err) => return text(StatusCode::UNAUTHORIZED, format!("{err}\n")),
     };
@@ -238,16 +282,32 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         .client
         .post(&url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(encoded);
+        .body(encoded.clone());
     if url.contains("/converse-stream") {
         upstream = upstream.header("accept", "application/vnd.amazon.eventstream");
     }
     upstream = apply_profile_headers(upstream, &state.profile, token.as_deref());
-    if let Ok(provider) = provider_from_profile(&state.profile) {
-        upstream = apply_provider_headers(upstream, &state.profile, &provider);
+    if let Ok(provider) = &state.provider {
+        upstream = apply_provider_headers(upstream, &state.profile, provider);
     }
+    let built = match apply_aws_sigv4(
+        &state.profile,
+        &url,
+        "POST",
+        &encoded,
+        upstream,
+        bearer_token_applied(&state.profile, token.as_deref()),
+    ) {
+        Ok(req) => req,
+        Err(crate::aws_sign::AwsSignError::Auth(err)) => {
+            return text(StatusCode::UNAUTHORIZED, format!("{err}\n"));
+        }
+        Err(crate::aws_sign::AwsSignError::Transport(err)) => {
+            return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
+        }
+    };
 
-    let resp = match upstream.send().await {
+    let resp = match state.client.execute(built).await {
         Ok(r) => r,
         Err(err) => {
             return text(

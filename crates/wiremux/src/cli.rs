@@ -5,9 +5,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::time::Duration;
 
 use wiremux_auth::{
-    AuthScheme, LoadOptions, Login, OauthPack, ProfileError, ResolvedProfile, TokenProvider, Wire,
-    list_profiles, load_profile_from_cli, persist_login_tokens, provider_from_profile,
-    redact_secret_looking, redact_url_origin, sanitize_oauth_error_text,
+    AnyTokenProvider, AuthScheme, LoadOptions, Login, OauthPack, ProfileError, ResolvedProfile,
+    TokenProvider, Wire, list_profiles, load_profile_from_cli, persist_login_tokens,
+    provider_from_profile, redact_secret_looking, redact_url_origin, sanitize_oauth_error_text,
 };
 
 /// Process exit: success.
@@ -532,7 +532,10 @@ pub fn wire_name(wire: Wire) -> &'static str {
 }
 
 /// Resolve an API token for the proxy. Empty means send no auth header.
-pub async fn proxy_token(profile: &ResolvedProfile) -> Result<Option<String>, String> {
+pub async fn proxy_token(
+    profile: &ResolvedProfile,
+    provider: &AnyTokenProvider,
+) -> Result<Option<String>, String> {
     if matches!(profile.http.auth_scheme, Some(AuthScheme::None)) && profile.oauth.is_none() {
         return Ok(None);
     }
@@ -549,12 +552,18 @@ pub async fn proxy_token(profile: &ResolvedProfile) -> Result<Option<String>, St
             .to_string();
         return Ok(Some(token));
     }
-    if profile.oauth.is_some() || !profile.access_env.is_empty() {
-        let provider = provider_from_profile(profile).map_err(|e| e.to_string())?;
+    if profile.oauth.is_some() || !profile.access_env.is_empty() || provider_has_token(provider) {
         let token = provider.get_token().await.map_err(|e| e.to_string())?;
+        if token.trim().is_empty() {
+            return Ok(None);
+        }
         return Ok(Some(token));
     }
     Ok(None)
+}
+
+fn provider_has_token(provider: &AnyTokenProvider) -> bool {
+    !matches!(provider, AnyTokenProvider::Static(_))
 }
 
 pub use crate::upstream::upstream_url_for_model;

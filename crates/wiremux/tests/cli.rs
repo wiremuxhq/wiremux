@@ -827,6 +827,115 @@ chat_path = "/v1/chat/completions"
 }
 
 #[test]
+fn proxy_bedrock_iam_sends_sigv4() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 16384];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+        let auths: Vec<_> = req
+            .lines()
+            .filter(|line| {
+                line.split_once(':')
+                    .is_some_and(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            })
+            .collect();
+        assert_eq!(
+            auths.len(),
+            1,
+            "proxy must send exactly one Authorization, got {auths:?} in {req}"
+        );
+        assert!(
+            auths[0].to_ascii_lowercase().contains("aws4-hmac-sha256"),
+            "proxy must SigV4 Bedrock IAM requests, got {auths:?}"
+        );
+        assert!(
+            req.to_ascii_lowercase().contains("x-amz-date:"),
+            "proxy SigV4 must send x-amz-date, got {req}"
+        );
+        let body = r#"{"output":{"message":{"role":"assistant","content":[{"text":"ok"}]}},"stopReason":"end_turn"}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        req
+    });
+
+    let dir = unique_scratch();
+    let aws_dir = dir.join("aws");
+    std::fs::create_dir_all(&aws_dir).expect("mkdir aws");
+    let creds_path = aws_dir.join("credentials");
+    std::fs::write(
+        &creds_path,
+        "[dev]\naws_access_key_id = AKIAPROXY\naws_secret_access_key = proxysecret\n",
+    )
+    .expect("write credentials");
+    let profile = write_profile(
+        &dir,
+        "bedrock-iam.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "bedrock-iam"
+wire = "converse"
+auth_scheme = "none"
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "http://{upstream_addr}"
+chat_path = "/model/{{model}}/converse"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .env_remove("AWS_ACCESS_KEY_ID")
+        .env_remove("AWS_SECRET_ACCESS_KEY")
+        .env_remove("AWS_SESSION_TOKEN")
+        .env_remove("AWS_BEARER_TOKEN_BEDROCK")
+        .env("AWS_PROFILE", "dev")
+        .env("AWS_SHARED_CREDENTIALS_FILE", &creds_path)
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body =
+        r#"{"modelId":"amazon.titan","messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /model/amazon.titan/converse HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = upstream_thread.join();
+    assert!(
+        resp.contains("200") && resp.contains("end_turn"),
+        "proxy should return signed upstream Converse, got: {resp}"
+    );
+}
+
+#[test]
 fn proxy_forwards_upstream_sse_status() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");

@@ -14,6 +14,7 @@ use wiremux::{
 };
 use wiremux_auth::{
     AnyTokenProvider, GcpTokenProvider, IsolatedHome, PlantCredentials, StaticToken,
+    provider_from_profile,
 };
 
 const PLANTED_ACCESS: &str = "sk-ant-oat01-client73";
@@ -1429,4 +1430,170 @@ async fn stream_http_200_leftover_vendor_body_redacts_secret_and_userinfo() {
         );
         assert!(!dbg.contains(leaked), "Debug must not leak {leaked}: {dbg}");
     }
+}
+
+fn authorization_lines(req: &str) -> Vec<String> {
+    req.lines()
+        .filter(|line| {
+            line.split_once(':')
+                .is_some_and(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+fn converse_complete_body() -> String {
+    json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{"text": "ok"}]
+            }
+        },
+        "stopReason": "end_turn"
+    })
+    .to_string()
+}
+
+fn bedrock_profile(base: &str, extra: &str) -> wiremux::ResolvedProfile {
+    parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "amazon-bedrock"
+wire = "converse"
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "{base}"
+chat_path = "/model/{{model}}/converse"
+{extra}
+"#
+    ))
+    .expect("bedrock profile")
+}
+
+#[tokio::test]
+async fn bearer_and_iam_keys_send_one_authorization_bearer() {
+    let home = IsolatedHome::with_extra_envs(&[
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_REGION",
+    ]);
+    home.set_env("AWS_ACCESS_KEY_ID", "AKIATEST");
+    home.set_env(
+        "AWS_SECRET_ACCESS_KEY",
+        "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+    );
+    home.set_env("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-tok");
+
+    let (base, handle) = spawn_one(200, "OK", "", converse_complete_body());
+    let profile = bedrock_profile(
+        &base,
+        r#"
+auth_scheme = "bearer"
+access_env = ["AWS_BEARER_TOKEN_BEDROCK"]
+"#,
+    );
+    let provider = provider_from_profile(&profile).expect("provider");
+    let client = WireClient::from_resolved(profile, provider).expect("client");
+    let _ = client.send(simple_ir("amazon.titan")).await;
+    let req = handle.join().expect("join");
+    let auths = authorization_lines(&req);
+    assert_eq!(
+        auths.len(),
+        1,
+        "exactly one Authorization, got {auths:?} in {req}"
+    );
+    assert!(
+        auths[0].contains("Bearer bedrock-bearer-tok"),
+        "bearer must win when token and IAM keys are both set: {auths:?}"
+    );
+    assert!(
+        !req.to_ascii_lowercase().contains("aws4-hmac-sha256"),
+        "must not SigV4 when a bearer token is present: {req}"
+    );
+    let _ = home;
+}
+
+#[tokio::test]
+async fn aws_profile_file_credentials_sign() {
+    let home = IsolatedHome::with_extra_envs(&[
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_REGION",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_CONFIG_FILE",
+    ]);
+    let creds_dir = home.path().join(".aws");
+    std::fs::create_dir_all(&creds_dir).expect("mkdir .aws");
+    std::fs::write(
+        creds_dir.join("credentials"),
+        "[dev]\naws_access_key_id = AKIAPROFILE\naws_secret_access_key = profilesecret\n",
+    )
+    .expect("write credentials");
+    home.set_env("AWS_PROFILE", "dev");
+
+    let (base, handle) = spawn_one(200, "OK", "", converse_complete_body());
+    let profile = bedrock_profile(&base, r#"auth_scheme = "none""#);
+    let client = WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("")))
+        .expect("client");
+    let _ = client.send(simple_ir("amazon.titan")).await;
+    let req = handle.join().expect("join");
+    let auths = authorization_lines(&req);
+    assert_eq!(
+        auths.len(),
+        1,
+        "IAM profile keys must produce one Authorization, got {auths:?} in {req}"
+    );
+    assert!(
+        auths[0].to_ascii_lowercase().contains("aws4-hmac-sha256"),
+        "must SigV4 from ~/.aws/credentials: {auths:?}"
+    );
+    assert!(
+        auths[0].contains("AKIAPROFILE"),
+        "credential must use the named profile access key: {auths:?}"
+    );
+    let _ = home;
+}
+
+#[tokio::test]
+async fn aws_service_without_keys_is_local_auth_error() {
+    let home = IsolatedHome::with_extra_envs(&[
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_REGION",
+    ]);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        listener.set_nonblocking(true).ok();
+        accept_timeout(&listener, Duration::from_millis(200))
+    });
+    let profile = bedrock_profile(&format!("http://{addr}"), r#"auth_scheme = "none""#);
+    let client = WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("")))
+        .expect("client");
+    let err = client
+        .send(simple_ir("amazon.titan"))
+        .await
+        .expect_err("missing IAM keys");
+    let accepted = handle.join().expect("join");
+    assert!(
+        accepted.is_none(),
+        "must fail closed locally, no upstream call"
+    );
+    match err {
+        ClientError::Auth { status, message } => {
+            assert_eq!(status, None, "local auth error has no HTTP status");
+            assert!(
+                message.to_ascii_lowercase().contains("aws")
+                    || message.contains("AWS_ACCESS_KEY_ID")
+                    || message.contains("credentials"),
+                "must name what was tried, got {message}"
+            );
+        }
+        other => panic!("expected local Auth, got {other:?}"),
+    }
+    let _ = home;
 }
