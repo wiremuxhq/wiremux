@@ -4077,6 +4077,7 @@ fn sampling_include_drops_off_responses() {
         (Wire::ChatCompletions, chat_profile()),
         (Wire::Messages, messages_profile()),
         (Wire::Gemini, gemini_profile()),
+        (Wire::Converse, converse_profile()),
     ] {
         let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
         let body: Value = serde_json::from_slice(&bytes).expect("json");
@@ -4777,4 +4778,91 @@ fn converse_reasoning_text_signature_round_trips() {
         "replay must keep reasoningText.signature, got {body}"
     );
     assert_eq!(content[1]["text"], "done");
+}
+
+#[test]
+fn converse_encode_drops_thinking_schema_and_parallel() {
+    let ir = user_ir(IrSampling {
+        max_reasoning_tokens: Some(2048),
+        include_thoughts: Some(true),
+        reasoning_effort: Some("high".into()),
+        thinking_budget: Some(1024),
+        json_schema: Some(serde_json::json!({"type": "object"})),
+        json_schema_name: Some("answer".into()),
+        parallel_tool_calls: Some(true),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("max_reasoning_tokens").is_none()
+            && body.get("maxReasoningTokens").is_none()
+            && body.get("include_thoughts").is_none()
+            && body.get("includeThoughts").is_none()
+            && body.get("reasoning_effort").is_none()
+            && body.get("reasoningEffort").is_none()
+            && body.get("thinking_budget").is_none()
+            && body.get("thinkingBudget").is_none()
+            && body.get("thinkingConfig").is_none()
+            && body.get("thinking").is_none()
+            && body.get("json_schema").is_none()
+            && body.get("jsonSchema").is_none()
+            && body.get("responseSchema").is_none()
+            && body.get("response_format").is_none()
+            && body.get("output_format").is_none()
+            && body.get("parallel_tool_calls").is_none()
+            && body.get("parallelToolCalls").is_none(),
+        "Converse must not invent thinking/schema/parallel slots, got {body}"
+    );
+    for path in [
+        "sampling.max_reasoning_tokens",
+        "sampling.include_thoughts",
+        "sampling.reasoning_effort",
+        "sampling.thinking_budget",
+        "sampling.json_schema",
+        "sampling.json_schema_name",
+        "sampling.parallel_tool_calls",
+    ] {
+        assert!(
+            loss_dropped(&report, path),
+            "Converse {path} drop missing, got {report:?}"
+        );
+    }
+}
+
+#[test]
+fn converse_none_tool_choice_omits_tool_config() {
+    let ir = IrRequest {
+        model: "amazon.nova-lite-v1:0".into(),
+        items: vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+        tools: vec![IrTool::Function {
+            name: "lookup".into(),
+            description: "d".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }],
+        sampling: IrSampling {
+            tool_choice: IrToolChoice::None,
+            ..IrSampling::default()
+        },
+    };
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("toolConfig").is_none(),
+        "None must omit toolConfig; Bedrock has no none slot, got {body}"
+    );
+    assert!(
+        body.pointer("/toolConfig/toolChoice/auto").is_none(),
+        "None must not become auto, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.tool_choice"
+                && matches!(event.action, LossAction::Degrade | LossAction::Drop)
+                && event.detail.contains("no none slot")
+        }),
+        "None with tools must record tool_choice no none slot, got {report:?}"
+    );
 }
