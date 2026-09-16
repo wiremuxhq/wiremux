@@ -25,7 +25,8 @@ use crate::ir::LossReport;
 use crate::map::{decode, encode};
 use crate::stream::{
     RawSse, StreamEncoder, ToolCallAssembler, UpstreamFrames, decode_response,
-    decode_stream_events, encode_response, event_has_slot,
+    decode_stream_events, encode_eventstream_exception, encode_eventstream_message,
+    encode_response, event_has_slot, frame_event_name, unwrap_event_payload,
 };
 use crate::upstream::upstream_url_for_model;
 
@@ -306,10 +307,13 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
     }
 
-    let (ir, dec_loss) = match decode(state.from, &collected) {
+    let (mut ir, dec_loss) = match decode(state.from, &collected) {
         Ok(v) => v,
         Err(err) => return text(StatusCode::BAD_REQUEST, format!("{err}\n")),
     };
+    if matches!(state.from, Wire::Converse) && path.ends_with("/converse-stream") {
+        ir.sampling.stream = Some(true);
+    }
     let target = match state.profile.dialect.wire {
         Some(w) => w,
         None => {
@@ -372,7 +376,11 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         && status.is_success()
         && let Some(sse) = json_completion_to_sse(state.from, target, &body, &state.profile)
     {
-        return bytes_response(status_from_reqwest(status), "text/event-stream", sse);
+        return bytes_response(
+            status_from_reqwest(status),
+            dest_stream_content_type(state.from),
+            sse,
+        );
     }
     if target == state.from || !status.is_success() {
         return bytes_response(status_from_reqwest(status), &content_type, body);
@@ -432,19 +440,19 @@ fn json_completion_to_sse(
         return None;
     }
     let mut encoder = StreamEncoder::new(from);
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut wrote = false;
     for ev in events {
         if !event_has_slot(from, &ev) {
             continue;
         }
         for raw in encoder.push(ev).ok()? {
-            out.push_str(&format_sse(&raw));
+            out.extend_from_slice(&dest_frame_bytes(from, &raw));
             wrote = true;
         }
     }
     for raw in encoder.finish().ok()? {
-        out.push_str(&format_sse(&raw));
+        out.extend_from_slice(&dest_frame_bytes(from, &raw));
         wrote = true;
     }
     wrote.then(|| Bytes::from(out))
@@ -507,6 +515,7 @@ fn map_sse_stream(
     resp: reqwest::Response,
 ) -> Response<ProxyBody> {
     let url = resp.url().to_string();
+    let dest_ct = dest_stream_content_type(state.from);
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(16);
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
@@ -518,10 +527,10 @@ fn map_sse_stream(
                 Ok(b) => b,
                 Err(err) => {
                     let _ = tx
-                        .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
-                            event: Some("error".into()),
-                            data: format_oauth_transport_error("upstream stream", &err, &url),
-                        })))))
+                        .send(Ok(Frame::data(dest_error_bytes(
+                            state.from,
+                            format_oauth_transport_error("upstream stream", &err, &url),
+                        ))))
                         .await;
                     return;
                 }
@@ -530,10 +539,7 @@ fn map_sse_stream(
                 Ok(pair) => pair,
                 Err(err) => {
                     let _ = tx
-                        .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
-                            event: Some("error".into()),
-                            data: err,
-                        })))))
+                        .send(Ok(Frame::data(dest_error_bytes(state.from, err))))
                         .await;
                     return;
                 }
@@ -544,10 +550,7 @@ fn map_sse_stream(
             }
             if let Some(err) = terminal {
                 let _ = tx
-                    .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
-                        event: Some("error".into()),
-                        data: err,
-                    })))))
+                    .send(Ok(Frame::data(dest_error_bytes(state.from, err))))
                     .await;
                 return;
             }
@@ -571,7 +574,7 @@ fn map_sse_stream(
                 Ok(mapped) => {
                     for frame in mapped {
                         if tx
-                            .send(Ok(Frame::data(Bytes::from(format_sse(&frame)))))
+                            .send(Ok(Frame::data(dest_frame_bytes(state.from, &frame))))
                             .await
                             .is_err()
                         {
@@ -581,10 +584,10 @@ fn map_sse_stream(
                 }
                 Err(err) => {
                     let _ = tx
-                        .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
-                            event: Some("error".into()),
-                            data: format!("encode stream: {err}"),
-                        })))))
+                        .send(Ok(Frame::data(dest_error_bytes(
+                            state.from,
+                            format!("encode stream: {err}"),
+                        ))))
                         .await;
                     return;
                 }
@@ -594,7 +597,7 @@ fn map_sse_stream(
             Ok(mapped) => {
                 for frame in mapped {
                     if tx
-                        .send(Ok(Frame::data(Bytes::from(format_sse(&frame)))))
+                        .send(Ok(Frame::data(dest_frame_bytes(state.from, &frame))))
                         .await
                         .is_err()
                     {
@@ -604,10 +607,10 @@ fn map_sse_stream(
             }
             Err(err) => {
                 let _ = tx
-                    .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
-                        event: Some("error".into()),
-                        data: format!("encode stream: {err}"),
-                    })))))
+                    .send(Ok(Frame::data(dest_error_bytes(
+                        state.from,
+                        format!("encode stream: {err}"),
+                    ))))
                     .await;
             }
         }
@@ -617,7 +620,7 @@ fn map_sse_stream(
     });
     Response::builder()
         .status(status)
-        .header("content-type", "text/event-stream")
+        .header("content-type", dest_ct)
         .body(StreamBody::new(body_stream).boxed_unsync())
         .unwrap_or_else(|_| Response::new(boxed_full("{}\n")))
 }
@@ -641,7 +644,7 @@ async fn push_mapped_frames(
                         Ok(mapped) => {
                             for frame in mapped {
                                 if tx
-                                    .send(Ok(Frame::data(Bytes::from(format_sse(&frame)))))
+                                    .send(Ok(Frame::data(dest_frame_bytes(state.from, &frame))))
                                     .await
                                     .is_err()
                                 {
@@ -651,10 +654,10 @@ async fn push_mapped_frames(
                         }
                         Err(err) => {
                             let _ = tx
-                                .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
-                                    event: Some("error".into()),
-                                    data: format!("encode stream: {err}"),
-                                })))))
+                                .send(Ok(Frame::data(dest_error_bytes(
+                                    state.from,
+                                    format!("encode stream: {err}"),
+                                ))))
                                 .await;
                             return false;
                         }
@@ -663,10 +666,10 @@ async fn push_mapped_frames(
             }
             Err(err) => {
                 let _ = tx
-                    .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
-                        event: Some("error".into()),
-                        data: format!("decode stream: {err}"),
-                    })))))
+                    .send(Ok(Frame::data(dest_error_bytes(
+                        state.from,
+                        format!("decode stream: {err}"),
+                    ))))
                     .await;
                 return false;
             }
@@ -679,6 +682,41 @@ fn boxed_full(bytes: impl Into<Bytes>) -> ProxyBody {
     Full::new(bytes.into())
         .map_err(|never| match never {})
         .boxed_unsync()
+}
+
+fn dest_stream_content_type(from: Wire) -> &'static str {
+    if matches!(from, Wire::Converse) {
+        "application/vnd.amazon.eventstream"
+    } else {
+        "text/event-stream"
+    }
+}
+
+fn dest_frame_bytes(from: Wire, raw: &RawSse) -> Bytes {
+    if matches!(from, Wire::Converse) {
+        let event = frame_event_name(from, raw);
+        Bytes::from(encode_eventstream_message(
+            &event,
+            &unwrap_event_payload(&event, &raw.data),
+        ))
+    } else {
+        Bytes::from(format_sse(raw))
+    }
+}
+
+fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
+    if matches!(from, Wire::Converse) {
+        let payload = serde_json::json!({ "message": msg }).to_string();
+        Bytes::from(encode_eventstream_exception(
+            "internalServerException",
+            payload.as_bytes(),
+        ))
+    } else {
+        Bytes::from(format_sse(&RawSse {
+            event: Some("error".into()),
+            data: msg,
+        }))
+    }
 }
 
 fn format_sse(raw: &RawSse) -> String {
@@ -765,6 +803,52 @@ mod tests {
         ] {
             assert!(!host_is_loopback(host), "{host}");
         }
+    }
+
+    fn first_eventstream_payload(bytes: &[u8]) -> &[u8] {
+        let total = u32::from_be_bytes(bytes[0..4].try_into().expect("total")) as usize;
+        let headers_len = u32::from_be_bytes(bytes[4..8].try_into().expect("headers")) as usize;
+        &bytes[12 + headers_len..total - 4]
+    }
+
+    #[test]
+    fn dest_converse_frame_is_eventstream_not_sse() {
+        let raw = crate::stream::RawSse {
+            event: None,
+            data: r#"{"contentBlockDelta":{"delta":{"text":"hi"}}}"#.into(),
+        };
+        let bytes = super::dest_frame_bytes(wiremux_auth::Wire::Converse, &raw);
+        assert!(
+            !bytes.starts_with(b"data:"),
+            "dest Converse must not emit SSE, got {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let payload = first_eventstream_payload(&bytes);
+        let value: serde_json::Value = serde_json::from_slice(payload).expect("payload");
+        assert!(
+            value.get("contentBlockDelta").is_none(),
+            "dest Event Stream payload must be the AWS member struct, got {value}"
+        );
+        assert_eq!(
+            value
+                .pointer("/delta/text")
+                .and_then(serde_json::Value::as_str),
+            Some("hi")
+        );
+        let mut reader = crate::stream::EventStreamReader::new();
+        let (frames, err) = reader.feed(&bytes).expect("feed");
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].event.as_deref(), Some("contentBlockDelta"));
+        assert!(frames[0].data.contains("hi"), "{}", frames[0].data);
+        assert_eq!(
+            super::dest_stream_content_type(wiremux_auth::Wire::Converse),
+            "application/vnd.amazon.eventstream"
+        );
+        assert_eq!(
+            super::dest_stream_content_type(wiremux_auth::Wire::ChatCompletions),
+            "text/event-stream"
+        );
     }
 
     #[test]

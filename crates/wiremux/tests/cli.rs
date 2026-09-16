@@ -2426,6 +2426,278 @@ chat_path = "/model/{{model}}/converse"
 }
 
 #[test]
+fn proxy_dest_converse_remaps_chat_sse_as_eventstream() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = concat!(
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-to-converse-sse.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-to-converse-sse"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"modelId":"amazon.nova-lite-v1:0","messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /model/amazon.nova-lite-v1:0/converse-stream HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = Vec::new();
+    let _ = client.read_to_end(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    let (head, body) = http_head_and_body(&resp);
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("content-type: application/vnd.amazon.eventstream"),
+        "dest Converse remap must advertise Event Stream, got: {head}"
+    );
+    assert!(
+        !head.to_ascii_lowercase().contains("text/event-stream"),
+        "dest Converse remap must not advertise SSE, got: {head}"
+    );
+    let frames = eventstream_frames(&body);
+    let payloads = eventstream_raw_payloads(&body);
+    assert!(
+        payloads.iter().any(|value| {
+            value.get("contentBlockDelta").is_none()
+                && value.pointer("/delta/text").and_then(|v| v.as_str()) == Some("hi")
+        }),
+        "dest Event Stream payload must be the AWS member struct, got: {payloads:?}"
+    );
+    assert!(
+        frames.iter().any(|frame| {
+            frame.event.as_deref() == Some("contentBlockDelta") && frame.data.contains("hi")
+        }),
+        "dest Event Stream must carry remapped text, got: {frames:?}"
+    );
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame.event.as_deref() == Some("messageStop")),
+        "dest Event Stream must finish with messageStop, got: {frames:?}"
+    );
+}
+
+#[test]
+fn proxy_dest_converse_wraps_json_completion_as_eventstream() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-to-converse-json.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-to-converse-json"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"modelId":"amazon.nova-lite-v1:0","messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /model/amazon.nova-lite-v1:0/converse-stream HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = Vec::new();
+    let _ = client.read_to_end(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    let (head, body) = http_head_and_body(&resp);
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("content-type: application/vnd.amazon.eventstream"),
+        "dest Converse JSON wrap must advertise Event Stream, got: {head}"
+    );
+    assert!(
+        !head.to_ascii_lowercase().contains("text/event-stream"),
+        "dest Converse JSON wrap must not advertise SSE, got: {head}"
+    );
+    let frames = eventstream_frames(&body);
+    let payloads = eventstream_raw_payloads(&body);
+    assert!(
+        payloads.iter().any(|value| {
+            value.get("contentBlockDelta").is_none()
+                && value.pointer("/delta/text").and_then(|v| v.as_str()) == Some("hi")
+        }),
+        "JSON wrap dest payload must be the AWS member struct, got: {payloads:?}"
+    );
+    assert!(
+        frames.iter().any(|frame| {
+            frame.event.as_deref() == Some("contentBlockDelta") && frame.data.contains("hi")
+        }),
+        "JSON wrap must dest-encode text as Event Stream, got: {frames:?}"
+    );
+}
+
+#[test]
+fn proxy_dest_converse_unary_json_stays_json() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-to-converse-unary.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-to-converse-unary"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"modelId":"amazon.nova-lite-v1:0","messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /model/amazon.nova-lite-v1:0/converse HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.to_ascii_lowercase().contains("application/json"),
+        "unary dest Converse must stay JSON, got: {resp}"
+    );
+    assert!(
+        !resp
+            .to_ascii_lowercase()
+            .contains("application/vnd.amazon.eventstream"),
+        "unary dest Converse must not dest-encode Event Stream, got: {resp}"
+    );
+    assert!(
+        resp.contains("hi"),
+        "unary dest Converse must remap assistant text, got: {resp}"
+    );
+}
+
+#[test]
 fn proxy_eventstream_exception_is_sse_data() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
@@ -2870,6 +3142,79 @@ gcp_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
         1,
         "Vertex ADC must mint once per token lifetime, not per request"
     );
+}
+
+fn http_head_and_body(resp: &[u8]) -> (String, Vec<u8>) {
+    let sep = resp
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("http header terminator");
+    let head = String::from_utf8_lossy(&resp[..sep]).into_owned();
+    let raw = &resp[sep + 4..];
+    let body = if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        decode_chunked(raw)
+    } else {
+        raw.to_vec()
+    };
+    (head, body)
+}
+
+fn decode_chunked(mut raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    while !raw.is_empty() {
+        let Some(nl) = raw.windows(2).position(|w| w == b"\r\n") else {
+            break;
+        };
+        let size_line = std::str::from_utf8(&raw[..nl]).unwrap_or("");
+        let size = usize::from_str_radix(size_line.trim(), 16).unwrap_or(0);
+        raw = &raw[nl + 2..];
+        if size == 0 {
+            break;
+        }
+        if raw.len() < size {
+            break;
+        }
+        out.extend_from_slice(&raw[..size]);
+        raw = &raw[size..];
+        if raw.starts_with(b"\r\n") {
+            raw = &raw[2..];
+        }
+    }
+    out
+}
+
+fn eventstream_raw_payloads(mut raw: &[u8]) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    while raw.len() >= 16 {
+        let total = u32::from_be_bytes(raw[0..4].try_into().expect("total")) as usize;
+        if total < 16 || total > raw.len() {
+            break;
+        }
+        let headers_len = u32::from_be_bytes(raw[4..8].try_into().expect("headers")) as usize;
+        let start = 12usize.saturating_add(headers_len);
+        let end = total.saturating_sub(4);
+        if start < end
+            && end <= raw.len()
+            && let Ok(value) = serde_json::from_slice(&raw[start..end])
+        {
+            out.push(value);
+        }
+        raw = &raw[total..];
+    }
+    out
+}
+
+fn eventstream_frames(body: &[u8]) -> Vec<wiremux::stream::RawSse> {
+    let mut reader = wiremux::stream::EventStreamReader::new();
+    let (mut frames, err) = reader.feed(body).expect("eventstream feed");
+    assert!(err.is_none(), "{err:?}");
+    if let Some(last) = reader.drain() {
+        frames.push(last);
+    }
+    frames
 }
 
 fn read_listen_addr(stdout: &mut impl Read) -> std::net::SocketAddr {
