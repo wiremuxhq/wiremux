@@ -2589,6 +2589,136 @@ chat_path = "/v1/messages"
     );
 }
 
+#[test]
+fn proxy_vertex_reuses_provider_and_mints_once() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+
+    let hits = Arc::new(AtomicU64::new(0));
+    let token_hits = Arc::clone(&hits);
+    let token_srv = TcpListener::bind("127.0.0.1:0").expect("token bind");
+    let token_addr = token_srv.local_addr().expect("addr");
+    token_srv.set_nonblocking(true).expect("token nonblocking");
+    let stop = Arc::new(AtomicU64::new(0));
+    let stop_flag = Arc::clone(&stop);
+    let token_thread = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while stop_flag.load(Ordering::Relaxed) == 0 && Instant::now() < deadline {
+            match token_srv.accept() {
+                Ok((mut stream, _)) => {
+                    token_hits.fetch_add(1, Ordering::Relaxed);
+                    let mut buf = [0u8; 8192];
+                    let _ = stream.read(&mut buf);
+                    let body =
+                        r#"{"access_token":"ya29.once","expires_in":3600,"token_type":"Bearer"}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = upstream.accept().expect("accept");
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            seen.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+            let body =
+                r#"{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+        seen
+    });
+
+    let (home, mut cmd) = isolated_home();
+    let adc_path = home.path().join("adc.json");
+    std::fs::write(
+        &adc_path,
+        format!(
+            r#"{{"type":"authorized_user","client_id":"123.apps.googleusercontent.com","client_secret":"user-secret","refresh_token":"1//refresh-me","token_uri":"http://{token_addr}/token"}}"#
+        ),
+    )
+    .expect("write adc");
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "vertex-mint.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "vertex-mint"
+wire = "gemini"
+auth_scheme = "bearer"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/projects/p/locations/us/publishers/google/models/{{model}}:generateContent"
+gcp_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
+"#
+        ),
+    );
+
+    let mut child = cmd
+        .env("GOOGLE_APPLICATION_CREDENTIALS", &adc_path)
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"gemini-2.0-flash","stream":false,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    for _ in 0..2 {
+        let mut client = TcpStream::connect(listen).expect("connect proxy");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        client.write_all(req.as_bytes()).expect("write");
+        let mut resp = String::new();
+        let _ = client.read_to_string(&mut resp);
+        assert!(
+            resp.contains("ok") || resp.contains("chat.completion"),
+            "vertex proxy request failed: {resp}"
+        );
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    stop.store(1, Ordering::Relaxed);
+    let _ = token_thread.join();
+    let seen = upstream_thread.join().expect("upstream");
+    assert_eq!(seen.len(), 2, "two upstream calls, got {seen:?}");
+    assert_eq!(
+        hits.load(Ordering::Relaxed),
+        1,
+        "Vertex ADC must mint once per token lifetime, not per request"
+    );
+}
+
 fn read_listen_addr(stdout: &mut impl Read) -> std::net::SocketAddr {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut buf = Vec::new();
@@ -2664,6 +2794,7 @@ fn profile_ingest_from_file_writes_user_dir() {
             "groq",
             "--vendor",
             "deepseek",
+            "--force",
             "--dir",
             dest.to_str().expect("utf8"),
         ])

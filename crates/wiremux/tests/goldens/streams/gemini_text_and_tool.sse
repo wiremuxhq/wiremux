@@ -1,0 +1,3 @@
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Hi"}]}}]}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"fc_redacted","name":"lookup","args":{"q":"x"}}}]},"finishReason":"STOP"}]}

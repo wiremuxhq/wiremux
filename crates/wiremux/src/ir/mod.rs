@@ -137,6 +137,7 @@ pub enum IrToolChoice {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct IrCache {
     pub enabled: bool,
     /// "5m" or "1h" when the target dialect has a TTL slot.
@@ -144,6 +145,31 @@ pub struct IrCache {
     /// Skip `cache_control` when estimated prompt tokens are below this floor.
     /// `None` or `0` means no floor.
     pub min_cacheable_tokens: Option<u32>,
+}
+
+impl IrCache {
+    /// Enabled cache with no TTL and no token floor.
+    #[must_use]
+    pub fn enabled() -> Self {
+        Self {
+            enabled: true,
+            ..Self::default()
+        }
+    }
+
+    /// Set Messages-style TTL (`5m` / `1h`).
+    #[must_use]
+    pub fn with_retention(mut self, retention: impl Into<String>) -> Self {
+        self.retention = Some(retention.into());
+        self
+    }
+
+    /// Skip `cache_control` below this estimated prompt-token floor.
+    #[must_use]
+    pub fn with_min_cacheable_tokens(mut self, tokens: u32) -> Self {
+        self.min_cacheable_tokens = Some(tokens);
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -233,6 +259,7 @@ pub enum IrDocumentSource {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum IrTool {
     Function {
         name: String,
@@ -327,6 +354,7 @@ impl LossReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct LossEvent {
     pub path: String,
     pub action: LossAction,

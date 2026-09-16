@@ -1,0 +1,77 @@
+name: Nightly smoke
+
+on:
+  schedule:
+    - cron: "27 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live-smoke:
+    name: Live preset smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Skip without live secrets
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+        run: |
+          if [ -z "${OPENAI_API_KEY}${ANTHROPIC_API_KEY}${XAI_API_KEY}" ]; then
+            echo "no live vendor secrets; skip"
+            exit 0
+          fi
+          echo "secrets present; live smoke is env-gated in stream_grammar"
+          exit 0
+
+  fuzz-smoke:
+    name: Fuzz target smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: target/ci-fuzz
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: nightly
+      - name: Prepend nightly toolchain to PATH
+        run: dirname "$(rustup which --toolchain nightly cargo)" >> "$GITHUB_PATH"
+      - uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            .
+            fuzz
+          shared-key: fuzz
+          cache-on-failure: true
+          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+      - name: Build and smoke-run fuzz targets
+        env:
+          RUSTUP_TOOLCHAIN: nightly
+        run: |
+          set -euo pipefail
+          cargo fuzz build
+          cargo fuzz run sse_frames -- -max_total_time=5
+          cargo fuzz run eventstream -- -max_total_time=5

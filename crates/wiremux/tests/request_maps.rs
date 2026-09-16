@@ -1672,11 +1672,7 @@ fn prompt_caching_on_system_and_first_user() {
         ],
     )
     .with_sampling(IrSampling::patch(|s| {
-        s.cache = IrCache {
-            enabled: true,
-            retention: None,
-            ..Default::default()
-        };
+        s.cache = IrCache::enabled();
     }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
@@ -1722,11 +1718,7 @@ fn long_ttl_with_tools_tags_last_tool_before_system() {
         },
     ])
     .with_sampling(IrSampling::patch(|s| {
-        s.cache = IrCache {
-            enabled: true,
-            retention: Some("1h".into()),
-            ..Default::default()
-        };
+        s.cache = IrCache::enabled().with_retention("1h");
     }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
@@ -1789,11 +1781,7 @@ fn cache_retention_none_skips_cache_control() {
         }],
     )
     .with_sampling(IrSampling::patch(|s| {
-        s.cache = IrCache {
-            enabled: true,
-            retention: Some("none".into()),
-            ..Default::default()
-        };
+        s.cache = IrCache::enabled().with_retention("none");
     }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
@@ -1824,11 +1812,7 @@ fn multi_fragment_system_stays_at_or_under_cache_control_limit() {
         parts: vec![IrPart::Text("do the work".into())],
     });
     let ir = IrRequest::new("claude-opus-4-6", items).with_sampling(IrSampling::patch(|s| {
-        s.cache = IrCache {
-            enabled: true,
-            retention: Some("1h".into()),
-            ..Default::default()
-        };
+        s.cache = IrCache::enabled().with_retention("1h");
     }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
@@ -1898,11 +1882,7 @@ fn multi_fragment_long_ttl_with_tools_tags_first_system_not_last() {
         },
     ])
     .with_sampling(IrSampling::patch(|s| {
-        s.cache = IrCache {
-            enabled: true,
-            retention: Some("1h".into()),
-            ..Default::default()
-        };
+        s.cache = IrCache::enabled().with_retention("1h");
     }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
@@ -1943,11 +1923,7 @@ fn short_ttl_multi_system_tags_last_system_and_first_user() {
         ],
     )
     .with_sampling(IrSampling::patch(|s| {
-        s.cache = IrCache {
-            enabled: true,
-            retention: None,
-            ..Default::default()
-        };
+        s.cache = IrCache::enabled();
     }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
@@ -2023,11 +1999,7 @@ fn cached_messages_ir(text: &str, floor: Option<u32>) -> IrRequest {
         ],
     )
     .with_sampling(IrSampling::patch(|s| {
-        s.cache = IrCache {
-            enabled: true,
-            retention: None,
-            min_cacheable_tokens: floor,
-        };
+        s.cache = IrCache::enabled().with_min_cacheable_tokens(floor.unwrap_or(0));
     }))
 }
 
@@ -2083,11 +2055,7 @@ fn long_developer_at_min_cacheable_tokens_still_tags() {
         ],
     )
     .with_sampling(IrSampling::patch(|s| {
-        s.cache = IrCache {
-            enabled: true,
-            retention: None,
-            min_cacheable_tokens: Some(1024),
-        };
+        s.cache = IrCache::enabled().with_min_cacheable_tokens(1024);
     }));
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
@@ -2130,11 +2098,7 @@ fn large_function_output_at_min_cacheable_tokens_still_tags() {
         ],
     )
     .with_sampling(IrSampling::patch(|s| {
-        s.cache = IrCache {
-            enabled: true,
-            retention: None,
-            min_cacheable_tokens: Some(1024),
-        };
+        s.cache = IrCache::enabled().with_min_cacheable_tokens(1024);
     }));
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
@@ -4009,6 +3973,42 @@ fn chat_input_audio_maps_to_gemini_inline_data() {
             .any(|event| event.path.contains("audio") && event.action == LossAction::Drop),
         "Gemini has an audio inlineData slot, got {report:?}"
     );
+}
+
+#[test]
+fn chat_input_audio_records_loss_on_messages_and_converse() {
+    let req = br#"{
+        "model": "gpt-4o-audio-preview",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hi"},
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": "AAAA",
+                        "format": "wav"
+                    }
+                }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    for wire in [Wire::Messages, Wire::Converse] {
+        let profile = match wire {
+            Wire::Messages => messages_profile(),
+            Wire::Converse => converse_profile(),
+            _ => unreachable!(),
+        };
+        let (_, report) = encode(wire, &ir, &profile).expect("encode");
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|event| { event.path.contains("audio") && event.action == LossAction::Drop }),
+            "{wire:?} has no audio slot and must Drop, got {report:?}"
+        );
+    }
 }
 
 #[test]
