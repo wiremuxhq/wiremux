@@ -939,11 +939,57 @@ fn error_message(body: &str) -> String {
 }
 
 fn redact_embedded_url(s: &str) -> String {
-    if s.contains("://") {
-        redact_url_origin(s)
-    } else {
-        s.to_string()
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while let Some(rel) = s[i..].find("://") {
+        let sep = i + rel;
+        let scheme_start = scheme_start_before(s, sep);
+        if scheme_start == sep {
+            out.push_str(&s[i..sep + 3]);
+            i = sep + 3;
+            continue;
+        }
+        out.push_str(&s[i..scheme_start]);
+        let after = sep + 3;
+        let url_end = url_end_from(s, after);
+        out.push_str(&redact_url_origin(&s[scheme_start..url_end]));
+        i = url_end;
     }
+    out.push_str(&s[i..]);
+    out
+}
+
+fn scheme_start_before(s: &str, sep: usize) -> usize {
+    let prefix = &s[..sep];
+    let mut start = sep;
+    for (idx, ch) in prefix.char_indices().rev() {
+        if is_scheme_char(ch) {
+            start = idx;
+        } else {
+            break;
+        }
+    }
+    if start < sep
+        && s[start..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+    {
+        return start;
+    }
+    sep
+}
+
+fn is_scheme_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '+' || c == '.' || c == '-'
+}
+
+fn url_end_from(s: &str, start: usize) -> usize {
+    s[start..]
+        .char_indices()
+        .find(|(_, c)| c.is_whitespace() || matches!(*c, '<' | '>' | '"' | '\'' | ')' | ']' | '}'))
+        .map(|(idx, _)| start + idx)
+        .unwrap_or(s.len())
 }
 
 fn fallback_error_text(body: &str) -> String {
@@ -1427,5 +1473,49 @@ base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
         )
         .expect("missing keys skip even if url is bad");
         assert!(out.is_none(), "Bearer-only Bedrock must skip sign");
+    }
+
+    #[test]
+    fn error_message_keeps_vendor_text_around_gs_url() {
+        let body = r#"{"error":{"message":"invalid fileUri gs://bucket/path/file.pdf because mime type is unsupported"}}"#;
+        let msg = error_message(body);
+        assert!(
+            msg.contains("mime type is unsupported"),
+            "must keep vendor text after the URL, got {msg}"
+        );
+        assert!(
+            !msg.contains("/path/file.pdf"),
+            "must drop object path, got {msg}"
+        );
+        assert!(
+            msg.contains("gs://bucket"),
+            "must keep scheme+bucket, got {msg}"
+        );
+    }
+
+    #[test]
+    fn error_message_redacts_userinfo_and_keeps_surrounding_text() {
+        let body = r#"{"error":{"message":"callback https://user:secret@evil.test/x failed"}}"#;
+        let msg = error_message(body);
+        assert!(
+            !msg.contains("user:secret") && !msg.contains("secret@"),
+            "must not leak userinfo, got {msg}"
+        );
+        assert!(
+            msg.contains("https://evil.test"),
+            "must keep origin, got {msg}"
+        );
+        assert!(!msg.contains("/x"), "must drop path, got {msg}");
+        assert!(
+            msg.contains("callback") && msg.contains("failed"),
+            "must keep surrounding text, got {msg}"
+        );
+    }
+
+    #[test]
+    fn error_message_without_url_is_unchanged() {
+        let body = r#"{"error":{"message":"invalid argument: mime type is unsupported"}}"#;
+        let msg = error_message(body);
+        assert_eq!(msg, "invalid argument: mime type is unsupported");
     }
 }
