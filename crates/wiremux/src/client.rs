@@ -215,7 +215,8 @@ fn redact_bearer(s: &str) -> String {
 pub struct ListedModel {
     /// Vendor model id. Gemini `name` drops a leading `models/` prefix.
     pub id: String,
-    /// `context_length`, Anthropic `max_input_tokens`, or Gemini `inputTokenLimit`.
+    /// `context_length`, Anthropic `max_input_tokens`, Grok Build
+    /// `context_window`, or Gemini `inputTokenLimit`.
     pub context_tokens: Option<u32>,
     /// True when `architecture.input_modalities` includes `image` or `vision`.
     pub vision: Option<bool>,
@@ -1026,6 +1027,7 @@ fn parse_openai_listed_models(data: &[Value]) -> Vec<ListedModel> {
         let context_tokens = item
             .get("context_length")
             .or_else(|| item.get("max_input_tokens"))
+            .or_else(|| item.get("context_window"))
             .and_then(Value::as_u64)
             .and_then(|n| u32::try_from(n).ok());
         let vision = item
