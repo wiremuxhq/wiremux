@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use wiremux::{
-    IrStreamEvent, MapError, RawSse, ResolvedProfile, ToolCallAssembler, Wire, decode_stream_event,
-    decode_stream_events, encode_stream_event, parse_profile_str,
+    IrStreamEvent, MapError, RawSse, ResolvedProfile, StreamEncoder, ToolCallAssembler, Wire,
+    decode_stream_event, decode_stream_events, encode_stream_event, parse_profile_str,
 };
 
 fn golden(name: &str) -> String {
@@ -1817,4 +1817,191 @@ fn gemini_generated_ids_are_distinct_when_vendor_omits_id() {
         .collect();
     assert_eq!(ids.len(), 2, "{all:?}");
     assert_ne!(ids[0], ids[1], "{ids:?}");
+}
+
+fn encode_all(wire: Wire, events: &[IrStreamEvent]) -> Vec<RawSse> {
+    let mut enc = StreamEncoder::new(wire);
+    let mut out = Vec::new();
+    for ev in events {
+        out.extend(enc.push(ev.clone()).expect("push"));
+    }
+    out.extend(enc.finish().expect("finish"));
+    out
+}
+
+fn frame_events(frames: &[RawSse]) -> Vec<String> {
+    frames
+        .iter()
+        .map(|f| {
+            f.event.clone().unwrap_or_else(|| {
+                serde_json::from_str::<Value>(&f.data)
+                    .ok()
+                    .and_then(|v| v.get("type").and_then(Value::as_str).map(str::to_string))
+                    .unwrap_or_else(|| "chunk".into())
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn stream_encoder_chat_to_messages_emits_grammar() {
+    let frames = encode_all(
+        Wire::Messages,
+        &[
+            IrStreamEvent::TextDelta { text: "Hi".into() },
+            IrStreamEvent::ToolCallStart {
+                id: "call_1".into(),
+                name: "lookup".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"q":"x"}"#.into(),
+                index: 0,
+            },
+            IrStreamEvent::FinishReason {
+                reason: "tool_calls".into(),
+            },
+            IrStreamEvent::Usage {
+                prompt_tokens: 3,
+                completion_tokens: 2,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+            },
+            IrStreamEvent::Done,
+        ],
+    );
+    let names = frame_events(&frames);
+    assert_eq!(
+        names.first().map(String::as_str),
+        Some("message_start"),
+        "Messages must open with message_start, got {names:?}"
+    );
+    let starts: Vec<u64> = frames
+        .iter()
+        .filter(|f| f.event.as_deref() == Some("content_block_start"))
+        .filter_map(|f| {
+            serde_json::from_str::<Value>(&f.data)
+                .ok()?
+                .get("index")
+                .and_then(Value::as_u64)
+        })
+        .collect();
+    assert!(
+        starts.contains(&0) && starts.contains(&1),
+        "text and tool_use must use distinct indexes, got {starts:?} from {frames:?}"
+    );
+    assert!(
+        frames
+            .iter()
+            .any(|f| f.event.as_deref() == Some("content_block_stop")),
+        "must close blocks with content_block_stop, got {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "message_delta"),
+        "must emit message_delta, got {names:?}"
+    );
+    assert_eq!(
+        names.last().map(String::as_str),
+        Some("message_stop"),
+        "must end with message_stop, got {names:?}"
+    );
+}
+
+#[test]
+fn stream_encoder_chat_to_responses_one_created_one_completed() {
+    let frames = encode_all(
+        Wire::Responses,
+        &[
+            IrStreamEvent::TextDelta { text: "Hi".into() },
+            IrStreamEvent::ToolCallStart {
+                id: "call_1".into(),
+                name: "lookup".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"q":"x"}"#.into(),
+                index: 0,
+            },
+            IrStreamEvent::FinishReason {
+                reason: "tool_calls".into(),
+            },
+            IrStreamEvent::Usage {
+                prompt_tokens: 3,
+                completion_tokens: 2,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+            },
+            IrStreamEvent::Done,
+        ],
+    );
+    let names = frame_events(&frames);
+    let created = names.iter().filter(|n| *n == "response.created").count();
+    let completed = names.iter().filter(|n| *n == "response.completed").count();
+    assert_eq!(created, 1, "exactly one response.created, got {names:?}");
+    assert_eq!(
+        completed, 1,
+        "exactly one response.completed, got {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "response.output_item.added"),
+        "must add output items, got {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "response.output_item.done"),
+        "must close output items, got {names:?}"
+    );
+    let completed_frame = frames
+        .iter()
+        .find(|f| f.event.as_deref() == Some("response.completed"))
+        .expect("completed");
+    let json: Value = serde_json::from_str(&completed_frame.data).expect("json");
+    assert!(
+        json.pointer("/response/usage").is_some(),
+        "completed must carry usage, got {json}"
+    );
+}
+
+#[test]
+fn stream_encoder_parallel_tools_to_chat_use_distinct_indexes() {
+    let frames = encode_all(
+        Wire::ChatCompletions,
+        &[
+            IrStreamEvent::ToolCallStart {
+                id: "c1".into(),
+                name: "weather".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallStart {
+                id: "c2".into(),
+                name: "weather".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"city":"Paris"}"#.into(),
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"city":"Rome"}"#.into(),
+                index: 0,
+            },
+        ],
+    );
+    let indexes: Vec<u64> = frames
+        .iter()
+        .filter_map(|f| {
+            let v: Value = serde_json::from_str(&f.data).ok()?;
+            v.pointer("/choices/0/delta/tool_calls/0/index")
+                .and_then(Value::as_u64)
+        })
+        .collect();
+    assert!(
+        indexes.contains(&0) && indexes.contains(&1),
+        "parallel Chat tool calls must use distinct indexes, got {indexes:?} from {frames:?}"
+    );
 }

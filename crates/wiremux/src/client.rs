@@ -306,9 +306,13 @@ impl WireClient {
         ir: IrRequest,
     ) -> impl Stream<Item = Result<IrStreamEvent, ClientError>> + Send {
         let client = self.clone();
-        futures_util::stream::unfold(StreamPhase::Start { client, ir }, |phase| async move {
-            step_stream(phase).await
-        })
+        futures_util::stream::unfold(
+            StreamPhase::Start {
+                client,
+                ir: Box::new(ir),
+            },
+            |phase| async move { step_stream(phase).await },
+        )
     }
 
     /// GET the models catalog. OpenAI-compat uses the chat version prefix
@@ -486,7 +490,10 @@ impl WireClient {
 }
 
 enum StreamPhase {
-    Start { client: WireClient, ir: IrRequest },
+    Start {
+        client: WireClient,
+        ir: Box<IrRequest>,
+    },
     Live(LiveStream),
     Done,
 }
@@ -524,7 +531,7 @@ async fn step_stream(
     phase: StreamPhase,
 ) -> Option<(Result<IrStreamEvent, ClientError>, StreamPhase)> {
     match phase {
-        StreamPhase::Start { client, ir } => match client.open_stream(ir).await {
+        StreamPhase::Start { client, ir } => match client.open_stream(*ir).await {
             Ok(live) => pull_live(live).await,
             Err(err) => Some((Err(err), StreamPhase::Done)),
         },

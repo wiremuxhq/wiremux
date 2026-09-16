@@ -3,6 +3,7 @@
 mod chat;
 mod complete;
 mod converse;
+mod encoder;
 mod eventstream;
 mod gemini;
 mod messages;
@@ -43,9 +44,8 @@ impl RawSse {
     }
 }
 
-#[cfg(feature = "proxy")]
-pub(crate) use chat::map_finish;
 pub use complete::{decode_response, encode_response};
+pub use encoder::StreamEncoder;
 pub use eventstream::{
     EventStreamReader, MAX_EVENTSTREAM_PENDING,
     encode_exception_message as encode_eventstream_exception,
@@ -92,8 +92,6 @@ impl UpstreamFrames {
         }
     }
 }
-#[cfg(feature = "proxy")]
-pub(crate) use usage::from_chat;
 
 /// Decode one SSE frame. `None` is a recognized no-op (ping, empty delta).
 ///
