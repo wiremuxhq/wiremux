@@ -181,13 +181,33 @@ fn check_chat(frames: &[RawSse]) {
 }
 
 fn check_gemini(frames: &[RawSse]) {
+    let mut saw_done = false;
     for frame in frames {
         if frame.data.trim() == "[DONE]" {
+            saw_done = true;
             continue;
         }
         serde_json::from_str::<serde_json::Value>(&frame.data)
             .unwrap_or_else(|err| panic!("Gemini frame must be JSON: {err} {}", frame.data));
     }
+    assert!(
+        saw_done,
+        "Gemini must emit a [DONE] frame, got {:?}",
+        frames.iter().map(|f| f.data.as_str()).collect::<Vec<_>>()
+    );
+}
+
+fn check_converse(frames: &[RawSse]) {
+    let saw_stop = frames.iter().any(|frame| {
+        serde_json::from_str::<serde_json::Value>(&frame.data)
+            .ok()
+            .is_some_and(|v| v.pointer("/messageStop").is_some())
+    });
+    assert!(
+        saw_stop,
+        "Converse must emit messageStop, got {:?}",
+        frames.iter().map(|f| f.data.as_str()).collect::<Vec<_>>()
+    );
 }
 
 fn check_grammar(client: Wire, frames: &[RawSse]) {
@@ -196,7 +216,8 @@ fn check_grammar(client: Wire, frames: &[RawSse]) {
         Wire::Responses => check_responses(frames),
         Wire::ChatCompletions => check_chat(frames),
         Wire::Gemini => check_gemini(frames),
-        Wire::Converse | _ => {}
+        Wire::Converse => check_converse(frames),
+        _ => {}
     }
 }
 
@@ -276,4 +297,12 @@ fn chat_grammar_distinct_tool_indexes() {
         &RawSse::parse_all(&golden("chat_tool_call_deltas.sse")),
     );
     check_chat(&frames);
+}
+
+#[test]
+fn encoder_finish_emits_gemini_done_and_converse_message_stop() {
+    let mut gemini = StreamEncoder::new(Wire::Gemini);
+    check_gemini(&gemini.finish().expect("gemini finish"));
+    let mut converse = StreamEncoder::new(Wire::Converse);
+    check_converse(&converse.finish().expect("converse finish"));
 }
