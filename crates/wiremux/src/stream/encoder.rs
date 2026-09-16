@@ -69,6 +69,13 @@ impl StreamEncoder {
                 Wire::Messages => self.push_messages(other),
                 Wire::Responses => self.push_responses(other),
                 Wire::ChatCompletions => self.push_chat(other),
+                Wire::Converse => {
+                    if let IrStreamEvent::FinishReason { reason } = other {
+                        self.finish = Some(reason);
+                        return Ok(Vec::new());
+                    }
+                    Ok(vec![encode_stream_event(self.wire, &other)?])
+                }
                 _ => Ok(vec![encode_stream_event(self.wire, &other)?]),
             },
         }
@@ -84,8 +91,13 @@ impl StreamEncoder {
             Wire::Messages => Ok(self.finish_messages()),
             Wire::Responses => Ok(self.finish_responses()),
             Wire::ChatCompletions => Ok(self.finish_chat()),
-            Wire::Gemini | Wire::Converse => {
+            Wire::Gemini => {
                 encode_stream_event(self.wire, &IrStreamEvent::Done).map(|frame| vec![frame])
+            }
+            Wire::Converse => {
+                let reason = self.finish.clone().unwrap_or_else(|| "end_turn".into());
+                encode_stream_event(self.wire, &IrStreamEvent::FinishReason { reason })
+                    .map(|frame| vec![frame])
             }
             _ => Ok(Vec::new()),
         }
