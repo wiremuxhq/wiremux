@@ -355,9 +355,13 @@ fn json_completion_to_sse(from: Wire, body: &Bytes) -> Option<Bytes> {
             id,
             name,
             thought_signature: None,
+            index: 0,
         });
         if !args.is_empty() {
-            events.push(IrStreamEvent::ToolCallArgDelta { delta: args });
+            events.push(IrStreamEvent::ToolCallArgDelta {
+                delta: args,
+                index: 0,
+            });
         }
         events.push(IrStreamEvent::ToolCallEnd);
     }

@@ -103,6 +103,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                     id: gemini_call_id(fc, &name, 0),
                     name,
                     thought_signature,
+                    index: 0,
                 }));
             }
             if let Some(text) = part
@@ -189,6 +190,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             id,
             name,
             thought_signature,
+            ..
         } => {
             let n = if name.is_empty() { id } else { name };
             let mut part = json!({ "functionCall": { "name": n, "args": {} } });
@@ -204,7 +206,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 }]
             })
         }
-        IrStreamEvent::ToolCallArgDelta { delta } => {
+        IrStreamEvent::ToolCallArgDelta { delta, .. } => {
             let args: Value = serde_json::from_str(delta).unwrap_or_else(|_| json!({}));
             json!({
                 "candidates": [{

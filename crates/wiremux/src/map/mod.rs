@@ -14,6 +14,7 @@ use crate::ir::{IrItem, IrRequest, LossAction, LossReport};
 
 /// Failure from request decode or encode.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MapError {
     /// Body is not valid JSON.
     #[error("invalid JSON: {0}")]

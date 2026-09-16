@@ -63,7 +63,7 @@ fn encode_chat_complete(events: &[IrStreamEvent]) -> Value {
                 }
                 current = Some((id.clone(), name.clone(), String::new()));
             }
-            IrStreamEvent::ToolCallArgDelta { delta } => {
+            IrStreamEvent::ToolCallArgDelta { delta, .. } => {
                 if let Some((_, _, args)) = current.as_mut() {
                     args.push_str(delta);
                 }
@@ -173,7 +173,7 @@ fn encode_messages_complete(events: &[IrStreamEvent]) -> Value {
                 }
                 current = Some((id.clone(), name.clone(), String::new()));
             }
-            IrStreamEvent::ToolCallArgDelta { delta } => {
+            IrStreamEvent::ToolCallArgDelta { delta, .. } => {
                 if let Some((_, _, args)) = current.as_mut() {
                     args.push_str(delta);
                 }
@@ -274,7 +274,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent]) -> Value {
                 }
                 current = Some((id.clone(), name.clone(), String::new()));
             }
-            IrStreamEvent::ToolCallArgDelta { delta } => {
+            IrStreamEvent::ToolCallArgDelta { delta, .. } => {
                 if let Some((_, _, args)) = current.as_mut() {
                     args.push_str(delta);
                 }
@@ -374,7 +374,7 @@ fn encode_responses_complete(events: &[IrStreamEvent]) -> Value {
                 }
                 current = Some((id.clone(), name.clone(), String::new()));
             }
-            IrStreamEvent::ToolCallArgDelta { delta } => {
+            IrStreamEvent::ToolCallArgDelta { delta, .. } => {
                 if let Some((_, _, args)) = current.as_mut() {
                     args.push_str(delta);
                 }
@@ -542,13 +542,15 @@ fn complete_chat_tool_call(call: &Value) -> Vec<IrStreamEvent> {
     let id = str_field(call, "id").unwrap_or_default();
     let name = str_field(func, "name").unwrap_or_default();
     let args = str_field(func, "arguments");
+    let index = super::chat::tool_call_index(call);
     let mut out = vec![IrStreamEvent::ToolCallStart {
         id,
         name,
         thought_signature: None,
+        index,
     }];
     if let Some(delta) = args {
-        out.push(IrStreamEvent::ToolCallArgDelta { delta });
+        out.push(IrStreamEvent::ToolCallArgDelta { delta, index });
     }
     out.push(IrStreamEvent::ToolCallEnd);
     out
@@ -578,10 +580,12 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
                         id: str_field(block, "id").unwrap_or_default(),
                         name: str_field(block, "name").unwrap_or_default(),
                         thought_signature: None,
+                        index: 0,
                     });
                     if let Some(input) = block.get("input").filter(|v| !v.is_null()) {
                         out.push(IrStreamEvent::ToolCallArgDelta {
                             delta: input.to_string(),
+                            index: 0,
                         });
                     }
                     out.push(IrStreamEvent::ToolCallEnd);
@@ -695,9 +699,10 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                         .unwrap_or_default(),
                     name: str_field(item, "name").unwrap_or_default(),
                     thought_signature: None,
+                    index: 0,
                 });
                 if let Some(delta) = str_field(item, "arguments").filter(|s| !s.is_empty()) {
-                    out.push(IrStreamEvent::ToolCallArgDelta { delta });
+                    out.push(IrStreamEvent::ToolCallArgDelta { delta, index: 0 });
                 }
                 out.push(IrStreamEvent::ToolCallEnd);
             }

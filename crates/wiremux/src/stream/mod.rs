@@ -256,10 +256,12 @@ fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> 
             .map(str::to_string);
         let id = gemini::gemini_call_id(fc, &name, *call_seq);
         *call_seq += 1;
+        let index = u32::try_from(*call_seq).unwrap_or(0);
         out.push(IrStreamEvent::ToolCallStart {
             id,
             name,
             thought_signature,
+            index,
         });
         if let Some(args) = fc
             .get("args")
@@ -267,6 +269,7 @@ fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> 
         {
             out.push(IrStreamEvent::ToolCallArgDelta {
                 delta: args.to_string(),
+                index,
             });
         }
     } else if out.is_empty()
@@ -304,30 +307,25 @@ fn expand_chat_tool_call(first: &IrStreamEvent, value: &Value) -> Option<Vec<IrS
     let tool_calls = value
         .pointer("/choices/0/delta/tool_calls")
         .and_then(Value::as_array)?;
-    if tool_calls.len() > 1 {
+    let mut out = Vec::new();
+    for call in tool_calls {
+        let expanded = chat::expand_tool_call(call, value);
+        if expanded
+            .iter()
+            .all(|ev| matches!(ev, IrStreamEvent::Protocol { .. }))
+        {
+            continue;
+        }
+        out.extend(
+            expanded
+                .into_iter()
+                .filter(|ev| !matches!(ev, IrStreamEvent::Protocol { .. })),
+        );
+    }
+    if out.is_empty() {
         return None;
     }
-    let call = tool_calls.first()?;
-    if let Some(ty) = call.get("type").and_then(Value::as_str)
-        && ty != "function"
-    {
-        return None;
-    }
-    let func = call.get("function").unwrap_or(call);
-    let id = str_field(call, "id").unwrap_or_default();
-    let name = str_field(func, "name").unwrap_or_default();
-    let args = str_field(func, "arguments").filter(|s| !s.is_empty())?;
-    if id.is_empty() && name.is_empty() {
-        return None;
-    }
-    Some(vec![
-        IrStreamEvent::ToolCallStart {
-            id,
-            name,
-            thought_signature: None,
-        },
-        IrStreamEvent::ToolCallArgDelta { delta: args },
-    ])
+    Some(out)
 }
 
 fn expand_gemini_function_call(first: &IrStreamEvent, value: &Value) -> Option<Vec<IrStreamEvent>> {
@@ -354,9 +352,11 @@ fn expand_gemini_function_call(first: &IrStreamEvent, value: &Value) -> Option<V
             id: name.clone(),
             name,
             thought_signature,
+            index: 0,
         },
         IrStreamEvent::ToolCallArgDelta {
             delta: args.to_string(),
+            index: 0,
         },
     ])
 }
@@ -369,6 +369,7 @@ fn expand_responses_function_call(
         id,
         name,
         thought_signature,
+        index,
     } = first
     else {
         return None;
@@ -382,17 +383,22 @@ fn expand_responses_function_call(
             id: id.clone(),
             name: name.clone(),
             thought_signature: thought_signature.clone(),
+            index: *index,
         },
         IrStreamEvent::ToolCallArgDelta {
             delta: args.to_string(),
+            index: *index,
         },
     ])
 }
 
 /// Merge Chat tool-call starts that arrive as id-only then name-only.
+///
+/// Pending starts are keyed by `index` so interleaved parallel calls
+/// do not overwrite each other.
 #[derive(Debug, Default)]
 pub struct ToolCallAssembler {
-    pending: Option<IrStreamEvent>,
+    pending: std::collections::BTreeMap<u32, IrStreamEvent>,
 }
 
 impl ToolCallAssembler {
@@ -409,21 +415,27 @@ impl ToolCallAssembler {
                 id,
                 name,
                 thought_signature,
-            } => self.push_start(id, name, thought_signature),
-            other => {
+                index,
+            } => self.push_start(id, name, thought_signature, index),
+            IrStreamEvent::ToolCallArgDelta { delta, index } => {
                 let mut out = Vec::new();
-                if let Some(pending) = self.pending.take() {
+                if let Some(pending) = self.pending.remove(&index) {
                     out.push(pending);
                 }
+                out.push(IrStreamEvent::ToolCallArgDelta { delta, index });
+                out
+            }
+            other => {
+                let mut out = self.flush();
                 out.push(other);
                 out
             }
         }
     }
 
-    /// Emit a held start at end of stream.
+    /// Emit held starts at end of stream.
     pub fn flush(&mut self) -> Vec<IrStreamEvent> {
-        self.pending.take().into_iter().collect()
+        std::mem::take(&mut self.pending).into_values().collect()
     }
 
     fn push_start(
@@ -431,22 +443,26 @@ impl ToolCallAssembler {
         id: String,
         name: String,
         thought_signature: Option<String>,
+        index: u32,
     ) -> Vec<IrStreamEvent> {
         let incoming = IrStreamEvent::ToolCallStart {
             id,
             name,
             thought_signature,
+            index,
         };
-        match self.pending.take() {
+        match self.pending.remove(&index) {
             Some(IrStreamEvent::ToolCallStart {
                 id: pid,
                 name: pname,
                 thought_signature: psig,
+                index: _,
             }) => {
                 let IrStreamEvent::ToolCallStart {
                     id,
                     name,
                     thought_signature,
+                    index,
                 } = incoming
                 else {
                     unreachable!("incoming is ToolCallStart");
@@ -455,25 +471,26 @@ impl ToolCallAssembler {
                     id: if id.is_empty() { pid } else { id },
                     name: if name.is_empty() { pname } else { name },
                     thought_signature: thought_signature.or(psig),
+                    index,
                 };
                 if let IrStreamEvent::ToolCallStart { id, name, .. } = &merged
                     && (id.is_empty() || name.is_empty())
                 {
-                    self.pending = Some(merged);
+                    self.pending.insert(index, merged);
                     Vec::new()
                 } else {
                     vec![merged]
                 }
             }
             Some(other) => {
-                self.pending = Some(incoming);
+                self.pending.insert(index, incoming);
                 vec![other]
             }
             None => {
                 if let IrStreamEvent::ToolCallStart { id, name, .. } = &incoming
                     && (id.is_empty() || name.is_empty())
                 {
-                    self.pending = Some(incoming);
+                    self.pending.insert(index, incoming);
                     Vec::new()
                 } else {
                     vec![incoming]

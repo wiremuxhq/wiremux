@@ -25,6 +25,7 @@ const MAX_SUCCESS_BODY: usize = 16 * 1024 * 1024;
 const MAX_ERROR_BODY: usize = 64 * 1024;
 
 /// Matchable HTTP / map / transport failure. Display and Debug redact secrets.
+#[non_exhaustive]
 pub enum ClientError {
     /// HTTP 401, or 400/403 whose body looks like a bad or missing key.
     Auth {

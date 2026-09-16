@@ -29,12 +29,6 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         for call in calls {
             check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
         }
-        if calls.len() > 1 {
-            return Ok(Some(IrStreamEvent::Protocol {
-                item_type: "chunk".into(),
-                payload: value.clone(),
-            }));
-        }
         if let Some(call) = calls.first() {
             return Ok(Some(decode_tool_call(call, value)));
         }
@@ -102,14 +96,7 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     {
         for call in calls {
             check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
-        }
-        if calls.len() > 1 {
-            out.push(IrStreamEvent::Protocol {
-                item_type: "chunk".into(),
-                payload: value.clone(),
-            });
-        } else if let Some(call) = calls.first() {
-            out.push(decode_tool_call(call, value));
+            out.extend(expand_tool_call(call, value));
         }
     }
 
@@ -190,6 +177,46 @@ pub(super) fn encode_finish(reason: &str) -> &str {
     }
 }
 
+pub(super) fn tool_call_index(call: &Value) -> u32 {
+    call.get("index")
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0)
+}
+
+/// Expand one Chat `tool_calls[]` entry into Start and/or ArgDelta.
+pub(super) fn expand_tool_call(call: &Value, chunk: &Value) -> Vec<IrStreamEvent> {
+    let keep = || {
+        vec![IrStreamEvent::Protocol {
+            item_type: "chunk".into(),
+            payload: chunk.clone(),
+        }]
+    };
+    if let Some(ty) = call.get("type").and_then(Value::as_str)
+        && ty != "function"
+    {
+        return keep();
+    }
+    let func = call.get("function").unwrap_or(call);
+    let id = str_field(call, "id").unwrap_or_default();
+    let name = str_field(func, "name").unwrap_or_default();
+    let args = str_field(func, "arguments").filter(|s| !s.is_empty());
+    let index = tool_call_index(call);
+    let mut out = Vec::new();
+    if !id.is_empty() || !name.is_empty() {
+        out.push(IrStreamEvent::ToolCallStart {
+            id,
+            name,
+            thought_signature: None,
+            index,
+        });
+    }
+    if let Some(delta) = args {
+        out.push(IrStreamEvent::ToolCallArgDelta { delta, index });
+    }
+    if out.is_empty() { keep() } else { out }
+}
+
 fn decode_tool_call(call: &Value, chunk: &Value) -> IrStreamEvent {
     let keep = || IrStreamEvent::Protocol {
         item_type: "chunk".into(),
@@ -204,6 +231,7 @@ fn decode_tool_call(call: &Value, chunk: &Value) -> IrStreamEvent {
     let id = str_field(call, "id");
     let name = str_field(func, "name");
     let args = str_field(func, "arguments").filter(|s| !s.is_empty());
+    let index = tool_call_index(call);
     // 1:1 API cannot emit Start and ArgDelta together; keep the whole chunk.
     if (id.is_some() || name.is_some()) && args.is_some() {
         return keep();
@@ -213,10 +241,11 @@ fn decode_tool_call(call: &Value, chunk: &Value) -> IrStreamEvent {
             id: id.unwrap_or_default(),
             name: name.unwrap_or_default(),
             thought_signature: None,
+            index,
         };
     }
     match args {
-        Some(delta) => IrStreamEvent::ToolCallArgDelta { delta },
+        Some(delta) => IrStreamEvent::ToolCallArgDelta { delta, index },
         None => keep(),
     }
 }
@@ -232,12 +261,14 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         IrStreamEvent::ReasoningSignature { signature } => json!({
             "choices": [{ "index": 0, "delta": { "reasoning_signature": signature } }]
         }),
-        IrStreamEvent::ToolCallStart { id, name, .. } => json!({
+        IrStreamEvent::ToolCallStart {
+            id, name, index, ..
+        } => json!({
             "choices": [{
                 "index": 0,
                 "delta": {
                     "tool_calls": [{
-                        "index": 0,
+                        "index": index,
                         "id": id,
                         "type": "function",
                         "function": { "name": name, "arguments": "" }
@@ -245,12 +276,12 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 }
             }]
         }),
-        IrStreamEvent::ToolCallArgDelta { delta } => json!({
+        IrStreamEvent::ToolCallArgDelta { delta, index } => json!({
             "choices": [{
                 "index": 0,
                 "delta": {
                     "tool_calls": [{
-                        "index": 0,
+                        "index": index,
                         "function": { "arguments": delta }
                     }]
                 }

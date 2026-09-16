@@ -197,10 +197,9 @@ fn store_true_forbidden_is_hard_error() {
 
 #[test]
 fn chat_encode_emits_store_true() {
-    let ir = user_ir(IrSampling {
-        store: Some(true),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.store = Some(true);
+    }));
     let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -222,10 +221,9 @@ fn chat_encode_emits_store_true() {
 
 #[test]
 fn chat_encode_emits_store_false() {
-    let ir = user_ir(IrSampling {
-        store: Some(false),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.store = Some(false);
+    }));
     let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -252,10 +250,9 @@ fn chat_decode_reads_store_true() {
 
 #[test]
 fn chat_store_forbidden_is_hard_error() {
-    let ir = user_ir(IrSampling {
-        store: Some(true),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.store = Some(true);
+    }));
     let err = encode(Wire::ChatCompletions, &ir, &openrouter_forbid_store())
         .expect_err("OpenRouter forbidden store must hard-error on Chat");
     match err {
@@ -269,10 +266,9 @@ fn chat_store_forbidden_is_hard_error() {
 
 #[test]
 fn messages_and_gemini_do_not_invent_store() {
-    let ir = user_ir(IrSampling {
-        store: Some(true),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.store = Some(true);
+    }));
     let (msg_bytes, msg_report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let msg: Value = serde_json::from_slice(&msg_bytes).expect("json");
     assert!(
@@ -342,11 +338,10 @@ fn responses_and_chat_round_trip_codex_cache_key_and_tier() {
 
 #[test]
 fn messages_and_gemini_drop_codex_cache_key_and_tier() {
-    let ir = user_ir(IrSampling {
-        prompt_cache_key: Some("sess-1".into()),
-        service_tier: Some("flex".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.prompt_cache_key = Some("sess-1".into());
+        s.service_tier = Some("flex".into());
+    }));
     let (msg_bytes, msg_report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let msg: Value = serde_json::from_slice(&msg_bytes).expect("json");
     assert!(
@@ -792,9 +787,9 @@ fn thought_part_signature_is_not_stolen_by_later_function_call() {
 
 #[test]
 fn gemini_reasoning_summary_encodes_as_thought_part() {
-    let ir = IrRequest {
-        model: "gemini-2.5-flash".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![
             IrItem::User {
                 parts: vec![IrPart::Text("hi".into())],
             },
@@ -804,9 +799,7 @@ fn gemini_reasoning_summary_encodes_as_thought_part() {
                 raw: None,
             },
         ],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let parts: Vec<&Value> = body
@@ -842,16 +835,14 @@ fn gemini_reasoning_summary_encodes_as_thought_part() {
 
 #[test]
 fn gemini_reasoning_without_summary_omits_thought() {
-    let ir = IrRequest {
-        model: "gemini-2.5-flash".into(),
-        items: vec![IrItem::Reasoning {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::Reasoning {
             encrypted: Some("enc-only".into()),
             summary: None,
             raw: None,
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let has_thought = body
@@ -1045,9 +1036,9 @@ fn gemini_consecutive_function_responses_share_user_turn() {
 
 #[test]
 fn gemini_function_response_uses_function_name_not_call_id() {
-    let ir = wiremux::IrRequest {
-        model: "gemini-2.5-flash".into(),
-        items: vec![
+    let ir = wiremux::IrRequest::new(
+        "gemini-2.5-flash",
+        vec![
             IrItem::FunctionCall {
                 call_id: "call_abc".into(),
                 name: "lookup".into(),
@@ -1059,9 +1050,8 @@ fn gemini_function_response_uses_function_name_not_call_id() {
                 output: "plain text".into(),
             },
         ],
-        tools: vec![],
-        sampling: wiremux::IrSampling::default(),
-    };
+    )
+    .with_sampling(wiremux::IrSampling::default());
     let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -1142,9 +1132,9 @@ fn replay_thinking_and_signature_in_assistant_json() {
 
 #[test]
 fn unsigned_thinking_is_not_replayed_on_messages() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![IrItem::Assistant {
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![IrItem::Assistant {
             parts: vec![
                 IrPart::Thinking {
                     text: "scratch".into(),
@@ -1153,9 +1143,7 @@ fn unsigned_thinking_is_not_replayed_on_messages() {
                 IrPart::Text("Hello".into()),
             ],
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let content = body
@@ -1220,9 +1208,9 @@ fn replay_redacted_thinking_in_assistant_json() {
 
 #[test]
 fn chat_skips_thinking_and_protocol_parts() {
-    let ir = IrRequest {
-        model: "grok-4".into(),
-        items: vec![IrItem::Assistant {
+    let ir = IrRequest::new(
+        "grok-4",
+        vec![IrItem::Assistant {
             parts: vec![
                 IrPart::Thinking {
                     text: "plan".into(),
@@ -1235,9 +1223,7 @@ fn chat_skips_thinking_and_protocol_parts() {
                 IrPart::Text("Hello".into()),
             ],
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let content = &body["messages"][0]["content"];
@@ -1257,9 +1243,9 @@ fn chat_skips_thinking_and_protocol_parts() {
 
 #[test]
 fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
-    let ir = IrRequest {
-        model: "gpt-5".into(),
-        items: vec![IrItem::Assistant {
+    let ir = IrRequest::new(
+        "gpt-5",
+        vec![IrItem::Assistant {
             parts: vec![
                 IrPart::Thinking {
                     text: "secret plan".into(),
@@ -1272,9 +1258,7 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
                 IrPart::Text("Hello".into()),
             ],
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -1359,14 +1343,12 @@ fn chat_stream_true_requests_include_usage() {
 
 #[test]
 fn messages_whitespace_only_assistant_becomes_dot() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![IrItem::Assistant {
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![IrItem::Assistant {
             parts: vec![IrPart::Text("\n".into())],
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -1461,17 +1443,15 @@ fn responses_data_url_becomes_image_base64_for_gemini() {
 
 #[test]
 fn gemini_https_image_url_degrades_to_text_placeholder() {
-    let ir = IrRequest {
-        model: "gemini-2.5-flash".into(),
-        items: vec![IrItem::User {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::User {
             parts: vec![
                 IrPart::Text("see".into()),
                 IrPart::ImageUrl("https://example.com/cat.png".into()),
             ],
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -1496,9 +1476,9 @@ fn gemini_https_image_url_degrades_to_text_placeholder() {
 
 #[test]
 fn gemini_raw_part_is_dropped_with_loss_report() {
-    let ir = IrRequest {
-        model: "gemini-2.5-flash".into(),
-        items: vec![IrItem::User {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::User {
             parts: vec![
                 IrPart::Text("hi".into()),
                 IrPart::Raw {
@@ -1507,9 +1487,7 @@ fn gemini_raw_part_is_dropped_with_loss_report() {
                 },
             ],
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let parts = body
@@ -1534,24 +1512,23 @@ fn gemini_raw_part_is_dropped_with_loss_report() {
 
 #[test]
 fn gemini_raw_tool_is_dropped_with_loss_report() {
-    let ir = IrRequest {
-        model: "gemini-2.5-flash".into(),
-        items: vec![IrItem::User {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::User {
             parts: vec![IrPart::Text("hi".into())],
         }],
-        tools: vec![
-            IrTool::Function {
-                name: "lookup".into(),
-                description: "Look up".into(),
-                parameters: serde_json::json!({"type": "object", "properties": {}}),
-            },
-            IrTool::Unknown {
-                type_name: "weird".into(),
-                raw: serde_json::json!({"type": "weird", "name": "do_thing"}),
-            },
-        ],
-        sampling: IrSampling::default(),
-    };
+    )
+    .with_tools(vec![
+        IrTool::Function {
+            name: "lookup".into(),
+            description: "Look up".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        },
+        IrTool::Unknown {
+            type_name: "weird".into(),
+            raw: serde_json::json!({"type": "weird", "name": "do_thing"}),
+        },
+    ]);
     let passthrough = profile(
         r#"
 schema_version = 1
@@ -1683,9 +1660,9 @@ fn count_cache_control(value: &Value) -> usize {
 
 #[test]
 fn prompt_caching_on_system_and_first_user() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![
             IrItem::System {
                 text: "rules".into(),
             },
@@ -1693,16 +1670,14 @@ fn prompt_caching_on_system_and_first_user() {
                 parts: vec![IrPart::Text("hello world".into())],
             },
         ],
-        tools: vec![],
-        sampling: IrSampling {
-            cache: IrCache {
-                enabled: true,
-                retention: None,
-                ..Default::default()
-            },
-            ..IrSampling::default()
-        },
-    };
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache {
+            enabled: true,
+            retention: None,
+            ..Default::default()
+        };
+    }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -1723,9 +1698,9 @@ fn prompt_caching_on_system_and_first_user() {
 
 #[test]
 fn long_ttl_with_tools_tags_last_tool_before_system() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![
             IrItem::System {
                 text: "rules".into(),
             },
@@ -1733,27 +1708,26 @@ fn long_ttl_with_tools_tags_last_tool_before_system() {
                 parts: vec![IrPart::Text("hello".into())],
             },
         ],
-        tools: vec![
-            IrTool::Function {
-                name: "one".into(),
-                description: "a".into(),
-                parameters: serde_json::json!({"type": "object"}),
-            },
-            IrTool::Function {
-                name: "two".into(),
-                description: "b".into(),
-                parameters: serde_json::json!({"type": "object"}),
-            },
-        ],
-        sampling: IrSampling {
-            cache: IrCache {
-                enabled: true,
-                retention: Some("1h".into()),
-                ..Default::default()
-            },
-            ..IrSampling::default()
+    )
+    .with_tools(vec![
+        IrTool::Function {
+            name: "one".into(),
+            description: "a".into(),
+            parameters: serde_json::json!({"type": "object"}),
         },
-    };
+        IrTool::Function {
+            name: "two".into(),
+            description: "b".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        },
+    ])
+    .with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache {
+            enabled: true,
+            retention: Some("1h".into()),
+            ..Default::default()
+        };
+    }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let tools = body.get("tools").and_then(Value::as_array).expect("tools");
@@ -1785,9 +1759,9 @@ fn long_ttl_with_tools_tags_last_tool_before_system() {
 
 #[test]
 fn cache_disabled_no_cache_control_blocks() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![
             IrItem::System {
                 text: "rules".into(),
             },
@@ -1795,13 +1769,12 @@ fn cache_disabled_no_cache_control_blocks() {
                 parts: vec![IrPart::Text("hello".into())],
             },
         ],
-        tools: vec![IrTool::Function {
-            name: "one".into(),
-            description: "a".into(),
-            parameters: serde_json::json!({"type": "object"}),
-        }],
-        sampling: IrSampling::default(),
-    };
+    )
+    .with_tools(vec![IrTool::Function {
+        name: "one".into(),
+        description: "a".into(),
+        parameters: serde_json::json!({"type": "object"}),
+    }]);
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(count_cache_control(&body), 0, "got {body}");
@@ -1809,21 +1782,19 @@ fn cache_disabled_no_cache_control_blocks() {
 
 #[test]
 fn cache_retention_none_skips_cache_control() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![IrItem::System {
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![IrItem::System {
             text: "rules".into(),
         }],
-        tools: vec![],
-        sampling: IrSampling {
-            cache: IrCache {
-                enabled: true,
-                retention: Some("none".into()),
-                ..Default::default()
-            },
-            ..IrSampling::default()
-        },
-    };
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache {
+            enabled: true,
+            retention: Some("none".into()),
+            ..Default::default()
+        };
+    }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(count_cache_control(&body), 0, "retention=none, got {body}");
@@ -1852,19 +1823,13 @@ fn multi_fragment_system_stays_at_or_under_cache_control_limit() {
     items.push(IrItem::User {
         parts: vec![IrPart::Text("do the work".into())],
     });
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items,
-        tools: vec![],
-        sampling: IrSampling {
-            cache: IrCache {
-                enabled: true,
-                retention: Some("1h".into()),
-                ..Default::default()
-            },
-            ..IrSampling::default()
-        },
-    };
+    let ir = IrRequest::new("claude-opus-4-6", items).with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache {
+            enabled: true,
+            retention: Some("1h".into()),
+            ..Default::default()
+        };
+    }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let system = body
@@ -1906,9 +1871,9 @@ fn multi_fragment_system_stays_at_or_under_cache_control_limit() {
 
 #[test]
 fn multi_fragment_long_ttl_with_tools_tags_first_system_not_last() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![
             IrItem::System {
                 text: "You are a coding agent.".into(),
             },
@@ -1919,27 +1884,26 @@ fn multi_fragment_long_ttl_with_tools_tags_first_system_not_last() {
                 parts: vec![IrPart::Text("continue the work".into())],
             },
         ],
-        tools: vec![
-            IrTool::Function {
-                name: "one".into(),
-                description: "a".into(),
-                parameters: serde_json::json!({"type": "object"}),
-            },
-            IrTool::Function {
-                name: "two".into(),
-                description: "b".into(),
-                parameters: serde_json::json!({"type": "object"}),
-            },
-        ],
-        sampling: IrSampling {
-            cache: IrCache {
-                enabled: true,
-                retention: Some("1h".into()),
-                ..Default::default()
-            },
-            ..IrSampling::default()
+    )
+    .with_tools(vec![
+        IrTool::Function {
+            name: "one".into(),
+            description: "a".into(),
+            parameters: serde_json::json!({"type": "object"}),
         },
-    };
+        IrTool::Function {
+            name: "two".into(),
+            description: "b".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        },
+    ])
+    .with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache {
+            enabled: true,
+            retention: Some("1h".into()),
+            ..Default::default()
+        };
+    }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let tools = body.get("tools").and_then(Value::as_array).expect("tools");
@@ -1964,9 +1928,9 @@ fn multi_fragment_long_ttl_with_tools_tags_first_system_not_last() {
 
 #[test]
 fn short_ttl_multi_system_tags_last_system_and_first_user() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![
             IrItem::System {
                 text: "static".into(),
             },
@@ -1977,16 +1941,14 @@ fn short_ttl_multi_system_tags_last_system_and_first_user() {
                 parts: vec![IrPart::Text("hello".into())],
             },
         ],
-        tools: vec![],
-        sampling: IrSampling {
-            cache: IrCache {
-                enabled: true,
-                retention: None,
-                ..Default::default()
-            },
-            ..IrSampling::default()
-        },
-    };
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache {
+            enabled: true,
+            retention: None,
+            ..Default::default()
+        };
+    }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -2051,24 +2013,22 @@ fn encode_after_decode_strips_six_cache_markers_to_preferred_pair() {
 }
 
 fn cached_messages_ir(text: &str, floor: Option<u32>) -> IrRequest {
-    IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![
+    IrRequest::new(
+        "claude-opus-4-6",
+        vec![
             IrItem::System { text: text.into() },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
             },
         ],
-        tools: vec![],
-        sampling: IrSampling {
-            cache: IrCache {
-                enabled: true,
-                retention: None,
-                min_cacheable_tokens: floor,
-            },
-            ..IrSampling::default()
-        },
-    }
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache {
+            enabled: true,
+            retention: None,
+            min_cacheable_tokens: floor,
+        };
+    }))
 }
 
 #[test]
@@ -2111,9 +2071,9 @@ fn min_cacheable_tokens_zero_does_not_skip() {
 
 #[test]
 fn long_developer_at_min_cacheable_tokens_still_tags() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![
             IrItem::Developer {
                 text: "x".repeat(5000),
             },
@@ -2121,16 +2081,14 @@ fn long_developer_at_min_cacheable_tokens_still_tags() {
                 parts: vec![IrPart::Text("hello".into())],
             },
         ],
-        tools: vec![],
-        sampling: IrSampling {
-            cache: IrCache {
-                enabled: true,
-                retention: None,
-                min_cacheable_tokens: Some(1024),
-            },
-            ..IrSampling::default()
-        },
-    };
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache {
+            enabled: true,
+            retention: None,
+            min_cacheable_tokens: Some(1024),
+        };
+    }));
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -2159,9 +2117,9 @@ fn long_developer_at_min_cacheable_tokens_still_tags() {
 
 #[test]
 fn large_function_output_at_min_cacheable_tokens_still_tags() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![
             IrItem::System {
                 text: "rules".into(),
             },
@@ -2170,16 +2128,14 @@ fn large_function_output_at_min_cacheable_tokens_still_tags() {
                 output: "x".repeat(5000),
             },
         ],
-        tools: vec![],
-        sampling: IrSampling {
-            cache: IrCache {
-                enabled: true,
-                retention: None,
-                min_cacheable_tokens: Some(1024),
-            },
-            ..IrSampling::default()
-        },
-    };
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache {
+            enabled: true,
+            retention: None,
+            min_cacheable_tokens: Some(1024),
+        };
+    }));
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -2200,14 +2156,13 @@ fn large_function_output_at_min_cacheable_tokens_still_tags() {
 }
 
 fn user_ir(sampling: IrSampling) -> IrRequest {
-    IrRequest {
-        model: "gpt-4".into(),
-        items: vec![IrItem::User {
+    IrRequest::new(
+        "gpt-4",
+        vec![IrItem::User {
             parts: vec![IrPart::Text("hi".into())],
         }],
-        tools: vec![],
-        sampling,
-    }
+    )
+    .with_sampling(sampling)
 }
 
 fn loss_dropped(report: &LossReport, path: &str) -> bool {
@@ -2226,10 +2181,9 @@ fn loss_degraded(report: &LossReport, path: &str) -> bool {
 
 #[test]
 fn chat_encode_emits_reasoning_effort_when_set() {
-    let ir = user_ir(IrSampling {
-        reasoning_effort: Some("high".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.reasoning_effort = Some("high".into());
+    }));
     let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2317,10 +2271,9 @@ fn chat_decode_empty_reasoning_effort_is_unset() {
 
 #[test]
 fn chat_drops_max_reasoning_tokens() {
-    let ir = user_ir(IrSampling {
-        max_reasoning_tokens: Some(2048),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.max_reasoning_tokens = Some(2048);
+    }));
     let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -2335,10 +2288,9 @@ fn chat_drops_max_reasoning_tokens() {
 
 #[test]
 fn responses_encode_drops_max_reasoning_tokens() {
-    let ir = user_ir(IrSampling {
-        max_reasoning_tokens: Some(2048),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.max_reasoning_tokens = Some(2048);
+    }));
     let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -2353,10 +2305,9 @@ fn responses_encode_drops_max_reasoning_tokens() {
 
 #[test]
 fn responses_encode_folds_effort_into_reasoning() {
-    let ir = user_ir(IrSampling {
-        reasoning_effort: Some("high".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.reasoning_effort = Some("high".into());
+    }));
     let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2385,10 +2336,9 @@ fn responses_encode_does_not_invent_reasoning_object_when_unset() {
 #[test]
 fn responses_encode_does_not_invent_reasoning_for_empty_effort() {
     for effort in ["", "  \t"] {
-        let ir = user_ir(IrSampling {
-            reasoning_effort: Some(effort.into()),
-            ..IrSampling::default()
-        });
+        let ir = user_ir(IrSampling::patch(|s| {
+            s.reasoning_effort = Some(effort.into());
+        }));
         let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
         let body: Value = serde_json::from_slice(&bytes).expect("json");
         assert!(
@@ -2400,10 +2350,9 @@ fn responses_encode_does_not_invent_reasoning_for_empty_effort() {
 
 #[test]
 fn responses_encode_include_thoughts_as_reasoning_summary_auto() {
-    let ir = user_ir(IrSampling {
-        include_thoughts: Some(true),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include_thoughts = Some(true);
+    }));
     let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2425,11 +2374,10 @@ fn responses_encode_include_thoughts_as_reasoning_summary_auto() {
 
 #[test]
 fn responses_encode_merges_summary_into_existing_reasoning() {
-    let ir = user_ir(IrSampling {
-        include_thoughts: Some(true),
-        reasoning_effort: Some("high".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include_thoughts = Some(true);
+        s.reasoning_effort = Some("high".into());
+    }));
     let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2450,11 +2398,10 @@ fn responses_encode_merges_summary_into_existing_reasoning() {
 
 #[test]
 fn responses_encode_false_include_thoughts_does_not_invent_summary() {
-    let ir = user_ir(IrSampling {
-        include_thoughts: Some(false),
-        reasoning_effort: Some("high".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include_thoughts = Some(false);
+        s.reasoning_effort = Some("high".into());
+    }));
     let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2517,12 +2464,11 @@ fn responses_decode_empty_reasoning_summary_leaves_include_thoughts_unset() {
 
 #[test]
 fn messages_encode_emits_thinking_from_include_thoughts_and_budget() {
-    let ir = user_ir(IrSampling {
-        include_thoughts: Some(true),
-        max_reasoning_tokens: Some(2048),
-        reasoning_effort: Some("high".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include_thoughts = Some(true);
+        s.max_reasoning_tokens = Some(2048);
+        s.reasoning_effort = Some("high".into());
+    }));
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2551,10 +2497,9 @@ fn messages_encode_emits_thinking_from_include_thoughts_and_budget() {
 
 #[test]
 fn messages_encode_effort_high_maps_to_thinking_budget() {
-    let ir = user_ir(IrSampling {
-        reasoning_effort: Some("high".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.reasoning_effort = Some("high".into());
+    }));
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2575,12 +2520,11 @@ fn messages_encode_effort_high_maps_to_thinking_budget() {
 
 #[test]
 fn messages_encode_disables_thinking_when_include_thoughts_false() {
-    let ir = user_ir(IrSampling {
-        include_thoughts: Some(false),
-        reasoning_effort: Some("high".into()),
-        max_reasoning_tokens: Some(2048),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include_thoughts = Some(false);
+        s.reasoning_effort = Some("high".into());
+        s.max_reasoning_tokens = Some(2048);
+    }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2596,12 +2540,11 @@ fn messages_encode_disables_thinking_when_include_thoughts_false() {
 
 #[test]
 fn messages_encode_raises_max_tokens_above_budget() {
-    let ir = user_ir(IrSampling {
-        include_thoughts: Some(true),
-        max_reasoning_tokens: Some(2048),
-        max_tokens: Some(100),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include_thoughts = Some(true);
+        s.max_reasoning_tokens = Some(2048);
+        s.max_tokens = Some(100);
+    }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2643,10 +2586,9 @@ fn messages_encode_does_not_invent_thinking_when_unset() {
 #[test]
 fn messages_encode_empty_effort_does_not_invent_thinking() {
     for effort in ["", "  \t"] {
-        let ir = user_ir(IrSampling {
-            reasoning_effort: Some(effort.into()),
-            ..IrSampling::default()
-        });
+        let ir = user_ir(IrSampling::patch(|s| {
+            s.reasoning_effort = Some(effort.into());
+        }));
         let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
         let body: Value = serde_json::from_slice(&bytes).expect("json");
         assert!(
@@ -2658,10 +2600,9 @@ fn messages_encode_empty_effort_does_not_invent_thinking() {
 
 #[test]
 fn messages_encode_thinking_budget_wins_when_max_reasoning_unset() {
-    let ir = user_ir(IrSampling {
-        thinking_budget: Some(24576),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.thinking_budget = Some(24576);
+    }));
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2682,11 +2623,10 @@ fn messages_encode_thinking_budget_wins_when_max_reasoning_unset() {
 
 #[test]
 fn messages_encode_keeps_explicit_thinking_budget_zero() {
-    let ir = user_ir(IrSampling {
-        include_thoughts: Some(true),
-        max_reasoning_tokens: Some(0),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include_thoughts = Some(true);
+        s.max_reasoning_tokens = Some(0);
+    }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2703,11 +2643,10 @@ fn messages_encode_keeps_explicit_thinking_budget_zero() {
 
 #[test]
 fn messages_encode_thinking_budget_zero_wins_when_max_reasoning_unset() {
-    let ir = user_ir(IrSampling {
-        include_thoughts: Some(true),
-        thinking_budget: Some(0),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include_thoughts = Some(true);
+        s.thinking_budget = Some(0);
+    }));
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2819,13 +2758,12 @@ fn messages_thinking_round_trips() {
 
 #[test]
 fn gemini_thinking_config_survives_reasoning_sampling_fields() {
-    let ir = user_ir(IrSampling {
-        include_thoughts: Some(true),
-        thinking_budget: Some(24576),
-        reasoning_effort: Some("high".into()),
-        max_reasoning_tokens: Some(1024),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include_thoughts = Some(true);
+        s.thinking_budget = Some(24576);
+        s.reasoning_effort = Some("high".into());
+        s.max_reasoning_tokens = Some(1024);
+    }));
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let tc = body
@@ -2859,10 +2797,9 @@ fn gemini_thinking_config_survives_reasoning_sampling_fields() {
 
 #[test]
 fn gemini_encode_effort_as_thinking_level() {
-    let ir = user_ir(IrSampling {
-        reasoning_effort: Some("high".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.reasoning_effort = Some("high".into());
+    }));
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2888,10 +2825,9 @@ fn gemini_encode_effort_as_thinking_level() {
 
 #[test]
 fn gemini_encode_thinking_level_is_lowercase() {
-    let ir = user_ir(IrSampling {
-        reasoning_effort: Some("MEDIUM".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.reasoning_effort = Some("MEDIUM".into());
+    }));
     let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -2905,10 +2841,9 @@ fn gemini_encode_thinking_level_is_lowercase() {
 #[test]
 fn gemini_encode_xhigh_effort_degrades_to_high() {
     for effort in ["xhigh", "x-high", "XHIGH", "X-High"] {
-        let ir = user_ir(IrSampling {
-            reasoning_effort: Some(effort.into()),
-            ..IrSampling::default()
-        });
+        let ir = user_ir(IrSampling::patch(|s| {
+            s.reasoning_effort = Some(effort.into());
+        }));
         let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
         let body: Value = serde_json::from_slice(&bytes).expect("json");
         assert_eq!(
@@ -2932,10 +2867,9 @@ fn gemini_encode_xhigh_effort_degrades_to_high() {
 #[test]
 fn gemini_encode_empty_effort_does_not_invent_thinking_level() {
     for effort in ["", "  \t"] {
-        let ir = user_ir(IrSampling {
-            reasoning_effort: Some(effort.into()),
-            ..IrSampling::default()
-        });
+        let ir = user_ir(IrSampling::patch(|s| {
+            s.reasoning_effort = Some(effort.into());
+        }));
         let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
         let body: Value = serde_json::from_slice(&bytes).expect("json");
         assert!(
@@ -2999,11 +2933,10 @@ fn gemini_thinking_budget_from_messages_max_reasoning_tokens() {
 
 #[test]
 fn gemini_thinking_budget_zero_from_max_reasoning_tokens() {
-    let ir = user_ir(IrSampling {
-        include_thoughts: Some(true),
-        max_reasoning_tokens: Some(0),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include_thoughts = Some(true);
+        s.max_reasoning_tokens = Some(0);
+    }));
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -3028,11 +2961,10 @@ fn gemini_thinking_budget_zero_from_max_reasoning_tokens() {
 
 #[test]
 fn gemini_thinking_ir_drops_on_chat() {
-    let ir = user_ir(IrSampling {
-        include_thoughts: Some(true),
-        thinking_budget: Some(24576),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include_thoughts = Some(true);
+        s.thinking_budget = Some(24576);
+    }));
     let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -3063,10 +2995,9 @@ fn gemini_thinking_ir_drops_on_chat() {
 
 #[test]
 fn chat_required_tool_choice_maps_on_gemini() {
-    let ir = user_ir(IrSampling {
-        tool_choice: IrToolChoice::Required,
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.tool_choice = IrToolChoice::Required;
+    }));
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -3087,10 +3018,9 @@ fn chat_required_tool_choice_maps_on_gemini() {
 
 #[test]
 fn gemini_none_tool_choice_encodes() {
-    let ir = user_ir(IrSampling {
-        tool_choice: IrToolChoice::None,
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.tool_choice = IrToolChoice::None;
+    }));
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -3112,10 +3042,9 @@ fn gemini_none_tool_choice_encodes() {
 
 #[test]
 fn gemini_named_tool_choice_encodes() {
-    let ir = user_ir(IrSampling {
-        tool_choice: IrToolChoice::Named("lookup".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.tool_choice = IrToolChoice::Named("lookup".into());
+    }));
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -3198,9 +3127,9 @@ fn gemini_tool_choice_round_trips() {
 
 #[test]
 fn chat_grouped_function_call_records_thought_signature_drop() {
-    let ir = IrRequest {
-        model: "gpt-4".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "gpt-4",
+        vec![
             IrItem::Assistant {
                 parts: vec![IrPart::Text("calling".into())],
             },
@@ -3211,9 +3140,7 @@ fn chat_grouped_function_call_records_thought_signature_drop() {
                 thought_signature: Some("sig_grouped".into()),
             },
         ],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (_, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
     assert!(
         report.events.iter().any(|event| {
@@ -3226,9 +3153,9 @@ fn chat_grouped_function_call_records_thought_signature_drop() {
 
 #[test]
 fn chat_standalone_function_calls_encode_one_tool_calls_message() {
-    let ir = IrRequest {
-        model: "gpt-4".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "gpt-4",
+        vec![
             IrItem::FunctionCall {
                 call_id: "call_1".into(),
                 name: "lookup".into(),
@@ -3242,9 +3169,7 @@ fn chat_standalone_function_calls_encode_one_tool_calls_message() {
                 thought_signature: None,
             },
         ],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let messages = body
@@ -3284,17 +3209,15 @@ fn chat_standalone_function_calls_encode_one_tool_calls_message() {
 
 #[test]
 fn gemini_encode_does_not_invent_empty_function_call_args() {
-    let ir = IrRequest {
-        model: "gemini-2.5-flash".into(),
-        items: vec![IrItem::FunctionCall {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::FunctionCall {
             call_id: "lookup".into(),
             name: "lookup".into(),
             arguments: "not-json".into(),
             thought_signature: None,
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let args = body.pointer("/contents/0/parts/0/functionCall/args");
@@ -3312,9 +3235,9 @@ fn gemini_encode_does_not_invent_empty_function_call_args() {
 
 #[test]
 fn messages_sanitizes_gemini_shaped_tool_use_id() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![
             IrItem::FunctionCall {
                 call_id: "lookup.v2".into(),
                 name: "lookup.v2".into(),
@@ -3326,9 +3249,7 @@ fn messages_sanitizes_gemini_shaped_tool_use_id() {
                 output: "ok".into(),
             },
         ],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -3441,11 +3362,10 @@ fn responses_json_schema_round_trips() {
 
 #[test]
 fn chat_json_schema_without_name_is_dropped() {
-    let ir = user_ir(IrSampling {
-        json_schema: Some(serde_json::json!({"type": "object"})),
-        json_schema_name: None,
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.json_schema = Some(serde_json::json!({"type": "object"}));
+        s.json_schema_name = None;
+    }));
     let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -3457,11 +3377,10 @@ fn chat_json_schema_without_name_is_dropped() {
         "nameless json_schema must Drop, got {report:?}"
     );
 
-    let ir = user_ir(IrSampling {
-        json_schema: Some(serde_json::json!(["not", "object"])),
-        json_schema_name: Some("answer".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.json_schema = Some(serde_json::json!(["not", "object"]));
+        s.json_schema_name = Some("answer".into());
+    }));
     let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -3476,11 +3395,10 @@ fn chat_json_schema_without_name_is_dropped() {
 
 #[test]
 fn responses_json_schema_without_name_is_dropped() {
-    let ir = user_ir(IrSampling {
-        json_schema: Some(serde_json::json!({"type": "object"})),
-        json_schema_name: None,
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.json_schema = Some(serde_json::json!({"type": "object"}));
+        s.json_schema_name = None;
+    }));
     let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -3492,11 +3410,10 @@ fn responses_json_schema_without_name_is_dropped() {
         "nameless json_schema must Drop, got {report:?}"
     );
 
-    let ir = user_ir(IrSampling {
-        json_schema: Some(serde_json::json!("not-object")),
-        json_schema_name: Some("answer".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.json_schema = Some(serde_json::json!("not-object"));
+        s.json_schema_name = Some("answer".into());
+    }));
     let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -3511,11 +3428,10 @@ fn responses_json_schema_without_name_is_dropped() {
 
 #[test]
 fn messages_json_schema_is_dropped() {
-    let ir = user_ir(IrSampling {
-        json_schema: Some(serde_json::json!({"type": "object"})),
-        json_schema_name: Some("answer".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.json_schema = Some(serde_json::json!({"type": "object"}));
+        s.json_schema_name = Some("answer".into());
+    }));
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -3568,13 +3484,11 @@ fn gemini_json_schema_round_trips() {
 
 #[test]
 fn gemini_nameless_json_schema_still_encodes() {
-    let ir = user_ir(IrSampling {
-        json_schema: Some(
-            serde_json::json!({"type": "object", "properties": {"n": {"type": "number"}}}),
-        ),
-        json_schema_name: None,
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.json_schema =
+            Some(serde_json::json!({"type": "object", "properties": {"n": {"type": "number"}}}));
+        s.json_schema_name = None;
+    }));
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -3590,11 +3504,10 @@ fn gemini_nameless_json_schema_still_encodes() {
 
 #[test]
 fn gemini_non_object_json_schema_is_dropped() {
-    let ir = user_ir(IrSampling {
-        json_schema: Some(serde_json::json!(["not", "object"])),
-        json_schema_name: Some("answer".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.json_schema = Some(serde_json::json!(["not", "object"]));
+        s.json_schema_name = Some("answer".into());
+    }));
     let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -3616,16 +3529,10 @@ fn gemini_non_object_json_schema_is_dropped() {
 }
 
 fn chat_sampling_ir(model: &str) -> IrRequest {
-    IrRequest {
-        model: model.into(),
-        items: vec![],
-        tools: vec![],
-        sampling: IrSampling {
-            max_tokens: Some(64),
-            temperature: Some(0.2),
-            ..IrSampling::default()
-        },
-    }
+    IrRequest::new(model, vec![]).with_sampling(IrSampling::patch(|s| {
+        s.max_tokens = Some(64);
+        s.temperature = Some(0.2);
+    }))
 }
 
 fn assert_chat_max_completion(model: &str) {
@@ -4051,14 +3958,12 @@ fn responses_include_extras_survive_remap() {
 
 #[test]
 fn responses_include_default_still_writes_encrypted_reasoning() {
-    let ir = IrRequest {
-        model: "gpt-5".into(),
-        items: vec![IrItem::User {
+    let ir = IrRequest::new(
+        "gpt-5",
+        vec![IrItem::User {
             parts: vec![IrPart::Text("hi".into())],
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     assert!(
         ir.sampling.include.is_empty(),
         "default include must be empty"
@@ -4074,10 +3979,9 @@ fn responses_include_default_still_writes_encrypted_reasoning() {
 
 #[test]
 fn sampling_include_drops_off_responses() {
-    let ir = user_ir(IrSampling {
-        include: vec!["file_search_call.results".into()],
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include = vec!["file_search_call.results".into()];
+    }));
     for (wire, profile) in [
         (Wire::ChatCompletions, chat_profile()),
         (Wire::Messages, messages_profile()),
@@ -4119,9 +4023,9 @@ fn messages_roles(body: &Value) -> Vec<(String, Option<String>)> {
 
 #[test]
 fn messages_encode_appends_continue_on_assistant_last() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![
             IrItem::User {
                 parts: vec![IrPart::Text("hi".into())],
             },
@@ -4129,9 +4033,7 @@ fn messages_encode_appends_continue_on_assistant_last() {
                 parts: vec![IrPart::Text("hello".into())],
             },
         ],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let roles = messages_roles(&body);
@@ -4145,17 +4047,15 @@ fn messages_encode_appends_continue_on_assistant_last() {
 
 #[test]
 fn messages_encode_appends_continue_on_function_call_last() {
-    let ir = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![IrItem::FunctionCall {
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![IrItem::FunctionCall {
             call_id: "call_1".into(),
             name: "lookup".into(),
             arguments: "{}".into(),
             thought_signature: None,
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let roles = messages_roles(&body);
@@ -4168,14 +4068,12 @@ fn messages_encode_appends_continue_on_function_call_last() {
 
 #[test]
 fn messages_encode_skips_continue_when_user_last_or_empty() {
-    let user_last = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![IrItem::User {
+    let user_last = IrRequest::new(
+        "claude-opus-4-6",
+        vec![IrItem::User {
             parts: vec![IrPart::Text("hi".into())],
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, _) = encode(Wire::Messages, &user_last, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let roles = messages_roles(&body);
@@ -4185,12 +4083,7 @@ fn messages_encode_skips_continue_when_user_last_or_empty() {
         "user-last must stay unchanged, got {body}"
     );
 
-    let empty = IrRequest {
-        model: "claude-opus-4-6".into(),
-        items: vec![],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    let empty = IrRequest::new("claude-opus-4-6", vec![]);
     let (bytes, _) = encode(Wire::Messages, &empty, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let messages = body
@@ -4202,9 +4095,9 @@ fn messages_encode_skips_continue_when_user_last_or_empty() {
 
 #[test]
 fn other_wires_do_not_append_continue_on_assistant_last() {
-    let ir = IrRequest {
-        model: "gpt-4".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "gpt-4",
+        vec![
             IrItem::User {
                 parts: vec![IrPart::Text("hi".into())],
             },
@@ -4212,9 +4105,7 @@ fn other_wires_do_not_append_continue_on_assistant_last() {
                 parts: vec![IrPart::Text("hello".into())],
             },
         ],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (chat_bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
     let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
     let chat_msgs = chat
@@ -4263,38 +4154,37 @@ fn other_wires_do_not_append_continue_on_assistant_last() {
 
 #[test]
 fn messages_encode_object_tool_schema_emits_required_array() {
-    let ir = IrRequest {
-        model: "grok-4".into(),
-        items: vec![IrItem::User {
+    let ir = IrRequest::new(
+        "grok-4",
+        vec![IrItem::User {
             parts: vec![IrPart::Text("hi".into())],
         }],
-        tools: vec![
-            IrTool::Function {
-                name: "lookup".into(),
-                description: "lookup".into(),
-                parameters: serde_json::json!({"type": "object", "properties": {}}),
-            },
-            IrTool::Function {
-                name: "null_required".into(),
-                description: "null required".into(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": null
-                }),
-            },
-            IrTool::Function {
-                name: "keep".into(),
-                description: "keep listed required".into(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {"q": {"type": "string"}},
-                    "required": ["q"]
-                }),
-            },
-        ],
-        sampling: IrSampling::default(),
-    };
+    )
+    .with_tools(vec![
+        IrTool::Function {
+            name: "lookup".into(),
+            description: "lookup".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        },
+        IrTool::Function {
+            name: "null_required".into(),
+            description: "null required".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": null
+            }),
+        },
+        IrTool::Function {
+            name: "keep".into(),
+            description: "keep listed required".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"]
+            }),
+        },
+    ]);
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let tools = body.get("tools").and_then(Value::as_array).expect("tools");
@@ -4329,17 +4219,15 @@ aws_region = "us-east-1"
 
 #[test]
 fn converse_encode_does_not_invent_empty_function_call_args() {
-    let ir = IrRequest {
-        model: "amazon.nova-lite-v1:0".into(),
-        items: vec![IrItem::FunctionCall {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::FunctionCall {
             call_id: "t1".into(),
             name: "lookup".into(),
             arguments: "not-json".into(),
             thought_signature: None,
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let input = body.pointer("/messages/0/content/0/toolUse/input");
@@ -4424,12 +4312,10 @@ fn converse_round_trip_text_and_tool() {
 
 #[test]
 fn converse_encode_empty_messages_fails() {
-    let ir = IrRequest {
-        model: "amazon.nova-lite-v1:0".into(),
-        items: vec![IrItem::System { text: "sys".into() }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::System { text: "sys".into() }],
+    );
     let err = encode(Wire::Converse, &ir, &converse_profile())
         .expect_err("Converse encode must fail when messages would be empty");
     let msg = err.to_string();
@@ -4468,9 +4354,9 @@ fn converse_decode_tool_result_missing_id_fails() {
 
 #[test]
 fn converse_parallel_function_outputs_encode_one_user_message() {
-    let ir = IrRequest {
-        model: "amazon.nova-lite-v1:0".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![
             IrItem::FunctionOutput {
                 call_id: "t1".into(),
                 output: "one".into(),
@@ -4480,9 +4366,7 @@ fn converse_parallel_function_outputs_encode_one_user_message() {
                 output: "two".into(),
             },
         ],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let messages = body["messages"]
@@ -4591,9 +4475,9 @@ fn converse_decode_tool_result_json_round_trips_nonempty() {
 
 #[test]
 fn converse_whitespace_only_assistant_text_with_tool_use_omits_blank_text() {
-    let ir = IrRequest {
-        model: "amazon.nova-lite-v1:0".into(),
-        items: vec![
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![
             IrItem::Assistant {
                 parts: vec![IrPart::Text("  \n\t  ".into())],
             },
@@ -4604,9 +4488,7 @@ fn converse_whitespace_only_assistant_text_with_tool_use_omits_blank_text() {
                 thought_signature: None,
             },
         ],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let messages = body["messages"]
@@ -4636,15 +4518,13 @@ fn converse_whitespace_only_assistant_text_with_tool_use_omits_blank_text() {
 
 #[test]
 fn converse_empty_function_output_encodes_nonempty_tool_result_text() {
-    let ir = IrRequest {
-        model: "amazon.nova-lite-v1:0".into(),
-        items: vec![IrItem::FunctionOutput {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::FunctionOutput {
             call_id: "t1".into(),
             output: String::new(),
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    };
+    );
     let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let text = body
@@ -4788,16 +4668,15 @@ fn converse_reasoning_text_signature_round_trips() {
 #[test]
 fn converse_encode_drops_thinking_schema_and_parallel() {
     let schema = serde_json::json!({"type": "object"});
-    let ir = user_ir(IrSampling {
-        max_reasoning_tokens: Some(2048),
-        include_thoughts: Some(true),
-        reasoning_effort: Some("high".into()),
-        thinking_budget: Some(1024),
-        json_schema: Some(schema.clone()),
-        json_schema_name: Some("answer".into()),
-        parallel_tool_calls: Some(true),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.max_reasoning_tokens = Some(2048);
+        s.include_thoughts = Some(true);
+        s.reasoning_effort = Some("high".into());
+        s.thinking_budget = Some(1024);
+        s.json_schema = Some(schema.clone());
+        s.json_schema_name = Some("answer".into());
+        s.parallel_tool_calls = Some(true);
+    }));
     let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -4863,12 +4742,11 @@ fn converse_encode_drops_thinking_schema_and_parallel() {
 #[test]
 fn converse_encode_output_config_schema_and_effort() {
     let schema = serde_json::json!({"type": "object", "properties": {"ok": {"type": "boolean"}}});
-    let ir = user_ir(IrSampling {
-        json_schema: Some(schema.clone()),
-        json_schema_name: Some("answer".into()),
-        reasoning_effort: Some("high".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.json_schema = Some(schema.clone());
+        s.json_schema_name = Some("answer".into());
+        s.reasoning_effort = Some("high".into());
+    }));
     let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -4933,11 +4811,10 @@ fn converse_decode_reads_output_config_schema_and_effort() {
 
 #[test]
 fn converse_non_object_json_schema_is_dropped() {
-    let ir = user_ir(IrSampling {
-        json_schema: Some(serde_json::json!(["not", "object"])),
-        json_schema_name: Some("answer".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.json_schema = Some(serde_json::json!(["not", "object"]));
+        s.json_schema_name = Some("answer".into());
+    }));
     let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -4960,10 +4837,9 @@ fn converse_non_object_json_schema_is_dropped() {
 
 #[test]
 fn converse_encode_unknown_effort_is_dropped() {
-    let ir = user_ir(IrSampling {
-        reasoning_effort: Some("ultra".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.reasoning_effort = Some("ultra".into());
+    }));
     let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -4978,10 +4854,9 @@ fn converse_encode_unknown_effort_is_dropped() {
 
 #[test]
 fn converse_encode_service_tier_auto_degrades_to_default() {
-    let ir = user_ir(IrSampling {
-        service_tier: Some("auto".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.service_tier = Some("auto".into());
+    }));
     let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
@@ -5002,10 +4877,9 @@ fn converse_encode_service_tier_passthrough() {
         ("reserved", "reserved"),
         ("DEFAULT", "default"),
     ] {
-        let ir = user_ir(IrSampling {
-            service_tier: Some(input.into()),
-            ..IrSampling::default()
-        });
+        let ir = user_ir(IrSampling::patch(|s| {
+            s.service_tier = Some(input.into());
+        }));
         let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
         let body: Value = serde_json::from_slice(&bytes).expect("json");
         assert_eq!(
@@ -5023,10 +4897,9 @@ fn converse_encode_service_tier_passthrough() {
 
 #[test]
 fn converse_encode_unknown_service_tier_is_dropped() {
-    let ir = user_ir(IrSampling {
-        service_tier: Some("turbo".into()),
-        ..IrSampling::default()
-    });
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.service_tier = Some("turbo".into());
+    }));
     let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(
@@ -5060,10 +4933,9 @@ fn converse_decode_reads_service_tier() {
 #[test]
 fn converse_encode_x_high_effort_degrades_to_xhigh() {
     for effort in ["x-high", "X-High"] {
-        let ir = user_ir(IrSampling {
-            reasoning_effort: Some(effort.into()),
-            ..IrSampling::default()
-        });
+        let ir = user_ir(IrSampling::patch(|s| {
+            s.reasoning_effort = Some(effort.into());
+        }));
         let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
         let body: Value = serde_json::from_slice(&bytes).expect("json");
         assert_eq!(
@@ -5077,10 +4949,9 @@ fn converse_encode_x_high_effort_degrades_to_xhigh() {
         );
     }
     for effort in ["xhigh", "XHIGH"] {
-        let ir = user_ir(IrSampling {
-            reasoning_effort: Some(effort.into()),
-            ..IrSampling::default()
-        });
+        let ir = user_ir(IrSampling::patch(|s| {
+            s.reasoning_effort = Some(effort.into());
+        }));
         let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
         let body: Value = serde_json::from_slice(&bytes).expect("json");
         assert_eq!(
@@ -5098,21 +4969,20 @@ fn converse_encode_x_high_effort_degrades_to_xhigh() {
 
 #[test]
 fn converse_none_tool_choice_omits_tool_config() {
-    let ir = IrRequest {
-        model: "amazon.nova-lite-v1:0".into(),
-        items: vec![IrItem::User {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::User {
             parts: vec![IrPart::Text("hi".into())],
         }],
-        tools: vec![IrTool::Function {
-            name: "lookup".into(),
-            description: "d".into(),
-            parameters: serde_json::json!({"type": "object", "properties": {}}),
-        }],
-        sampling: IrSampling {
-            tool_choice: IrToolChoice::None,
-            ..IrSampling::default()
-        },
-    };
+    )
+    .with_tools(vec![IrTool::Function {
+        name: "lookup".into(),
+        description: "d".into(),
+        parameters: serde_json::json!({"type": "object", "properties": {}}),
+    }])
+    .with_sampling(IrSampling::patch(|s| {
+        s.tool_choice = IrToolChoice::None;
+    }));
     let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert!(

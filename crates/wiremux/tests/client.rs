@@ -10,8 +10,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use serde_json::json;
 use wiremux::{
-    ClientError, IrItem, IrPart, IrRequest, IrSampling, IrStreamEvent, WireClient,
-    parse_profile_str,
+    ClientError, IrItem, IrPart, IrRequest, IrStreamEvent, WireClient, parse_profile_str,
 };
 use wiremux_auth::{
     AnyTokenProvider, GcpTokenProvider, IsolatedHome, PlantCredentials, StaticToken,
@@ -22,14 +21,12 @@ const PLANTED_SK: &str = "sk-planted-secret73";
 const PLANTED_XAI: &str = "xai-planted-secret73";
 
 fn simple_ir(model: &str) -> IrRequest {
-    IrRequest {
-        model: model.to_string(),
-        items: vec![IrItem::User {
+    IrRequest::new(
+        model.to_string(),
+        vec![IrItem::User {
             parts: vec![IrPart::Text("hi".into())],
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    }
+    )
 }
 
 fn chat_profile(base: &str) -> wiremux::ResolvedProfile {
@@ -459,7 +456,7 @@ async fn send_chat_complete_tool_calls() {
     let args: String = events
         .iter()
         .filter_map(|ev| match ev {
-            IrStreamEvent::ToolCallArgDelta { delta } => Some(delta.as_str()),
+            IrStreamEvent::ToolCallArgDelta { delta, .. } => Some(delta.as_str()),
             _ => None,
         })
         .collect();

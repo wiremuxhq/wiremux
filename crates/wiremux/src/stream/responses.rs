@@ -20,6 +20,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
         "response.refusal.delta" => nonempty_delta(value, |text| IrStreamEvent::TextDelta { text }),
         "response.function_call_arguments.delta" => Ok(Some(IrStreamEvent::ToolCallArgDelta {
             delta: str_field(value, "delta").unwrap_or_default(),
+            index: output_index(value),
         })),
         "response.output_item.added" => match item_type(value) {
             Some("function_call") => {
@@ -30,6 +31,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                         .unwrap_or_default(),
                     name: str_field(item, "name").unwrap_or_default(),
                     thought_signature: None,
+                    index: output_index(value),
                 }))
             }
             Some("reasoning") => Ok(Some(decode_reasoning_item(name, value))),
@@ -112,6 +114,14 @@ fn terminal_finish_reason(name: &str, value: &Value) -> Option<String> {
     }
 }
 
+fn output_index(value: &Value) -> u32 {
+    value
+        .get("output_index")
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0)
+}
+
 fn item_type(value: &Value) -> Option<&str> {
     value
         .get("item")
@@ -171,11 +181,13 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "item": { "type": "reasoning", "signature": signature }
             }),
         ),
-        IrStreamEvent::ToolCallStart { id, name, .. } => (
+        IrStreamEvent::ToolCallStart {
+            id, name, index, ..
+        } => (
             "response.output_item.added",
             json!({
                 "type": "response.output_item.added",
-                "output_index": 0,
+                "output_index": index,
                 "item": {
                     "type": "function_call",
                     "id": id,
@@ -185,11 +197,11 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 }
             }),
         ),
-        IrStreamEvent::ToolCallArgDelta { delta } => (
+        IrStreamEvent::ToolCallArgDelta { delta, index } => (
             "response.function_call_arguments.delta",
             json!({
                 "type": "response.function_call_arguments.delta",
-                "output_index": 0,
+                "output_index": index,
                 "delta": delta
             }),
         ),

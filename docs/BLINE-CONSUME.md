@@ -78,6 +78,12 @@ logger, and `bline diagnose`. Those are not LLM wire.
 `IrRequest` is the LLM request. Do not grow a parallel Bline dialect
 map. A thin host-type shim is allowed only until Bline deletes
 `ChatRequest`. Do not `pub use wiremux::IrRequest as ChatRequest`.
+Public IR and error enums (`IrItem`, `IrPart`, `IrToolChoice`,
+`IrStreamEvent`, `LossAction`, `MapError`, `ClientError`) and the
+structs `IrRequest`, `IrSampling`, and `LossReport` are
+`#[non_exhaustive]`. Hosts build with `IrRequest::new(model, items)`
+and `IrSampling::default()` / `IrSampling::patch`.
+`IrStreamEvent::ToolCallStart` and `ToolCallArgDelta` carry `index`.
 
 `wiremux-auth` must not depend on `bline-types`. `AuthError` stays
 independent of `LlmError`.
