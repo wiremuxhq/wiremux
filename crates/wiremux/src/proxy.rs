@@ -529,9 +529,10 @@ async fn push_mapped_frames(
                         }
                         Err(err) => {
                             let _ = tx
-                                .send(Ok(Frame::data(Bytes::from(format!(
-                                    "encode stream: {err}\n"
-                                )))))
+                                .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
+                                    event: Some("error".into()),
+                                    data: format!("encode stream: {err}"),
+                                })))))
                                 .await;
                             return false;
                         }
@@ -540,9 +541,10 @@ async fn push_mapped_frames(
             }
             Err(err) => {
                 let _ = tx
-                    .send(Ok(Frame::data(Bytes::from(format!(
-                        "decode stream: {err}\n"
-                    )))))
+                    .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
+                        event: Some("error".into()),
+                        data: format!("decode stream: {err}"),
+                    })))))
                     .await;
                 return false;
             }
