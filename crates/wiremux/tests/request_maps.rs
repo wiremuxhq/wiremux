@@ -375,6 +375,20 @@ fn messages_and_gemini_drop_codex_cache_key_and_tier() {
         loss_dropped(&gem_report, "sampling.service_tier"),
         "Gemini service_tier drop missing, got {gem_report:?}"
     );
+    let (cv_bytes, cv_report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let cv: Value = serde_json::from_slice(&cv_bytes).expect("json");
+    assert!(
+        cv.get("prompt_cache_key").is_none() && cv.get("service_tier").is_none(),
+        "Converse must not invent Codex cache/tier, got {cv}"
+    );
+    assert!(
+        loss_dropped(&cv_report, "sampling.prompt_cache_key"),
+        "Converse prompt_cache_key drop missing, got {cv_report:?}"
+    );
+    assert!(
+        loss_dropped(&cv_report, "sampling.service_tier"),
+        "Converse service_tier drop missing, got {cv_report:?}"
+    );
 }
 
 #[test]
