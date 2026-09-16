@@ -155,6 +155,9 @@ pub fn provider_from_profile(
     if let Some(oauth) = profile.oauth.as_ref() {
         return provider_from_oauth(oauth);
     }
+    if let Some(provider) = gcp_from_profile(profile)? {
+        return Ok(provider);
+    }
     if !profile.access_env.is_empty() {
         return static_from_access_env(&profile.id, &profile.access_env);
     }
@@ -165,6 +168,22 @@ pub fn provider_from_profile(
         "profile `{}` has no [oauth] table",
         profile.id
     )))
+}
+
+fn gcp_from_profile(
+    profile: &ResolvedProfile,
+) -> Result<Option<crate::AnyTokenProvider>, AuthError> {
+    let Some(env_name) = profile.http.gcp_key_env.as_deref() else {
+        return Ok(None);
+    };
+    if env_name.is_empty() {
+        return Ok(None);
+    }
+    let path = match std::env::var(env_name) {
+        Ok(path) if !path.trim().is_empty() => path,
+        _ => return Ok(None),
+    };
+    Ok(Some(crate::GcpTokenProvider::from_key_file(path)?.into()))
 }
 
 fn static_from_access_env(

@@ -3,6 +3,7 @@
 mod chat;
 mod complete;
 mod converse;
+mod eventstream;
 mod gemini;
 mod messages;
 mod responses;
@@ -45,7 +46,46 @@ impl RawSse {
 #[cfg(feature = "proxy")]
 pub(crate) use chat::map_finish;
 pub use complete::{decode_response, encode_response};
+pub use eventstream::{
+    EventStreamReader, MAX_EVENTSTREAM_PENDING, encode_message as encode_eventstream_message,
+};
 pub use sse::{MAX_SSE_PENDING, SseFrameReader};
+
+/// Incremental frames from SSE or AWS Event Stream.
+pub enum UpstreamFrames {
+    /// `text/event-stream`.
+    Sse(SseFrameReader),
+    /// `application/vnd.amazon.eventstream`.
+    Event(EventStreamReader),
+}
+
+impl UpstreamFrames {
+    /// Event Stream for Converse; SSE otherwise.
+    #[must_use]
+    pub fn for_wire(wire: Wire) -> Self {
+        if matches!(wire, Wire::Converse) {
+            Self::Event(EventStreamReader::new())
+        } else {
+            Self::Sse(SseFrameReader::new())
+        }
+    }
+
+    /// Append bytes and emit complete frames.
+    pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<RawSse>, String> {
+        match self {
+            Self::Sse(r) => r.feed(bytes),
+            Self::Event(r) => r.feed(bytes),
+        }
+    }
+
+    /// Trailing SSE frame, if any.
+    pub fn drain(&mut self) -> Option<RawSse> {
+        match self {
+            Self::Sse(r) => r.drain(),
+            Self::Event(r) => r.drain(),
+        }
+    }
+}
 #[cfg(feature = "proxy")]
 pub(crate) use usage::from_chat;
 

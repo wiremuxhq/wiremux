@@ -22,7 +22,7 @@ use crate::headers::apply_profile_headers;
 use crate::ir::{IrStreamEvent, LossReport};
 use crate::map::{decode, encode};
 use crate::stream::{
-    RawSse, SseFrameReader, ToolCallAssembler, decode_response, decode_stream_events,
+    RawSse, ToolCallAssembler, UpstreamFrames, decode_response, decode_stream_events,
     encode_response, encode_stream_event, event_has_slot, from_chat, map_finish,
 };
 use crate::upstream::upstream_url_for_model;
@@ -442,7 +442,7 @@ fn map_sse_stream(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(16);
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
-        let mut reader = SseFrameReader::new();
+        let mut reader = UpstreamFrames::for_wire(target);
         let mut assembler = ToolCallAssembler::new();
         while let Some(item) = stream.next().await {
             let bytes = match item {

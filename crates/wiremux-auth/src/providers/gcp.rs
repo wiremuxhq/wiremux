@@ -435,4 +435,56 @@ c+5RXVheoFNjzJpbLyOIeEEttw==
         );
         assert_eq!(handle.join().expect("join"), 3);
     }
+
+    #[tokio::test]
+    async fn provider_from_profile_uses_gcp_key_file() {
+        use crate::{IsolatedHome, parse_profile_str, provider_from_profile};
+
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"ya29.from-file","expires_in":3600,"token_type":"Bearer"}"#,
+        );
+        let home = IsolatedHome::new();
+        let key_path = home.path().join("sa.json");
+        std::fs::write(&key_path, test_key_json(&url)).expect("write key");
+        home.set_env(
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            key_path.to_str().expect("utf8"),
+        );
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "google-vertex"
+wire = "gemini"
+gcp_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
+access_env = ["GOOGLE_OAUTH_ACCESS_TOKEN"]
+"#,
+        )
+        .expect("parse");
+        let provider = provider_from_profile(&profile).expect("gcp");
+        assert_eq!(provider.get_token().await.expect("token"), "ya29.from-file");
+        handle.join().expect("join");
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn provider_from_profile_gcp_falls_back_to_access_env() {
+        use crate::{IsolatedHome, parse_profile_str, provider_from_profile};
+
+        let home = IsolatedHome::new();
+        home.set_env("GOOGLE_OAUTH_ACCESS_TOKEN", "ya29.bearer");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "google-vertex"
+wire = "gemini"
+gcp_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
+access_env = ["GOOGLE_OAUTH_ACCESS_TOKEN"]
+"#,
+        )
+        .expect("parse");
+        let provider = provider_from_profile(&profile).expect("bearer");
+        assert_eq!(provider.get_token().await.expect("token"), "ya29.bearer");
+        let _ = home;
+    }
 }

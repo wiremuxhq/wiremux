@@ -43,6 +43,7 @@ pub(crate) fn merge(earlier: RawProfile, later: RawProfile) -> RawProfile {
         header_merge,
         aws_service: later.aws_service.or(earlier.aws_service),
         aws_region: later.aws_region.or(earlier.aws_region),
+        gcp_key_env: later.gcp_key_env.or(earlier.gcp_key_env),
         access_env: later.access_env.or(earlier.access_env),
         oauth: merge_oauth(earlier.oauth, later.oauth),
         fingerprint: merge_fingerprint(earlier.fingerprint, later.fingerprint),

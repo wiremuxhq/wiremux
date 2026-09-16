@@ -754,6 +754,32 @@ base_url = "https://generativelanguage.googleapis.com"
     }
 
     #[test]
+    fn converse_stream_url_uses_converse_stream() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "amazon-bedrock"
+wire = "converse"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+chat_path = "/model/{model}/converse"
+"#,
+        )
+        .expect("parse");
+        let url =
+            upstream_url_for_model(&profile, Some("amazon.nova-lite-v1:0"), false).expect("url");
+        assert!(
+            url.ends_with("/model/amazon.nova-lite-v1:0/converse"),
+            "{url}"
+        );
+        let stream =
+            upstream_url_for_model(&profile, Some("amazon.nova-lite-v1:0"), true).expect("stream");
+        assert!(
+            stream.ends_with("/model/amazon.nova-lite-v1:0/converse-stream"),
+            "{stream}"
+        );
+    }
+
+    #[test]
     fn parse_listen_rejects_wildcard() {
         assert!(parse_listen("0.0.0.0:0").is_err());
         let addr = parse_listen("127.0.0.1:0").expect("loopback ephemeral listen");

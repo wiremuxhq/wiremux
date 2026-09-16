@@ -133,6 +133,8 @@ pub(crate) struct RawProfile {
     pub(crate) aws_service: Option<String>,
     #[serde(default, alias = "awsRegion")]
     pub(crate) aws_region: Option<String>,
+    #[serde(default, alias = "gcpKeyEnv")]
+    pub(crate) gcp_key_env: Option<String>,
     #[serde(default, alias = "accessEnv")]
     pub(crate) access_env: Option<RawAccessEnv>,
     #[serde(default)]
@@ -341,6 +343,7 @@ pub(crate) fn resolve(raw: RawProfile) -> Result<ResolvedProfile, ProfileError> 
             header_merge: raw.header_merge.unwrap_or_default(),
             aws_service: raw.aws_service.filter(|s| !s.is_empty()),
             aws_region: raw.aws_region.filter(|s| !s.is_empty()),
+            gcp_key_env: raw.gcp_key_env.filter(|s| !s.is_empty()),
         },
         oauth,
         access_env: resolve_access_env(raw.access_env),
