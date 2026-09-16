@@ -270,7 +270,7 @@ pub(super) fn encode(
     if let Some(system) = system {
         body["system"] = system;
     }
-    encode_sampling(ir, &mut body);
+    encode_sampling(ir, &mut body, report);
     if !prepared.is_empty() {
         let tools: Vec<Value> = prepared.iter().filter_map(encode_tool).collect();
         if !tools.is_empty() {
@@ -466,7 +466,7 @@ fn encode_tool(tool: &PreparedTool) -> Option<Value> {
     }
 }
 
-fn encode_sampling(ir: &IrRequest, body: &mut Value) {
+fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     let s = &ir.sampling;
     let mut cfg = serde_json::Map::new();
     if let Some(n) = s.max_tokens {
@@ -483,6 +483,21 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value) {
     }
     if !cfg.is_empty() {
         body["inferenceConfig"] = Value::Object(cfg);
+    }
+    if s.store.is_some() {
+        report.record("sampling.store", LossAction::Drop, "no slot");
+    }
+    if s.prompt_cache_key.is_some() {
+        report.record("sampling.prompt_cache_key", LossAction::Drop, "no slot");
+    }
+    if s.service_tier.is_some() {
+        report.record("sampling.service_tier", LossAction::Drop, "no slot");
+    }
+    if s.previous_response_id.is_some() {
+        report.record("sampling.previous_response_id", LossAction::Drop, "no slot");
+    }
+    if s.cache.enabled {
+        report.record("sampling.cache", LossAction::Drop, "no slot");
     }
 }
 
