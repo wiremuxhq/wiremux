@@ -214,19 +214,20 @@ fn draft_for(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestError> {
         return Err(vendor_err(&vendor.id, reason));
     }
     if vendor.id == "azure" || vendor.id == "azure-cognitive-services" {
-        return Ok(azure_draft(vendor));
+        return azure_draft(vendor);
     }
     if vendor.id == "google-vertex" {
-        return Ok(vertex_gemini_draft(vendor));
+        return vertex_gemini_draft(vendor);
     }
     if vendor.id == "google-vertex-anthropic" {
-        return Ok(vertex_anthropic_draft(vendor));
+        return vertex_anthropic_draft(vendor);
     }
     if vendor.id == "amazon-bedrock" {
         return Ok(bedrock_draft(vendor));
     }
     let wire = emit_wire(vendor)?;
     let (base_url, chat_path) = endpoint_for(vendor, wire)?;
+    let access_env = drop_url_placeholder_env(&vendor.env, &base_url, &chat_path);
     let auth_scheme = if wire == EmitWire::Messages && vendor.api.is_some() {
         "bearer"
     } else {
@@ -237,7 +238,7 @@ fn draft_for(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestError> {
         base_url,
         chat_path,
         auth_scheme,
-        access_env: vendor.env.clone(),
+        access_env,
         headers: Vec::new(),
         extra_body: Vec::new(),
         aws_service: None,
@@ -245,20 +246,19 @@ fn draft_for(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestError> {
     })
 }
 
-fn azure_draft(vendor: &CatalogVendor) -> ProfileDraft {
+fn azure_draft(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestError> {
     let resource = vendor
         .env
         .iter()
         .find(|n| n.contains("RESOURCE_NAME"))
-        .map(String::as_str)
-        .unwrap_or("AZURE_RESOURCE_NAME");
+        .ok_or_else(|| vendor_err(&vendor.id, "catalog env has no RESOURCE_NAME"))?;
     let key = vendor
         .env
         .iter()
         .find(|n| n.ends_with("API_KEY") || n.ends_with("_KEY"))
         .cloned()
         .unwrap_or_else(|| "AZURE_API_KEY".into());
-    ProfileDraft {
+    Ok(ProfileDraft {
         wire: EmitWire::ChatCompletions,
         base_url: format!("https://{{env:{resource}}}.openai.azure.com"),
         chat_path: "/openai/deployments/{model}/chat/completions?api-version=2024-10-21".into(),
@@ -268,11 +268,12 @@ fn azure_draft(vendor: &CatalogVendor) -> ProfileDraft {
         extra_body: Vec::new(),
         aws_service: None,
         aws_region: None,
-    }
+    })
 }
 
-fn vertex_gemini_draft(vendor: &CatalogVendor) -> ProfileDraft {
-    ProfileDraft {
+fn vertex_gemini_draft(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestError> {
+    require_vertex_project(vendor)?;
+    Ok(ProfileDraft {
         wire: EmitWire::Gemini,
         base_url: "https://{env:GOOGLE_VERTEX_LOCATION}-aiplatform.googleapis.com".into(),
         chat_path: "/v1/projects/{env:GOOGLE_VERTEX_PROJECT}/locations/{env:GOOGLE_VERTEX_LOCATION}/publishers/google/models/{model}:generateContent".into(),
@@ -282,11 +283,12 @@ fn vertex_gemini_draft(vendor: &CatalogVendor) -> ProfileDraft {
         extra_body: Vec::new(),
         aws_service: None,
         aws_region: None,
-    }
+    })
 }
 
-fn vertex_anthropic_draft(vendor: &CatalogVendor) -> ProfileDraft {
-    ProfileDraft {
+fn vertex_anthropic_draft(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestError> {
+    require_vertex_project(vendor)?;
+    Ok(ProfileDraft {
         wire: EmitWire::Messages,
         base_url: "https://{env:GOOGLE_VERTEX_LOCATION}-aiplatform.googleapis.com".into(),
         chat_path: "/v1/projects/{env:GOOGLE_VERTEX_PROJECT}/locations/{env:GOOGLE_VERTEX_LOCATION}/publishers/anthropic/models/{model}:rawPredict".into(),
@@ -296,7 +298,31 @@ fn vertex_anthropic_draft(vendor: &CatalogVendor) -> ProfileDraft {
         extra_body: vec![("anthropic_version".into(), "vertex-2023-10-16".into())],
         aws_service: None,
         aws_region: None,
+    })
+}
+
+fn require_vertex_project(vendor: &CatalogVendor) -> Result<(), IngestError> {
+    if vendor
+        .env
+        .iter()
+        .any(|n| n == "GOOGLE_VERTEX_PROJECT" || n.contains("PROJECT"))
+    {
+        Ok(())
+    } else {
+        Err(vendor_err(
+            &vendor.id,
+            "catalog env has no GOOGLE_VERTEX_PROJECT",
+        ))
     }
+}
+
+/// Token names only. Host/account placeholders stay in the URL.
+fn drop_url_placeholder_env(env: &[String], base_url: &str, chat_path: &str) -> Vec<String> {
+    let haystack = format!("{base_url}{chat_path}");
+    env.iter()
+        .filter(|name| !haystack.contains(&format!("{{env:{name}}}")))
+        .cloned()
+        .collect()
 }
 
 fn vertex_access_env(vendor: &CatalogVendor) -> Vec<String> {
@@ -417,7 +443,7 @@ fn wanted_ids(req: &IngestRequest, by_id: &BTreeMap<String, CatalogVendor>) -> V
     if req.all_compatible {
         return by_id
             .values()
-            .filter(|v| profile_toml(v).is_ok() && !skip_id(&v.id))
+            .filter(|v| openai_compat_row(v) && profile_toml(v).is_ok() && !skip_id(&v.id))
             .map(|v| v.id.clone())
             .collect();
     }
@@ -613,6 +639,19 @@ fn is_env_ident(s: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn openai_compat_row(vendor: &CatalogVendor) -> bool {
+    if vendor.id.starts_with("azure")
+        || vendor.id == "amazon-bedrock"
+        || vendor.id.starts_with("google-vertex")
+    {
+        return false;
+    }
+    match vendor.npm.as_deref() {
+        Some(npm) => openai_compat_npm(npm),
+        None => true,
+    }
 }
 
 fn openai_compat_npm(npm: &str) -> bool {
@@ -1212,5 +1251,97 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(fs::read_to_string(path).unwrap(), "stale");
+    }
+
+    #[test]
+    fn all_compatible_writes_openai_compat_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = ingest_catalog(
+            MODELS_DEV_FIXTURE,
+            &IngestRequest {
+                all_compatible: true,
+                dir: Some(dir.path().to_path_buf()),
+                ..IngestRequest::default()
+            },
+        )
+        .unwrap();
+        let wrote: Vec<String> = report
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                IngestAction::Wrote(p) => p.file_stem()?.to_str().map(str::to_string),
+                _ => None,
+            })
+            .collect();
+        assert!(wrote.contains(&"groq".into()), "groq missing: {wrote:?}");
+        assert!(dir.path().join("groq.toml").is_file());
+        assert!(!dir.path().join("azure.toml").exists());
+        assert!(!dir.path().join("amazon-bedrock.toml").exists());
+        assert!(!dir.path().join("google-vertex.toml").exists());
+        assert!(!dir.path().join("google-vertex-anthropic.toml").exists());
+        assert!(!wrote.iter().any(|id| id.starts_with("azure")));
+        assert!(!wrote.iter().any(|id| id == "amazon-bedrock"));
+        assert!(!wrote.iter().any(|id| id.starts_with("google-vertex")));
+    }
+
+    #[test]
+    fn explicit_vendor_azure_still_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        ingest_catalog(
+            MODELS_DEV_FIXTURE,
+            &IngestRequest {
+                vendors: vec!["azure".into()],
+                dir: Some(dir.path().to_path_buf()),
+                ..IngestRequest::default()
+            },
+        )
+        .unwrap();
+        assert!(dir.path().join("azure.toml").is_file());
+    }
+
+    #[test]
+    fn databricks_access_env_is_token_only() {
+        let rows = parse_catalog(CatalogKind::ModelsDev, MODELS_DEV_FIXTURE).unwrap();
+        let db = rows.iter().find(|r| r.id == "databricks").unwrap();
+        let toml = profile_toml(db).unwrap();
+        let access = toml
+            .lines()
+            .find(|l| l.starts_with("access_env"))
+            .expect("access_env");
+        assert!(access.contains("DATABRICKS_TOKEN"), "{access}");
+        assert!(
+            !access.contains("DATABRICKS_HOST"),
+            "host belongs in the URL, not access_env: {access}"
+        );
+        parse_profile_str(&toml).unwrap();
+    }
+
+    #[test]
+    fn azure_without_resource_name_fails() {
+        let v = CatalogVendor {
+            id: "azure".into(),
+            display_name: "Azure".into(),
+            api: None,
+            env: vec!["AZURE_API_KEY".into()],
+            npm: Some("@ai-sdk/azure".into()),
+        };
+        let err = profile_toml(&v).unwrap_err().to_string();
+        assert!(err.contains("RESOURCE_NAME"), "{err}");
+    }
+
+    #[test]
+    fn vertex_without_project_fails() {
+        let v = CatalogVendor {
+            id: "google-vertex".into(),
+            display_name: "Vertex".into(),
+            api: None,
+            env: vec!["GOOGLE_VERTEX_LOCATION".into()],
+            npm: Some("@ai-sdk/google-vertex".into()),
+        };
+        let err = profile_toml(&v).unwrap_err().to_string();
+        assert!(
+            err.contains("GOOGLE_VERTEX_PROJECT") || err.contains("PROJECT"),
+            "{err}"
+        );
     }
 }

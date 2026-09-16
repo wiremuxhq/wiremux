@@ -84,7 +84,7 @@ enum ProfileCommand {
         /// Catalog ids. Repeat. Default: groq, deepseek, togetherai, fireworks-ai, mistral, cerebras.
         #[arg(long = "vendor")]
         vendors: Vec<String>,
-        /// Every openai-compat row the catalog can resolve (still skips Azure/Bedrock/Copilot).
+        /// Every openai-compat row the catalog can resolve (skips Azure/Bedrock/Vertex/Copilot).
         #[arg(long)]
         all_compatible: bool,
         /// Destination directory (default: user overlay dir).
