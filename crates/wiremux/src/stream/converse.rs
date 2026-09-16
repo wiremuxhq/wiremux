@@ -101,7 +101,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
         })),
         IrStreamEvent::ToolCallEnd => Ok(json!({ "contentBlockStop": {} })),
         IrStreamEvent::FinishReason { reason } => Ok(json!({
-            "messageStop": { "stopReason": reason }
+            "messageStop": { "stopReason": finish_reason(reason) }
         })),
         IrStreamEvent::Usage {
             prompt_tokens,
@@ -273,5 +273,42 @@ fn finish_reason(reason: &str) -> &'static str {
         "stop_sequence" => "stop_sequence",
         "guardrail_intervened" => "guardrail_intervened",
         _ => "end_turn",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn converse_encode_finish_maps_chat_stop_and_tool_calls() {
+        let stop = encode(&IrStreamEvent::FinishReason {
+            reason: "stop".into(),
+        })
+        .expect("encode stop");
+        assert_eq!(
+            stop.pointer("/messageStop/stopReason")
+                .and_then(Value::as_str),
+            Some("end_turn"),
+            "Chat stop must become AWS end_turn, got {stop}"
+        );
+        let tools = encode(&IrStreamEvent::FinishReason {
+            reason: "tool_calls".into(),
+        })
+        .expect("encode tool_calls");
+        assert_eq!(
+            tools
+                .pointer("/messageStop/stopReason")
+                .and_then(Value::as_str),
+            Some("tool_use"),
+            "Chat tool_calls must become AWS tool_use, got {tools}"
+        );
+        let done = encode(&IrStreamEvent::Done).expect("encode done");
+        assert_eq!(
+            done.pointer("/messageStop/stopReason")
+                .and_then(Value::as_str),
+            Some("end_turn"),
+            "Done stays end_turn, got {done}"
+        );
     }
 }
