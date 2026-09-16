@@ -54,6 +54,10 @@ pub fn decode(wire: Wire, bytes: &[u8]) -> Result<(IrRequest, LossReport), MapEr
         Wire::Responses => responses::decode(&value),
         Wire::Gemini => gemini::decode(&value),
         Wire::Converse => converse::decode(&value),
+        _ => Err(MapError::Invalid(format!(
+            "unsupported wire `{}`",
+            wire.as_str()
+        ))),
     }
 }
 
@@ -73,6 +77,12 @@ pub fn encode(
         Wire::Responses => responses::encode(&ir, &prepared, profile, &mut report)?,
         Wire::Gemini => gemini::encode(&ir, &prepared, &mut report)?,
         Wire::Converse => converse::encode(&ir, &prepared, &mut report)?,
+        _ => {
+            return Err(MapError::Invalid(format!(
+                "unsupported wire `{}`",
+                wire.as_str()
+            )));
+        }
     };
     merge_extra_body(&mut body, profile);
     apply_forbidden_fields(&mut body, profile, &mut report)?;

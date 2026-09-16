@@ -78,7 +78,27 @@ pub struct Dialect {
 }
 
 /// v1 wire dialects. Not a host registry name.
+///
+/// New dialects may be added in a minor release. Hosts must include a
+/// `_` arm so an additive variant is not a compile break:
+///
+/// ```
+/// use wiremux_auth::Wire;
+///
+/// fn host_label(wire: Wire) -> &'static str {
+///     match wire {
+///         Wire::ChatCompletions => "chat-completions",
+///         Wire::Messages => "messages",
+///         Wire::Responses => "responses",
+///         Wire::Gemini => "gemini",
+///         Wire::Converse => "converse",
+///         _ => "unknown",
+///     }
+/// }
+/// assert_eq!(host_label(Wire::Messages), "messages");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 #[serde(rename_all = "kebab-case")]
 pub enum Wire {
     /// OpenAI Chat Completions.
@@ -103,7 +123,7 @@ impl Wire {
         "converse",
     ];
 
-    /// Catalog / file spelling (`messages`, `chat-completions`, `responses`, `gemini`).
+    /// Catalog / file spelling (`messages`, `chat-completions`, `responses`, `gemini`, `converse`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -799,6 +819,43 @@ mod tests {
         AuthScheme::parse(input)
             .expect_err("must reject")
             .to_string()
+    }
+
+    #[test]
+    #[allow(unreachable_patterns)] // non_exhaustive still lets this crate match all known variants
+    fn hosts_should_wildcard_unknown_wire_dialects() {
+        fn host_spelling(wire: Wire) -> &'static str {
+            match wire {
+                Wire::ChatCompletions => "chat-completions",
+                Wire::Messages => "messages",
+                Wire::Responses => "responses",
+                Wire::Gemini => "gemini",
+                Wire::Converse => "converse",
+                _ => "unknown",
+            }
+        }
+        assert_eq!(host_spelling(Wire::ChatCompletions), "chat-completions");
+        assert_eq!(host_spelling(Wire::Messages), "messages");
+        assert_eq!(host_spelling(Wire::Responses), "responses");
+        assert_eq!(host_spelling(Wire::Gemini), "gemini");
+        assert_eq!(host_spelling(Wire::Converse), "converse");
+        assert!(
+            Wire::NAMES.contains(&"converse"),
+            "NAMES must include converse"
+        );
+    }
+
+    #[test]
+    fn as_str_rustdoc_lists_converse() {
+        let src = include_str!("types.rs");
+        let as_str_doc = src
+            .lines()
+            .find(|line| line.contains("Catalog / file spelling"))
+            .expect("as_str rustdoc lists catalog spellings");
+        assert!(
+            as_str_doc.contains("converse"),
+            "as_str rustdoc must list converse with the other spellings, got: {as_str_doc}"
+        );
     }
 
     #[test]

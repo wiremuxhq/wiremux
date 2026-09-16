@@ -1023,6 +1023,7 @@ fn encode_round_trip_text_and_tool_start() {
                 parse_profile_str("schema_version = 1\nid = \"bedrock\"\nwire = \"converse\"\n")
                     .expect("converse profile")
             }
+            _ => continue,
         };
         let raw = encode_stream_event(wire, &text).expect("encode text");
         let back = decode_stream_event(wire, &raw, &profile)
@@ -1046,6 +1047,7 @@ fn encode_round_trip_text_and_tool_start() {
                 parse_profile_str("schema_version = 1\nid = \"bedrock\"\nwire = \"converse\"\n")
                     .expect("converse profile")
             }
+            _ => continue,
         };
         let raw = encode_stream_event(wire, &start).expect("encode start");
         let back = decode_stream_event(wire, &raw, &profile)

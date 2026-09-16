@@ -120,6 +120,10 @@ pub fn decode_stream_event(
         Wire::Responses => responses::decode(&name, &value),
         Wire::Gemini => gemini::decode(&value),
         Wire::Converse => converse::decode(&value),
+        _ => Err(MapError::Invalid(format!(
+            "unsupported wire `{}`",
+            wire.as_str()
+        ))),
     }
 }
 
@@ -275,6 +279,7 @@ fn expand_complete_tool_call(
         Wire::Gemini => expand_gemini_function_call(first, &value),
         Wire::Responses => expand_responses_function_call(first, &value),
         Wire::Messages | Wire::Converse => None,
+        _ => None,
     }
 }
 
@@ -495,6 +500,10 @@ pub fn encode_stream_event(wire: Wire, ev: &IrStreamEvent) -> Result<RawSse, Map
                     data: value.to_string(),
                 })
             }
+            _ => Err(MapError::Invalid(format!(
+                "unsupported wire `{}`",
+                wire.as_str()
+            ))),
         },
     }
 }

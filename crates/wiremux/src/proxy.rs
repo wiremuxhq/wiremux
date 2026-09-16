@@ -410,6 +410,7 @@ fn assistant_text(wire: Wire, value: &Value) -> Option<String> {
             }
             (!text.is_empty()).then_some(text)
         }
+        _ => None,
     }
 }
 

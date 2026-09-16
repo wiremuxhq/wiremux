@@ -17,6 +17,10 @@ pub fn encode_response(wire: Wire, events: &[IrStreamEvent]) -> Result<Value, Ma
         Wire::Gemini => Ok(encode_gemini_complete(events)),
         Wire::Responses => Ok(encode_responses_complete(events)),
         Wire::Converse => Ok(super::converse::encode_complete(events)),
+        _ => Err(MapError::Invalid(format!(
+            "unsupported wire `{}`",
+            wire.as_str()
+        ))),
     }
 }
 
@@ -462,6 +466,10 @@ pub fn decode_response(
         Wire::Responses => decode_responses_complete(&value, profile),
         Wire::Gemini => decode_gemini_complete(&value, profile),
         Wire::Converse => super::converse::decode_complete(&value),
+        _ => Err(MapError::Invalid(format!(
+            "unsupported wire `{}`",
+            wire.as_str()
+        ))),
     }
 }
 

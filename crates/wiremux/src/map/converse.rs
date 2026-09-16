@@ -272,11 +272,15 @@ pub(super) fn encode(
     }
     encode_sampling(ir, &mut body, report);
     if !prepared.is_empty() {
-        let tools: Vec<Value> = prepared.iter().filter_map(encode_tool).collect();
-        if !tools.is_empty() {
-            let mut cfg = json!({ "tools": tools });
-            encode_tool_choice(&ir.sampling.tool_choice, &mut cfg);
-            body["toolConfig"] = cfg;
+        if matches!(ir.sampling.tool_choice, IrToolChoice::None) {
+            report.record("sampling.tool_choice", LossAction::Degrade, "no none slot");
+        } else {
+            let tools: Vec<Value> = prepared.iter().filter_map(encode_tool).collect();
+            if !tools.is_empty() {
+                let mut cfg = json!({ "tools": tools });
+                encode_tool_choice(&ir.sampling.tool_choice, &mut cfg);
+                body["toolConfig"] = cfg;
+            }
         }
     }
     Ok(body)
@@ -499,13 +503,38 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.cache.enabled {
         report.record("sampling.cache", LossAction::Drop, "no slot");
     }
+    if s.max_reasoning_tokens.is_some() {
+        report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
+    }
+    if s.include_thoughts.is_some() {
+        report.record("sampling.include_thoughts", LossAction::Drop, "no slot");
+    }
+    if s.reasoning_effort.is_some() {
+        report.record("sampling.reasoning_effort", LossAction::Drop, "no slot");
+    }
+    if s.thinking_budget.is_some() {
+        report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
+    }
+    if s.json_schema.is_some() {
+        report.record("sampling.json_schema", LossAction::Drop, "no slot");
+    }
+    if s.json_schema_name.is_some() {
+        report.record("sampling.json_schema_name", LossAction::Drop, "no slot");
+    }
+    if !s.include.is_empty() {
+        report.record("sampling.include", LossAction::Drop, "no slot");
+    }
+    if s.parallel_tool_calls.is_some() {
+        report.record("sampling.parallel_tool_calls", LossAction::Drop, "no slot");
+    }
 }
 
 fn encode_tool_choice(choice: &IrToolChoice, cfg: &mut Value) {
     match choice {
-        IrToolChoice::Auto | IrToolChoice::None => {
+        IrToolChoice::Auto => {
             cfg["toolChoice"] = json!({ "auto": {} });
         }
+        IrToolChoice::None => {}
         IrToolChoice::Required => {
             cfg["toolChoice"] = json!({ "any": {} });
         }
