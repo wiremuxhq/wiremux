@@ -702,6 +702,16 @@ mod tests {
     }
 
     #[test]
+    fn canonical_uri_double_encodes_bedrock_arn_slash() {
+        let path =
+            "/model/arn:aws:bedrock:us-east-1:123:inference-profile%2Fus.anthropic.claude/converse";
+        assert_eq!(
+            canonical_uri(path),
+            "/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A123%3Ainference-profile%252Fus.anthropic.claude/converse"
+        );
+    }
+
+    #[test]
     fn sign_aws_request_matches_iam_get_example() {
         let creds = AwsCredentials {
             access_key_id: "AKIDEXAMPLE".into(),

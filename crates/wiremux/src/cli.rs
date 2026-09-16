@@ -755,6 +755,76 @@ base_url = "https://generativelanguage.googleapis.com"
     }
 
     #[test]
+    fn model_segment_encodes_slash_query_and_fragment() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "g"
+wire = "gemini"
+base_url = "https://generativelanguage.googleapis.com"
+"#,
+        )
+        .expect("parse");
+        let traversed = upstream_url_for_model(&profile, Some("../x"), false).expect("url");
+        assert!(
+            traversed.contains("/v1beta/models/..%2Fx:generateContent"),
+            "slash in model must stay one segment, got {traversed}"
+        );
+        assert!(
+            !traversed.contains("/models/../x"),
+            "unencoded traversal must not appear, got {traversed}"
+        );
+        let query = upstream_url_for_model(&profile, Some("a?b"), false).expect("url");
+        assert!(
+            query.contains("/v1beta/models/a%3Fb:generateContent"),
+            "query delimiter must encode, got {query}"
+        );
+        assert!(!query.contains("?b:generateContent"), "{query}");
+        let frag = upstream_url_for_model(&profile, Some("a#b"), false).expect("url");
+        assert!(
+            frag.contains("/v1beta/models/a%23b:generateContent"),
+            "fragment delimiter must encode, got {frag}"
+        );
+        let percent = upstream_url_for_model(&profile, Some("a%b"), false).expect("url");
+        assert!(
+            percent.contains("/v1beta/models/a%25b:generateContent"),
+            "percent must encode, got {percent}"
+        );
+        let backslash = upstream_url_for_model(&profile, Some("a\\b"), false).expect("url");
+        assert!(
+            backslash.contains("/v1beta/models/a%5Cb:generateContent"),
+            "backslash must encode, got {backslash}"
+        );
+        let control = upstream_url_for_model(&profile, Some("a\nb"), false).expect("url");
+        assert!(
+            control.contains("/v1beta/models/a%0Ab:generateContent"),
+            "control must encode, got {control}"
+        );
+    }
+
+    #[test]
+    fn bedrock_arn_model_encodes_slash_as_one_segment() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "amazon-bedrock"
+wire = "converse"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+chat_path = "/model/{model}/converse"
+"#,
+        )
+        .expect("parse");
+        let arn = "arn:aws:bedrock:us-east-1:123:inference-profile/us.anthropic.claude";
+        let url = upstream_url_for_model(&profile, Some(arn), false).expect("url");
+        assert!(
+            url.ends_with(
+                "/model/arn:aws:bedrock:us-east-1:123:inference-profile%2Fus.anthropic.claude/converse"
+            ),
+            "{url}"
+        );
+    }
+
+    #[test]
     fn converse_stream_url_uses_converse_stream() {
         let profile = parse_profile_str(
             r#"

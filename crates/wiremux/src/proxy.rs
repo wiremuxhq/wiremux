@@ -95,7 +95,86 @@ async fn handle(
     Ok(handle_inner(state, req).await)
 }
 
+/// Loopback Host only. Rejects DNS-rebinding names, trailing dots,
+/// decimal IPs, and unbracketed IPv6 except the exact `::1` token.
+fn host_is_loopback(host: &str) -> bool {
+    let host = host.trim();
+    if host.is_empty() {
+        return false;
+    }
+    if host == "::1" {
+        return true;
+    }
+    if let Some(rest) = host.strip_prefix('[') {
+        let Some((addr, after)) = rest.split_once(']') else {
+            return false;
+        };
+        if addr != "::1" {
+            return false;
+        }
+        return match after.strip_prefix(':') {
+            Some(port) => !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()),
+            None => after.is_empty(),
+        };
+    }
+    let name = match host.rsplit_once(':') {
+        Some((name, port))
+            if !name.is_empty() && !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            name
+        }
+        _ => host,
+    };
+    name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost")
+}
+
+fn is_json_content_type(value: &str) -> bool {
+    value
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .eq_ignore_ascii_case("application/json")
+}
+
+fn request_guard(req: &Request<Incoming>, post: bool) -> Option<Response<ProxyBody>> {
+    let host = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !host_is_loopback(host) {
+        return Some(text(StatusCode::FORBIDDEN, "forbidden host\n"));
+    }
+    if req.headers().contains_key(hyper::header::ORIGIN) {
+        return Some(text(StatusCode::FORBIDDEN, "forbidden origin\n"));
+    }
+    if let Some(site) = req
+        .headers()
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        && site.eq_ignore_ascii_case("cross-site")
+    {
+        return Some(text(StatusCode::FORBIDDEN, "forbidden site\n"));
+    }
+    if post
+        && !is_json_content_type(
+            req.headers()
+                .get(hyper::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or(""),
+        )
+    {
+        return Some(text(StatusCode::UNSUPPORTED_MEDIA_TYPE, "json required\n"));
+    }
+    None
+}
+
 async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Response<ProxyBody> {
+    let is_post = req.method() == Method::POST;
+    if let Some(denied) = request_guard(&req, is_post) {
+        return denied;
+    }
     if req.method() == Method::GET && matches!(req.uri().path(), "/" | "/health" | "/healthz") {
         return text(StatusCode::OK, "ok\n");
     }
@@ -613,4 +692,54 @@ fn bytes_response(status: StatusCode, content_type: &str, body: Bytes) -> Respon
 
 fn status_from_reqwest(status: reqwest::StatusCode) -> StatusCode {
     StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{host_is_loopback, is_json_content_type};
+
+    #[test]
+    fn loopback_hosts_accepted() {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.1:0",
+            "127.0.0.1:18789",
+            "localhost",
+            "LOCALHOST",
+            "localhost:9",
+            "[::1]",
+            "[::1]:8080",
+            "::1",
+        ] {
+            assert!(host_is_loopback(host), "{host}");
+        }
+    }
+
+    #[test]
+    fn non_loopback_hosts_rejected() {
+        for host in [
+            "",
+            "evil.example",
+            "127.0.0.1.evil.example",
+            "localhost.",
+            "127.0.0.1.",
+            "0.0.0.0",
+            "2130706433",
+            "[fe80::1]",
+            "127.0.0.1:abc",
+            "user@127.0.0.1",
+            "127.0.0.1:80:80",
+        ] {
+            assert!(!host_is_loopback(host), "{host}");
+        }
+    }
+
+    #[test]
+    fn json_content_type_allows_charset() {
+        assert!(is_json_content_type("application/json"));
+        assert!(is_json_content_type("Application/JSON; charset=utf-8"));
+        assert!(!is_json_content_type("text/plain"));
+        assert!(!is_json_content_type("application/jsonp"));
+        assert!(!is_json_content_type(""));
+    }
 }

@@ -497,6 +497,100 @@ chat_path = "/v1/responses"
     );
 }
 
+fn spawn_guard_proxy() -> (tempfile::TempDir, std::process::Child, std::net::SocketAddr) {
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "guard.toml",
+        r#"
+schema_version = 1
+id = "guard"
+wire = "responses"
+auth_scheme = "none"
+base_url = "http://127.0.0.1:1"
+chat_path = "/v1/responses"
+"#,
+    );
+    let (home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "responses",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    (home, child, listen)
+}
+
+fn raw_http(addr: std::net::SocketAddr, req: &str) -> String {
+    let mut client = TcpStream::connect(addr).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    resp
+}
+
+fn kill_proxy(mut child: std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn proxy_rejects_non_loopback_host() {
+    let (_home, child, listen) = spawn_guard_proxy();
+    let req = "POST /v1/responses HTTP/1.1\r\nHost: evil.example\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+    let resp = raw_http(listen, req);
+    kill_proxy(child);
+    assert!(resp.contains("403"), "foreign Host must 403, got: {resp:?}");
+}
+
+#[test]
+fn proxy_rejects_browser_origin() {
+    let (_home, child, listen) = spawn_guard_proxy();
+    let req = "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+    let resp = raw_http(listen, req);
+    kill_proxy(child);
+    assert!(
+        resp.contains("403"),
+        "browser Origin must 403, got: {resp:?}"
+    );
+}
+
+#[test]
+fn proxy_rejects_cross_site_fetch() {
+    let (_home, child, listen) = spawn_guard_proxy();
+    let req = "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Site: cross-site\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+    let resp = raw_http(listen, req);
+    kill_proxy(child);
+    assert!(
+        resp.contains("403"),
+        "Sec-Fetch-Site cross-site must 403, got: {resp:?}"
+    );
+}
+
+#[test]
+fn proxy_rejects_non_json_content_type() {
+    let (_home, child, listen) = spawn_guard_proxy();
+    let req = "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+    let resp = raw_http(listen, req);
+    kill_proxy(child);
+    assert!(
+        resp.contains("415"),
+        "non-json Content-Type must 415, got: {resp:?}"
+    );
+}
+
 #[test]
 fn proxy_maps_request_to_profile_upstream() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");

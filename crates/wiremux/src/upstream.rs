@@ -23,7 +23,7 @@ pub fn upstream_url_for_model(
         .or_else(|| profile.dialect.wire.map(Wire::default_chat_path))
         .unwrap_or("/");
     let mut path = if let Some(model) = model.filter(|m| !m.is_empty()) {
-        path.replace("{model}", model)
+        path.replace("{model}", &encode_model_segment(model))
     } else {
         path.to_string()
     };
@@ -55,6 +55,26 @@ pub fn upstream_url_for_model(
             format!("/{path}")
         }
     )))
+}
+
+/// Encode `{model}` as one path segment. Keep `:` so Bedrock model ids
+/// stay readable. Encode `/ ? # % \\` and controls so the name cannot
+/// change the path, query, or fragment.
+pub(crate) fn encode_model_segment(model: &str) -> String {
+    let mut out = String::with_capacity(model.len());
+    for byte in model.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b':' => {
+                out.push(byte as char)
+            }
+            _ => {
+                out.push('%');
+                out.push(char::from(b"0123456789ABCDEF"[(byte >> 4) as usize]));
+                out.push(char::from(b"0123456789ABCDEF"[(byte & 0x0F) as usize]));
+            }
+        }
+    }
+    out
 }
 
 /// Ingest writes `https://{env:GOOGLE_VERTEX_LOCATION}-aiplatform.googleapis.com`.
