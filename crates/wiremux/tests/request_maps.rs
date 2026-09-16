@@ -4445,3 +4445,126 @@ fn converse_decode_tool_result_missing_id_fails() {
         "{msg}"
     );
 }
+
+#[test]
+fn converse_parallel_function_outputs_encode_one_user_message() {
+    let ir = IrRequest {
+        model: "amazon.nova-lite-v1:0".into(),
+        items: vec![
+            IrItem::FunctionOutput {
+                call_id: "t1".into(),
+                output: "one".into(),
+            },
+            IrItem::FunctionOutput {
+                call_id: "t2".into(),
+                output: "two".into(),
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages must be an array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "parallel toolResults must be one user turn, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "user");
+    let content = messages[0]["content"]
+        .as_array()
+        .expect("content must be an array");
+    assert_eq!(
+        content.len(),
+        2,
+        "expected two toolResult blocks, got {body}"
+    );
+    assert_eq!(content[0]["toolResult"]["toolUseId"], "t1");
+    assert_eq!(content[0]["toolResult"]["content"][0]["text"], "one");
+    assert_eq!(content[1]["toolResult"]["toolUseId"], "t2");
+    assert_eq!(content[1]["toolResult"]["content"][0]["text"], "two");
+}
+
+#[test]
+fn converse_mixed_assistant_tool_use_then_text_round_trips_one_message() {
+    let req = br#"{
+      "modelId": "amazon.nova-lite-v1:0",
+      "messages": [
+        {"role": "assistant", "content": [
+          {"toolUse": {"toolUseId": "t1", "name": "lookup", "input": {"q": "x"}}},
+          {"text": "done looking."}
+        ]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode mixed assistant");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages must be an array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "re-encode must stay one assistant message, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "assistant");
+    let content = messages[0]["content"]
+        .as_array()
+        .expect("content must be an array");
+    assert_eq!(content.len(), 2, "expected toolUse then text, got {body}");
+    assert_eq!(content[0]["toolUse"]["toolUseId"], "t1");
+    assert_eq!(content[0]["toolUse"]["name"], "lookup");
+    assert_eq!(content[1]["text"], "done looking.");
+}
+
+#[test]
+fn converse_decode_tool_result_json_round_trips_nonempty() {
+    let req = br#"{
+      "modelId": "amazon.nova-lite-v1:0",
+      "messages": [
+        {"role": "user", "content": [{
+          "toolResult": {
+            "toolUseId": "t1",
+            "content": [{ "json": { "ok": true, "n": 1 } }]
+          }
+        }]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode json toolResult");
+    let output = ir.items.iter().find_map(|item| match item {
+        IrItem::FunctionOutput { call_id, output } if call_id == "t1" => Some(output.as_str()),
+        _ => None,
+    });
+    let output = output.expect("FunctionOutput t1");
+    assert!(
+        !output.is_empty(),
+        "json toolResult must not decode to empty string, got {output:?}"
+    );
+    assert!(
+        output.contains("ok") && output.contains("true"),
+        "json payload must be serialized, got {output:?}"
+    );
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let arr = body
+        .pointer("/messages/0/content/0/toolResult/content")
+        .and_then(Value::as_array)
+        .expect("toolResult content");
+    assert!(
+        !arr.is_empty(),
+        "re-encode must keep toolResult content, got {body}"
+    );
+    let lost = arr.iter().all(|p| {
+        p.get("text")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+            && p.get("json").is_none()
+    });
+    assert!(
+        !lost,
+        "re-encode must not be empty text-only loss, got {body}"
+    );
+}

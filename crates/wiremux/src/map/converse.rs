@@ -101,16 +101,7 @@ fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), M
                 .get("toolUseId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| MapError::Invalid("toolResult omitted toolUseId".into()))?;
-            let output = result
-                .get("content")
-                .and_then(Value::as_array)
-                .map(|c| {
-                    c.iter()
-                        .filter_map(|p| p.get("text").and_then(Value::as_str))
-                        .collect::<Vec<_>>()
-                        .join("")
-                })
-                .unwrap_or_default();
+            let output = tool_result_output(result);
             items.push(IrItem::FunctionOutput {
                 call_id: id.to_string(),
                 output,
@@ -175,6 +166,25 @@ fn flush_assistant(parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
             parts: std::mem::take(parts),
         });
     }
+}
+
+fn tool_result_output(result: &Value) -> String {
+    result
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|c| {
+            c.iter()
+                .filter_map(|p| {
+                    if let Some(v) = p.get("json") {
+                        Some(v.to_string())
+                    } else {
+                        p.get("text").and_then(Value::as_str).map(str::to_string)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default()
 }
 
 fn decode_part(block: &Value) -> Option<IrPart> {
@@ -284,9 +294,17 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                     .iter()
                     .filter_map(|p| encode_part(p, report))
                     .collect();
-                if !blocks.is_empty() {
-                    messages.push(json!({ "role": "assistant", "content": blocks }));
+                if blocks.is_empty() {
+                    continue;
                 }
+                if let Some(last) = messages.last_mut()
+                    && last.get("role").and_then(Value::as_str) == Some("assistant")
+                    && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)
+                {
+                    arr.extend(blocks);
+                    continue;
+                }
+                messages.push(json!({ "role": "assistant", "content": blocks }));
             }
             IrItem::FunctionCall {
                 call_id,
@@ -313,15 +331,20 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 messages.push(json!({ "role": "assistant", "content": [block] }));
             }
             IrItem::FunctionOutput { call_id, output } => {
-                messages.push(json!({
-                    "role": "user",
-                    "content": [{
-                        "toolResult": {
-                            "toolUseId": call_id,
-                            "content": [{ "text": output }]
-                        }
-                    }]
-                }));
+                let block = json!({
+                    "toolResult": {
+                        "toolUseId": call_id,
+                        "content": [{ "text": output }]
+                    }
+                });
+                if last_user_has_tool_result(&messages)
+                    && let Some(last) = messages.last_mut()
+                    && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)
+                {
+                    arr.push(block);
+                    continue;
+                }
+                messages.push(json!({ "role": "user", "content": [block] }));
             }
             IrItem::Reasoning { summary, .. } => {
                 if let Some(text) = summary {
@@ -360,6 +383,18 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
         Some(Value::Array(system))
     };
     (system, Value::Array(messages))
+}
+
+fn last_user_has_tool_result(messages: &[Value]) -> bool {
+    let Some(last) = messages.last() else {
+        return false;
+    };
+    if last.get("role").and_then(Value::as_str) != Some("user") {
+        return false;
+    }
+    last.get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|arr| arr.iter().any(|b| b.get("toolResult").is_some()))
 }
 
 fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
