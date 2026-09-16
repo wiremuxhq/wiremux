@@ -18,7 +18,7 @@ use wiremux_auth::{
 use crate::headers::apply_profile_headers;
 use crate::ir::{IrRequest, IrStreamEvent, LossReport};
 use crate::map::{MapError, encode};
-use crate::stream::{SseFrameReader, ToolCallAssembler, decode_response, decode_stream_events};
+use crate::stream::{ToolCallAssembler, UpstreamFrames, decode_response, decode_stream_events};
 use crate::upstream::upstream_url_for_model;
 
 const MAX_SUCCESS_BODY: usize = 16 * 1024 * 1024;
@@ -391,6 +391,11 @@ impl WireClient {
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.clone());
         let req = apply_profile_headers(req, &self.profile, token);
+        let req = if url.contains("/converse-stream") {
+            req.header("accept", "application/vnd.amazon.eventstream")
+        } else {
+            req
+        };
         apply_aws_sigv4(&self.profile, url, "POST", &body, req)?
             .send()
             .await
@@ -463,7 +468,7 @@ impl WireClient {
             Box::pin(resp.bytes_stream());
         Ok(LiveStream {
             bytes,
-            reader: SseFrameReader::new(),
+            reader: UpstreamFrames::for_wire(wire),
             assembler: ToolCallAssembler::new(),
             pending: VecDeque::new(),
             wire,
@@ -484,7 +489,7 @@ enum StreamPhase {
 
 struct LiveStream {
     bytes: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
-    reader: SseFrameReader,
+    reader: UpstreamFrames,
     assembler: ToolCallAssembler,
     pending: VecDeque<IrStreamEvent>,
     wire: Wire,

@@ -179,6 +179,9 @@ pub fn profile_toml(vendor: &CatalogVendor) -> Result<String, IngestError> {
     if let Some(service) = draft.aws_service {
         out.push_str(&format!("aws_service = {}\n", toml_string(service)));
     }
+    if let Some(env) = draft.gcp_key_env {
+        out.push_str(&format!("gcp_key_env = {}\n", toml_string(env)));
+    }
     if let Some(region) = draft.aws_region {
         out.push_str(&format!("aws_region = {}\n", toml_string(&region)));
     }
@@ -207,6 +210,7 @@ struct ProfileDraft {
     extra_body: Vec<(String, String)>,
     aws_service: Option<&'static str>,
     aws_region: Option<String>,
+    gcp_key_env: Option<&'static str>,
 }
 
 fn draft_for(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestError> {
@@ -243,6 +247,7 @@ fn draft_for(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestError> {
         extra_body: Vec::new(),
         aws_service: None,
         aws_region: None,
+        gcp_key_env: None,
     })
 }
 
@@ -268,6 +273,7 @@ fn azure_draft(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestError> {
         extra_body: Vec::new(),
         aws_service: None,
         aws_region: None,
+        gcp_key_env: None,
     })
 }
 
@@ -283,6 +289,7 @@ fn vertex_gemini_draft(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestErr
         extra_body: Vec::new(),
         aws_service: None,
         aws_region: None,
+        gcp_key_env: Some("GOOGLE_APPLICATION_CREDENTIALS"),
     })
 }
 
@@ -298,6 +305,7 @@ fn vertex_anthropic_draft(vendor: &CatalogVendor) -> Result<ProfileDraft, Ingest
         extra_body: vec![("anthropic_version".into(), "vertex-2023-10-16".into())],
         aws_service: None,
         aws_region: None,
+        gcp_key_env: Some("GOOGLE_APPLICATION_CREDENTIALS"),
     })
 }
 
@@ -353,6 +361,7 @@ fn bedrock_draft(vendor: &CatalogVendor) -> ProfileDraft {
         extra_body: Vec::new(),
         aws_service: Some("bedrock"),
         aws_region: Some("{env:AWS_REGION}".into()),
+        gcp_key_env: None,
     }
 }
 
@@ -1120,6 +1129,7 @@ mod tests {
         let vertex = rows.iter().find(|r| r.id == "google-vertex").unwrap();
         let toml = profile_toml(vertex).unwrap();
         assert!(toml.contains("wire = \"gemini\""), "{toml}");
+        assert!(toml.contains("gcp_key_env = \"GOOGLE_APPLICATION_CREDENTIALS\""));
         assert!(toml.contains("{env:GOOGLE_VERTEX_PROJECT}"));
         assert!(toml.contains(":generateContent"));
         parse_profile_str(&toml).unwrap();

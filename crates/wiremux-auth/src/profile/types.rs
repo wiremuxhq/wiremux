@@ -316,6 +316,8 @@ pub struct Http {
     pub aws_service: Option<String>,
     /// Region for SigV4 (`us-east-1`). `{env:AWS_REGION}` is allowed.
     pub aws_region: Option<String>,
+    /// Env that holds a GCP service-account JSON path (`GOOGLE_APPLICATION_CREDENTIALS`).
+    pub gcp_key_env: Option<String>,
 }
 
 /// API auth scheme. `none` sends no `Authorization` and no `x-api-key`.
