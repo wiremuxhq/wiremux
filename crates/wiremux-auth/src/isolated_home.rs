@@ -24,6 +24,9 @@ const COMMON_ENVS: &[&str] = &[
     "GROK_API_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_OAUTH_ACCESS_TOKEN",
+    "CLOUDSDK_CONFIG",
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "HTTP_PROXY",
@@ -82,6 +85,8 @@ impl IsolatedHome {
         names.extend_from_slice(extra);
         names.push("HOME");
         names.push("USERPROFILE");
+        names.push("APPDATA");
+        names.push("LOCALAPPDATA");
 
         let mut saved = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
@@ -99,6 +104,8 @@ impl IsolatedHome {
         unsafe {
             std::env::set_var("HOME", dir.path());
             std::env::set_var("USERPROFILE", dir.path());
+            std::env::set_var("APPDATA", dir.path());
+            std::env::set_var("LOCALAPPDATA", dir.path());
             for name in COMMON_ENVS.iter().chain(extra.iter()) {
                 std::env::remove_var(name);
             }
