@@ -4308,6 +4308,34 @@ aws_region = "us-east-1"
 }
 
 #[test]
+fn converse_encode_does_not_invent_empty_function_call_args() {
+    let ir = IrRequest {
+        model: "amazon.nova-lite-v1:0".into(),
+        items: vec![IrItem::FunctionCall {
+            call_id: "t1".into(),
+            name: "lookup".into(),
+            arguments: "not-json".into(),
+            thought_signature: None,
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let input = body.pointer("/messages/0/content/0/toolUse/input");
+    assert_ne!(
+        input,
+        Some(&serde_json::json!({})),
+        "invalid JSON must not become empty object, got {body}"
+    );
+    assert_eq!(
+        input,
+        Some(&Value::String("not-json".into())),
+        "invalid JSON must stay a string, got {body}"
+    );
+}
+
+#[test]
 fn converse_round_trip_text_and_tool() {
     let req = br#"{
       "modelId": "amazon.nova-lite-v1:0",
@@ -4329,6 +4357,10 @@ fn converse_round_trip_text_and_tool() {
     assert_eq!(ir.sampling.max_tokens, Some(32));
     let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("modelId").is_none(),
+        "model stays in chat_path, not the JSON body: {body}"
+    );
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(
         body["messages"][1]["content"][0]["toolUse"]["name"],
@@ -4336,4 +4368,48 @@ fn converse_round_trip_text_and_tool() {
     );
     assert_eq!(body["inferenceConfig"]["maxTokens"], 32);
     assert!(body["toolConfig"]["tools"][0]["toolSpec"]["name"] == "lookup");
+}
+
+#[test]
+fn converse_encode_empty_messages_fails() {
+    let ir = IrRequest {
+        model: "amazon.nova-lite-v1:0".into(),
+        items: vec![IrItem::System { text: "sys".into() }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let err = encode(Wire::Converse, &ir, &converse_profile())
+        .expect_err("Converse encode must fail when messages would be empty");
+    let msg = err.to_string();
+    assert!(msg.contains("messages") && msg.contains("empty"), "{msg}");
+}
+
+#[test]
+fn converse_decode_tool_use_missing_id_fails() {
+    let req = br#"{
+      "messages": [
+        {"role": "assistant", "content": [{"toolUse": {"name": "lookup", "input": {}}}]}
+      ]
+    }"#;
+    let err = decode(Wire::Converse, req).expect_err("toolUse without toolUseId");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("toolUseId") || msg.contains("toolUse"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn converse_decode_tool_result_missing_id_fails() {
+    let req = br#"{
+      "messages": [
+        {"role": "user", "content": [{"toolResult": {"content": [{"text": "ok"}]}}]}
+      ]
+    }"#;
+    let err = decode(Wire::Converse, req).expect_err("toolResult without toolUseId");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("toolUseId") || msg.contains("toolResult"),
+        "{msg}"
+    );
 }

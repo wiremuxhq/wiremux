@@ -14,7 +14,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     }
     if let Some(messages) = value.get("messages").and_then(Value::as_array) {
         for msg in messages {
-            decode_message(msg, &mut items);
+            decode_message(msg, &mut items)?;
         }
     }
     let model = value
@@ -75,33 +75,34 @@ fn decode_system(system: &Value, items: &mut Vec<IrItem>) {
     }
 }
 
-fn decode_message(msg: &Value, items: &mut Vec<IrItem>) {
+fn decode_message(msg: &Value, items: &mut Vec<IrItem>) -> Result<(), MapError> {
     let role = msg.get("role").and_then(Value::as_str).unwrap_or("");
     let content = msg.get("content");
     match role {
         "user" => decode_user(content, items),
         "assistant" => decode_assistant(content, items),
-        _ => {}
+        _ => Ok(()),
     }
 }
 
-fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) {
+fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), MapError> {
     let Some(arr) = content.and_then(Value::as_array) else {
         if let Some(s) = content.and_then(Value::as_str) {
             items.push(IrItem::User {
                 parts: vec![IrPart::Text(s.to_string())],
             });
         }
-        return;
+        return Ok(());
     };
     let mut parts = Vec::new();
     for block in arr {
-        if let Some(id) = block
-            .pointer("/toolResult/toolUseId")
-            .and_then(Value::as_str)
-        {
-            let output = block
-                .pointer("/toolResult/content")
+        if let Some(result) = block.get("toolResult") {
+            let id = result
+                .get("toolUseId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| MapError::Invalid("toolResult omitted toolUseId".into()))?;
+            let output = result
+                .get("content")
                 .and_then(Value::as_array)
                 .map(|c| {
                     c.iter()
@@ -123,16 +124,17 @@ fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) {
     if !parts.is_empty() {
         items.push(IrItem::User { parts });
     }
+    Ok(())
 }
 
-fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) {
+fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), MapError> {
     let Some(arr) = content.and_then(Value::as_array) else {
         if let Some(s) = content.and_then(Value::as_str) {
             items.push(IrItem::Assistant {
                 parts: vec![IrPart::Text(s.to_string())],
             });
         }
-        return;
+        return Ok(());
     };
     let mut parts = Vec::new();
     for block in arr {
@@ -140,8 +142,7 @@ fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) {
             let id = tool
                 .get("toolUseId")
                 .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
+                .ok_or_else(|| MapError::Invalid("toolUse omitted toolUseId".into()))?;
             let name = tool
                 .get("name")
                 .and_then(Value::as_str)
@@ -152,7 +153,7 @@ fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) {
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "{}".into());
             items.push(IrItem::FunctionCall {
-                call_id: id,
+                call_id: id.to_string(),
                 name,
                 arguments,
                 thought_signature: None,
@@ -166,6 +167,7 @@ fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) {
     if !parts.is_empty() {
         items.push(IrItem::Assistant { parts });
     }
+    Ok(())
 }
 
 fn decode_part(block: &Value) -> Option<IrPart> {
@@ -230,12 +232,14 @@ pub(super) fn encode(
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
     let (system, messages) = encode_items(ir, report);
+    if messages.as_array().is_none_or(|a| a.is_empty()) {
+        return Err(MapError::Invalid(
+            "converse messages must not be empty".into(),
+        ));
+    }
     let mut body = json!({ "messages": messages });
     if let Some(system) = system {
         body["system"] = system;
-    }
-    if !ir.model.is_empty() {
-        body["modelId"] = json!(ir.model);
     }
     encode_sampling(ir, &mut body);
     if !prepared.is_empty() {
@@ -283,7 +287,8 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 arguments,
                 ..
             } => {
-                let input: Value = serde_json::from_str(arguments).unwrap_or(json!({}));
+                let input: Value =
+                    serde_json::from_str(arguments).unwrap_or_else(|_| json!(arguments));
                 let block = json!({
                     "toolUse": {
                         "toolUseId": call_id,
