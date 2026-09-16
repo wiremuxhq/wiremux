@@ -4336,6 +4336,38 @@ fn converse_encode_does_not_invent_empty_function_call_args() {
 }
 
 #[test]
+fn converse_mixed_assistant_text_then_tool_use_round_trips_one_message() {
+    let req = br#"{
+      "modelId": "amazon.nova-lite-v1:0",
+      "messages": [
+        {"role": "assistant", "content": [
+          {"text": "I'll look that up."},
+          {"toolUse": {"toolUseId": "t1", "name": "lookup", "input": {"q": "x"}}}
+        ]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode mixed assistant");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages must be an array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "re-encode must stay one assistant message, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "assistant");
+    let content = messages[0]["content"]
+        .as_array()
+        .expect("content must be an array");
+    assert_eq!(content.len(), 2, "expected text then toolUse, got {body}");
+    assert_eq!(content[0]["text"], "I'll look that up.");
+    assert_eq!(content[1]["toolUse"]["toolUseId"], "t1");
+    assert_eq!(content[1]["toolUse"]["name"], "lookup");
+}
+
+#[test]
 fn converse_round_trip_text_and_tool() {
     let req = br#"{
       "modelId": "amazon.nova-lite-v1:0",
