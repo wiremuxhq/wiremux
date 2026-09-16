@@ -911,6 +911,24 @@ async fn http_400_model_not_found() {
 }
 
 #[tokio::test]
+async fn list_models_reads_grok_build_context_window() {
+    let (base, handle) = spawn_one(
+        200,
+        "OK",
+        "",
+        r#"{"data":[{"id":"grok-4.6","context_window":500000}]}"#,
+    );
+    let models = client_for(&base, "sk-test")
+        .list_models()
+        .await
+        .expect("list");
+    let _ = handle.join();
+    assert_eq!(models.len(), 1, "{models:?}");
+    assert_eq!(models[0].id, "grok-4.6");
+    assert_eq!(models[0].context_tokens, Some(500_000));
+}
+
+#[tokio::test]
 async fn list_models_404_is_empty() {
     let (base, handle) = spawn_one(404, "Not Found", "", "missing");
     let models = client_for(&base, "sk-test")
