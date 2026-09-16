@@ -379,15 +379,20 @@ fn messages_and_gemini_drop_codex_cache_key_and_tier() {
     let cv: Value = serde_json::from_slice(&cv_bytes).expect("json");
     assert!(
         cv.get("prompt_cache_key").is_none() && cv.get("service_tier").is_none(),
-        "Converse must not invent Codex cache/tier, got {cv}"
+        "Converse must not invent Codex cache/tier keys, got {cv}"
     );
     assert!(
         loss_dropped(&cv_report, "sampling.prompt_cache_key"),
         "Converse prompt_cache_key drop missing, got {cv_report:?}"
     );
+    assert_eq!(
+        cv.pointer("/serviceTier/type").and_then(Value::as_str),
+        Some("flex"),
+        "Converse flex must emit serviceTier.type, got {cv}"
+    );
     assert!(
-        loss_dropped(&cv_report, "sampling.service_tier"),
-        "Converse service_tier drop missing, got {cv_report:?}"
+        !loss_dropped(&cv_report, "sampling.service_tier"),
+        "Converse has serviceTier; flex must not Drop, got {cv_report:?}"
     );
 }
 
@@ -4969,6 +4974,87 @@ fn converse_encode_unknown_effort_is_dropped() {
         loss_dropped(&report, "sampling.reasoning_effort"),
         "unknown effort must Drop, got {report:?}"
     );
+}
+
+#[test]
+fn converse_encode_service_tier_auto_degrades_to_default() {
+    let ir = user_ir(IrSampling {
+        service_tier: Some("auto".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/serviceTier/type").and_then(Value::as_str),
+        Some("default"),
+        "auto must map to serviceTier.type default, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "sampling.service_tier"),
+        "auto must Degrade to default, got {report:?}"
+    );
+}
+
+#[test]
+fn converse_encode_service_tier_passthrough() {
+    for (input, want) in [
+        ("priority", "priority"),
+        ("reserved", "reserved"),
+        ("DEFAULT", "default"),
+    ] {
+        let ir = user_ir(IrSampling {
+            service_tier: Some(input.into()),
+            ..IrSampling::default()
+        });
+        let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            body.pointer("/serviceTier/type").and_then(Value::as_str),
+            Some(want),
+            "{input} must emit serviceTier.type {want}, got {body}"
+        );
+        assert!(
+            !loss_dropped(&report, "sampling.service_tier")
+                && !loss_degraded(&report, "sampling.service_tier"),
+            "{input} must pass through, got {report:?}"
+        );
+    }
+}
+
+#[test]
+fn converse_encode_unknown_service_tier_is_dropped() {
+    let ir = user_ir(IrSampling {
+        service_tier: Some("turbo".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("serviceTier").is_none(),
+        "unknown service_tier must not invent serviceTier, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.service_tier"),
+        "unknown service_tier must Drop, got {report:?}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "sampling.service_tier"
+                && event.action == LossAction::Drop
+                && event.detail == "no slot"
+        }),
+        "Converse has a slot; Drop detail must not be no slot, got {report:?}"
+    );
+}
+
+#[test]
+fn converse_decode_reads_service_tier() {
+    let req = br#"{
+      "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+      "serviceTier": { "type": "priority" }
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    assert_eq!(ir.sampling.service_tier.as_deref(), Some("priority"));
 }
 
 #[test]
