@@ -1,0 +1,10 @@
+schema_version = 1
+id = "amazon-bedrock"
+display_name = "Amazon Bedrock Converse"
+wire = "converse"
+base_url = "https://bedrock-runtime.{env:AWS_REGION}.amazonaws.com"
+chat_path = "/model/{model}/converse"
+auth_scheme = "bearer"
+access_env = "AWS_BEARER_TOKEN_BEDROCK"
+aws_service = "bedrock"
+aws_region = "{env:AWS_REGION}"

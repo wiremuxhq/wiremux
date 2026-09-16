@@ -1,0 +1,8 @@
+schema_version = 1
+id = "dashscope"
+display_name = "DashScope Qwen Chat Completions"
+wire = "chat-completions"
+base_url = "https://dashscope-intl.aliyuncs.com"
+chat_path = "/compatible-mode/v1/chat/completions"
+auth_scheme = "bearer"
+access_env = "DASHSCOPE_API_KEY"

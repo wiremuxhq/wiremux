@@ -1,0 +1,8 @@
+schema_version = 1
+id = "together"
+display_name = "Together Chat Completions"
+wire = "chat-completions"
+base_url = "https://api.together.xyz"
+chat_path = "/v1/chat/completions"
+auth_scheme = "bearer"
+access_env = "TOGETHER_API_KEY"

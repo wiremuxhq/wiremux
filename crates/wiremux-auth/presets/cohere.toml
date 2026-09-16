@@ -1,0 +1,8 @@
+schema_version = 1
+id = "cohere"
+display_name = "Cohere OpenAI-compat Chat Completions"
+wire = "chat-completions"
+base_url = "https://api.cohere.ai"
+chat_path = "/compatibility/v1/chat/completions"
+auth_scheme = "bearer"
+access_env = "COHERE_API_KEY"

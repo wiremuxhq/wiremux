@@ -1,0 +1,8 @@
+schema_version = 1
+id = "moonshot"
+display_name = "Moonshot Kimi Chat Completions"
+wire = "chat-completions"
+base_url = "https://api.moonshot.cn"
+chat_path = "/v1/chat/completions"
+auth_scheme = "bearer"
+access_env = "MOONSHOT_API_KEY"

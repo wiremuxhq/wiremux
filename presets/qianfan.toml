@@ -1,0 +1,8 @@
+schema_version = 1
+id = "qianfan"
+display_name = "Baidu Qianfan Chat Completions"
+wire = "chat-completions"
+base_url = "https://qianfan.baidubce.com"
+chat_path = "/v2/chat/completions"
+auth_scheme = "bearer"
+access_env = "QIANFAN_API_KEY"

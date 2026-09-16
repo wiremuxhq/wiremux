@@ -1,0 +1,8 @@
+schema_version = 1
+id = "fireworks"
+display_name = "Fireworks Chat Completions"
+wire = "chat-completions"
+base_url = "https://api.fireworks.ai"
+chat_path = "/inference/v1/chat/completions"
+auth_scheme = "bearer"
+access_env = "FIREWORKS_API_KEY"

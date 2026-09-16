@@ -1,0 +1,9 @@
+schema_version = 1
+id = "vertex-gemini"
+display_name = "Vertex Gemini generateContent"
+wire = "gemini"
+base_url = "https://{env:GOOGLE_VERTEX_LOCATION}-aiplatform.googleapis.com"
+chat_path = "/v1/projects/{env:GOOGLE_VERTEX_PROJECT}/locations/{env:GOOGLE_VERTEX_LOCATION}/publishers/google/models/{model}:generateContent"
+auth_scheme = "bearer"
+access_env = "GOOGLE_OAUTH_ACCESS_TOKEN"
+gcp_key_env = "GOOGLE_APPLICATION_CREDENTIALS"

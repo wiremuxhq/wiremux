@@ -1,0 +1,8 @@
+schema_version = 1
+id = "perplexity"
+display_name = "Perplexity Chat Completions"
+wire = "chat-completions"
+base_url = "https://api.perplexity.ai"
+chat_path = "/chat/completions"
+auth_scheme = "bearer"
+access_env = "PERPLEXITY_API_KEY"

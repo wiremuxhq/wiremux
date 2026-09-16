@@ -1,0 +1,7 @@
+schema_version = 1
+id = "llama-cpp"
+display_name = "llama.cpp server Chat Completions"
+wire = "chat-completions"
+base_url = "http://127.0.0.1:8080"
+chat_path = "/v1/chat/completions"
+auth_scheme = "none"

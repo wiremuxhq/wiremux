@@ -1,0 +1,8 @@
+schema_version = 1
+id = "deepseek"
+display_name = "DeepSeek Chat Completions"
+wire = "chat-completions"
+base_url = "https://api.deepseek.com"
+chat_path = "/v1/chat/completions"
+auth_scheme = "bearer"
+access_env = "DEEPSEEK_API_KEY"

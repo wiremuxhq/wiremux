@@ -673,6 +673,14 @@ fn isolated_home_clears_anthropic_auth_token() {
 }
 
 #[test]
+fn every_shipped_preset_parses() {
+    let _home = IsolatedHome::new();
+    for id in shipped_profile_ids() {
+        load_profile(id, &shipped_opts()).expect(id);
+    }
+}
+
+#[test]
 fn include_shipped_false_hides_catalog() {
     let _home = IsolatedHome::new();
     for id in shipped_profile_ids() {

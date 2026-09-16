@@ -1,0 +1,8 @@
+schema_version = 1
+id = "minimax"
+display_name = "MiniMax Chat Completions"
+wire = "chat-completions"
+base_url = "https://api.minimax.chat"
+chat_path = "/v1/text/chatcompletion_v2"
+auth_scheme = "bearer"
+access_env = "MINIMAX_API_KEY"
