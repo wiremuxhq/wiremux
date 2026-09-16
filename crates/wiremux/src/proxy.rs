@@ -456,6 +456,7 @@ fn passthrough_sse(
     content_type: &str,
 ) -> Response<ProxyBody> {
     let url = resp.url().to_string();
+    let eventstream = content_type.contains("eventstream");
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(16);
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
@@ -467,12 +468,16 @@ fn passthrough_sse(
                     }
                 }
                 Err(err) => {
-                    let _ = tx
-                        .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
-                            event: Some("error".into()),
-                            data: format_oauth_transport_error("upstream stream", &err, &url),
-                        })))))
-                        .await;
+                    let msg = format_oauth_transport_error("upstream stream", &err, &url);
+                    eprintln!("{msg}");
+                    if !eventstream {
+                        let _ = tx
+                            .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
+                                event: Some("error".into()),
+                                data: msg,
+                            })))))
+                            .await;
+                    }
                     return;
                 }
             }

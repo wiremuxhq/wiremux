@@ -306,3 +306,26 @@ fn encoder_finish_emits_gemini_done_and_converse_message_stop() {
     let mut converse = StreamEncoder::new(Wire::Converse);
     check_converse(&converse.finish().expect("converse finish"));
 }
+
+#[test]
+fn converse_finish_reason_is_one_message_stop() {
+    let mut enc = StreamEncoder::new(Wire::Converse);
+    let early = enc
+        .push(IrStreamEvent::FinishReason {
+            reason: "tool_use".into(),
+        })
+        .expect("push finish");
+    assert!(
+        early.is_empty(),
+        "Converse FinishReason must wait for finish(), got {early:?}"
+    );
+    let frames = enc.finish().expect("finish");
+    assert_eq!(frames.len(), 1, "one messageStop, got {frames:?}");
+    let value: serde_json::Value = serde_json::from_str(&frames[0].data).expect("json");
+    assert_eq!(
+        value
+            .pointer("/messageStop/stopReason")
+            .and_then(|v| v.as_str()),
+        Some("tool_use")
+    );
+}
