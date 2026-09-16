@@ -336,3 +336,30 @@ auth_scheme = "Bearer"
         "Bearer should suggest bearer, got {text}"
     );
 }
+
+#[test]
+fn read_timeout_secs_is_optional_and_additive() {
+    let profile = parse_via_file(
+        "timeout.toml",
+        r#"
+schema_version = 1
+id = "timeout"
+wire = "chat-completions"
+base_url = "https://example.invalid"
+read_timeout_secs = 1
+"#,
+    )
+    .expect("parse");
+    assert_eq!(profile.http.read_timeout_secs, Some(1));
+    let omitted = parse_via_file(
+        "no-timeout.toml",
+        r#"
+schema_version = 1
+id = "no-timeout"
+wire = "chat-completions"
+base_url = "https://example.invalid"
+"#,
+    )
+    .expect("parse");
+    assert_eq!(omitted.http.read_timeout_secs, None);
+}

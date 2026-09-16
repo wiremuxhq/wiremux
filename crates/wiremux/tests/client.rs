@@ -1597,3 +1597,274 @@ async fn aws_service_without_keys_is_local_auth_error() {
     }
     let _ = home;
 }
+
+fn spawn_script(responses: Vec<(u16, String)>) -> (String, JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let mut seen = Vec::new();
+        for (status, body) in responses {
+            let Some(mut stream) = accept_timeout(&listener, Duration::from_secs(2)) else {
+                break;
+            };
+            seen.push(read_http_request(&mut stream));
+            let reason = if status == 200 {
+                "OK"
+            } else if status == 401 {
+                "Unauthorized"
+            } else {
+                "Error"
+            };
+            write_http(&mut stream, status, reason, "", &body);
+        }
+        seen
+    });
+    (format!("http://{addr}"), handle)
+}
+
+fn oauth_retry_profile(
+    api_base: &str,
+    token_url: &str,
+    creds_path: &str,
+) -> wiremux::ResolvedProfile {
+    let creds_unix = creds_path.replace('\\', "/");
+    parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "retry-oauth"
+wire = "chat-completions"
+auth_scheme = "bearer"
+base_url = "{api_base}"
+chat_path = "/v1/chat/completions"
+[oauth]
+token_url = "{token_url}"
+client_id = "retry-client"
+token_request_format = "form"
+creds_format = "json-pointer"
+creds_path = "{creds_unix}"
+access_token_ptr = "/tokens/access"
+refresh_token_ptr = "/tokens/refresh"
+expires_ptr = "/tokens/expiry_unix"
+expires_unit = "s"
+login = "none"
+[oauth.token_response]
+access_token_ptr = "/access_token"
+refresh_token_ptr = "/refresh_token"
+expires_ptr = "/expires_in"
+expires_unit = "s"
+"#
+    ))
+    .expect("oauth retry profile")
+}
+
+#[tokio::test]
+async fn send_401_oauth_retries_once() {
+    let home = IsolatedHome::new();
+    let creds = home.plant_credentials(PlantCredentials::JsonPointer {
+        relative_path: ".config/wiremux/auth-retry.json",
+        document: json!({
+            "tokens": {
+                "access": "first-159",
+                "refresh": "rt-159",
+                "expiry_unix": 4_102_444_800_i64
+            }
+        }),
+    });
+    let (token_base, token_handle) = spawn_one(
+        200,
+        "OK",
+        "",
+        r#"{"access_token":"second-159","refresh_token":"rt2","expires_in":3600}"#,
+    );
+    let (api_base, api_handle) = spawn_script(vec![
+        (401, r#"{"error":{"message":"expired"}}"#.into()),
+        (200, complete_chat_body()),
+    ]);
+    let profile = oauth_retry_profile(
+        &api_base,
+        &format!("{token_base}/token"),
+        &creds.to_string_lossy(),
+    );
+    let provider = provider_from_profile(&profile).expect("provider");
+    let client = WireClient::from_resolved(profile, provider).expect("client");
+    let (events, _) = client.send(simple_ir("gpt-4")).await.expect("401 retry");
+    let seen = api_handle.join().expect("join");
+    let _ = token_handle.join();
+    assert_eq!(seen.len(), 2, "must retry once, got {seen:?}");
+    assert!(
+        seen[0].contains("Bearer first-159"),
+        "first try uses stored access: {}",
+        seen[0]
+    );
+    assert!(
+        seen[1].contains("Bearer second-159"),
+        "retry uses refreshed access: {}",
+        seen[1]
+    );
+    assert!(
+        events.iter().any(
+            |ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "hello from complete")
+        ),
+        "{events:?}"
+    );
+    let _ = home;
+}
+
+#[tokio::test]
+async fn send_401_static_does_not_retry() {
+    let (base, handle) = spawn_script(vec![
+        (401, r#"{"error":{"message":"nope"}}"#.into()),
+        (200, complete_chat_body()),
+    ]);
+    let err = client_for(&base, "sk-static")
+        .send(simple_ir("gpt-4"))
+        .await
+        .expect_err("static 401");
+    let seen = handle.join().expect("join");
+    assert_eq!(seen.len(), 1, "static key must not retry, got {seen:?}");
+    match err {
+        ClientError::Auth { status, .. } => assert_eq!(status, Some(401)),
+        other => panic!("expected Auth 401, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stream_401_oauth_retries_once_before_body() {
+    let home = IsolatedHome::new();
+    let creds = home.plant_credentials(PlantCredentials::JsonPointer {
+        relative_path: ".config/wiremux/auth-retry-stream.json",
+        document: json!({
+            "tokens": {
+                "access": "first-stream",
+                "refresh": "rt-stream",
+                "expiry_unix": 4_102_444_800_i64
+            }
+        }),
+    });
+    let (token_base, token_handle) = spawn_one(
+        200,
+        "OK",
+        "",
+        r#"{"access_token":"second-stream","refresh_token":"rt2","expires_in":3600}"#,
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let mut seen = Vec::new();
+        let (mut stream, _) = listener.accept().expect("first");
+        seen.push(read_http_request(&mut stream));
+        write_http(
+            &mut stream,
+            401,
+            "Unauthorized",
+            "",
+            r#"{"error":{"message":"expired"}}"#,
+        );
+        let (mut stream, _) = listener.accept().expect("retry");
+        seen.push(read_http_request(&mut stream));
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+            sse.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        seen
+    });
+    let profile = oauth_retry_profile(
+        &format!("http://{addr}"),
+        &format!("{token_base}/token"),
+        &creds.to_string_lossy(),
+    );
+    let provider = provider_from_profile(&profile).expect("provider");
+    let client = WireClient::from_resolved(profile, provider).expect("client");
+    let mut stream = std::pin::pin!(client.stream(simple_ir("gpt-4")));
+    let mut saw_text = false;
+    while let Some(item) = stream.next().await {
+        if let Ok(IrStreamEvent::TextDelta { text }) = item
+            && text == "hi"
+        {
+            saw_text = true;
+            break;
+        }
+    }
+    let seen = handle.join().expect("join");
+    let _ = token_handle.join();
+    assert_eq!(
+        seen.len(),
+        2,
+        "stream must retry 401 before body, got {seen:?}"
+    );
+    assert!(seen[0].contains("Bearer first-stream"), "{}", seen[0]);
+    assert!(seen[1].contains("Bearer second-stream"), "{}", seen[1]);
+    assert!(saw_text, "retry must yield remapped SSE");
+    let _ = home;
+}
+
+#[tokio::test]
+async fn read_timeout_secs_is_transient() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        thread::sleep(Duration::from_secs(3));
+        write_http(&mut stream, 200, "OK", "", &complete_chat_body());
+        req
+    });
+    let profile = parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "slow"
+wire = "chat-completions"
+auth_scheme = "bearer"
+base_url = "http://{addr}"
+chat_path = "/v1/chat/completions"
+read_timeout_secs = 1
+"#
+    ))
+    .expect("profile");
+    assert_eq!(profile.http.read_timeout_secs, Some(1));
+    let client =
+        WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("sk-test")))
+            .expect("client");
+    let err = client.send(simple_ir("gpt-4")).await.expect_err("timeout");
+    let _ = handle.join();
+    match err {
+        ClientError::Transient { .. } => {}
+        other => panic!("expected Transient timeout, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn from_resolved_with_client_uses_host_timeout() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        thread::sleep(Duration::from_secs(3));
+        write_http(&mut stream, 200, "OK", "", &complete_chat_body());
+        req
+    });
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .read_timeout(Duration::from_secs(1))
+        .build()
+        .expect("host client");
+    let client = WireClient::from_resolved_with_client(
+        chat_profile(&format!("http://{addr}")),
+        AnyTokenProvider::from(StaticToken::new("sk-test")),
+        http,
+    )
+    .expect("client");
+    let err = client
+        .send(simple_ir("gpt-4"))
+        .await
+        .expect_err("host timeout");
+    let _ = handle.join();
+    match err {
+        ClientError::Transient { .. } => {}
+        other => panic!("expected Transient, got {other:?}"),
+    }
+}

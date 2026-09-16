@@ -35,6 +35,9 @@ enum Command {
         /// Print LossReport on stderr per request.
         #[arg(long)]
         dump_loss: bool,
+        /// Override profile `read_timeout_secs` (default 120).
+        #[arg(long)]
+        read_timeout_secs: Option<u64>,
     },
     /// Credential login and status.
     Auth {
@@ -143,7 +146,8 @@ async fn main() -> ExitCode {
             from,
             profile,
             dump_loss,
-        } => cmd_proxy(&listen, &from, &profile, dump_loss).await,
+            read_timeout_secs,
+        } => cmd_proxy(&listen, &from, &profile, dump_loss, read_timeout_secs).await,
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
@@ -265,7 +269,13 @@ fn cmd_status(profile_arg: &str) -> i32 {
     }
 }
 
-async fn cmd_proxy(listen: &str, from: &str, profile_arg: &str, dump_loss: bool) -> i32 {
+async fn cmd_proxy(
+    listen: &str,
+    from: &str,
+    profile_arg: &str,
+    dump_loss: bool,
+    read_timeout_secs: Option<u64>,
+) -> i32 {
     let from = match parse_wire(from) {
         Ok(w) => w,
         Err(err) => {
@@ -273,13 +283,16 @@ async fn cmd_proxy(listen: &str, from: &str, profile_arg: &str, dump_loss: bool)
             return EXIT_ERROR;
         }
     };
-    let profile = match load_cli_profile(profile_arg) {
+    let mut profile = match load_cli_profile(profile_arg) {
         Ok(p) => p,
         Err(err) => {
             eprintln!("{err}");
             return EXIT_ERROR;
         }
     };
+    if let Some(secs) = read_timeout_secs.filter(|&s| s > 0) {
+        profile.http.read_timeout_secs = Some(secs);
+    }
     #[cfg(feature = "proxy")]
     {
         if let Err(err) = wiremux::proxy::run(listen, from, profile, dump_loss).await {

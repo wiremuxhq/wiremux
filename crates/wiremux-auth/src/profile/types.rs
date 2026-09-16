@@ -338,6 +338,8 @@ pub struct Http {
     pub aws_region: Option<String>,
     /// Env that holds a GCP service-account JSON path (`GOOGLE_APPLICATION_CREDENTIALS`).
     pub gcp_key_env: Option<String>,
+    /// Idle-read timeout in seconds for API calls. Default 120 when unset.
+    pub read_timeout_secs: Option<u64>,
 }
 
 /// API auth scheme. `none` sends no `Authorization` and no `x-api-key`.

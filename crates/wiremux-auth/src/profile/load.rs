@@ -135,6 +135,7 @@ fn minimal_profile_for_wire(wire: Wire) -> ResolvedProfile {
             aws_service: None,
             aws_region: None,
             gcp_key_env: None,
+            read_timeout_secs: None,
         },
         oauth: None,
         access_env: Vec::new(),

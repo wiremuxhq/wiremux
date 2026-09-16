@@ -97,6 +97,13 @@ impl AnyTokenProvider {
             _ => None,
         }
     }
+
+    /// True when a 401 can be retried after [`TokenProvider::mark_stale`].
+    /// Static keys never refresh.
+    #[must_use]
+    pub fn can_refresh(&self) -> bool {
+        !matches!(self, Self::Static(_))
+    }
 }
 
 impl TokenProvider for AnyTokenProvider {
@@ -403,6 +410,11 @@ expires_unit = "s"
             );
         }
         let _ = home;
+    }
+
+    #[test]
+    fn can_refresh_is_false_for_static_only() {
+        assert!(!AnyTokenProvider::from(StaticToken::new("sk")).can_refresh());
     }
 
     #[tokio::test]

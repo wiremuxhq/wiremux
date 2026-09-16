@@ -3,7 +3,6 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::pin::Pin;
-use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
@@ -258,14 +257,18 @@ impl WireClient {
         profile: ResolvedProfile,
         provider: AnyTokenProvider,
     ) -> Result<Self, ClientError> {
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|err| ClientError::Transport(err.to_string()))?;
+        let http = crate::headers::default_http_client(&profile).map_err(ClientError::Transport)?;
+        Self::from_resolved_with_client(profile, provider, http)
+    }
+
+    /// Same as [`Self::from_resolved`], with a host-supplied HTTP client.
+    pub fn from_resolved_with_client(
+        profile: ResolvedProfile,
+        provider: AnyTokenProvider,
+        client: reqwest::Client,
+    ) -> Result<Self, ClientError> {
         Ok(Self {
-            http,
+            http: client,
             profile,
             provider,
         })
@@ -281,8 +284,7 @@ impl WireClient {
         let (encoded, loss) = encode(wire, &ir, &self.profile)?;
         let url = upstream_url_for_model(&self.profile, Some(ir.model.as_str()), false)
             .map_err(ClientError::Transport)?;
-        let token = self.access_token().await?;
-        let resp = self.post_json(&url, encoded, token.as_deref()).await?;
+        let resp = self.post_json_auth_retry(&url, encoded).await?;
         let status = resp.status().as_u16();
         let retry_after = retry_after_secs(&resp);
         let success = resp.status().is_success();
@@ -415,6 +417,22 @@ impl WireClient {
         self.http.execute(built).await.map_err(classify_send_err)
     }
 
+    async fn post_json_auth_retry(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+    ) -> Result<reqwest::Response, ClientError> {
+        let token = self.access_token().await?;
+        let resp = self.post_json(url, body.clone(), token.as_deref()).await?;
+        if resp.status().as_u16() != 401 || !self.provider.can_refresh() {
+            return Ok(resp);
+        }
+        drop(resp);
+        self.provider.mark_stale();
+        let token = self.access_token().await?;
+        self.post_json(url, body, token.as_deref()).await
+    }
+
     async fn get_url(
         &self,
         url: &str,
@@ -464,8 +482,7 @@ impl WireClient {
         let (encoded, _loss) = encode(wire, &ir, &self.profile)?;
         let url = upstream_url_for_model(&self.profile, Some(ir.model.as_str()), true)
             .map_err(ClientError::Transport)?;
-        let token = self.access_token().await?;
-        let resp = self.post_json(&url, encoded, token.as_deref()).await?;
+        let resp = self.post_json_auth_retry(&url, encoded).await?;
         let status = resp.status().as_u16();
         let retry_after = retry_after_secs(&resp);
         if !resp.status().is_success() {

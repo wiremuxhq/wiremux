@@ -14,8 +14,8 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use wiremux_auth::{
-    AnyTokenProvider, ResolvedProfile, StaticToken, Wire, format_oauth_transport_error,
-    provider_from_profile,
+    AnyTokenProvider, ResolvedProfile, StaticToken, TokenProvider, Wire,
+    format_oauth_transport_error, provider_from_profile,
 };
 
 use crate::aws_sign::{apply_aws_sigv4, bearer_token_applied};
@@ -71,17 +71,13 @@ pub async fn run(
             }
         }
     };
+    let client = crate::headers::default_http_client(&profile)?;
     let state = Arc::new(ProxyState {
         from,
         profile,
         dump_loss,
         provider,
-        client: reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(std::time::Duration::from_secs(30))
-            .read_timeout(std::time::Duration::from_secs(120))
-            .build()
-            .map_err(|e| e.to_string())?,
+        client,
     });
 
     loop {
@@ -134,6 +130,71 @@ async fn resolve_proxy_token(state: &ProxyState) -> Result<Option<String>, Strin
                 Err(err.clone())
             }
         }
+    }
+}
+
+async fn send_upstream(
+    state: &ProxyState,
+    url: &str,
+    encoded: &[u8],
+) -> Result<reqwest::Response, Response<ProxyBody>> {
+    let mut retried = false;
+    loop {
+        let token = match resolve_proxy_token(state).await {
+            Ok(t) => t,
+            Err(err) => return Err(text(StatusCode::UNAUTHORIZED, format!("{err}\n"))),
+        };
+        let mut upstream = state
+            .client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(encoded.to_vec());
+        if url.contains("/converse-stream") {
+            upstream = upstream.header("accept", "application/vnd.amazon.eventstream");
+        }
+        upstream = apply_profile_headers(upstream, &state.profile, token.as_deref());
+        if let Ok(provider) = &state.provider {
+            upstream = apply_provider_headers(upstream, &state.profile, provider);
+        }
+        let built = match apply_aws_sigv4(
+            &state.profile,
+            url,
+            "POST",
+            encoded,
+            upstream,
+            bearer_token_applied(&state.profile, token.as_deref()),
+        ) {
+            Ok(req) => req,
+            Err(crate::aws_sign::AwsSignError::Auth(err)) => {
+                return Err(text(StatusCode::UNAUTHORIZED, format!("{err}\n")));
+            }
+            Err(crate::aws_sign::AwsSignError::Transport(err)) => {
+                return Err(text(StatusCode::BAD_GATEWAY, format!("{err}\n")));
+            }
+        };
+        let resp = match state.client.execute(built).await {
+            Ok(r) => r,
+            Err(err) => {
+                return Err(text(
+                    StatusCode::BAD_GATEWAY,
+                    format!("{}\n", format_oauth_transport_error("upstream", &err, url)),
+                ));
+            }
+        };
+        if resp.status().as_u16() == 401
+            && !retried
+            && state
+                .provider
+                .as_ref()
+                .is_ok_and(AnyTokenProvider::can_refresh)
+        {
+            if let Ok(provider) = &state.provider {
+                provider.mark_stale();
+            }
+            retried = true;
+            continue;
+        }
+        return Ok(resp);
     }
 }
 
@@ -273,48 +334,9 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         Ok(u) => u,
         Err(err) => return text(StatusCode::BAD_GATEWAY, format!("{err}\n")),
     };
-    let token = match resolve_proxy_token(&state).await {
-        Ok(t) => t,
-        Err(err) => return text(StatusCode::UNAUTHORIZED, format!("{err}\n")),
-    };
-
-    let mut upstream = state
-        .client
-        .post(&url)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(encoded.clone());
-    if url.contains("/converse-stream") {
-        upstream = upstream.header("accept", "application/vnd.amazon.eventstream");
-    }
-    upstream = apply_profile_headers(upstream, &state.profile, token.as_deref());
-    if let Ok(provider) = &state.provider {
-        upstream = apply_provider_headers(upstream, &state.profile, provider);
-    }
-    let built = match apply_aws_sigv4(
-        &state.profile,
-        &url,
-        "POST",
-        &encoded,
-        upstream,
-        bearer_token_applied(&state.profile, token.as_deref()),
-    ) {
-        Ok(req) => req,
-        Err(crate::aws_sign::AwsSignError::Auth(err)) => {
-            return text(StatusCode::UNAUTHORIZED, format!("{err}\n"));
-        }
-        Err(crate::aws_sign::AwsSignError::Transport(err)) => {
-            return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
-        }
-    };
-
-    let resp = match state.client.execute(built).await {
+    let resp = match send_upstream(&state, &url, &encoded).await {
         Ok(r) => r,
-        Err(err) => {
-            return text(
-                StatusCode::BAD_GATEWAY,
-                format!("{}\n", format_oauth_transport_error("upstream", &err, &url)),
-            );
-        }
+        Err(resp) => return resp,
     };
     let status = resp.status();
     let content_type = resp
