@@ -780,6 +780,90 @@ chat_path = "/model/{model}/converse"
     }
 
     #[test]
+    fn vertex_global_host_rewrites_to_aiplatform() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "vertex-gemini-global"
+wire = "gemini"
+base_url = "https://global-aiplatform.googleapis.com"
+chat_path = "/v1/projects/p/locations/global/publishers/google/models/{model}:generateContent"
+"#,
+        )
+        .expect("parse");
+        let url = upstream_url_for_model(&profile, Some("gemini-2.5-flash"), false).expect("url");
+        assert!(
+            url.starts_with("https://aiplatform.googleapis.com/"),
+            "global host must drop the global- prefix, got {url}"
+        );
+        assert!(
+            !url.contains("global-aiplatform.googleapis.com"),
+            "joined URL must not keep the invalid global host, got {url}"
+        );
+        assert!(
+            url.contains("/locations/global/"),
+            "path must keep /locations/global/, got {url}"
+        );
+        assert!(
+            url.ends_with("/v1/projects/p/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"),
+            "{url}"
+        );
+    }
+
+    #[test]
+    fn vertex_regional_host_stays_prefixed() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "vertex-gemini-regional"
+wire = "gemini"
+base_url = "https://us-central1-aiplatform.googleapis.com"
+chat_path = "/v1/projects/p/locations/us-central1/publishers/google/models/{model}:generateContent"
+"#,
+        )
+        .expect("parse");
+        let url = upstream_url_for_model(&profile, Some("gemini-2.5-flash"), false).expect("url");
+        assert!(
+            url.starts_with("https://us-central1-aiplatform.googleapis.com/"),
+            "regional host must stay prefixed, got {url}"
+        );
+        assert!(url.contains("/locations/us-central1/"), "{url}");
+    }
+
+    #[test]
+    fn vertex_messages_stream_rewrites_raw_predict() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "vertex-anthropic"
+wire = "messages"
+base_url = "https://us-central1-aiplatform.googleapis.com"
+chat_path = "/v1/projects/p/locations/us-central1/publishers/anthropic/models/{model}:rawPredict"
+"#,
+        )
+        .expect("parse");
+        let unary = upstream_url_for_model(&profile, Some("claude-sonnet-4"), false).expect("url");
+        assert!(
+            unary.ends_with(":rawPredict"),
+            "unary must stay :rawPredict, got {unary}"
+        );
+        assert!(
+            !unary.contains(":streamRawPredict"),
+            "unary must not rewrite to stream, got {unary}"
+        );
+        let stream =
+            upstream_url_for_model(&profile, Some("claude-sonnet-4"), true).expect("stream");
+        assert!(
+            stream.ends_with(":streamRawPredict"),
+            "stream=true must rewrite :rawPredict to :streamRawPredict, got {stream}"
+        );
+        assert!(
+            !stream.contains("?alt=sse"),
+            "Messages Vertex stream must not add ?alt=sse, got {stream}"
+        );
+    }
+
+    #[test]
     fn parse_listen_rejects_wildcard() {
         assert!(parse_listen("0.0.0.0:0").is_err());
         let addr = parse_listen("127.0.0.1:0").expect("loopback ephemeral listen");

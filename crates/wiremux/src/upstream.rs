@@ -33,14 +33,20 @@ pub fn upstream_url_for_model(
     {
         path = path.replacen(":generateContent", ":streamGenerateContent?alt=sse", 1);
     }
+    if stream
+        && matches!(profile.dialect.wire, Some(Wire::Messages))
+        && path.ends_with(":rawPredict")
+    {
+        path = path.replacen(":rawPredict", ":streamRawPredict", 1);
+    }
     if stream && matches!(profile.dialect.wire, Some(Wire::Converse)) && path.ends_with("/converse")
     {
         path = format!("{path}-stream");
     }
     if path.starts_with("http://") || path.starts_with("https://") {
-        return Ok(path);
+        return Ok(rewrite_vertex_global_host(path));
     }
-    Ok(format!(
+    Ok(rewrite_vertex_global_host(format!(
         "{}{}",
         base.trim_end_matches('/'),
         if path.starts_with('/') {
@@ -48,5 +54,16 @@ pub fn upstream_url_for_model(
         } else {
             format!("/{path}")
         }
-    ))
+    )))
+}
+
+/// Ingest writes `https://{env:GOOGLE_VERTEX_LOCATION}-aiplatform.googleapis.com`.
+/// After envsubst, `LOCATION=global` becomes `global-aiplatform.googleapis.com`.
+/// Google's global host is `aiplatform.googleapis.com` (path keeps `/locations/global/`).
+fn rewrite_vertex_global_host(url: String) -> String {
+    url.replacen(
+        "://global-aiplatform.googleapis.com",
+        "://aiplatform.googleapis.com",
+        1,
+    )
 }
