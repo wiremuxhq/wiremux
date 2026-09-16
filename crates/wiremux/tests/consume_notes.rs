@@ -20,14 +20,14 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         .and_then(|rest| rest.split("```").next())
         .expect("suggested attach toml fence");
     assert!(
-        attach.contains("wiremux-auth = \"0.5.0\"")
-            && attach.contains("version = \"0.5.0\"")
+        attach.contains("wiremux-auth = \"0.6.0\"")
+            && attach.contains("version = \"0.6.0\"")
             && attach.contains("default-features = false"),
         "published-host attach must list crates.io form, got {attach}"
     );
     assert!(
         !notes.contains("tag = \"v0.1.0\""),
-        "Bline attach is crates.io 0.5.0, not git tag v0.1.0"
+        "Bline attach is crates.io 0.6.0, not git tag v0.1.0"
     );
     assert!(
         !notes.contains("leftover-only")
@@ -42,13 +42,15 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         "notes must record the live Bline wrap, not leftover-only"
     );
     assert!(
-        notes.contains("crates.io is `0.5.0`")
+        notes.contains("crates.io is `0.6.0`")
+            && notes.contains("v0.6.0")
             && notes.contains("v0.5.0")
             && notes.contains("3996")
             && notes.contains("4010")
             && notes.contains("v0.4.0")
-            && notes.contains("not in crates.io `0.4.0`"),
-        "notes must name crates.io 0.5.0 and keep the Bline 3996/4010/0.4.0 history"
+            && notes.contains("not in crates.io `0.4.0`")
+            && notes.contains("not in crates.io `0.5.0`"),
+        "notes must name crates.io 0.6.0 and keep the Bline 3996/4010/0.4.0/0.5.0 history"
     );
     assert!(
         notes.contains("default-features = false"),
