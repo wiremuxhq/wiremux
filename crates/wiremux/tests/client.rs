@@ -23,7 +23,7 @@ const PLANTED_XAI: &str = "xai-planted-secret73";
 
 fn simple_ir(model: &str) -> IrRequest {
     IrRequest::new(
-        model.to_string(),
+        model,
         vec![IrItem::User {
             parts: vec![IrPart::Text("hi".into())],
         }],
