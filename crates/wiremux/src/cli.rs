@@ -527,6 +527,7 @@ pub fn wire_name(wire: Wire) -> &'static str {
         Wire::Responses => "responses",
         Wire::Gemini => "gemini",
         Wire::Converse => "converse",
+        _ => wire.as_str(),
     }
 }
 
