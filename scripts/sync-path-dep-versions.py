@@ -17,8 +17,8 @@ def sync_path_dep(root: Path) -> str:
     path = root / "crates/wiremux/Cargo.toml"
     old = path.read_text(encoding="utf-8")
     new, n = re.subn(
-        r'wiremux-auth = \{ version = "[^"]+", path = "../wiremux-auth" \}',
-        f'wiremux-auth = {{ version = "{version}", path = "../wiremux-auth" }}',
+        r'wiremux-auth = \{ version = "[^"]+", path = "../wiremux-auth"((?:, [^}]+)?) \}',
+        f'wiremux-auth = {{ version = "{version}", path = "../wiremux-auth"\\1 }}',
         old,
         count=1,
     )
