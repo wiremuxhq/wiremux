@@ -1653,3 +1653,22 @@ fn converse_eventstream_bytes_decode_to_text_delta() {
         "{ev:?}"
     );
 }
+
+#[test]
+fn converse_eventstream_unwrapped_payload_decodes_to_text_delta() {
+    let converse_profile =
+        parse_profile_str("schema_version = 1\nid = \"amazon-bedrock\"\nwire = \"converse\"\n")
+            .expect("converse profile");
+    let payload = br#"{"delta":{"text":"hi"},"contentBlockIndex":0}"#;
+    let bytes = wiremux::stream::encode_eventstream_message("contentBlockDelta", payload);
+    let mut reader = wiremux::stream::EventStreamReader::new();
+    let frames = reader.feed(&bytes).expect("feed");
+    assert_eq!(frames.len(), 1);
+    let ev = decode_stream_event(Wire::Converse, &frames[0], &converse_profile)
+        .expect("decode")
+        .expect("event");
+    assert!(
+        matches!(ev, IrStreamEvent::TextDelta { ref text } if text == "hi"),
+        "{ev:?}"
+    );
+}

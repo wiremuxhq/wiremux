@@ -13,7 +13,9 @@ use wiremux::{
     ClientError, IrItem, IrPart, IrRequest, IrSampling, IrStreamEvent, WireClient,
     parse_profile_str,
 };
-use wiremux_auth::{AnyTokenProvider, IsolatedHome, PlantCredentials, StaticToken};
+use wiremux_auth::{
+    AnyTokenProvider, GcpTokenProvider, IsolatedHome, PlantCredentials, StaticToken,
+};
 
 const PLANTED_ACCESS: &str = "sk-ant-oat01-client73";
 const PLANTED_SK: &str = "sk-planted-secret73";
@@ -1182,6 +1184,132 @@ async fn display_redacts_secrets_and_debug_hides_token() {
     assert!(
         display.contains("[redacted]"),
         "Display should mark redaction: {display}"
+    );
+}
+
+fn vertex_profile(base: &str, extra_headers: &str) -> wiremux::ResolvedProfile {
+    parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "google-vertex"
+wire = "gemini"
+auth_scheme = "bearer"
+base_url = "{base}"
+chat_path = "/v1beta/models/{{model}}:generateContent"
+{extra_headers}
+"#
+    ))
+    .expect("vertex profile")
+}
+
+fn authorized_user_adc(token_uri: &str, quota_project_id: Option<&str>) -> String {
+    let mut value = json!({
+        "type": "authorized_user",
+        "client_id": "123.apps.googleusercontent.com",
+        "client_secret": "user-secret",
+        "refresh_token": "1//refresh-me",
+        "token_uri": token_uri,
+    });
+    if let Some(quota) = quota_project_id {
+        value["quota_project_id"] = json!(quota);
+    }
+    value.to_string()
+}
+
+const GEMINI_OK_BODY: &str =
+    r#"{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"#;
+
+#[tokio::test]
+async fn authorized_user_adc_sends_x_goog_user_project() {
+    let (token_base, token_handle) = spawn_one(
+        200,
+        "OK",
+        "",
+        r#"{"access_token":"ya29.user","expires_in":3600,"token_type":"Bearer"}"#,
+    );
+    let (api_base, api_handle) = spawn_one(200, "OK", "", GEMINI_OK_BODY);
+    let provider = GcpTokenProvider::from_key(&authorized_user_adc(
+        &format!("{token_base}/token"),
+        Some("billing-proj"),
+    ))
+    .expect("from_key");
+    let client = WireClient::from_resolved(
+        vertex_profile(&api_base, ""),
+        AnyTokenProvider::from(provider),
+    )
+    .expect("client");
+    let _ = client.send(simple_ir("gemini-2.0-flash")).await;
+    let req = api_handle.join().expect("join");
+    let _ = token_handle.join();
+    let lower = req.to_ascii_lowercase();
+    assert!(
+        lower.contains("x-goog-user-project: billing-proj"),
+        "ADC quota_project_id must be sent as x-goog-user-project: {req}"
+    );
+}
+
+#[tokio::test]
+async fn profile_x_goog_user_project_is_not_overwritten() {
+    let (token_base, token_handle) = spawn_one(
+        200,
+        "OK",
+        "",
+        r#"{"access_token":"ya29.user","expires_in":3600,"token_type":"Bearer"}"#,
+    );
+    let (api_base, api_handle) = spawn_one(200, "OK", "", GEMINI_OK_BODY);
+    let provider = GcpTokenProvider::from_key(&authorized_user_adc(
+        &format!("{token_base}/token"),
+        Some("billing-proj"),
+    ))
+    .expect("from_key");
+    let client = WireClient::from_resolved(
+        vertex_profile(
+            &api_base,
+            r#"
+[headers]
+x-goog-user-project = "profile-proj"
+"#,
+        ),
+        AnyTokenProvider::from(provider),
+    )
+    .expect("client");
+    let _ = client.send(simple_ir("gemini-2.0-flash")).await;
+    let req = api_handle.join().expect("join");
+    let _ = token_handle.join();
+    let lower = req.to_ascii_lowercase();
+    assert!(
+        lower.contains("x-goog-user-project: profile-proj"),
+        "profile header must win: {req}"
+    );
+    assert!(
+        !lower.contains("x-goog-user-project: billing-proj"),
+        "must not overwrite profile x-goog-user-project: {req}"
+    );
+}
+
+#[tokio::test]
+async fn authorized_user_adc_without_quota_does_not_invent_header() {
+    let (token_base, token_handle) = spawn_one(
+        200,
+        "OK",
+        "",
+        r#"{"access_token":"ya29.user","expires_in":3600,"token_type":"Bearer"}"#,
+    );
+    let (api_base, api_handle) = spawn_one(200, "OK", "", GEMINI_OK_BODY);
+    let provider =
+        GcpTokenProvider::from_key(&authorized_user_adc(&format!("{token_base}/token"), None))
+            .expect("from_key");
+    let client = WireClient::from_resolved(
+        vertex_profile(&api_base, ""),
+        AnyTokenProvider::from(provider),
+    )
+    .expect("client");
+    let _ = client.send(simple_ir("gemini-2.0-flash")).await;
+    let req = api_handle.join().expect("join");
+    let _ = token_handle.join();
+    assert!(
+        !req.to_ascii_lowercase().contains("x-goog-user-project"),
+        "ADC without quota_project_id must not invent the header: {req}"
     );
 }
 

@@ -15,7 +15,7 @@ use wiremux_auth::{
     sign_aws_request,
 };
 
-use crate::headers::apply_profile_headers;
+use crate::headers::{apply_profile_headers, apply_provider_headers};
 use crate::ir::{IrRequest, IrStreamEvent, LossReport};
 use crate::map::{MapError, encode};
 use crate::stream::{ToolCallAssembler, UpstreamFrames, decode_response, decode_stream_events};
@@ -391,6 +391,7 @@ impl WireClient {
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.clone());
         let req = apply_profile_headers(req, &self.profile, token);
+        let req = apply_provider_headers(req, &self.profile, &self.provider);
         let req = if url.contains("/converse-stream") {
             req.header("accept", "application/vnd.amazon.eventstream")
         } else {
@@ -408,7 +409,8 @@ impl WireClient {
         token: Option<&str>,
     ) -> Result<reqwest::Response, reqwest::Error> {
         let req = self.http.get(url);
-        apply_profile_headers(req, &self.profile, token)
+        let req = apply_profile_headers(req, &self.profile, token);
+        apply_provider_headers(req, &self.profile, &self.provider)
             .send()
             .await
     }

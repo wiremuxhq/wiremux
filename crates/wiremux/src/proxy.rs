@@ -13,12 +13,12 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
-use wiremux_auth::{ResolvedProfile, Wire, format_oauth_transport_error};
+use wiremux_auth::{ResolvedProfile, Wire, format_oauth_transport_error, provider_from_profile};
 
 use serde_json::Value;
 
 use crate::cli::{parse_listen, proxy_token};
-use crate::headers::apply_profile_headers;
+use crate::headers::{apply_profile_headers, apply_provider_headers};
 use crate::ir::{IrStreamEvent, LossReport};
 use crate::map::{decode, encode};
 use crate::stream::{
@@ -163,6 +163,9 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(encoded);
     upstream = apply_profile_headers(upstream, &state.profile, token.as_deref());
+    if let Ok(provider) = provider_from_profile(&state.profile) {
+        upstream = apply_provider_headers(upstream, &state.profile, &provider);
+    }
 
     let resp = match upstream.send().await {
         Ok(r) => r,

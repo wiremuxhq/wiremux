@@ -1,6 +1,6 @@
 //! Shared profile header / auth_scheme / betas application.
 
-use wiremux_auth::{AuthScheme, ResolvedProfile};
+use wiremux_auth::{AnyTokenProvider, AuthScheme, ResolvedProfile};
 
 const GROK_BUILD_PROXY_HOST: &str = "cli-chat-proxy.grok.com";
 const GROK_CLIENT_VERSION: &str = "0.1.202";
@@ -53,6 +53,21 @@ pub(crate) fn apply_profile_headers(
                 req = req.header(name, token);
             }
         }
+    }
+    req
+}
+
+/// Provider-derived headers after profile headers. Profile keys win.
+pub(crate) fn apply_provider_headers(
+    mut req: reqwest::RequestBuilder,
+    profile: &ResolvedProfile,
+    provider: &AnyTokenProvider,
+) -> reqwest::RequestBuilder {
+    if header_present(profile, "x-goog-user-project") {
+        return req;
+    }
+    if let Some(quota) = provider.quota_project_id() {
+        req = req.header("x-goog-user-project", quota);
     }
     req
 }

@@ -50,11 +50,27 @@ struct EventStreamMessage {
 
 impl EventStreamMessage {
     fn into_raw_sse(self) -> RawSse {
+        let data = wrap_event_payload(self.event_type.as_deref(), &self.payload);
         RawSse {
             event: self.event_type,
-            data: String::from_utf8_lossy(&self.payload).into_owned(),
+            data,
         }
     }
+}
+
+fn wrap_event_payload(event_type: Option<&str>, payload: &[u8]) -> String {
+    let text = String::from_utf8_lossy(payload).into_owned();
+    let Some(event_type) = event_type.filter(|name| !name.is_empty()) else {
+        return text;
+    };
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(payload)
+    else {
+        return text;
+    };
+    if map.contains_key(event_type) {
+        return text;
+    }
+    serde_json::json!({ event_type: serde_json::Value::Object(map) }).to_string()
 }
 
 fn take_message(buf: &[u8]) -> Result<Option<(EventStreamMessage, usize)>, String> {
@@ -84,6 +100,12 @@ fn take_message(buf: &[u8]) -> Result<Option<(EventStreamMessage, usize)>, Strin
     }
     let headers = parse_headers(&buf[headers_start..headers_end])?;
     let payload = buf[headers_end..total - CRC_LEN].to_vec();
+    if headers.message_type.as_deref() == Some("exception") {
+        return Err(exception_error(
+            headers.exception_type.as_deref().unwrap_or("unknown"),
+            &payload,
+        ));
+    }
     Ok(Some((
         EventStreamMessage {
             event_type: headers.event_type,
@@ -93,13 +115,30 @@ fn take_message(buf: &[u8]) -> Result<Option<(EventStreamMessage, usize)>, Strin
     )))
 }
 
+fn exception_error(exception_type: &str, payload: &[u8]) -> String {
+    let message = serde_json::from_slice::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| String::from_utf8_lossy(payload).into_owned());
+    format!("eventstream exception {exception_type}: {message}")
+}
+
 struct ParsedHeaders {
     event_type: Option<String>,
+    message_type: Option<String>,
+    exception_type: Option<String>,
 }
 
 fn parse_headers(buf: &[u8]) -> Result<ParsedHeaders, String> {
     let mut i = 0;
     let mut event_type = None;
+    let mut message_type = None;
+    let mut exception_type = None;
     while i < buf.len() {
         let name_len = buf[i] as usize;
         i += 1;
@@ -112,11 +151,18 @@ fn parse_headers(buf: &[u8]) -> Result<ParsedHeaders, String> {
         let ty = buf[i];
         i += 1;
         let value = read_header_value(ty, buf, &mut i)?;
-        if name == ":event-type" {
-            event_type = Some(value);
+        match name {
+            ":event-type" => event_type = Some(value),
+            ":message-type" => message_type = Some(value),
+            ":exception-type" => exception_type = Some(value),
+            _ => {}
         }
     }
-    Ok(ParsedHeaders { event_type })
+    Ok(ParsedHeaders {
+        event_type,
+        message_type,
+        exception_type,
+    })
 }
 
 fn read_header_value(ty: u8, buf: &[u8], i: &mut usize) -> Result<String, String> {
@@ -164,13 +210,26 @@ pub fn encode_message(event_type: &str, payload: &[u8]) -> Vec<u8> {
     write_string_header(&mut headers, ":message-type", "event");
     write_string_header(&mut headers, ":event-type", event_type);
     write_string_header(&mut headers, ":content-type", "application/json");
+    encode_with_headers(&headers, payload)
+}
+
+/// Encode an AWS Event Stream exception frame (no `:event-type`).
+pub fn encode_exception_message(exception_type: &str, payload: &[u8]) -> Vec<u8> {
+    let mut headers = Vec::new();
+    write_string_header(&mut headers, ":message-type", "exception");
+    write_string_header(&mut headers, ":exception-type", exception_type);
+    write_string_header(&mut headers, ":content-type", "application/json");
+    encode_with_headers(&headers, payload)
+}
+
+fn encode_with_headers(headers: &[u8], payload: &[u8]) -> Vec<u8> {
     let total = PRELUDE_LEN + headers.len() + payload.len() + CRC_LEN;
     let mut out = Vec::with_capacity(total);
     out.extend_from_slice(&(total as u32).to_be_bytes());
     out.extend_from_slice(&(headers.len() as u32).to_be_bytes());
     let prelude_crc = crc32_ieee(&out);
     out.extend_from_slice(&prelude_crc.to_be_bytes());
-    out.extend_from_slice(&headers);
+    out.extend_from_slice(headers);
     out.extend_from_slice(payload);
     let message_crc = crc32_ieee(&out);
     out.extend_from_slice(&message_crc.to_be_bytes());
@@ -238,5 +297,58 @@ mod tests {
         let mut reader = EventStreamReader::new();
         let err = reader.feed(&bytes).expect_err("crc");
         assert!(err.contains("CRC"), "{err}");
+    }
+
+    #[test]
+    fn unwrapped_event_type_payload_is_wrapped() {
+        let payload = br#"{"delta":{"text":"hi"},"contentBlockIndex":0}"#;
+        let bytes = encode_message("contentBlockDelta", payload);
+        let mut reader = EventStreamReader::new();
+        let frames = reader.feed(&bytes).expect("feed");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].event.as_deref(), Some("contentBlockDelta"));
+        let value: serde_json::Value = serde_json::from_str(&frames[0].data).expect("json");
+        assert_eq!(
+            value
+                .pointer("/contentBlockDelta/delta/text")
+                .and_then(serde_json::Value::as_str),
+            Some("hi"),
+            "{}",
+            frames[0].data
+        );
+    }
+
+    #[test]
+    fn exception_frame_is_feed_error() {
+        let bytes = encode_exception_message(
+            "validationException",
+            br#"{"message":"The provided model identifier is invalid."}"#,
+        );
+        let mut reader = EventStreamReader::new();
+        let err = reader.feed(&bytes).expect_err("exception");
+        assert!(err.contains("validationException"), "{err}");
+        assert!(
+            err.contains("The provided model identifier is invalid."),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn exception_then_delta_in_same_buffer_is_error() {
+        let mut bytes =
+            encode_exception_message("internalServerException", br#"{"message":"boom"}"#);
+        bytes.extend_from_slice(&encode_message(
+            "contentBlockDelta",
+            br#"{"delta":{"text":"hi"},"contentBlockIndex":0}"#,
+        ));
+        let mut reader = EventStreamReader::new();
+        let err = reader.feed(&bytes).expect_err("exception first");
+        assert!(err.contains("internalServerException"), "{err}");
+        assert!(err.contains("boom"), "{err}");
+        let again = reader.feed(&[]);
+        assert!(
+            again.is_err(),
+            "must not emit a later contentBlockDelta as success: {again:?}"
+        );
     }
 }
