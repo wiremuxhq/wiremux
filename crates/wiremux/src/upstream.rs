@@ -33,10 +33,6 @@ pub fn upstream_url_for_model(
     {
         path = path.replacen(":generateContent", ":streamGenerateContent?alt=sse", 1);
     }
-    if stream && matches!(profile.dialect.wire, Some(Wire::Converse)) && path.ends_with("/converse")
-    {
-        path = format!("{path}-stream");
-    }
     if path.starts_with("http://") || path.starts_with("https://") {
         return Ok(path);
     }

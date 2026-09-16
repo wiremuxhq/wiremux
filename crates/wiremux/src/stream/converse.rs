@@ -46,7 +46,8 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         }));
     }
     if value.get("contentBlockStop").is_some() {
-        return Ok(Some(IrStreamEvent::ToolCallEnd));
+        // AWS also emits this for text/reasoning blocks.
+        return Ok(None);
     }
     if let Some(stop) = value
         .pointer("/messageStop/stopReason")

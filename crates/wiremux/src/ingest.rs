@@ -188,6 +188,12 @@ pub fn profile_toml(vendor: &CatalogVendor) -> Result<String, IngestError> {
             out.push_str(&format!("{k} = {}\n", toml_string(v)));
         }
     }
+    if !draft.extra_body.is_empty() {
+        out.push_str("\n[fingerprint.extra_body]\n");
+        for (k, v) in &draft.extra_body {
+            out.push_str(&format!("{k} = {}\n", toml_string(v)));
+        }
+    }
     Ok(out)
 }
 
@@ -198,6 +204,7 @@ struct ProfileDraft {
     auth_scheme: &'static str,
     access_env: Vec<String>,
     headers: Vec<(String, String)>,
+    extra_body: Vec<(String, String)>,
     aws_service: Option<&'static str>,
     aws_region: Option<String>,
 }
@@ -220,8 +227,8 @@ fn draft_for(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestError> {
     }
     let wire = emit_wire(vendor)?;
     let (base_url, chat_path) = endpoint_for(vendor, wire)?;
-    let auth_scheme = if wire == EmitWire::Messages {
-        "x-api-key"
+    let auth_scheme = if wire == EmitWire::Messages && vendor.api.is_some() {
+        "bearer"
     } else {
         wire.auth_scheme()
     };
@@ -232,6 +239,7 @@ fn draft_for(vendor: &CatalogVendor) -> Result<ProfileDraft, IngestError> {
         auth_scheme,
         access_env: vendor.env.clone(),
         headers: Vec::new(),
+        extra_body: Vec::new(),
         aws_service: None,
         aws_region: None,
     })
@@ -257,6 +265,7 @@ fn azure_draft(vendor: &CatalogVendor) -> ProfileDraft {
         auth_scheme: "header:api-key",
         access_env: vec![key],
         headers: Vec::new(),
+        extra_body: Vec::new(),
         aws_service: None,
         aws_region: None,
     }
@@ -270,6 +279,7 @@ fn vertex_gemini_draft(vendor: &CatalogVendor) -> ProfileDraft {
         auth_scheme: "bearer",
         access_env: vertex_access_env(vendor),
         headers: Vec::new(),
+        extra_body: Vec::new(),
         aws_service: None,
         aws_region: None,
     }
@@ -282,7 +292,8 @@ fn vertex_anthropic_draft(vendor: &CatalogVendor) -> ProfileDraft {
         chat_path: "/v1/projects/{env:GOOGLE_VERTEX_PROJECT}/locations/{env:GOOGLE_VERTEX_LOCATION}/publishers/anthropic/models/{model}:rawPredict".into(),
         auth_scheme: "bearer",
         access_env: vertex_access_env(vendor),
-        headers: vec![("anthropic-version".into(), "2023-06-01".into())],
+        headers: vec![("anthropic-version".into(), "vertex-2023-10-16".into())],
+        extra_body: vec![("anthropic_version".into(), "vertex-2023-10-16".into())],
         aws_service: None,
         aws_region: None,
     }
@@ -313,6 +324,7 @@ fn bedrock_draft(vendor: &CatalogVendor) -> ProfileDraft {
         auth_scheme: "bearer",
         access_env: env,
         headers: Vec::new(),
+        extra_body: Vec::new(),
         aws_service: Some("bedrock"),
         aws_region: Some("{env:AWS_REGION}".into()),
     }
@@ -1015,7 +1027,7 @@ mod tests {
         assert!(toml.contains("wire = \"messages\""), "{toml}");
         assert!(toml.contains("base_url = \"https://api.minimax.io\""));
         assert!(toml.contains("chat_path = \"/anthropic/v1/messages\""));
-        assert!(toml.contains("auth_scheme = \"x-api-key\""));
+        assert!(toml.contains("auth_scheme = \"bearer\""));
         parse_profile_str(&toml).unwrap();
 
         let kimi = rows.iter().find(|r| r.id == "kimi-for-coding").unwrap();
@@ -1080,6 +1092,7 @@ mod tests {
         assert!(toml.contains("wire = \"messages\""));
         assert!(toml.contains(":rawPredict"));
         assert!(toml.contains("anthropic-version"));
+        assert!(toml.contains("anthropic_version = \"vertex-2023-10-16\""));
         parse_profile_str(&toml).unwrap();
 
         let bedrock = rows.iter().find(|r| r.id == "amazon-bedrock").unwrap();
