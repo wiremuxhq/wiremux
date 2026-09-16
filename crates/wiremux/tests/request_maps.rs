@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use wiremux::{
-    IrCache, IrItem, IrPart, IrRequest, IrSampling, IrTool, IrToolChoice, LossAction, LossReport,
-    MapError, ResolvedProfile, Wire, decode, encode, parse_profile_str,
+    IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrTool, IrToolChoice,
+    LossAction, LossReport, MapError, ResolvedProfile, Wire, decode, encode, parse_profile_str,
 };
 
 fn golden(name: &str) -> Vec<u8> {
@@ -3738,7 +3738,7 @@ fn chat_encode_gpt_4o_keeps_top_p() {
 }
 
 #[test]
-fn messages_document_part_round_trips_as_raw() {
+fn messages_pdf_document_round_trips() {
     let req = br#"{
         "model": "claude-opus-4-6",
         "messages": [{
@@ -3759,30 +3759,41 @@ fn messages_document_part_round_trips_as_raw() {
             item,
             IrItem::User { parts } if parts.iter().any(|p| matches!(
                 p,
-                IrPart::Raw { type_name, raw }
-                    if type_name == "document"
-                        && raw.get("type").and_then(Value::as_str) == Some("document")
+                IrPart::Document {
+                    source: IrDocumentSource::Base64(data),
+                    media_type,
+                    ..
+                } if data == "AAAA" && media_type == "application/pdf"
             ))
         )),
-        "document part must become IrPart::Raw, got {:?}",
+        "document part must become IrPart::Document, got {:?}",
         ir.items
     );
-    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
-    let content = body
-        .pointer("/messages/0/content")
-        .and_then(Value::as_array)
-        .expect("content");
-    assert!(
-        content
-            .iter()
-            .any(|block| block.get("type").and_then(Value::as_str) == Some("document")),
+    assert_eq!(
+        body.pointer("/messages/0/content/0/type")
+            .and_then(Value::as_str),
+        Some("document"),
         "encode Messages must keep type document, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/source/data")
+            .and_then(Value::as_str),
+        Some("AAAA"),
+        "encode Messages must keep PDF bytes, got {body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| { event.path.contains("document") && event.action == LossAction::Drop }),
+        "Messages PDF must not Drop, got {report:?}"
     );
 }
 
 #[test]
-fn responses_input_file_part_round_trips_as_raw() {
+fn responses_input_file_part_round_trips_as_document() {
     let req = br#"{
         "model": "gpt-5",
         "input": [{
@@ -3799,12 +3810,13 @@ fn responses_input_file_part_round_trips_as_raw() {
             item,
             IrItem::User { parts } if parts.iter().any(|p| matches!(
                 p,
-                IrPart::Raw { type_name, raw }
-                    if type_name == "input_file"
-                        && raw.get("file_id").and_then(Value::as_str) == Some("file-abc")
+                IrPart::Document {
+                    source: IrDocumentSource::FileId(id),
+                    ..
+                } if id == "file-abc"
             ))
         )),
-        "input_file part must become IrPart::Raw, got {:?}",
+        "input_file part must become IrPart::Document FileId, got {:?}",
         ir.items
     );
     let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
@@ -3814,9 +3826,10 @@ fn responses_input_file_part_round_trips_as_raw() {
         .and_then(Value::as_array)
         .expect("content");
     assert!(
-        content
-            .iter()
-            .any(|block| block.get("type").and_then(Value::as_str) == Some("input_file")),
+        content.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("input_file")
+                && block.get("file_id").and_then(Value::as_str) == Some("file-abc")
+        }),
         "encode Responses must keep type input_file, got {body}"
     );
 }
@@ -3842,13 +3855,14 @@ fn gemini_fileData_part_round_trips_as_raw() {
             item,
             IrItem::User { parts } if parts.iter().any(|p| matches!(
                 p,
-                IrPart::Raw { type_name, raw }
-                    if type_name == "fileData"
-                        && raw.pointer("/fileData/fileUri").and_then(Value::as_str)
-                            == Some("files/abc")
+                IrPart::Document {
+                    source: IrDocumentSource::FileId(id),
+                    media_type,
+                    ..
+                } if id == "files/abc" && media_type == "application/pdf"
             ))
         )),
-        "fileData part must become IrPart::Raw, got {:?}",
+        "PDF fileData must become IrPart::Document FileId, got {:?}",
         ir.items
     );
     let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
@@ -3883,12 +3897,24 @@ fn gemini_fileData_encode_messages_does_not_leak() {
         !body.to_string().contains("fileData"),
         "Messages encode must not leak Gemini fileData, got {body}"
     );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/type")
+            .and_then(Value::as_str),
+        Some("document"),
+        "PDF fileData must become Messages document, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/source/file_id")
+            .and_then(Value::as_str),
+        Some("files/abc"),
+        "Messages document must keep file_id, got {body}"
+    );
     assert!(
-        report
+        !report
             .events
             .iter()
-            .any(|event| { event.action == LossAction::Drop && event.path.contains("fileData") }),
-        "Gemini fileData Raw must Drop on Messages encode, got {report:?}"
+            .any(|event| { event.action == LossAction::Drop && event.path.contains("document") }),
+        "Messages has a document file_id slot, got {report:?}"
     );
 }
 
@@ -3914,12 +3940,161 @@ fn gemini_fileData_encode_responses_does_not_leak() {
         !body.to_string().contains("fileData"),
         "Responses encode must not leak Gemini fileData, got {body}"
     );
+    assert_eq!(
+        body.pointer("/input/0/content/0/type")
+            .and_then(Value::as_str),
+        Some("input_file"),
+        "PDF fileData must become Responses input_file, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/input/0/content/0/file_id")
+            .and_then(Value::as_str),
+        Some("files/abc"),
+        "Responses input_file must keep file_id, got {body}"
+    );
     assert!(
-        report
+        !report
             .events
             .iter()
-            .any(|event| { event.action == LossAction::Drop && event.path.contains("fileData") }),
-        "Gemini fileData Raw must Drop on Responses encode, got {report:?}"
+            .any(|event| { event.action == LossAction::Drop && event.path.contains("document") }),
+        "Responses has an input_file file_id slot, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_input_audio_maps_to_gemini_inline_data() {
+    let req = br#"{
+        "model": "gpt-4o-audio-preview",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "input_audio",
+                "input_audio": {
+                    "data": "AAAA",
+                    "format": "wav"
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::Audio { data, format } if data == "AAAA" && format == "wav"
+            ))
+        )),
+        "input_audio must become IrPart::Audio, got {:?}",
+        ir.items
+    );
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/inlineData/mimeType")
+            .and_then(Value::as_str),
+        Some("audio/wav"),
+        "Gemini must get audio inlineData, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/inlineData/data")
+            .and_then(Value::as_str),
+        Some("AAAA"),
+        "Gemini must encode audio data, got {body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| event.path.contains("audio") && event.action == LossAction::Drop),
+        "Gemini has an audio inlineData slot, got {report:?}"
+    );
+}
+
+#[test]
+fn converse_document_round_trips() {
+    let req = br#"{
+        "modelId": "amazon.nova-lite-v1:0",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "document": {
+                    "format": "pdf",
+                    "name": "report",
+                    "source": { "bytes": "AAAA" }
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::Document {
+                    source: IrDocumentSource::Base64(data),
+                    media_type,
+                    name: Some(name),
+                } if data == "AAAA" && media_type == "application/pdf" && name == "report"
+            ))
+        )),
+        "Converse document must become IrPart::Document, got {:?}",
+        ir.items
+    );
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/document/format")
+            .and_then(Value::as_str),
+        Some("pdf"),
+        "encode Converse must keep document format, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/document/source/bytes")
+            .and_then(Value::as_str),
+        Some("AAAA"),
+        "encode Converse must keep document bytes, got {body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| { event.path.contains("document") && event.action == LossAction::Drop }),
+        "Converse has a document slot, got {report:?}"
+    );
+}
+
+#[test]
+fn converse_document_file_id_records_loss() {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::User {
+            parts: vec![
+                IrPart::Text("see attached".into()),
+                IrPart::Document {
+                    source: IrDocumentSource::FileId("file-abc".into()),
+                    media_type: "application/pdf".into(),
+                    name: Some("report".into()),
+                },
+            ],
+        }],
+    );
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.pointer("/messages/0/content")
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| blocks.iter().all(|b| b.get("document").is_none())),
+        "Converse must not invent a document from file_id, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "part.document"
+                && event.action == LossAction::Drop
+                && event.detail.contains("file_id")
+        }),
+        "file_id Document must record LossReport on Converse, got {report:?}"
     );
 }
 

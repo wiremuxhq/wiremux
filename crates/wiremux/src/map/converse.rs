@@ -3,8 +3,11 @@
 use serde_json::{Value, json};
 
 use super::MapError;
+use super::str_field;
 use super::tools::PreparedTool;
-use crate::ir::{IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction, LossReport};
+use crate::ir::{
+    IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction, LossReport,
+};
 
 pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError> {
     let mut report = LossReport::default();
@@ -212,7 +215,32 @@ fn decode_part(block: &Value) -> Option<IrPart> {
             signature,
         });
     }
+    if let Some(doc) = block.get("document") {
+        return decode_document(doc);
+    }
     None
+}
+
+fn decode_document(doc: &Value) -> Option<IrPart> {
+    let format = str_field(doc, "format").unwrap_or_else(|| "pdf".into());
+    let name = str_field(doc, "name").filter(|s| !s.is_empty());
+    let source = doc.get("source")?;
+    let src = if let Some(bytes) = str_field(source, "bytes") {
+        IrDocumentSource::Base64(bytes)
+    } else if let Some(uri) = source
+        .pointer("/s3Location/uri")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        IrDocumentSource::Url(uri.to_string())
+    } else {
+        return None;
+    };
+    Some(IrPart::Document {
+        source: src,
+        media_type: super::media_type_from_converse_format(&format),
+        name,
+    })
 }
 
 fn decode_sampling(value: &Value) -> IrSampling {
@@ -480,10 +508,72 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
                 "reasoningContent": { "reasoningText": reasoning_text }
             }))
         }
+        IrPart::Document {
+            source,
+            media_type,
+            name,
+        } => encode_document(source, media_type, name.as_deref(), report),
+        IrPart::Audio { .. } => {
+            report.record("part.audio", LossAction::Drop, "audio has no converse slot");
+            None
+        }
         IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. } | IrPart::Raw { .. } => {
             report.record("content", LossAction::Drop, "converse image/raw dropped");
             None
         }
+    }
+}
+
+fn encode_document(
+    source: &IrDocumentSource,
+    media_type: &str,
+    name: Option<&str>,
+    report: &mut LossReport,
+) -> Option<Value> {
+    if matches!(source, IrDocumentSource::FileId(_)) {
+        report.record(
+            "part.document",
+            LossAction::Drop,
+            "document file_id has no converse slot",
+        );
+        return None;
+    }
+    let Some(format) = super::converse_document_format(media_type) else {
+        report.record(
+            "part.document",
+            LossAction::Drop,
+            "document format has no converse slot",
+        );
+        return None;
+    };
+    let name = name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("document");
+    match source {
+        IrDocumentSource::Base64(data) => Some(json!({
+            "document": {
+                "format": format,
+                "name": name,
+                "source": { "bytes": data }
+            }
+        })),
+        IrDocumentSource::Url(url) if url.starts_with("s3://") => Some(json!({
+            "document": {
+                "format": format,
+                "name": name,
+                "source": { "s3Location": { "uri": url } }
+            }
+        })),
+        IrDocumentSource::Url(_) => {
+            report.record(
+                "part.document",
+                LossAction::Drop,
+                "document url has no converse slot",
+            );
+            None
+        }
+        IrDocumentSource::FileId(_) => unreachable!("recorded above"),
     }
 }
 

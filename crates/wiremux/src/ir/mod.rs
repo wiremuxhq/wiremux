@@ -209,6 +209,27 @@ pub enum IrPart {
         type_name: String,
         raw: serde_json::Value,
     },
+    /// Messages `document`, Chat/Responses `file`/`input_file`,
+    /// Gemini PDF `inlineData`/`fileData`, Converse `document`.
+    Document {
+        source: IrDocumentSource,
+        media_type: String,
+        name: Option<String>,
+    },
+    /// Chat `input_audio` and Gemini `inlineData` with `audio/*`.
+    Audio {
+        data: String,
+        format: String,
+    },
+}
+
+/// Where a document payload lives.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum IrDocumentSource {
+    Base64(String),
+    Url(String),
+    FileId(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]

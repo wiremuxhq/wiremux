@@ -3,9 +3,13 @@
 use serde_json::{Value, json};
 
 use super::tools::{PreparedTool, decode_tool};
-use super::{MapError, bool_field, f32_field, stop_values, str_field, u32_field, value_as_string};
+use super::{
+    MapError, bool_field, decode_input_audio_part, decode_openai_file_part, f32_field, stop_values,
+    str_field, u32_field, value_as_string,
+};
 use crate::ir::{
-    IrCache, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction, LossReport,
+    IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
+    LossReport,
 };
 
 pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError> {
@@ -114,6 +118,8 @@ fn decode_part(part: &Value) -> Option<IrPart> {
                 Some(IrPart::ImageUrl(url))
             }
         }
+        "file" => decode_openai_file_part(part),
+        "input_audio" => decode_input_audio_part(part),
         "thinking" => Some(IrPart::Thinking {
             text: part
                 .get("text")
@@ -384,6 +390,17 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                 );
                 false
             }
+            IrPart::Document {
+                source: IrDocumentSource::Url(_),
+                ..
+            } => {
+                report.record(
+                    "part.document",
+                    LossAction::Drop,
+                    "document url has no Chat Completions slot",
+                );
+                false
+            }
             _ => true,
         })
         .collect();
@@ -405,10 +422,47 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                     "type": "image_url",
                     "image_url": {"url": format!("data:{media_type};base64,{data}")}
                 }),
+                IrPart::Document {
+                    source,
+                    media_type,
+                    name,
+                } => encode_document(source, media_type, name.as_deref()),
+                IrPart::Audio { data, format } => json!({
+                    "type": "input_audio",
+                    "input_audio": { "data": data, "format": format }
+                }),
                 IrPart::Thinking { .. } | IrPart::Raw { .. } => unreachable!("filtered"),
             })
             .collect(),
     )
+}
+
+fn encode_document(source: &IrDocumentSource, media_type: &str, name: Option<&str>) -> Value {
+    let filename = super::document_filename(name, media_type);
+    match source {
+        IrDocumentSource::Base64(data) => {
+            let media_type = if media_type.is_empty() {
+                "application/pdf"
+            } else {
+                media_type
+            };
+            json!({
+                "type": "file",
+                "file": {
+                    "filename": filename,
+                    "file_data": format!("data:{media_type};base64,{data}")
+                }
+            })
+        }
+        IrDocumentSource::FileId(id) => {
+            let mut file = json!({ "file_id": id });
+            if let Some(name) = name.map(str::trim).filter(|s| !s.is_empty()) {
+                file["filename"] = json!(name);
+            }
+            json!({ "type": "file", "file": file })
+        }
+        IrDocumentSource::Url(_) => unreachable!("filtered"),
+    }
 }
 
 fn encode_tool(tool: &PreparedTool) -> Value {

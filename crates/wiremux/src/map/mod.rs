@@ -10,7 +10,7 @@ mod tools;
 use serde_json::Value;
 use wiremux_auth::{ForbiddenFieldPolicy, ResolvedProfile, ToolNameCase, Wire};
 
-use crate::ir::{IrItem, IrRequest, LossAction, LossReport};
+use crate::ir::{IrDocumentSource, IrItem, IrPart, IrRequest, LossAction, LossReport};
 
 /// Failure from request decode or encode.
 #[derive(Debug, thiserror::Error)]
@@ -202,6 +202,143 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
 
 fn split_data_url(url: &str) -> Option<(&str, &str)> {
     url.strip_prefix("data:")?.split_once(";base64,")
+}
+
+fn is_pdf_media_type(media: &str) -> bool {
+    let media = media.to_ascii_lowercase();
+    media == "application/pdf" || media == "application/x-pdf" || media == "pdf"
+}
+
+fn is_audio_media_type(media: &str) -> bool {
+    media.to_ascii_lowercase().starts_with("audio/")
+}
+
+fn audio_format_from_mime(mime: &str) -> String {
+    mime.split_once('/')
+        .map(|(_, rest)| rest.to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| mime.to_string())
+}
+
+fn audio_mime_from_format(format: &str) -> String {
+    if format.contains('/') {
+        format.to_string()
+    } else {
+        format!("audio/{format}")
+    }
+}
+
+fn converse_document_format(media_type: &str) -> Option<&'static str> {
+    let media = media_type.to_ascii_lowercase();
+    match media.as_str() {
+        "application/pdf" | "application/x-pdf" | "pdf" => Some("pdf"),
+        "text/csv" | "csv" => Some("csv"),
+        "application/msword" | "doc" => Some("doc"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" | "docx" => {
+            Some("docx")
+        }
+        "application/vnd.ms-excel" | "xls" => Some("xls"),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" | "xlsx" => {
+            Some("xlsx")
+        }
+        "text/html" | "html" => Some("html"),
+        "text/plain" | "txt" => Some("txt"),
+        "text/markdown" | "md" => Some("md"),
+        _ => None,
+    }
+}
+
+fn media_type_from_converse_format(format: &str) -> String {
+    match format.to_ascii_lowercase().as_str() {
+        "pdf" => "application/pdf".into(),
+        "csv" => "text/csv".into(),
+        "doc" => "application/msword".into(),
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
+        "xls" => "application/vnd.ms-excel".into(),
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into(),
+        "html" => "text/html".into(),
+        "txt" => "text/plain".into(),
+        "md" => "text/markdown".into(),
+        other => other.to_string(),
+    }
+}
+
+fn document_filename(name: Option<&str>, media_type: &str) -> String {
+    if let Some(name) = name.map(str::trim).filter(|s| !s.is_empty()) {
+        return name.to_string();
+    }
+    match converse_document_format(media_type) {
+        Some(ext) => format!("document.{ext}"),
+        None => "document".into(),
+    }
+}
+
+fn document_ref_source(uri: String) -> IrDocumentSource {
+    let lower = uri.to_ascii_lowercase();
+    if lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("s3://")
+        || lower.starts_with("gs://")
+    {
+        IrDocumentSource::Url(uri)
+    } else {
+        IrDocumentSource::FileId(uri)
+    }
+}
+
+fn decode_openai_file_part(part: &Value) -> Option<IrPart> {
+    let file = part.get("file").unwrap_or(part);
+    let name = str_field(file, "filename")
+        .or_else(|| str_field(part, "filename"))
+        .or_else(|| str_field(file, "name"))
+        .or_else(|| str_field(part, "name"))
+        .filter(|s| !s.is_empty());
+    let media_type = str_field(file, "media_type")
+        .or_else(|| str_field(part, "media_type"))
+        .unwrap_or_default();
+    if let Some(file_id) = str_field(file, "file_id").or_else(|| str_field(part, "file_id")) {
+        return Some(IrPart::Document {
+            source: IrDocumentSource::FileId(file_id),
+            media_type,
+            name,
+        });
+    }
+    if let Some(url) = str_field(file, "file_url")
+        .or_else(|| str_field(part, "file_url"))
+        .or_else(|| str_field(file, "url"))
+        .or_else(|| str_field(part, "url"))
+    {
+        return Some(IrPart::Document {
+            source: document_ref_source(url),
+            media_type,
+            name,
+        });
+    }
+    let data = str_field(file, "file_data")
+        .or_else(|| str_field(part, "file_data"))
+        .or_else(|| str_field(file, "data"))?;
+    let (media_type, payload) = if let Some((mt, b64)) = split_data_url(&data) {
+        (mt.to_string(), b64.to_string())
+    } else {
+        let media_type = if media_type.is_empty() {
+            "application/pdf".into()
+        } else {
+            media_type
+        };
+        (media_type, data)
+    };
+    Some(IrPart::Document {
+        source: IrDocumentSource::Base64(payload),
+        media_type,
+        name,
+    })
+}
+
+fn decode_input_audio_part(part: &Value) -> Option<IrPart> {
+    let audio = part.get("input_audio").unwrap_or(part);
+    let data = str_field(audio, "data")?;
+    let format = str_field(audio, "format").unwrap_or_else(|| "wav".into());
+    Some(IrPart::Audio { data, format })
 }
 
 fn f32_field(value: &Value, key: &str) -> Option<f32> {

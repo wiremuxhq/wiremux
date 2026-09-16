@@ -3,9 +3,13 @@
 use serde_json::{Value, json};
 
 use super::tools::PreparedTool;
-use super::{MapError, bool_field, f32_field, stop_values, str_field, u32_field};
+use super::{
+    MapError, audio_format_from_mime, audio_mime_from_format, bool_field, document_ref_source,
+    f32_field, is_audio_media_type, is_pdf_media_type, stop_values, str_field, u32_field,
+};
 use crate::ir::{
-    IrCache, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction, LossReport,
+    IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
+    LossReport,
 };
 
 pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError> {
@@ -102,16 +106,39 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
         if let Some(inline) = part.get("inlineData") {
             let media = str_field(inline, "mimeType").unwrap_or_default();
             let data = str_field(inline, "data").unwrap_or_default();
-            text_parts.push(IrPart::ImageBase64 {
-                media_type: media,
-                data,
-            });
+            if is_audio_media_type(&media) {
+                text_parts.push(IrPart::Audio {
+                    data,
+                    format: audio_format_from_mime(&media),
+                });
+            } else if is_pdf_media_type(&media) {
+                text_parts.push(IrPart::Document {
+                    source: IrDocumentSource::Base64(data),
+                    media_type: media,
+                    name: None,
+                });
+            } else {
+                text_parts.push(IrPart::ImageBase64 {
+                    media_type: media,
+                    data,
+                });
+            }
         }
-        if part.get("fileData").is_some() {
-            text_parts.push(IrPart::Raw {
-                type_name: "fileData".into(),
-                raw: part.clone(),
-            });
+        if let Some(file) = part.get("fileData") {
+            let media = str_field(file, "mimeType").unwrap_or_default();
+            let uri = str_field(file, "fileUri").unwrap_or_default();
+            if is_pdf_media_type(&media) && !uri.is_empty() {
+                text_parts.push(IrPart::Document {
+                    source: document_ref_source(uri),
+                    media_type: media,
+                    name: None,
+                });
+            } else {
+                text_parts.push(IrPart::Raw {
+                    type_name: "fileData".into(),
+                    raw: part.clone(),
+                });
+            }
         } else if part.get("fileUri").is_some() {
             text_parts.push(IrPart::Raw {
                 type_name: "fileUri".into(),
@@ -479,6 +506,17 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                     "inlineData": { "mimeType": media_type, "data": data }
                 }));
             }
+            IrPart::Document {
+                source, media_type, ..
+            } => out.push(encode_document(source, media_type)),
+            IrPart::Audio { data, format } => {
+                out.push(json!({
+                    "inlineData": {
+                        "mimeType": audio_mime_from_format(format),
+                        "data": data
+                    }
+                }));
+            }
             IrPart::Raw { raw, .. } => {
                 if raw.get("fileData").is_some() || raw.get("fileUri").is_some() {
                     out.push(raw.clone());
@@ -509,6 +547,21 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
         }
     }
     out
+}
+
+fn encode_document(source: &IrDocumentSource, media_type: &str) -> Value {
+    match source {
+        IrDocumentSource::Base64(data) => json!({
+            "inlineData": { "mimeType": media_type, "data": data }
+        }),
+        IrDocumentSource::Url(uri) | IrDocumentSource::FileId(uri) => {
+            let mut file = json!({ "fileUri": uri });
+            if !media_type.is_empty() {
+                file["mimeType"] = json!(media_type);
+            }
+            json!({ "fileData": file })
+        }
+    }
 }
 
 fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {

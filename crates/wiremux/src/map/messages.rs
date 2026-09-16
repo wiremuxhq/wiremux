@@ -8,7 +8,8 @@ use super::{
     str_field, u32_field, value_as_string,
 };
 use crate::ir::{
-    IrCache, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction, LossReport,
+    IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
+    LossReport,
 };
 
 pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError> {
@@ -180,6 +181,12 @@ fn decode_content_part(block: &Value) -> Option<IrPart> {
             .and_then(Value::as_str)
             .map(|t| IrPart::Text(t.to_string())),
         "image" => decode_image(block),
+        "document" => decode_document(block).or_else(|| {
+            Some(IrPart::Raw {
+                type_name: "document".into(),
+                raw: block.clone(),
+            })
+        }),
         _ => block
             .get("text")
             .and_then(Value::as_str)
@@ -203,6 +210,43 @@ fn decode_image(block: &Value) -> Option<IrPart> {
         }),
         _ => str_field(source, "url").map(IrPart::ImageUrl),
     }
+}
+
+fn decode_document(block: &Value) -> Option<IrPart> {
+    let source = block.get("source")?;
+    let media_type = str_field(source, "media_type")
+        .or_else(|| str_field(block, "media_type"))
+        .unwrap_or_default();
+    let name = str_field(block, "title")
+        .or_else(|| str_field(block, "name"))
+        .filter(|s| !s.is_empty());
+    let src = match source.get("type").and_then(Value::as_str) {
+        Some("url") => IrDocumentSource::Url(str_field(source, "url")?),
+        Some("file") => IrDocumentSource::FileId(
+            str_field(source, "file_id").or_else(|| str_field(source, "id"))?,
+        ),
+        Some("base64") => IrDocumentSource::Base64(str_field(source, "data")?),
+        _ => {
+            if let Some(data) = str_field(source, "data") {
+                IrDocumentSource::Base64(data)
+            } else if let Some(url) = str_field(source, "url") {
+                IrDocumentSource::Url(url)
+            } else if let Some(id) = str_field(source, "file_id") {
+                IrDocumentSource::FileId(id)
+            } else {
+                return None;
+            }
+        }
+    };
+    Some(IrPart::Document {
+        source: src,
+        media_type: if media_type.is_empty() {
+            "application/pdf".into()
+        } else {
+            media_type
+        },
+        name,
+    })
 }
 
 fn tool_result_output(block: &Value) -> String {
@@ -639,6 +683,15 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             "type": "image",
             "source": {"type": "base64", "media_type": media_type, "data": data}
         })),
+        IrPart::Document {
+            source,
+            media_type,
+            name,
+        } => Some(encode_document(source, media_type, name.as_deref())),
+        IrPart::Audio { .. } => {
+            report.record("part.audio", LossAction::Drop, "audio has no Messages slot");
+            None
+        }
         IrPart::Thinking { text, signature } => {
             let Some(sig) = signature.as_deref().filter(|s| !s.is_empty()) else {
                 report.record(
@@ -667,6 +720,33 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             }
         }
     }
+}
+
+fn encode_document(source: &IrDocumentSource, media_type: &str, name: Option<&str>) -> Value {
+    let mut block = json!({"type": "document"});
+    if let Some(name) = name.map(str::trim).filter(|s| !s.is_empty()) {
+        block["title"] = json!(name);
+    }
+    block["source"] = match source {
+        IrDocumentSource::Base64(data) => json!({
+            "type": "base64",
+            "media_type": if media_type.is_empty() {
+                "application/pdf"
+            } else {
+                media_type
+            },
+            "data": data
+        }),
+        IrDocumentSource::Url(url) => json!({
+            "type": "url",
+            "url": url
+        }),
+        IrDocumentSource::FileId(id) => json!({
+            "type": "file",
+            "file_id": id
+        }),
+    };
+    block
 }
 
 fn text_block(text: &str, cache: bool, retention: Option<&str>) -> Value {

@@ -19,8 +19,8 @@ pub mod stream;
 mod upstream;
 
 pub use ir::{
-    IrCache, IrItem, IrPart, IrRequest, IrSampling, IrStreamEvent, IrTool, IrToolChoice,
-    LossAction, LossEvent, LossReport, estimate_prompt_tokens,
+    IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrStreamEvent, IrTool,
+    IrToolChoice, LossAction, LossEvent, LossReport, estimate_prompt_tokens,
 };
 pub use map::{MapError, decode, encode};
 pub use stream::{
