@@ -420,6 +420,7 @@ pub async fn fetch_catalog_url(url: &str) -> Result<String, IngestError> {
         ));
     }
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(30))
         .user_agent(concat!("wiremux/", env!("CARGO_PKG_VERSION")))
         .build()
