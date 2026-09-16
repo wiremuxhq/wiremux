@@ -119,6 +119,37 @@ class WorkflowTriggerTests(unittest.TestCase):
             pin.read_text(encoding="utf-8"),
         )
 
+    def test_path_dep_sync_keeps_default_features_off(self) -> None:
+        import subprocess
+        import sys
+        import tempfile
+
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "crates/wiremux-auth").mkdir(parents=True)
+        (tmp / "crates/wiremux").mkdir(parents=True)
+        (tmp / "crates/wiremux-auth/Cargo.toml").write_text(
+            '[package]\nname = "wiremux-auth"\nversion = "0.6.0"\n',
+            encoding="utf-8",
+        )
+        pin = tmp / "crates/wiremux/Cargo.toml"
+        pin.write_text(
+            'wiremux-auth = { version = "0.5.0", path = "../wiremux-auth", default-features = false }\n',
+            encoding="utf-8",
+        )
+        out = subprocess.check_output(
+            [
+                sys.executable,
+                str(ROOT / "scripts/sync-path-dep-versions.py"),
+                str(tmp),
+            ],
+            text=True,
+        )
+        self.assertIn("0.6.0", out)
+        self.assertEqual(
+            pin.read_text(encoding="utf-8"),
+            'wiremux-auth = { version = "0.6.0", path = "../wiremux-auth", default-features = false }\n',
+        )
+
     def test_auto_merge_skips_release_please_head(self) -> None:
         text = (WORKFLOWS / "auto-approve.yml").read_text(encoding="utf-8")
         self.assertIn("!startsWith(github.head_ref, 'release-please')", text)
