@@ -50,6 +50,7 @@ enum GcpGrant {
         client_id: String,
         client_secret: String,
         refresh_token: String,
+        quota_project_id: Option<String>,
     },
 }
 
@@ -71,11 +72,18 @@ impl std::fmt::Debug for GcpTokenProvider {
                     .field("client_email", client_email)
                     .field("private_key", &"[REDACTED]");
             }
-            GcpGrant::AuthorizedUser { client_id, .. } => {
+            GcpGrant::AuthorizedUser {
+                client_id,
+                quota_project_id,
+                ..
+            } => {
                 dbg.field("grant", &"authorized_user")
                     .field("client_id", client_id)
                     .field("client_secret", &"[REDACTED]")
                     .field("refresh_token", &"[REDACTED]");
+                if let Some(quota) = quota_project_id {
+                    dbg.field("quota_project_id", quota);
+                }
             }
         }
         dbg.field("token_uri", &redact_url_origin(&self.inner.token_uri))
@@ -101,6 +109,8 @@ struct AdcFile {
     token_uri: Option<String>,
     #[serde(default)]
     scope: Option<String>,
+    #[serde(default)]
+    quota_project_id: Option<String>,
 }
 
 /// Well-known `gcloud` ADC path (`CLOUDSDK_CONFIG`, else `~/.config/gcloud`).
@@ -143,6 +153,17 @@ impl GcpTokenProvider {
         let text = std::fs::read_to_string(path)
             .map_err(|e| AuthError::io(Some(path.to_path_buf()), e))?;
         Self::from_key(&text)
+    }
+
+    /// Billing project from `authorized_user` ADC `quota_project_id`, if set.
+    #[must_use]
+    pub fn quota_project_id(&self) -> Option<&str> {
+        match &self.inner.grant {
+            GcpGrant::AuthorizedUser {
+                quota_project_id, ..
+            } => quota_project_id.as_deref(),
+            GcpGrant::ServiceAccount { .. } => None,
+        }
     }
 
     /// Build from service-account JSON or `authorized_user` ADC JSON.
@@ -223,6 +244,7 @@ impl GcpTokenProvider {
                 client_id,
                 client_secret,
                 refresh_token,
+                ..
             } => {
                 let form = [
                     ("grant_type", REFRESH_TOKEN),
@@ -290,10 +312,15 @@ fn grant_from_adc(file: AdcFile) -> Result<GcpGrant, AuthError> {
             if refresh_token.trim().is_empty() {
                 return Err(AuthError::MissingField("GCP refresh_token".into()));
             }
+            let quota_project_id = file
+                .quota_project_id
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
             Ok(GcpGrant::AuthorizedUser {
                 client_id,
                 client_secret,
                 refresh_token,
+                quota_project_id,
             })
         }
         "service_account" | "" => {
@@ -572,6 +599,42 @@ c+5RXVheoFNjzJpbLyOIeEEttw==
         assert!(debug.contains("[REDACTED]"), "{debug}");
         assert!(!debug.contains("user-secret"), "{debug}");
         assert!(!debug.contains("1//refresh-me"), "{debug}");
+    }
+
+    fn authorized_user_json_with_quota(token_uri: &str, quota_project_id: &str) -> String {
+        serde_json::json!({
+            "type": "authorized_user",
+            "client_id": "123.apps.googleusercontent.com",
+            "client_secret": "user-secret",
+            "refresh_token": "1//refresh-me",
+            "token_uri": token_uri,
+            "quota_project_id": quota_project_id,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn authorized_user_quota_project_id_from_key_and_file() {
+        let json = authorized_user_json_with_quota(DEFAULT_TOKEN_URI, "billing-proj");
+        let p = GcpTokenProvider::from_key(&json).expect("from_key");
+        assert_eq!(p.quota_project_id(), Some("billing-proj"));
+        let debug = format!("{p:?}");
+        assert!(debug.contains("billing-proj"), "{debug}");
+        assert!(!debug.contains("user-secret"), "{debug}");
+        assert!(!debug.contains("1//refresh-me"), "{debug}");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("adc.json");
+        std::fs::write(&path, json).expect("write adc");
+        let from_file = GcpTokenProvider::from_key_file(&path).expect("from_key_file");
+        assert_eq!(from_file.quota_project_id(), Some("billing-proj"));
+    }
+
+    #[test]
+    fn authorized_user_without_quota_project_id_is_none() {
+        let p =
+            GcpTokenProvider::from_key(&authorized_user_json(DEFAULT_TOKEN_URI)).expect("from_key");
+        assert_eq!(p.quota_project_id(), None);
     }
 
     #[test]

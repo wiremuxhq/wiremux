@@ -88,6 +88,15 @@ impl AnyTokenProvider {
             p.without_http_refresh();
         }
     }
+
+    /// ADC `quota_project_id` for Vertex, if this is a GCP authorized_user grant.
+    #[must_use]
+    pub fn quota_project_id(&self) -> Option<&str> {
+        match self {
+            Self::Gcp(p) => p.quota_project_id(),
+            _ => None,
+        }
+    }
 }
 
 impl TokenProvider for AnyTokenProvider {
