@@ -17,9 +17,10 @@ required-features = ["cli"]
 
 [features]
 # Maps + re-exported profile types. Set default-features = false.
+# That path keeps wiremux-auth default-features off (no HTTP / TLS / aws-lc).
 default = ["cli", "proxy"]
 # Binary helpers (validate, login, status).
-cli = ["dep:clap", "dep:reqwest", "dep:tokio"]
+cli = ["dep:clap", "dep:reqwest", "dep:tokio", "wiremux-auth/net", "wiremux-auth/pkce", "wiremux-auth/device"]
 # HTTP server stack for `wiremux proxy`. Needs cli listen/token helpers.
 proxy = [
     "cli",
@@ -32,7 +33,7 @@ proxy = [
     "dep:tokio",
 ]
 # Optional library POST/SSE. Does NOT pull clap / hyper / cli.
-client = ["dep:bytes", "dep:futures-util", "dep:reqwest", "dep:tokio"]
+client = ["dep:bytes", "dep:futures-util", "dep:reqwest", "dep:tokio", "wiremux-auth/net"]
 
 [dependencies]
 bytes = { version = "1", optional = true }
@@ -45,10 +46,10 @@ reqwest = { version = "0.13", optional = true, default-features = false, feature
 serde_json = "1"
 thiserror = "2.0.20"
 tokio = { version = "1.48.0", optional = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
-wiremux-auth = { version = "0.5.0", path = "../wiremux-auth" }
+wiremux-auth = { version = "0.5.0", path = "../wiremux-auth", default-features = false }
 
 [dev-dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 tempfile = "3.23.0"
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }
-wiremux-auth = { path = "../wiremux-auth", features = ["test-util"] }
+wiremux-auth = { path = "../wiremux-auth", default-features = false, features = ["test-util"] }

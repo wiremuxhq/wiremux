@@ -24,7 +24,9 @@ if curl -fsS -A "wiremux-check-cargo-package (github.com/wiremuxhq/wiremux)" \
   echo "DO: package wiremux (auth ${auth_ver} is on crates.io)"
   if ! cargo package -p wiremux --locked --allow-dirty; then
     echo "OK: skip wiremux crates.io compile; workspace auth API is ahead of ${auth_ver}"
-    cargo package -p wiremux --locked --allow-dirty --no-verify
+    # --no-verify still resolves path-dep features against crates.io.
+    # A new auth feature (example `net`) is not on the published crate.
+    cargo package -p wiremux --locked --allow-dirty --list >/dev/null
   fi
 else
   echo "OK: skip wiremux full package; wiremux-auth ${auth_ver} not on crates.io yet"

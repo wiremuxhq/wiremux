@@ -1,7 +1,9 @@
 //! TokenProvider errors. Independent of any host `LlmError`.
 
 use std::io;
-use std::path::{Path, PathBuf};
+#[cfg(any(feature = "net", test))]
+use std::path::Path;
+use std::path::PathBuf;
 
 use crate::profile::ProfileError;
 
@@ -57,6 +59,7 @@ impl AuthError {
     }
 
     /// Label a JSON error with the store path. Path-less `?` still uses [`Self::Json`].
+    #[cfg(any(feature = "net", test))]
     pub(crate) fn json(path: impl AsRef<Path>, source: serde_json::Error) -> Self {
         Self::Json {
             path: Some(redact_pathbuf(path.as_ref().to_path_buf())),
