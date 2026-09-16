@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.5.0](https://github.com/wiremuxhq/wiremux/compare/v0.4.0...v0.5.0) (2026-09-16)
+
+
+### Features
+
+* accept gcloud authorized_user ADC for Vertex ([#130](https://github.com/wiremuxhq/wiremux/issues/130)) ([a222e55](https://github.com/wiremuxhq/wiremux/commit/a222e55635db84dcdf3a1bb39361dde971d1aef1))
+* ingest catalog vendors into user-dir profiles ([#124](https://github.com/wiremuxhq/wiremux/issues/124)) ([b46840a](https://github.com/wiremuxhq/wiremux/commit/b46840a36202b0418ffffd7658fcf74afa227405))
+* ingest Messages hosts, Azure/Vertex URLs, Bedrock Converse ([#125](https://github.com/wiremuxhq/wiremux/issues/125)) ([62d6f9a](https://github.com/wiremuxhq/wiremux/commit/62d6f9a13c4b2a1daacde7770db811e3b6f49b81))
+* map Codex prompt_cache_key and service_tier ([#123](https://github.com/wiremuxhq/wiremux/issues/123)) ([1042510](https://github.com/wiremuxhq/wiremux/commit/1042510b822f123a46146ca1040a5c3a59b0348f))
+* Messages Grok Build catalog, Continue., and shipped ids ([#120](https://github.com/wiremuxhq/wiremux/issues/120)) ([64fd644](https://github.com/wiremuxhq/wiremux/commit/64fd644ab5b2efd9ddf1f4c0b4a4671ba106552b)), closes [#114](https://github.com/wiremuxhq/wiremux/issues/114) [#115](https://github.com/wiremuxhq/wiremux/issues/115) [#116](https://github.com/wiremuxhq/wiremux/issues/116) [#117](https://github.com/wiremuxhq/wiremux/issues/117) [#118](https://github.com/wiremuxhq/wiremux/issues/118) [#119](https://github.com/wiremuxhq/wiremux/issues/119)
+* Vertex GCP key file and Bedrock Event Stream ([#129](https://github.com/wiremuxhq/wiremux/issues/129)) ([b98ecd0](https://github.com/wiremuxhq/wiremux/commit/b98ecd086a2297a1f82f31801504f5b33d123f76))
+
+
+### Bug Fixes
+
+* emit Messages tool required as an array ([#122](https://github.com/wiremuxhq/wiremux/issues/122)) ([4b990c1](https://github.com/wiremuxhq/wiremux/commit/4b990c1c014fb7ae67bd51280207dcd443128173))
+* Event Stream AWS payload shape, exceptions, and ADC quota project ([#131](https://github.com/wiremuxhq/wiremux/issues/131)) ([577395b](https://github.com/wiremuxhq/wiremux/commit/577395b5fa4f3c67927dc10fea45a7ceb9f32ae9))
+* group Converse toolResults and keep stopReason ([#128](https://github.com/wiremuxhq/wiremux/issues/128)) ([f58f9e3](https://github.com/wiremuxhq/wiremux/commit/f58f9e3a47a1f16eec4c77818e8dcda58ff9f171))
+* harden ingest all-compatible and Converse body ([#126](https://github.com/wiremuxhq/wiremux/issues/126)) ([7996461](https://github.com/wiremuxhq/wiremux/commit/7996461cb50f8bdd046a8e7c8458390c1f1a4c67))
+* keep Converse mixed assistant text with toolUse ([#127](https://github.com/wiremuxhq/wiremux/issues/127)) ([163a458](https://github.com/wiremuxhq/wiremux/commit/163a4587aa08974aea119618bdc5561bf73c2056))
+* keep vendor error text and surface stream exceptions ([#133](https://github.com/wiremuxhq/wiremux/issues/133)) ([6145abd](https://github.com/wiremuxhq/wiremux/commit/6145abd6352b43564e3743ed1b9b6325763f6cf5))
+* send proxy decode errors as SSE data frames ([#134](https://github.com/wiremuxhq/wiremux/issues/134)) ([b18ad5b](https://github.com/wiremuxhq/wiremux/commit/b18ad5bac67672934d4eb7aaed47cde25d3483fd))
+* send proxy upstream stream errors as SSE data frames ([#135](https://github.com/wiremuxhq/wiremux/issues/135)) ([893793a](https://github.com/wiremuxhq/wiremux/commit/893793a866c0f783385bf511776a5d96ee6165de))
+* send same-dialect proxy stream errors as SSE data frames ([#136](https://github.com/wiremuxhq/wiremux/issues/136)) ([d8f3486](https://github.com/wiremuxhq/wiremux/commit/d8f3486d9810eae7e336d1b77c41aa9290aadbfa))
+* Vertex global host, streamRawPredict, and Event Stream errors ([#132](https://github.com/wiremuxhq/wiremux/issues/132)) ([00688bf](https://github.com/wiremuxhq/wiremux/commit/00688bff87431bc40a4b7b9a5f62fef5416d3fc4))
+
 ## [0.4.0](https://github.com/wiremuxhq/wiremux/compare/v0.3.0...v0.4.0) (2026-09-15)
 
 
