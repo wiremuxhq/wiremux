@@ -548,9 +548,15 @@ async fn pull_live(
                     append_capped(&mut live.leftover, &chunk, MAX_ERROR_BODY);
                 }
                 match live.reader.feed(&chunk) {
-                    Ok(frames) => {
+                    Ok((frames, terminal)) => {
                         if let Err(err) = live.push_frames(frames) {
                             return Some((Err(err), StreamPhase::Done));
+                        }
+                        if let Some(err) = terminal {
+                            return Some((
+                                Err(classify_feed_err(err, live.http_status)),
+                                StreamPhase::Done,
+                            ));
                         }
                     }
                     Err(err) => {

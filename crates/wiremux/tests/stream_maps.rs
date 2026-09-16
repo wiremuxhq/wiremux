@@ -1680,7 +1680,8 @@ fn converse_eventstream_bytes_decode_to_text_delta() {
     let payload = br#"{"contentBlockDelta":{"delta":{"text":"pong"}}}"#;
     let bytes = wiremux::stream::encode_eventstream_message("contentBlockDelta", payload);
     let mut reader = wiremux::stream::EventStreamReader::new();
-    let frames = reader.feed(&bytes).expect("feed");
+    let (frames, err) = reader.feed(&bytes).expect("feed");
+    assert!(err.is_none());
     assert_eq!(frames.len(), 1);
     let ev = decode_stream_event(Wire::Converse, &frames[0], &converse_profile)
         .expect("decode")
@@ -1699,7 +1700,8 @@ fn converse_eventstream_unwrapped_payload_decodes_to_text_delta() {
     let payload = br#"{"delta":{"text":"hi"},"contentBlockIndex":0}"#;
     let bytes = wiremux::stream::encode_eventstream_message("contentBlockDelta", payload);
     let mut reader = wiremux::stream::EventStreamReader::new();
-    let frames = reader.feed(&bytes).expect("feed");
+    let (frames, err) = reader.feed(&bytes).expect("feed");
+    assert!(err.is_none());
     assert_eq!(frames.len(), 1);
     let ev = decode_stream_event(Wire::Converse, &frames[0], &converse_profile)
         .expect("decode")

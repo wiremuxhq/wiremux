@@ -73,9 +73,12 @@ impl UpstreamFrames {
     }
 
     /// Append bytes and emit complete frames.
-    pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<RawSse>, String> {
+    ///
+    /// The optional string is a terminal Event Stream exception after
+    /// any frames already parsed from the same chunk.
+    pub fn feed(&mut self, bytes: &[u8]) -> Result<(Vec<RawSse>, Option<String>), String> {
         match self {
-            Self::Sse(r) => r.feed(bytes),
+            Self::Sse(r) => r.feed(bytes).map(|frames| (frames, None)),
             Self::Event(r) => r.feed(bytes),
         }
     }

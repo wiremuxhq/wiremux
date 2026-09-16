@@ -20,8 +20,12 @@ impl EventStreamReader {
         Self::default()
     }
 
-    /// Append `bytes` and return every complete message as an SSE-shaped frame.
-    pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<RawSse>, String> {
+    /// Append `bytes` and return complete messages.
+    ///
+    /// An exception later in the same chunk still yields the frames
+    /// already parsed. The second value is that exception, after those
+    /// frames have been returned and the exception bytes consumed.
+    pub fn feed(&mut self, bytes: &[u8]) -> Result<(Vec<RawSse>, Option<String>), String> {
         if self.buffer.len().saturating_add(bytes.len()) > MAX_EVENTSTREAM_PENDING {
             self.buffer.clear();
             return Err(format!(
@@ -30,11 +34,20 @@ impl EventStreamReader {
         }
         self.buffer.extend_from_slice(bytes);
         let mut out = Vec::new();
-        while let Some((msg, consumed)) = take_message(&self.buffer)? {
-            self.buffer.drain(..consumed);
-            out.push(msg.into_raw_sse());
+        loop {
+            match take_message(&self.buffer)? {
+                None => return Ok((out, None)),
+                Some(Take::Frame(msg, consumed)) => {
+                    self.buffer.drain(..consumed);
+                    out.push(msg.into_raw_sse());
+                }
+                Some(Take::Exception(err, consumed)) => {
+                    self.buffer.drain(..consumed);
+                    self.buffer.clear();
+                    return Ok((out, Some(err)));
+                }
+            }
         }
-        Ok(out)
     }
 
     /// No trailing partial message is a valid frame.
@@ -73,7 +86,12 @@ fn wrap_event_payload(event_type: Option<&str>, payload: &[u8]) -> String {
     serde_json::json!({ event_type: serde_json::Value::Object(map) }).to_string()
 }
 
-fn take_message(buf: &[u8]) -> Result<Option<(EventStreamMessage, usize)>, String> {
+enum Take {
+    Frame(EventStreamMessage, usize),
+    Exception(String, usize),
+}
+
+fn take_message(buf: &[u8]) -> Result<Option<Take>, String> {
     if buf.len() < PRELUDE_LEN {
         return Ok(None);
     }
@@ -101,12 +119,15 @@ fn take_message(buf: &[u8]) -> Result<Option<(EventStreamMessage, usize)>, Strin
     let headers = parse_headers(&buf[headers_start..headers_end])?;
     let payload = buf[headers_end..total - CRC_LEN].to_vec();
     if headers.message_type.as_deref() == Some("exception") {
-        return Err(exception_error(
-            headers.exception_type.as_deref().unwrap_or("unknown"),
-            &payload,
-        ));
+        return Ok(Some(Take::Exception(
+            exception_error(
+                headers.exception_type.as_deref().unwrap_or("unknown"),
+                &payload,
+            ),
+            total,
+        )));
     }
-    Ok(Some((
+    Ok(Some(Take::Frame(
         EventStreamMessage {
             event_type: headers.event_type,
             payload,
@@ -268,7 +289,8 @@ mod tests {
         let payload = br#"{"contentBlockDelta":{"delta":{"text":"hi"}}}"#;
         let bytes = encode_message("contentBlockDelta", payload);
         let mut reader = EventStreamReader::new();
-        let frames = reader.feed(&bytes).expect("feed");
+        let (frames, err) = reader.feed(&bytes).expect("feed");
+        assert!(err.is_none(), "{err:?}");
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].event.as_deref(), Some("contentBlockDelta"));
         assert!(frames[0].data.contains("\"text\":\"hi\""));
@@ -282,9 +304,11 @@ mod tests {
         );
         let mut reader = EventStreamReader::new();
         let mid = bytes.len() / 2;
-        let first = reader.feed(&bytes[..mid]).expect("first");
+        let (first, err) = reader.feed(&bytes[..mid]).expect("first");
+        assert!(err.is_none());
         assert!(first.is_empty());
-        let second = reader.feed(&bytes[mid..]).expect("second");
+        let (second, err) = reader.feed(&bytes[mid..]).expect("second");
+        assert!(err.is_none());
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].event.as_deref(), Some("messageStop"));
     }
@@ -304,7 +328,8 @@ mod tests {
         let payload = br#"{"delta":{"text":"hi"},"contentBlockIndex":0}"#;
         let bytes = encode_message("contentBlockDelta", payload);
         let mut reader = EventStreamReader::new();
-        let frames = reader.feed(&bytes).expect("feed");
+        let (frames, err) = reader.feed(&bytes).expect("feed");
+        assert!(err.is_none());
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].event.as_deref(), Some("contentBlockDelta"));
         let value: serde_json::Value = serde_json::from_str(&frames[0].data).expect("json");
@@ -325,7 +350,9 @@ mod tests {
             br#"{"message":"The provided model identifier is invalid."}"#,
         );
         let mut reader = EventStreamReader::new();
-        let err = reader.feed(&bytes).expect_err("exception");
+        let (frames, err) = reader.feed(&bytes).expect("exception");
+        assert!(frames.is_empty());
+        let err = err.expect("exception");
         assert!(err.contains("validationException"), "{err}");
         assert!(
             err.contains("The provided model identifier is invalid."),
@@ -342,13 +369,35 @@ mod tests {
             br#"{"delta":{"text":"hi"},"contentBlockIndex":0}"#,
         ));
         let mut reader = EventStreamReader::new();
-        let err = reader.feed(&bytes).expect_err("exception first");
+        let (frames, err) = reader.feed(&bytes).expect("exception first");
+        assert!(frames.is_empty());
+        let err = err.expect("exception first");
         assert!(err.contains("internalServerException"), "{err}");
         assert!(err.contains("boom"), "{err}");
-        let again = reader.feed(&[]);
+        let (again, again_err) = reader.feed(&[]).expect("rest");
         assert!(
-            again.is_err(),
-            "must not emit a later contentBlockDelta as success: {again:?}"
+            again.is_empty() && again_err.is_none(),
+            "must not emit a later contentBlockDelta as success: {again:?} {again_err:?}"
         );
+    }
+
+    #[test]
+    fn good_frames_then_exception_in_same_chunk() {
+        let mut bytes = encode_message(
+            "contentBlockDelta",
+            br#"{"contentBlockDelta":{"delta":{"text":"final"}}}"#,
+        );
+        bytes.extend_from_slice(&encode_exception_message(
+            "modelStreamErrorException",
+            br#"{"message":"cut"}"#,
+        ));
+        let mut reader = EventStreamReader::new();
+        let (frames, err) = reader.feed(&bytes).expect("feed");
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        assert!(frames[0].data.contains("final"), "{}", frames[0].data);
+        let err = err.expect("exception after frames");
+        assert!(err.contains("modelStreamErrorException"), "{err}");
+        assert!(err.contains("cut"), "{err}");
+        assert!(reader.buffer.is_empty(), "exception bytes must be consumed");
     }
 }

@@ -552,8 +552,8 @@ fn map_sse_stream(
                     return;
                 }
             };
-            let frames = match reader.feed(&bytes) {
-                Ok(f) => f,
+            let (frames, terminal) = match reader.feed(&bytes) {
+                Ok(pair) => pair,
                 Err(err) => {
                     let _ = tx
                         .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
@@ -565,6 +565,15 @@ fn map_sse_stream(
                 }
             };
             if !push_mapped_frames(&state, target, &tx, frames, &mut assembler).await {
+                return;
+            }
+            if let Some(err) = terminal {
+                let _ = tx
+                    .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
+                        event: Some("error".into()),
+                        data: err,
+                    })))))
+                    .await;
                 return;
             }
         }
