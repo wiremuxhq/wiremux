@@ -1,5 +1,7 @@
 //! Dialect maps. Not ready.
 
+#[cfg(any(feature = "proxy", feature = "client"))]
+mod aws_sign;
 #[cfg(feature = "cli")]
 pub mod cli;
 #[cfg(feature = "client")]
@@ -17,13 +19,13 @@ pub mod stream;
 mod upstream;
 
 pub use ir::{
-    IrCache, IrItem, IrPart, IrRequest, IrSampling, IrStreamEvent, IrTool, IrToolChoice,
-    LossAction, LossEvent, LossReport, estimate_prompt_tokens,
+    IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrStreamEvent, IrTool,
+    IrToolChoice, LossAction, LossEvent, LossReport, estimate_prompt_tokens,
 };
 pub use map::{MapError, decode, encode};
 pub use stream::{
     EventStreamReader, MAX_CONTENT_BLOCK_INDEX, MAX_EVENTSTREAM_PENDING, MAX_SSE_PENDING,
-    MAX_TOOL_CALL_INDEX, RawSse, SseFrameReader, ToolCallAssembler, decode_response,
+    MAX_TOOL_CALL_INDEX, RawSse, SseFrameReader, StreamEncoder, ToolCallAssembler, decode_response,
     decode_stream_event, decode_stream_events, encode_eventstream_message, encode_response,
     encode_stream_event,
 };

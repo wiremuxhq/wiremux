@@ -1,0 +1,8 @@
+schema_version = 1
+id = "azure-openai"
+display_name = "Azure OpenAI Chat Completions"
+wire = "chat-completions"
+base_url = "https://{env:AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com"
+chat_path = "/openai/deployments/{model}/chat/completions?api-version=2024-10-21"
+auth_scheme = "header:api-key"
+access_env = ["AZURE_OPENAI_API_KEY", "AZURE_API_KEY"]

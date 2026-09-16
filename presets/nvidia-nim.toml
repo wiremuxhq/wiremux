@@ -1,0 +1,8 @@
+schema_version = 1
+id = "nvidia-nim"
+display_name = "NVIDIA NIM Chat Completions"
+wire = "chat-completions"
+base_url = "https://integrate.api.nvidia.com"
+chat_path = "/v1/chat/completions"
+auth_scheme = "bearer"
+access_env = "NVIDIA_API_KEY"

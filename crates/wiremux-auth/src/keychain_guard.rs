@@ -26,6 +26,7 @@ impl Drop for KeychainIsolation {
     }
 }
 
+#[cfg_attr(not(any(feature = "net", test)), allow(dead_code))]
 pub(crate) fn keychain_disabled() -> bool {
     KEYCHAIN_DISABLES.load(Ordering::SeqCst) > 0
 }
@@ -59,10 +60,12 @@ mod test_store {
         }
     }
 
+    #[cfg_attr(not(any(feature = "net", test)), allow(dead_code))]
     pub fn active() -> bool {
         HOLDS.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 
+    #[cfg_attr(not(any(feature = "net", test)), allow(dead_code))]
     pub fn get(service: &str, account: &str) -> Option<String> {
         STORE
             .lock()
@@ -83,6 +86,7 @@ mod test_store {
 pub use test_store::TestKeychain;
 
 #[cfg(any(test, feature = "test-util"))]
+#[cfg_attr(not(any(feature = "net", test)), allow(dead_code, unused_imports))]
 pub(crate) use test_store::{
     active as test_keychain_active, get as test_keychain_get, set as test_keychain_set,
 };

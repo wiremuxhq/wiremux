@@ -1,0 +1,8 @@
+schema_version = 1
+id = "zhipu"
+display_name = "Zhipu GLM Chat Completions"
+wire = "chat-completions"
+base_url = "https://open.bigmodel.cn"
+chat_path = "/api/paas/v4/chat/completions"
+auth_scheme = "bearer"
+access_env = "ZHIPU_API_KEY"

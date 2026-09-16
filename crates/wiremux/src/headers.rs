@@ -1,6 +1,22 @@
 //! Shared profile header / auth_scheme / betas application.
 
+use std::time::Duration;
+
 use wiremux_auth::{AnyTokenProvider, AuthScheme, ResolvedProfile};
+
+pub(crate) fn default_http_client(profile: &ResolvedProfile) -> Result<reqwest::Client, String> {
+    let read_secs = profile
+        .http
+        .read_timeout_secs
+        .filter(|&s| s > 0)
+        .unwrap_or(120);
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(read_secs))
+        .build()
+        .map_err(|err| err.to_string())
+}
 
 const GROK_BUILD_PROXY_HOST: &str = "cli-chat-proxy.grok.com";
 const GROK_CLIENT_VERSION: &str = "0.1.202";

@@ -15,7 +15,7 @@ pub use load::{
     load_profile_from_cli, user_profile_dirs,
 };
 pub use parse::parse_profile_str;
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(all(feature = "net", any(test, feature = "test-util")))]
 pub(crate) use refuse::is_loopback_http;
 pub use shipped::shipped_profile_ids;
 pub use types::{

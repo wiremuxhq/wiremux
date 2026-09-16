@@ -13,17 +13,19 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
-use wiremux_auth::{ResolvedProfile, Wire, format_oauth_transport_error, provider_from_profile};
+use wiremux_auth::{
+    AnyTokenProvider, ResolvedProfile, StaticToken, TokenProvider, Wire,
+    format_oauth_transport_error, provider_from_profile,
+};
 
-use serde_json::Value;
-
+use crate::aws_sign::{apply_aws_sigv4, bearer_token_applied};
 use crate::cli::{parse_listen, proxy_token};
 use crate::headers::{apply_profile_headers, apply_provider_headers};
-use crate::ir::{IrStreamEvent, LossReport};
+use crate::ir::LossReport;
 use crate::map::{decode, encode};
 use crate::stream::{
-    RawSse, ToolCallAssembler, UpstreamFrames, decode_response, decode_stream_events,
-    encode_response, encode_stream_event, event_has_slot, from_chat, map_finish,
+    RawSse, StreamEncoder, ToolCallAssembler, UpstreamFrames, decode_response,
+    decode_stream_events, encode_response, event_has_slot,
 };
 use crate::upstream::upstream_url_for_model;
 
@@ -50,16 +52,32 @@ pub async fn run(
     println!("listening on {bound}");
     let _ = std::io::stdout().flush();
 
+    let provider = match provider_from_profile(&profile) {
+        Ok(p) => Ok(p),
+        Err(err) => {
+            if profile
+                .http
+                .aws_service
+                .as_deref()
+                .is_some_and(|s| !s.is_empty())
+                || matches!(
+                    profile.http.auth_scheme,
+                    Some(wiremux_auth::AuthScheme::None)
+                )
+            {
+                Ok(AnyTokenProvider::from(StaticToken::new("")))
+            } else {
+                Err(err.to_string())
+            }
+        }
+    };
+    let client = crate::headers::default_http_client(&profile)?;
     let state = Arc::new(ProxyState {
         from,
         profile,
         dump_loss,
-        client: reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(std::time::Duration::from_secs(30))
-            .read_timeout(std::time::Duration::from_secs(120))
-            .build()
-            .map_err(|e| e.to_string())?,
+        provider,
+        client,
     });
 
     loop {
@@ -85,6 +103,7 @@ struct ProxyState {
     from: Wire,
     profile: ResolvedProfile,
     dump_loss: bool,
+    provider: Result<AnyTokenProvider, String>,
     client: reqwest::Client,
 }
 
@@ -93,6 +112,90 @@ async fn handle(
     req: Request<Incoming>,
 ) -> Result<Response<ProxyBody>, Infallible> {
     Ok(handle_inner(state, req).await)
+}
+
+async fn resolve_proxy_token(state: &ProxyState) -> Result<Option<String>, String> {
+    match &state.provider {
+        Ok(provider) => proxy_token(&state.profile, provider).await,
+        Err(err) => {
+            if state
+                .profile
+                .http
+                .aws_service
+                .as_deref()
+                .is_some_and(|s| !s.is_empty())
+            {
+                Ok(None)
+            } else {
+                Err(err.clone())
+            }
+        }
+    }
+}
+
+async fn send_upstream(
+    state: &ProxyState,
+    url: &str,
+    encoded: &[u8],
+) -> Result<reqwest::Response, Response<ProxyBody>> {
+    let mut retried = false;
+    loop {
+        let token = match resolve_proxy_token(state).await {
+            Ok(t) => t,
+            Err(err) => return Err(text(StatusCode::UNAUTHORIZED, format!("{err}\n"))),
+        };
+        let mut upstream = state
+            .client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(encoded.to_vec());
+        if url.contains("/converse-stream") {
+            upstream = upstream.header("accept", "application/vnd.amazon.eventstream");
+        }
+        upstream = apply_profile_headers(upstream, &state.profile, token.as_deref());
+        if let Ok(provider) = &state.provider {
+            upstream = apply_provider_headers(upstream, &state.profile, provider);
+        }
+        let built = match apply_aws_sigv4(
+            &state.profile,
+            url,
+            "POST",
+            encoded,
+            upstream,
+            bearer_token_applied(&state.profile, token.as_deref()),
+        ) {
+            Ok(req) => req,
+            Err(crate::aws_sign::AwsSignError::Auth(err)) => {
+                return Err(text(StatusCode::UNAUTHORIZED, format!("{err}\n")));
+            }
+            Err(crate::aws_sign::AwsSignError::Transport(err)) => {
+                return Err(text(StatusCode::BAD_GATEWAY, format!("{err}\n")));
+            }
+        };
+        let resp = match state.client.execute(built).await {
+            Ok(r) => r,
+            Err(err) => {
+                return Err(text(
+                    StatusCode::BAD_GATEWAY,
+                    format!("{}\n", format_oauth_transport_error("upstream", &err, url)),
+                ));
+            }
+        };
+        if resp.status().as_u16() == 401
+            && !retried
+            && state
+                .provider
+                .as_ref()
+                .is_ok_and(AnyTokenProvider::can_refresh)
+        {
+            if let Ok(provider) = &state.provider {
+                provider.mark_stale();
+            }
+            retried = true;
+            continue;
+        }
+        return Ok(resp);
+    }
 }
 
 /// Loopback Host only. Rejects DNS-rebinding names, trailing dots,
@@ -231,32 +334,9 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         Ok(u) => u,
         Err(err) => return text(StatusCode::BAD_GATEWAY, format!("{err}\n")),
     };
-    let token = match proxy_token(&state.profile).await {
-        Ok(t) => t,
-        Err(err) => return text(StatusCode::UNAUTHORIZED, format!("{err}\n")),
-    };
-
-    let mut upstream = state
-        .client
-        .post(&url)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(encoded);
-    if url.contains("/converse-stream") {
-        upstream = upstream.header("accept", "application/vnd.amazon.eventstream");
-    }
-    upstream = apply_profile_headers(upstream, &state.profile, token.as_deref());
-    if let Ok(provider) = provider_from_profile(&state.profile) {
-        upstream = apply_provider_headers(upstream, &state.profile, &provider);
-    }
-
-    let resp = match upstream.send().await {
+    let resp = match send_upstream(&state, &url, &encoded).await {
         Ok(r) => r,
-        Err(err) => {
-            return text(
-                StatusCode::BAD_GATEWAY,
-                format!("{}\n", format_oauth_transport_error("upstream", &err, &url)),
-            );
-        }
+        Err(resp) => return resp,
     };
     let status = resp.status();
     let content_type = resp
@@ -288,7 +368,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     };
     if ir.sampling.stream == Some(true)
         && status.is_success()
-        && let Some(sse) = json_completion_to_sse(state.from, &body)
+        && let Some(sse) = json_completion_to_sse(state.from, target, &body, &state.profile)
     {
         return bytes_response(status_from_reqwest(status), "text/event-stream", sse);
     }
@@ -339,158 +419,33 @@ async fn read_capped_upstream(resp: reqwest::Response, cap: usize) -> Result<Byt
 
 /// Grok (and other always-SSE clients) still get SSE when the upstream
 /// ignored `stream: true` and returned a JSON completion.
-fn json_completion_to_sse(from: Wire, body: &Bytes) -> Option<Bytes> {
-    let value: Value = serde_json::from_slice(body).ok()?;
-    let tools = chat_tool_calls(&value);
-    let text = assistant_text(from, &value);
-    if tools.is_empty() && text.is_none() {
+fn json_completion_to_sse(
+    from: Wire,
+    target: Wire,
+    body: &Bytes,
+    profile: &ResolvedProfile,
+) -> Option<Bytes> {
+    let events = decode_response(target, body, profile).ok()?;
+    if events.is_empty() {
         return None;
     }
-    let mut events = Vec::new();
-    if let Some(text) = text {
-        events.push(IrStreamEvent::TextDelta { text });
-    }
-    for (id, name, args) in tools {
-        events.push(IrStreamEvent::ToolCallStart {
-            id,
-            name,
-            thought_signature: None,
-        });
-        if !args.is_empty() {
-            events.push(IrStreamEvent::ToolCallArgDelta { delta: args });
-        }
-        events.push(IrStreamEvent::ToolCallEnd);
-    }
-    let reason = value
-        .pointer("/choices/0/finish_reason")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(map_finish)
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
-            if events
-                .iter()
-                .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. }))
-            {
-                "tool_calls".into()
-            } else {
-                "stop".into()
-            }
-        });
-    events.push(IrStreamEvent::FinishReason { reason });
-    if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
-        events.push(from_chat(usage));
-    }
-    events.push(IrStreamEvent::Done);
+    let mut encoder = StreamEncoder::new(from);
     let mut out = String::new();
+    let mut wrote = false;
     for ev in events {
-        let raw = encode_stream_event(from, &ev).ok()?;
+        if !event_has_slot(from, &ev) {
+            continue;
+        }
+        for raw in encoder.push(ev).ok()? {
+            out.push_str(&format_sse(&raw));
+            wrote = true;
+        }
+    }
+    for raw in encoder.finish().ok()? {
         out.push_str(&format_sse(&raw));
+        wrote = true;
     }
-    Some(Bytes::from(out))
-}
-
-fn chat_tool_calls(value: &Value) -> Vec<(String, String, String)> {
-    let Some(calls) = value
-        .pointer("/choices/0/message/tool_calls")
-        .and_then(Value::as_array)
-    else {
-        return Vec::new();
-    };
-    calls
-        .iter()
-        .filter_map(|call| {
-            let func = call.get("function").unwrap_or(call);
-            let name = func
-                .get("name")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())?;
-            let id = call
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            let args = func
-                .get("arguments")
-                .map(|v| {
-                    v.as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| v.to_string())
-                })
-                .unwrap_or_default();
-            Some((id, name.to_owned(), args))
-        })
-        .collect()
-}
-
-fn assistant_text(wire: Wire, value: &Value) -> Option<String> {
-    match wire {
-        Wire::ChatCompletions => value
-            .pointer("/choices/0/message/content")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned),
-        Wire::Messages => {
-            if let Some(s) = value.get("content").and_then(Value::as_str) {
-                return Some(s.to_owned()).filter(|t| !t.is_empty());
-            }
-            let blocks = value.get("content").and_then(Value::as_array)?;
-            let text: String = blocks
-                .iter()
-                .filter_map(|block| block.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("");
-            (!text.is_empty()).then_some(text)
-        }
-        Wire::Converse => {
-            let blocks = value
-                .pointer("/output/message/content")
-                .and_then(Value::as_array)?;
-            let text: String = blocks
-                .iter()
-                .filter_map(|block| block.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("");
-            (!text.is_empty()).then_some(text)
-        }
-        Wire::Gemini => {
-            let parts = value
-                .pointer("/candidates/0/content/parts")
-                .and_then(Value::as_array)?;
-            let text: String = parts
-                .iter()
-                .filter_map(|p| p.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("");
-            (!text.is_empty()).then_some(text)
-        }
-        Wire::Responses => {
-            if let Some(s) = value
-                .pointer("/output_text")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-            {
-                return Some(s.to_owned());
-            }
-            let output = value.get("output").and_then(Value::as_array)?;
-            let mut text = String::new();
-            for item in output {
-                if let Some(s) = item.get("text").and_then(Value::as_str) {
-                    text.push_str(s);
-                    continue;
-                }
-                if let Some(parts) = item.get("content").and_then(Value::as_array) {
-                    for part in parts {
-                        if let Some(s) = part.get("text").and_then(Value::as_str) {
-                            text.push_str(s);
-                        }
-                    }
-                }
-            }
-            (!text.is_empty()).then_some(text)
-        }
-        _ => None,
-    }
+    wrote.then(|| Bytes::from(out))
 }
 
 fn passthrough_sse(status: StatusCode, resp: reqwest::Response) -> Response<ProxyBody> {
@@ -539,6 +494,7 @@ fn map_sse_stream(
         let mut stream = resp.bytes_stream();
         let mut reader = UpstreamFrames::for_wire(target);
         let mut assembler = ToolCallAssembler::new();
+        let mut encoder = StreamEncoder::new(state.from);
         while let Some(item) = stream.next().await {
             let bytes = match item {
                 Ok(b) => b,
@@ -552,8 +508,8 @@ fn map_sse_stream(
                     return;
                 }
             };
-            let frames = match reader.feed(&bytes) {
-                Ok(f) => f,
+            let (frames, terminal) = match reader.feed(&bytes) {
+                Ok(pair) => pair,
                 Err(err) => {
                     let _ = tx
                         .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
@@ -564,20 +520,76 @@ fn map_sse_stream(
                     return;
                 }
             };
-            if !push_mapped_frames(&state, target, &tx, frames, &mut assembler).await {
+            if !push_mapped_frames(&state, target, &tx, frames, &mut assembler, &mut encoder).await
+            {
+                return;
+            }
+            if let Some(err) = terminal {
+                let _ = tx
+                    .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
+                        event: Some("error".into()),
+                        data: err,
+                    })))))
+                    .await;
                 return;
             }
         }
         if let Some(last) = reader.drain() {
-            let _ = push_mapped_frames(&state, target, &tx, vec![last], &mut assembler).await;
+            let _ = push_mapped_frames(
+                &state,
+                target,
+                &tx,
+                vec![last],
+                &mut assembler,
+                &mut encoder,
+            )
+            .await;
         }
         for ev in assembler.flush() {
             if !event_has_slot(state.from, &ev) {
                 continue;
             }
-            if let Ok(mapped) = encode_stream_event(state.from, &ev) {
+            match encoder.push(ev) {
+                Ok(mapped) => {
+                    for frame in mapped {
+                        if tx
+                            .send(Ok(Frame::data(Bytes::from(format_sse(&frame)))))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                Err(err) => {
+                    let _ = tx
+                        .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
+                            event: Some("error".into()),
+                            data: format!("encode stream: {err}"),
+                        })))))
+                        .await;
+                    return;
+                }
+            }
+        }
+        match encoder.finish() {
+            Ok(mapped) => {
+                for frame in mapped {
+                    if tx
+                        .send(Ok(Frame::data(Bytes::from(format_sse(&frame)))))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            Err(err) => {
                 let _ = tx
-                    .send(Ok(Frame::data(Bytes::from(format_sse(&mapped)))))
+                    .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
+                        event: Some("error".into()),
+                        data: format!("encode stream: {err}"),
+                    })))))
                     .await;
             }
         }
@@ -598,6 +610,7 @@ async fn push_mapped_frames(
     tx: &tokio::sync::mpsc::Sender<Result<Frame<Bytes>, Infallible>>,
     frames: Vec<RawSse>,
     assembler: &mut ToolCallAssembler,
+    encoder: &mut StreamEncoder,
 ) -> bool {
     for raw in frames {
         match decode_stream_events(target, &raw, &state.profile) {
@@ -606,14 +619,16 @@ async fn push_mapped_frames(
                     if !event_has_slot(state.from, &ev) {
                         continue;
                     }
-                    match encode_stream_event(state.from, &ev) {
+                    match encoder.push(ev) {
                         Ok(mapped) => {
-                            if tx
-                                .send(Ok(Frame::data(Bytes::from(format_sse(&mapped)))))
-                                .await
-                                .is_err()
-                            {
-                                return false;
+                            for frame in mapped {
+                                if tx
+                                    .send(Ok(Frame::data(Bytes::from(format_sse(&frame)))))
+                                    .await
+                                    .is_err()
+                                {
+                                    return false;
+                                }
                             }
                         }
                         Err(err) => {

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 use wiremux::{
-    IrStreamEvent, MapError, RawSse, ResolvedProfile, ToolCallAssembler, Wire, decode_stream_event,
-    decode_stream_events, encode_stream_event, parse_profile_str,
+    IrStreamEvent, MapError, RawSse, ResolvedProfile, StreamEncoder, ToolCallAssembler, Wire,
+    decode_stream_event, decode_stream_events, encode_stream_event, parse_profile_str,
 };
 
 fn golden(name: &str) -> String {
@@ -105,7 +105,7 @@ fn anthropic_tool_use_and_thinking_golden() {
     let args: String = events
         .iter()
         .filter_map(|ev| match ev {
-            IrStreamEvent::ToolCallArgDelta { delta } => Some(delta.as_str()),
+            IrStreamEvent::ToolCallArgDelta { delta, .. } => Some(delta.as_str()),
             _ => None,
         })
         .collect();
@@ -141,7 +141,7 @@ fn chat_tool_call_delta_golden() {
     let args: String = events
         .iter()
         .filter_map(|ev| match ev {
-            IrStreamEvent::ToolCallArgDelta { delta } => Some(delta.as_str()),
+            IrStreamEvent::ToolCallArgDelta { delta, .. } => Some(delta.as_str()),
             _ => None,
         })
         .collect();
@@ -616,14 +616,14 @@ fn stream_signed_function_call_keeps_nonempty_args() {
     assert!(
         all.iter().any(|ev| matches!(
             ev,
-            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+            IrStreamEvent::ToolCallArgDelta { delta, .. } if delta == r#"{"q":"x"}"#
         )),
         "fan-out must emit ArgDelta, got {all:?}"
     );
     let delta = all
         .iter()
         .find_map(|ev| match ev {
-            IrStreamEvent::ToolCallArgDelta { delta } => Some(delta.as_str()),
+            IrStreamEvent::ToolCallArgDelta { delta, .. } => Some(delta.as_str()),
             _ => None,
         })
         .expect("ArgDelta");
@@ -631,6 +631,7 @@ fn stream_signed_function_call_keeps_nonempty_args() {
         Wire::Gemini,
         &IrStreamEvent::ToolCallArgDelta {
             delta: delta.to_string(),
+            index: 0,
         },
     )
     .expect("encode ArgDelta");
@@ -675,7 +676,7 @@ fn gemini_thought_then_function_call_emits_both() {
     assert!(
         all.iter().any(|ev| matches!(
             ev,
-            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+            IrStreamEvent::ToolCallArgDelta { delta, .. } if delta == r#"{"q":"x"}"#
         )),
         "functionCall args must emit ArgDelta, got {all:?}"
     );
@@ -705,7 +706,7 @@ fn gemini_text_then_function_call_emits_both() {
     assert!(
         all.iter().any(|ev| matches!(
             ev,
-            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+            IrStreamEvent::ToolCallArgDelta { delta, .. } if delta == r#"{"q":"x"}"#
         )),
         "functionCall args must emit ArgDelta, got {all:?}"
     );
@@ -943,7 +944,7 @@ fn responses_added_with_arguments_fans_out() {
     assert!(
         all.iter().any(|ev| matches!(
             ev,
-            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+            IrStreamEvent::ToolCallArgDelta { delta, .. } if delta == r#"{"q":"x"}"#
         )),
         "fan-out must emit arguments from output_item.added, got {all:?}"
     );
@@ -973,7 +974,7 @@ data: {"type":"response.completed","response":{"id":"resp_redacted","status":"co
     );
     assert!(
         events.iter().any(
-            |ev| matches!(ev, IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"location":"SF"}"#)
+            |ev| matches!(ev, IrStreamEvent::ToolCallArgDelta { delta, .. } if delta == r#"{"location":"SF"}"#)
         ),
         "arg delta missing: {events:?}"
     );
@@ -1036,6 +1037,7 @@ fn encode_round_trip_text_and_tool_start() {
         id: "call_1".into(),
         name: "lookup".into(),
         thought_signature: None,
+        index: 0,
     };
     for wire in [Wire::ChatCompletions, Wire::Messages, Wire::Responses] {
         let profile = match wire {
@@ -1162,54 +1164,93 @@ fn chat_tool_start_with_args_keeps_bytes() {
     assert!(
         all.iter().any(|ev| matches!(
             ev,
-            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"#
+            IrStreamEvent::ToolCallArgDelta { delta, .. } if delta == r#"{"q":"#
         )),
         "fan-out must emit ArgDelta, got {all:?}"
     );
 }
 
 #[test]
-fn chat_parallel_tool_calls_keep_protocol() {
+fn chat_parallel_tool_calls_emit_both_starts() {
     let raw = RawSse {
         event: None,
         data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":1}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"search","arguments":"{\"q\":2}"}}]}}]}"#.into(),
     };
     let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
         .expect("decode parallel tools");
-    let starts: Vec<(&str, &str)> = all
+    let starts: Vec<(&str, &str, u32)> = all
         .iter()
         .filter_map(|ev| match ev {
-            IrStreamEvent::ToolCallStart { id, name, .. } => Some((id.as_str(), name.as_str())),
+            IrStreamEvent::ToolCallStart {
+                id, name, index, ..
+            } => Some((id.as_str(), name.as_str(), *index)),
             _ => None,
         })
         .collect();
-    let has_protocol = all
-        .iter()
-        .any(|ev| matches!(ev, IrStreamEvent::Protocol { .. }));
     assert!(
-        has_protocol
-            || (starts
-                .iter()
-                .any(|(id, name)| *id == "call_1" && *name == "lookup")
-                && starts
-                    .iter()
-                    .any(|(id, name)| *id == "call_2" && *name == "search")),
-        "parallel tool_calls must stay Protocol or emit both starts, got {all:?}"
+        starts
+            .iter()
+            .any(|(id, name, index)| *id == "call_1" && *name == "lookup" && *index == 0),
+        "first parallel tool_call must survive as ToolCallStart index 0, got {all:?}"
     );
-    if let [IrStreamEvent::Protocol { payload, .. }] = all.as_slice() {
-        let calls = payload
-            .pointer("/choices/0/delta/tool_calls")
-            .and_then(Value::as_array)
-            .expect("tool_calls");
-        assert_eq!(
-            calls.len(),
-            2,
-            "Protocol must keep both sibling calls, got {payload}"
-        );
-    }
     assert!(
-        !(starts.len() == 1 && starts[0] == ("call_1", "lookup")),
-        "must not expand only the first tool_call, got {all:?}"
+        starts
+            .iter()
+            .any(|(id, name, index)| *id == "call_2" && *name == "search" && *index == 1),
+        "second parallel tool_call must survive as ToolCallStart index 1, got {all:?}"
+    );
+    assert!(
+        !all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::Protocol { .. })),
+        "parallel tool_calls must not collapse to Protocol, got {all:?}"
+    );
+}
+
+#[test]
+fn chat_interleaved_tool_indexes_assemble() {
+    let frames = [
+        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup"}}]}}]}"#,
+        r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"search"}}]}}]}"#,
+        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":1}"}}]}}]}"#,
+        r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"q\":2}"}}]}}]}"#,
+    ];
+    let mut asm = ToolCallAssembler::new();
+    let mut out = Vec::new();
+    for data in frames {
+        let raw = RawSse {
+            event: None,
+            data: data.into(),
+        };
+        for ev in decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("dec") {
+            out.extend(asm.push(ev));
+        }
+    }
+    out.extend(asm.flush());
+    let starts: Vec<(&str, &str, u32)> = out
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart {
+                id, name, index, ..
+            } => Some((id.as_str(), name.as_str(), *index)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        vec![("call_1", "lookup", 0), ("call_2", "search", 1)],
+        "interleaved starts must keep distinct indexes, got {out:?}"
+    );
+    let args: Vec<(&str, u32)> = out
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { delta, index } => Some((delta.as_str(), *index)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        args,
+        vec![(r#"{"q":1}"#, 0), (r#"{"q":2}"#, 1)],
+        "arg deltas must stay on their index, got {out:?}"
     );
 }
 
@@ -1366,7 +1407,7 @@ fn chat_tool_delta_same_chunk_finish_and_usage() {
     assert!(
         all.iter().any(|ev| matches!(
             ev,
-            IrStreamEvent::ToolCallArgDelta { delta } if delta == r#"{"q":"x"}"#
+            IrStreamEvent::ToolCallArgDelta { delta, .. } if delta == r#"{"q":"x"}"#
         )),
         "must emit ArgDelta, got {all:?}"
     );
@@ -1680,7 +1721,8 @@ fn converse_eventstream_bytes_decode_to_text_delta() {
     let payload = br#"{"contentBlockDelta":{"delta":{"text":"pong"}}}"#;
     let bytes = wiremux::stream::encode_eventstream_message("contentBlockDelta", payload);
     let mut reader = wiremux::stream::EventStreamReader::new();
-    let frames = reader.feed(&bytes).expect("feed");
+    let (frames, err) = reader.feed(&bytes).expect("feed");
+    assert!(err.is_none());
     assert_eq!(frames.len(), 1);
     let ev = decode_stream_event(Wire::Converse, &frames[0], &converse_profile)
         .expect("decode")
@@ -1699,7 +1741,8 @@ fn converse_eventstream_unwrapped_payload_decodes_to_text_delta() {
     let payload = br#"{"delta":{"text":"hi"},"contentBlockIndex":0}"#;
     let bytes = wiremux::stream::encode_eventstream_message("contentBlockDelta", payload);
     let mut reader = wiremux::stream::EventStreamReader::new();
-    let frames = reader.feed(&bytes).expect("feed");
+    let (frames, err) = reader.feed(&bytes).expect("feed");
+    assert!(err.is_none());
     assert_eq!(frames.len(), 1);
     let ev = decode_stream_event(Wire::Converse, &frames[0], &converse_profile)
         .expect("decode")
@@ -1707,5 +1750,258 @@ fn converse_eventstream_unwrapped_payload_decodes_to_text_delta() {
     assert!(
         matches!(ev, IrStreamEvent::TextDelta { ref text } if text == "hi"),
         "{ev:?}"
+    );
+}
+
+#[test]
+fn gemini_stop_with_function_call_is_tool_calls() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"weather","args":{"city":"Paris"}}}]},"finishReason":"STOP"}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::FinishReason { reason } if reason == "tool_calls"
+        )),
+        "STOP + functionCall must be tool_calls, got {all:?}"
+    );
+}
+
+#[test]
+fn gemini_stop_text_only_is_stop() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}"#
+            .into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+        "text-only STOP must stay stop, got {all:?}"
+    );
+}
+
+#[test]
+fn gemini_parallel_same_name_calls_get_distinct_ids() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc_1","name":"weather","args":{"city":"Paris"}}},{"functionCall":{"id":"fc_2","name":"weather","args":{"city":"Rome"}}}]}}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
+    let ids: Vec<&str> = all
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, ["fc_1", "fc_2"], "{all:?}");
+}
+
+#[test]
+fn gemini_generated_ids_are_distinct_when_vendor_omits_id() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"weather","args":{"city":"Paris"}}},{"functionCall":{"name":"weather","args":{"city":"Rome"}}}]}}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
+    let ids: Vec<&str> = all
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids.len(), 2, "{all:?}");
+    assert_ne!(ids[0], ids[1], "{ids:?}");
+}
+
+fn encode_all(wire: Wire, events: &[IrStreamEvent]) -> Vec<RawSse> {
+    let mut enc = StreamEncoder::new(wire);
+    let mut out = Vec::new();
+    for ev in events {
+        out.extend(enc.push(ev.clone()).expect("push"));
+    }
+    out.extend(enc.finish().expect("finish"));
+    out
+}
+
+fn frame_events(frames: &[RawSse]) -> Vec<String> {
+    frames
+        .iter()
+        .map(|f| {
+            f.event.clone().unwrap_or_else(|| {
+                serde_json::from_str::<Value>(&f.data)
+                    .ok()
+                    .and_then(|v| v.get("type").and_then(Value::as_str).map(str::to_string))
+                    .unwrap_or_else(|| "chunk".into())
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn stream_encoder_chat_to_messages_emits_grammar() {
+    let frames = encode_all(
+        Wire::Messages,
+        &[
+            IrStreamEvent::TextDelta { text: "Hi".into() },
+            IrStreamEvent::ToolCallStart {
+                id: "call_1".into(),
+                name: "lookup".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"q":"x"}"#.into(),
+                index: 0,
+            },
+            IrStreamEvent::FinishReason {
+                reason: "tool_calls".into(),
+            },
+            IrStreamEvent::Usage {
+                prompt_tokens: 3,
+                completion_tokens: 2,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+            },
+            IrStreamEvent::Done,
+        ],
+    );
+    let names = frame_events(&frames);
+    assert_eq!(
+        names.first().map(String::as_str),
+        Some("message_start"),
+        "Messages must open with message_start, got {names:?}"
+    );
+    let starts: Vec<u64> = frames
+        .iter()
+        .filter(|f| f.event.as_deref() == Some("content_block_start"))
+        .filter_map(|f| {
+            serde_json::from_str::<Value>(&f.data)
+                .ok()?
+                .get("index")
+                .and_then(Value::as_u64)
+        })
+        .collect();
+    assert!(
+        starts.contains(&0) && starts.contains(&1),
+        "text and tool_use must use distinct indexes, got {starts:?} from {frames:?}"
+    );
+    assert!(
+        frames
+            .iter()
+            .any(|f| f.event.as_deref() == Some("content_block_stop")),
+        "must close blocks with content_block_stop, got {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "message_delta"),
+        "must emit message_delta, got {names:?}"
+    );
+    assert_eq!(
+        names.last().map(String::as_str),
+        Some("message_stop"),
+        "must end with message_stop, got {names:?}"
+    );
+}
+
+#[test]
+fn stream_encoder_chat_to_responses_one_created_one_completed() {
+    let frames = encode_all(
+        Wire::Responses,
+        &[
+            IrStreamEvent::TextDelta { text: "Hi".into() },
+            IrStreamEvent::ToolCallStart {
+                id: "call_1".into(),
+                name: "lookup".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"q":"x"}"#.into(),
+                index: 0,
+            },
+            IrStreamEvent::FinishReason {
+                reason: "tool_calls".into(),
+            },
+            IrStreamEvent::Usage {
+                prompt_tokens: 3,
+                completion_tokens: 2,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+            },
+            IrStreamEvent::Done,
+        ],
+    );
+    let names = frame_events(&frames);
+    let created = names.iter().filter(|n| *n == "response.created").count();
+    let completed = names.iter().filter(|n| *n == "response.completed").count();
+    assert_eq!(created, 1, "exactly one response.created, got {names:?}");
+    assert_eq!(
+        completed, 1,
+        "exactly one response.completed, got {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "response.output_item.added"),
+        "must add output items, got {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "response.output_item.done"),
+        "must close output items, got {names:?}"
+    );
+    let completed_frame = frames
+        .iter()
+        .find(|f| f.event.as_deref() == Some("response.completed"))
+        .expect("completed");
+    let json: Value = serde_json::from_str(&completed_frame.data).expect("json");
+    assert!(
+        json.pointer("/response/usage").is_some(),
+        "completed must carry usage, got {json}"
+    );
+}
+
+#[test]
+fn stream_encoder_parallel_tools_to_chat_use_distinct_indexes() {
+    let frames = encode_all(
+        Wire::ChatCompletions,
+        &[
+            IrStreamEvent::ToolCallStart {
+                id: "c1".into(),
+                name: "weather".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallStart {
+                id: "c2".into(),
+                name: "weather".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"city":"Paris"}"#.into(),
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"city":"Rome"}"#.into(),
+                index: 0,
+            },
+        ],
+    );
+    let indexes: Vec<u64> = frames
+        .iter()
+        .filter_map(|f| {
+            let v: Value = serde_json::from_str(&f.data).ok()?;
+            v.pointer("/choices/0/delta/tool_calls/0/index")
+                .and_then(Value::as_u64)
+        })
+        .collect();
+    assert!(
+        indexes.contains(&0) && indexes.contains(&1),
+        "parallel Chat tool calls must use distinct indexes, got {indexes:?} from {frames:?}"
     );
 }

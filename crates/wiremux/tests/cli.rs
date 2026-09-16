@@ -827,6 +827,250 @@ chat_path = "/v1/chat/completions"
 }
 
 #[test]
+fn proxy_401_oauth_retries_once() {
+    let token_srv = TcpListener::bind("127.0.0.1:0").expect("token bind");
+    let token_addr = token_srv.local_addr().expect("addr");
+    let token_thread = std::thread::spawn(move || {
+        let (mut stream, _) = token_srv.accept().expect("token accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"access_token":"second-proxy","refresh_token":"rt2","expires_in":3600}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        for i in 0..2 {
+            let (mut stream, _) = upstream.accept().expect("accept");
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            seen.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+            if i == 0 {
+                let body = r#"{"error":{"message":"expired"}}"#;
+                let resp = format!(
+                    "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            } else {
+                let body = r#"{"id":"chatcmpl-retry","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        }
+        seen
+    });
+
+    let (home, mut cmd) = isolated_home();
+    let creds_dir = home.path().join("config/wiremux");
+    std::fs::create_dir_all(&creds_dir).expect("mkdir creds");
+    let creds_path = creds_dir.join("auth.json");
+    std::fs::write(
+        &creds_path,
+        r#"{"tokens":{"access":"first-proxy","refresh":"rt-proxy","expiry_unix":4102444800}}"#,
+    )
+    .expect("write creds");
+    let creds_unix = creds_path.to_string_lossy().replace('\\', "/");
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "retry-oauth.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "retry-oauth"
+wire = "chat-completions"
+auth_scheme = "bearer"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+[oauth]
+token_url = "http://{token_addr}/token"
+client_id = "retry-client"
+token_request_format = "form"
+creds_format = "json-pointer"
+creds_path = "{creds_unix}"
+access_token_ptr = "/tokens/access"
+refresh_token_ptr = "/tokens/refresh"
+expires_ptr = "/tokens/expiry_unix"
+expires_unit = "s"
+login = "none"
+[oauth.token_response]
+access_token_ptr = "/access_token"
+refresh_token_ptr = "/refresh_token"
+expires_ptr = "/expires_in"
+expires_unit = "s"
+"#
+        ),
+    );
+
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"gpt-4","stream":false,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = token_thread.join();
+    let seen = upstream_thread.join().expect("upstream");
+    assert_eq!(seen.len(), 2, "proxy must retry 401 once, got {seen:?}");
+    assert!(
+        seen[0].contains("Bearer first-proxy"),
+        "first try uses stored access: {}",
+        seen[0]
+    );
+    assert!(
+        seen[1].contains("Bearer second-proxy"),
+        "retry uses refreshed access: {}",
+        seen[1]
+    );
+    assert!(
+        resp.contains("chatcmpl-retry") && resp.contains("pong"),
+        "proxy should return the retried completion, got: {resp}"
+    );
+}
+
+#[test]
+fn proxy_bedrock_iam_sends_sigv4() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 16384];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+        let auths: Vec<_> = req
+            .lines()
+            .filter(|line| {
+                line.split_once(':')
+                    .is_some_and(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            })
+            .collect();
+        assert_eq!(
+            auths.len(),
+            1,
+            "proxy must send exactly one Authorization, got {auths:?} in {req}"
+        );
+        assert!(
+            auths[0].to_ascii_lowercase().contains("aws4-hmac-sha256"),
+            "proxy must SigV4 Bedrock IAM requests, got {auths:?}"
+        );
+        assert!(
+            req.to_ascii_lowercase().contains("x-amz-date:"),
+            "proxy SigV4 must send x-amz-date, got {req}"
+        );
+        let body = r#"{"output":{"message":{"role":"assistant","content":[{"text":"ok"}]}},"stopReason":"end_turn"}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        req
+    });
+
+    let dir = unique_scratch();
+    let aws_dir = dir.join("aws");
+    std::fs::create_dir_all(&aws_dir).expect("mkdir aws");
+    let creds_path = aws_dir.join("credentials");
+    std::fs::write(
+        &creds_path,
+        "[dev]\naws_access_key_id = AKIAPROXY\naws_secret_access_key = proxysecret\n",
+    )
+    .expect("write credentials");
+    let profile = write_profile(
+        &dir,
+        "bedrock-iam.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "bedrock-iam"
+wire = "converse"
+auth_scheme = "none"
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "http://{upstream_addr}"
+chat_path = "/model/{{model}}/converse"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .env_remove("AWS_ACCESS_KEY_ID")
+        .env_remove("AWS_SECRET_ACCESS_KEY")
+        .env_remove("AWS_SESSION_TOKEN")
+        .env_remove("AWS_BEARER_TOKEN_BEDROCK")
+        .env("AWS_PROFILE", "dev")
+        .env("AWS_SHARED_CREDENTIALS_FILE", &creds_path)
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body =
+        r#"{"modelId":"amazon.titan","messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /model/amazon.titan/converse HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = upstream_thread.join();
+    assert!(
+        resp.contains("200") && resp.contains("end_turn"),
+        "proxy should return signed upstream Converse, got: {resp}"
+    );
+}
+
+#[test]
 fn proxy_forwards_upstream_sse_status() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
@@ -1631,6 +1875,84 @@ chat_path = "/v1/chat/completions"
 }
 
 #[test]
+fn proxy_messages_client_chat_json_text_and_tools_becomes_sse() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"id":"chatcmpl-redacted","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Let me look that up.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-up.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-up"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "messages",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"claude","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"lookup"}]}"#;
+    let req = format!(
+        "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("text/event-stream"),
+        "Messages client must get SSE, not JSON, got: {resp}"
+    );
+    assert!(
+        resp.contains("Let me look that up."),
+        "wrapped SSE must keep assistant text, got: {resp}"
+    );
+    assert!(
+        resp.contains("tool_use") && resp.contains("lookup") && resp.contains("call_1"),
+        "wrapped SSE must keep the tool_use block, got: {resp}"
+    );
+}
+
+#[test]
 fn proxy_json_completion_length_finish_and_usage_becomes_sse() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
@@ -2267,6 +2589,136 @@ chat_path = "/v1/messages"
     );
 }
 
+#[test]
+fn proxy_vertex_reuses_provider_and_mints_once() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+
+    let hits = Arc::new(AtomicU64::new(0));
+    let token_hits = Arc::clone(&hits);
+    let token_srv = TcpListener::bind("127.0.0.1:0").expect("token bind");
+    let token_addr = token_srv.local_addr().expect("addr");
+    token_srv.set_nonblocking(true).expect("token nonblocking");
+    let stop = Arc::new(AtomicU64::new(0));
+    let stop_flag = Arc::clone(&stop);
+    let token_thread = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while stop_flag.load(Ordering::Relaxed) == 0 && Instant::now() < deadline {
+            match token_srv.accept() {
+                Ok((mut stream, _)) => {
+                    token_hits.fetch_add(1, Ordering::Relaxed);
+                    let mut buf = [0u8; 8192];
+                    let _ = stream.read(&mut buf);
+                    let body =
+                        r#"{"access_token":"ya29.once","expires_in":3600,"token_type":"Bearer"}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = upstream.accept().expect("accept");
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            seen.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+            let body =
+                r#"{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+        seen
+    });
+
+    let (home, mut cmd) = isolated_home();
+    let adc_path = home.path().join("adc.json");
+    std::fs::write(
+        &adc_path,
+        format!(
+            r#"{{"type":"authorized_user","client_id":"123.apps.googleusercontent.com","client_secret":"user-secret","refresh_token":"1//refresh-me","token_uri":"http://{token_addr}/token"}}"#
+        ),
+    )
+    .expect("write adc");
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "vertex-mint.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "vertex-mint"
+wire = "gemini"
+auth_scheme = "bearer"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/projects/p/locations/us/publishers/google/models/{{model}}:generateContent"
+gcp_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
+"#
+        ),
+    );
+
+    let mut child = cmd
+        .env("GOOGLE_APPLICATION_CREDENTIALS", &adc_path)
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"gemini-2.0-flash","stream":false,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    for _ in 0..2 {
+        let mut client = TcpStream::connect(listen).expect("connect proxy");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        client.write_all(req.as_bytes()).expect("write");
+        let mut resp = String::new();
+        let _ = client.read_to_string(&mut resp);
+        assert!(
+            resp.contains("ok") || resp.contains("chat.completion"),
+            "vertex proxy request failed: {resp}"
+        );
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    stop.store(1, Ordering::Relaxed);
+    let _ = token_thread.join();
+    let seen = upstream_thread.join().expect("upstream");
+    assert_eq!(seen.len(), 2, "two upstream calls, got {seen:?}");
+    assert_eq!(
+        hits.load(Ordering::Relaxed),
+        1,
+        "Vertex ADC must mint once per token lifetime, not per request"
+    );
+}
+
 fn read_listen_addr(stdout: &mut impl Read) -> std::net::SocketAddr {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut buf = Vec::new();
@@ -2342,6 +2794,7 @@ fn profile_ingest_from_file_writes_user_dir() {
             "groq",
             "--vendor",
             "deepseek",
+            "--force",
             "--dir",
             dest.to_str().expect("utf8"),
         ])

@@ -1,0 +1,8 @@
+schema_version = 1
+id = "groq"
+display_name = "Groq Chat Completions"
+wire = "chat-completions"
+base_url = "https://api.groq.com"
+chat_path = "/openai/v1/chat/completions"
+auth_scheme = "bearer"
+access_env = "GROQ_API_KEY"

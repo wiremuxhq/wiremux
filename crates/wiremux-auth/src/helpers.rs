@@ -1,34 +1,50 @@
 //! HTTP, lock, single-flight, and sanitization helpers.
 
+#[cfg(feature = "net")]
 use std::future::Future;
+#[cfg(feature = "net")]
 use std::io;
+#[cfg(any(feature = "net", test))]
 use std::path::{Component, Path, PathBuf};
+#[cfg(feature = "net")]
 use std::sync::Arc;
+#[cfg(feature = "net")]
 use std::time::Duration;
 
+#[cfg(feature = "net")]
 use tokio::sync::watch;
+#[cfg(feature = "net")]
 use tracing::warn;
 
+#[cfg(any(feature = "net", test))]
 use crate::error::AuthError;
 
 /// Cap `expires_in` so a millisecond-as-seconds vendor cannot overflow.
+#[cfg(feature = "net")]
 pub(crate) const MAX_EXPIRES_IN_SECS: u64 = 10 * 365 * 24 * 3600;
 /// Hard cap on token-endpoint bodies.
+#[cfg(feature = "net")]
 pub(crate) const MAX_OAUTH_BODY_BYTES: usize = 1024 * 1024;
 /// Hard cap on credential-store files.
+#[cfg(feature = "net")]
 pub(crate) const MAX_CREDS_BYTES: u64 = 1024 * 1024;
 /// Default lock wait.
+#[cfg(feature = "net")]
 pub(crate) const AUTH_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Connect timeout for token-URL POSTs. A missing host must not wait
 /// the full request timeout on each of `token_url` and `token_url_fallback`.
+#[cfg(feature = "net")]
 pub(crate) const OAUTH_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Total request timeout for token-URL POSTs.
+#[cfg(feature = "net")]
 pub(crate) const OAUTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[cfg(feature = "net")]
 pub(crate) fn duration_from_expires_in_secs(secs: u64) -> Duration {
     Duration::from_secs(secs.min(MAX_EXPIRES_IN_SECS))
 }
 
+#[cfg(feature = "net")]
 pub(crate) fn oauth_http_client() -> Result<reqwest::Client, AuthError> {
     reqwest::Client::builder()
         .user_agent(format!("wiremux-auth/{}", env!("CARGO_PKG_VERSION")))
@@ -40,27 +56,33 @@ pub(crate) fn oauth_http_client() -> Result<reqwest::Client, AuthError> {
 }
 
 /// Shared in-flight refresh so parallel `get_token` issues one POST.
+#[cfg(feature = "net")]
 pub(crate) struct InFlight {
     inner: Arc<InFlightInner>,
 }
 
+#[cfg(feature = "net")]
 type RefreshWatch = watch::Receiver<Option<Result<String, String>>>;
 
+#[cfg(feature = "net")]
 struct InFlightInner {
     slot: std::sync::Mutex<Option<RefreshWatch>>,
 }
 
+#[cfg(feature = "net")]
 pub(crate) enum RefreshRole {
     Leader(RefreshLeader),
     Follower(RefreshWatch),
 }
 
+#[cfg(feature = "net")]
 pub(crate) struct RefreshLeader {
     tx: watch::Sender<Option<Result<String, String>>>,
     inner: Arc<InFlightInner>,
     finished: bool,
 }
 
+#[cfg(feature = "net")]
 impl InFlight {
     pub(crate) fn new() -> Self {
         Self {
@@ -90,6 +112,7 @@ impl InFlight {
     }
 }
 
+#[cfg(feature = "net")]
 impl RefreshLeader {
     pub(crate) fn complete(mut self, result: &Result<String, AuthError>) {
         self.finished = true;
@@ -107,6 +130,7 @@ impl RefreshLeader {
     }
 }
 
+#[cfg(feature = "net")]
 impl Drop for RefreshLeader {
     fn drop(&mut self) {
         if self.finished {
@@ -117,6 +141,7 @@ impl Drop for RefreshLeader {
     }
 }
 
+#[cfg(feature = "net")]
 pub(crate) async fn follow_refresh(
     mut rx: watch::Receiver<Option<Result<String, String>>>,
 ) -> Result<String, AuthError> {
@@ -130,6 +155,7 @@ pub(crate) async fn follow_refresh(
     }
 }
 
+#[cfg(feature = "net")]
 pub(crate) async fn lead_or_follow<F, Fut>(
     inflight: &InFlight,
     refresh: F,
@@ -148,6 +174,7 @@ where
     }
 }
 
+#[cfg(feature = "net")]
 pub(crate) fn cached_token_on_lock_failure(
     cached: Option<&str>,
     force: bool,
@@ -159,6 +186,7 @@ pub(crate) fn cached_token_on_lock_failure(
     Err(err)
 }
 
+#[cfg(feature = "net")]
 pub(crate) fn append_oauth_body_chunk(buf: &mut Vec<u8>, chunk: &[u8]) -> Result<(), AuthError> {
     if buf.len().saturating_add(chunk.len()) > MAX_OAUTH_BODY_BYTES {
         return Err(AuthError::TokenProvider(format!(
@@ -170,6 +198,7 @@ pub(crate) fn append_oauth_body_chunk(buf: &mut Vec<u8>, chunk: &[u8]) -> Result
 }
 
 /// POST `application/x-www-form-urlencoded` to an https (or test loopback) URL.
+#[cfg(feature = "net")]
 pub(crate) async fn post_form_url(
     http: &reqwest::Client,
     url: &str,
@@ -188,6 +217,7 @@ pub(crate) async fn post_form_url(
     Ok((status, body))
 }
 
+#[cfg(feature = "net")]
 pub(crate) fn parse_token_endpoint(url: &str) -> Result<reqwest::Url, AuthError> {
     let parsed = reqwest::Url::parse(url.trim())
         .map_err(|e| AuthError::TokenProvider(format!("token_url is not a valid URL: {e}")))?;
@@ -203,6 +233,7 @@ pub(crate) fn parse_token_endpoint(url: &str) -> Result<reqwest::Url, AuthError>
     ))
 }
 
+#[cfg(feature = "net")]
 pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -213,6 +244,7 @@ pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg(feature = "net")]
 pub(crate) async fn read_oauth_body(mut resp: reqwest::Response) -> Result<String, AuthError> {
     if let Some(len) = resp.content_length()
         && len > MAX_OAUTH_BODY_BYTES as u64
@@ -234,6 +266,7 @@ pub(crate) async fn read_oauth_body(mut resp: reqwest::Response) -> Result<Strin
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+#[cfg(feature = "net")]
 pub(crate) fn is_token_rotation_error(body: &str) -> bool {
     let lower = body.to_lowercase();
     lower.contains("refresh_token_reused")
@@ -243,6 +276,7 @@ pub(crate) fn is_token_rotation_error(body: &str) -> bool {
 }
 
 /// `error` + `error_description` only. Never echo raw bodies or tokens.
+#[cfg(any(feature = "net", test))]
 pub(crate) fn sanitize_oauth_error_body(body: &str) -> String {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
         return String::new();
@@ -279,10 +313,12 @@ pub fn sanitize_oauth_error_text(text: &str) -> String {
 }
 
 /// Short reason plus origin only. Never format a raw `reqwest` error.
+#[cfg(feature = "net")]
 pub fn format_oauth_transport_error(context: &str, err: &reqwest::Error, url: &str) -> String {
     format_oauth_transport_via(context, oauth_transport_reason(err), url)
 }
 
+#[cfg(any(feature = "net", test))]
 pub(crate) fn is_oauth_transport_error(err: &AuthError) -> bool {
     match err {
         AuthError::TokenProvider(msg) => msg.starts_with("token refresh request failed ("),
@@ -290,10 +326,12 @@ pub(crate) fn is_oauth_transport_error(err: &AuthError) -> bool {
     }
 }
 
+#[cfg(any(feature = "net", test))]
 pub(crate) fn format_oauth_transport_via(context: &str, reason: &str, url: &str) -> String {
     format!("{context} ({reason}) via {}", redact_url_origin(url))
 }
 
+#[cfg(feature = "net")]
 fn oauth_transport_reason(err: &reqwest::Error) -> &'static str {
     if err.is_timeout() {
         "timeout"
@@ -306,6 +344,7 @@ fn oauth_transport_reason(err: &reqwest::Error) -> &'static str {
     }
 }
 
+#[cfg(any(feature = "pkce", feature = "device", test))]
 pub(crate) fn format_oauth_http_error(
     context: &str,
     status: impl std::fmt::Display,
@@ -322,6 +361,7 @@ pub(crate) fn format_oauth_http_error(
 }
 
 /// Sanitized body and origin only. HTTP status lives on [`AuthError::VendorRejected`].
+#[cfg(any(feature = "net", test))]
 pub(crate) fn vendor_rejected_summary(context: &str, body: &str, url: &str) -> String {
     let summary = sanitize_oauth_error_body(body);
     let via = redact_url_origin(url);
@@ -397,17 +437,20 @@ fn redact_jwt(s: &str) -> String {
 }
 
 /// RAII advisory lock. The sibling `{path}.lock` is left in place on drop.
+#[cfg(feature = "net")]
 #[derive(Debug)]
 pub(crate) struct FileLockGuard {
     file: std::fs::File,
 }
 
+#[cfg(feature = "net")]
 impl Drop for FileLockGuard {
     fn drop(&mut self) {
         let _ = fs4::FileExt::unlock(&self.file);
     }
 }
 
+#[cfg(feature = "net")]
 pub(crate) async fn try_acquire_refresh_lock(
     path: Option<&Path>,
     context: &str,
@@ -429,6 +472,7 @@ pub(crate) async fn try_acquire_refresh_lock(
     }
 }
 
+#[cfg(feature = "net")]
 pub(crate) async fn acquire_file_lock(
     path: &Path,
     timeout: Duration,
@@ -440,10 +484,12 @@ pub(crate) async fn acquire_file_lock(
         .map_err(|e| AuthError::TokenProvider(format!("spawn_blocking: {e}")))?
 }
 
+#[cfg(feature = "net")]
 pub(crate) fn lock_sibling(path: &Path) -> PathBuf {
     path.with_extension("lock")
 }
 
+#[cfg(feature = "net")]
 fn lock_exclusive_timeout(lock_path: &Path, timeout: Duration) -> Result<FileLockGuard, AuthError> {
     use fs4::TryLockError;
     use std::fs::OpenOptions;
@@ -485,6 +531,7 @@ fn lock_exclusive_timeout(lock_path: &Path, timeout: Duration) -> Result<FileLoc
     }
 }
 
+#[cfg(feature = "net")]
 fn is_lock_busy(err: &io::Error) -> bool {
     matches!(
         err.kind(),
@@ -498,6 +545,7 @@ fn is_lock_busy(err: &io::Error) -> bool {
         )
 }
 
+#[cfg(any(feature = "net", test))]
 pub(crate) fn expand_tilde(path: &str) -> PathBuf {
     if path == "~" {
         return home_dir().unwrap_or_else(|| PathBuf::from(path));
@@ -516,11 +564,13 @@ pub(crate) fn expand_tilde(path: &str) -> PathBuf {
 }
 
 /// Expand `~` / relative paths, then refuse anything that leaves `$HOME`.
+#[cfg(any(feature = "net", test))]
 pub(crate) fn resolve_creds_path(raw: &str) -> Result<PathBuf, AuthError> {
     jail_creds_path(&expand_tilde(raw))
 }
 
 /// Refuse `..` and any path that is not under `$HOME` / IsolatedHome.
+#[cfg(any(feature = "net", test))]
 pub(crate) fn jail_creds_path(path: &Path) -> Result<PathBuf, AuthError> {
     if path.as_os_str().is_empty() || has_parent_dir(path) {
         return Err(creds_path_escapes_home());
@@ -540,10 +590,12 @@ pub(crate) fn jail_creds_path(path: &Path) -> Result<PathBuf, AuthError> {
     Ok(resolved)
 }
 
+#[cfg(any(feature = "net", test))]
 fn has_parent_dir(path: &Path) -> bool {
     path.components().any(|c| matches!(c, Component::ParentDir))
 }
 
+#[cfg(any(feature = "net", test))]
 fn path_is_under_home(path: &Path, home: &Path) -> bool {
     let home_canon = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     if let Ok(canon) = std::fs::canonicalize(path) {
@@ -562,6 +614,7 @@ fn path_is_under_home(path: &Path, home: &Path) -> bool {
     path.strip_prefix(&home_canon).is_ok()
 }
 
+#[cfg(any(feature = "net", test))]
 fn resolve_via_existing_ancestor(path: &Path) -> Option<PathBuf> {
     let mut suffix: Vec<std::ffi::OsString> = Vec::new();
     let mut current = path.to_path_buf();
@@ -583,16 +636,19 @@ fn resolve_via_existing_ancestor(path: &Path) -> Option<PathBuf> {
     }
 }
 
+#[cfg(any(feature = "net", test))]
 fn creds_path_escapes_home() -> AuthError {
     AuthError::TokenProvider("oauth.creds_path must stay under home".into())
 }
 
+#[cfg(any(feature = "net", test))]
 pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
 }
 
+#[cfg(any(feature = "net", test))]
 pub(crate) fn percent_encode(input: &str) -> String {
     let mut out = String::with_capacity(input.len() * 3);
     for byte in input.bytes() {
@@ -610,6 +666,7 @@ pub(crate) fn percent_encode(input: &str) -> String {
     out
 }
 
+#[cfg(feature = "net")]
 pub(crate) fn format_rfc3339_now_plus(seconds: u64) -> String {
     let seconds = seconds.min(MAX_EXPIRES_IN_SECS);
     let total_secs = std::time::SystemTime::now()
@@ -620,6 +677,7 @@ pub(crate) fn format_rfc3339_now_plus(seconds: u64) -> String {
     format_rfc3339_epoch(total_secs)
 }
 
+#[cfg(feature = "net")]
 pub(crate) fn format_rfc3339_epoch(total_secs: u64) -> String {
     let secs_per_day: u64 = 86400;
     let mut days = (total_secs / secs_per_day) as i64;
@@ -642,6 +700,7 @@ pub(crate) fn format_rfc3339_epoch(total_secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{hour:02}:{min:02}:{sec:02}Z")
 }
 
+#[cfg(feature = "net")]
 pub(crate) fn parse_rfc3339(s: &str) -> Result<std::time::SystemTime, AuthError> {
     let s = s.trim();
     if s.len() < 19 {
@@ -714,6 +773,7 @@ pub(crate) fn parse_rfc3339(s: &str) -> Result<std::time::SystemTime, AuthError>
     Ok(std::time::UNIX_EPOCH + Duration::from_secs(total_secs))
 }
 
+#[cfg(feature = "net")]
 fn days_since_epoch(year: i32, month: u32, day: u32) -> i64 {
     let y = i64::from(if month <= 2 { year - 1 } else { year });
     let m = if month <= 2 {
@@ -729,6 +789,7 @@ fn days_since_epoch(year: i32, month: u32, day: u32) -> i64 {
     era * 146097 + doe - 719468
 }
 
+#[cfg(feature = "net")]
 pub(crate) fn remaining_from_system_time(expiry: std::time::SystemTime) -> Duration {
     match expiry.duration_since(std::time::SystemTime::now()) {
         Ok(remaining) => remaining,
@@ -751,6 +812,7 @@ mod tests {
         assert!(!is_oauth_transport_error(&AuthError::EmptyWriteRefused));
     }
 
+    #[cfg(feature = "net")]
     #[test]
     fn oauth_connect_timeout_is_shorter_than_request_timeout() {
         assert!(OAUTH_CONNECT_TIMEOUT <= Duration::from_secs(5));

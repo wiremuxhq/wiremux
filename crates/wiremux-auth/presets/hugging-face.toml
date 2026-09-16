@@ -1,0 +1,8 @@
+schema_version = 1
+id = "hugging-face"
+display_name = "Hugging Face router Chat Completions"
+wire = "chat-completions"
+base_url = "https://router.huggingface.co"
+chat_path = "/v1/chat/completions"
+auth_scheme = "bearer"
+access_env = "HF_TOKEN"

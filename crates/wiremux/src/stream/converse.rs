@@ -23,6 +23,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         if let Some(input) = delta.pointer("/toolUse/input").and_then(Value::as_str) {
             return Ok(Some(IrStreamEvent::ToolCallArgDelta {
                 delta: input.to_string(),
+                index: 0,
             }));
         }
     }
@@ -43,6 +44,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             id,
             name,
             thought_signature: None,
+            index: 0,
         }));
     }
     if value.get("contentBlockStop").is_some() {
@@ -94,7 +96,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
                 "start": { "toolUse": { "toolUseId": id, "name": name } }
             }
         })),
-        IrStreamEvent::ToolCallArgDelta { delta } => Ok(json!({
+        IrStreamEvent::ToolCallArgDelta { delta, .. } => Ok(json!({
             "contentBlockDelta": { "delta": { "toolUse": { "input": delta } } }
         })),
         IrStreamEvent::ToolCallEnd => Ok(json!({ "contentBlockStop": {} })),
@@ -136,7 +138,7 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
                 }
                 current_tool = Some((id.clone(), name.clone(), String::new()));
             }
-            IrStreamEvent::ToolCallArgDelta { delta } => {
+            IrStreamEvent::ToolCallArgDelta { delta, .. } => {
                 if let Some((_, _, args)) = current_tool.as_mut() {
                     args.push_str(delta);
                 }
@@ -212,8 +214,12 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
                 id,
                 name,
                 thought_signature: None,
+                index: 0,
             });
-            out.push(IrStreamEvent::ToolCallArgDelta { delta: args });
+            out.push(IrStreamEvent::ToolCallArgDelta {
+                delta: args,
+                index: 0,
+            });
             out.push(IrStreamEvent::ToolCallEnd);
         }
     }

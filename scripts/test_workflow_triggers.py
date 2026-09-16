@@ -202,6 +202,16 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertNotIn("pull_request:", apply_wf)
         self.assertIn("scripts/apply-release-notes.sh", apply_wf)
 
+    def test_nightly_smoke_is_schedule_or_dispatch(self) -> None:
+        text = (WORKFLOWS / "nightly-smoke.yml").read_text(encoding="utf-8")
+        on_block = _on_block(text)
+        self.assertIn("schedule:", on_block)
+        self.assertIn("workflow_dispatch:", on_block)
+        self.assertNotIn("pull_request:", on_block)
+        self.assertNotIn("push:", on_block)
+        self.assertIn("cargo fuzz", text)
+        self.assertIn("no live vendor secrets; skip", text)
+
     def test_msrv_is_1_95(self) -> None:
         toolchain = (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")
         self.assertIn('channel = "1.95"', toolchain)

@@ -16,7 +16,15 @@ fn cargo_toml_aligns_keyring_reqwest_toml() {
         "reqwest must be 0.13 so a 0.13 host does not pull 0.12, got:\n{manifest}"
     );
     assert!(
-        manifest.contains("keyring = \"4."),
+        manifest.contains("keyring = { version = \"4.2\""),
         "keyring must be 4.x so a 4.x host does not pull 3.x, got:\n{manifest}"
+    );
+    assert!(
+        manifest.contains("default = [\"net\", \"pkce\", \"device\"]"),
+        "net must be a default feature, got:\n{manifest}"
+    );
+    assert!(
+        manifest.contains("\"aws_lc_rs\""),
+        "jsonwebtoken must keep aws_lc_rs on net, got:\n{manifest}"
     );
 }

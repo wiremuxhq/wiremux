@@ -33,6 +33,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                     id: str_field(block, "id").unwrap_or_default(),
                     name: str_field(block, "name").unwrap_or_default(),
                     thought_signature: None,
+                    index: block_index(value),
                 })),
                 _ => Ok(Some(protocol(name, value))),
             }
@@ -54,6 +55,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                 }
                 Some("input_json_delta") => Ok(Some(IrStreamEvent::ToolCallArgDelta {
                     delta: str_field(delta, "partial_json").unwrap_or_default(),
+                    index: block_index(value),
                 })),
                 _ => Ok(Some(protocol(name, value))),
             }
@@ -76,6 +78,14 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
         }
         other => Ok(Some(protocol(other, value))),
     }
+}
+
+fn block_index(value: &Value) -> u32 {
+    value
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0)
 }
 
 fn nonempty_text(
@@ -111,19 +121,21 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "delta": { "type": "signature_delta", "signature": signature }
             }),
         ),
-        IrStreamEvent::ToolCallStart { id, name, .. } => (
+        IrStreamEvent::ToolCallStart {
+            id, name, index, ..
+        } => (
             "content_block_start",
             json!({
                 "type": "content_block_start",
-                "index": 0,
+                "index": index,
                 "content_block": { "type": "tool_use", "id": id, "name": name, "input": {} }
             }),
         ),
-        IrStreamEvent::ToolCallArgDelta { delta } => (
+        IrStreamEvent::ToolCallArgDelta { delta, index } => (
             "content_block_delta",
             json!({
                 "type": "content_block_delta",
-                "index": 0,
+                "index": index,
                 "delta": { "type": "input_json_delta", "partial_json": delta }
             }),
         ),

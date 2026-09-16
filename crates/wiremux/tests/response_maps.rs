@@ -128,7 +128,7 @@ fn chat_complete_message_tool_calls() {
     let args: String = events
         .iter()
         .filter_map(|ev| match ev {
-            IrStreamEvent::ToolCallArgDelta { delta } => Some(delta.as_str()),
+            IrStreamEvent::ToolCallArgDelta { delta, .. } => Some(delta.as_str()),
             _ => None,
         })
         .collect();
@@ -606,9 +606,11 @@ fn converse_complete_tool_calls_finish_stays_tool_use() {
             id: "t1".into(),
             name: "lookup".into(),
             thought_signature: None,
+            index: 0,
         },
         IrStreamEvent::ToolCallArgDelta {
             delta: r#"{"q":"x"}"#.into(),
+            index: 0,
         },
         IrStreamEvent::ToolCallEnd,
         IrStreamEvent::FinishReason {
@@ -663,9 +665,11 @@ fn converse_complete_non_json_tool_input_stays_string() {
             id: "t1".into(),
             name: "lookup".into(),
             thought_signature: None,
+            index: 0,
         },
         IrStreamEvent::ToolCallArgDelta {
             delta: "not-json".into(),
+            index: 0,
         },
         IrStreamEvent::ToolCallEnd,
         IrStreamEvent::FinishReason {

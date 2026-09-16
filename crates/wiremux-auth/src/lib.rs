@@ -1,11 +1,20 @@
 //! TokenProvider and profile catalog. Not ready.
+//!
+//! Feature `net` (default) enables HTTP TokenProviders. Maps-only hosts
+//! disable default features and keep profile parse/load without reqwest.
 
 mod error;
-mod exchange;
 mod helpers;
-mod keychain_guard;
 mod profile;
+
+#[cfg(any(feature = "net", test, feature = "test-util"))]
+mod keychain_guard;
+
+#[cfg(feature = "net")]
+mod exchange;
+#[cfg(feature = "net")]
 mod providers;
+#[cfg(feature = "net")]
 mod writeback;
 
 #[cfg(feature = "device")]
@@ -17,11 +26,11 @@ pub mod pkce;
 mod isolated_home;
 
 pub use error::AuthError;
+#[cfg(feature = "net")]
 pub use exchange::TokenExchangeResponse;
-pub use helpers::{
-    format_oauth_transport_error, redact_secret_looking, redact_url_origin,
-    sanitize_oauth_error_text,
-};
+#[cfg(feature = "net")]
+pub use helpers::format_oauth_transport_error;
+pub use helpers::{redact_secret_looking, redact_url_origin, sanitize_oauth_error_text};
 pub use profile::{
     AuthScheme, Betas, CredsFormat, Dialect, ExpiresUnit, Fingerprint, ForbiddenFieldPolicy, Http,
     ListMerge, LoadOptions, Login, OauthPack, ProfileError, ResolvedProfile, SCHEMA_VERSION_MAX,
@@ -30,15 +39,21 @@ pub use profile::{
     load_profile_from_cli, not_found_message, parse_profile_str, shipped_profile_ids,
     user_profile_dirs,
 };
+#[cfg(feature = "net")]
 pub use providers::aws::{
     AwsCredentials, AwsSignParams, AwsStsConfig, AwsStsTokenProvider, sign_aws_request,
 };
+#[cfg(feature = "net")]
 pub use providers::azure::AzureTokenProvider;
+#[cfg(feature = "net")]
 pub use providers::gcp::{GcpTokenProvider, default_adc_path};
+#[cfg(feature = "net")]
 pub use providers::oauth::{
     ProfileTokenProvider, provider_from_oauth, provider_from_oauth_opts, provider_from_profile,
 };
+#[cfg(feature = "net")]
 pub use providers::static_token::StaticToken;
+#[cfg(feature = "net")]
 pub use writeback::{persist_login_tokens, remove_store_entry};
 
 #[cfg(feature = "test-util")]
@@ -52,6 +67,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// A provider of short-lived Bearer tokens.
 ///
 /// Implementations are cheaply cloneable (`Arc` state) and safe to share.
+#[cfg(feature = "net")]
 pub trait TokenProvider: Send + Sync + std::fmt::Debug {
     /// Return a valid access token, refreshing if necessary.
     fn get_token(&self) -> impl std::future::Future<Output = Result<String, AuthError>> + Send;
@@ -66,6 +82,7 @@ pub trait TokenProvider: Send + Sync + std::fmt::Debug {
 }
 
 /// Type-erased token provider.
+#[cfg(feature = "net")]
 #[derive(Debug, Clone)]
 pub enum AnyTokenProvider {
     /// Static key, never refreshed.
@@ -80,6 +97,7 @@ pub enum AnyTokenProvider {
     AwsSts(AwsStsTokenProvider),
 }
 
+#[cfg(feature = "net")]
 impl AnyTokenProvider {
     /// Skip token-URL POSTs on later [`TokenProvider::get_token`] calls.
     /// No-op for static / cloud STS providers.
@@ -97,8 +115,16 @@ impl AnyTokenProvider {
             _ => None,
         }
     }
+
+    /// True when a 401 can be retried after [`TokenProvider::mark_stale`].
+    /// Static keys never refresh.
+    #[must_use]
+    pub fn can_refresh(&self) -> bool {
+        !matches!(self, Self::Static(_))
+    }
 }
 
+#[cfg(feature = "net")]
 impl TokenProvider for AnyTokenProvider {
     fn mark_stale(&self) {
         match self {
@@ -131,30 +157,35 @@ impl TokenProvider for AnyTokenProvider {
     }
 }
 
+#[cfg(feature = "net")]
 impl From<StaticToken> for AnyTokenProvider {
     fn from(t: StaticToken) -> Self {
         Self::Static(t)
     }
 }
 
+#[cfg(feature = "net")]
 impl From<ProfileTokenProvider> for AnyTokenProvider {
     fn from(t: ProfileTokenProvider) -> Self {
         Self::Profile(t)
     }
 }
 
+#[cfg(feature = "net")]
 impl From<AzureTokenProvider> for AnyTokenProvider {
     fn from(t: AzureTokenProvider) -> Self {
         Self::Azure(t)
     }
 }
 
+#[cfg(feature = "net")]
 impl From<GcpTokenProvider> for AnyTokenProvider {
     fn from(t: GcpTokenProvider) -> Self {
         Self::Gcp(t)
     }
 }
 
+#[cfg(feature = "net")]
 impl From<AwsStsTokenProvider> for AnyTokenProvider {
     fn from(t: AwsStsTokenProvider) -> Self {
         Self::AwsSts(t)
@@ -171,11 +202,13 @@ impl From<AwsStsTokenProvider> for AnyTokenProvider {
 ///
 /// This helper does not accept a file path. Use [`load_profile_from_cli`] then
 /// [`provider_from_profile`] for a `.toml` / `.json` profile.
+#[cfg(feature = "net")]
 pub async fn token_for_profile(id: &str) -> Result<String, AuthError> {
     token_for_profile_opts(id, &LoadOptions::default()).await
 }
 
 /// Same, with host LoadOptions (tests, IsolatedHome, no shipped).
+#[cfg(feature = "net")]
 pub async fn token_for_profile_opts(id: &str, opts: &LoadOptions<'_>) -> Result<String, AuthError> {
     TokenProvider::get_token(&provider_for_profile_opts(id, opts)?).await
 }
@@ -183,11 +216,13 @@ pub async fn token_for_profile_opts(id: &str, opts: &LoadOptions<'_>) -> Result<
 /// Load a catalog id and return the stored Bearer without POSTing
 /// `token_url`. Empty access still fails closed. [`token_for_profile`]
 /// may still block on keychain plus one or two HTTP refreshes.
+#[cfg(feature = "net")]
 pub async fn token_for_profile_cached(id: &str) -> Result<String, AuthError> {
     token_for_profile_opts_cached(id, &LoadOptions::default()).await
 }
 
 /// Same as [`token_for_profile_cached`], with host [`LoadOptions`].
+#[cfg(feature = "net")]
 pub async fn token_for_profile_opts_cached(
     id: &str,
     opts: &LoadOptions<'_>,
@@ -200,10 +235,12 @@ pub async fn token_for_profile_opts_cached(
 /// Same load path as [`token_for_profile`], but keep the provider so the host
 /// can `mark_stale` / `wake`. Catalog id only; paths use
 /// [`load_profile_from_cli`] then [`provider_from_profile`].
+#[cfg(feature = "net")]
 pub fn provider_for_profile(id: &str) -> Result<AnyTokenProvider, AuthError> {
     provider_for_profile_opts(id, &LoadOptions::default())
 }
 
+#[cfg(feature = "net")]
 pub fn provider_for_profile_opts(
     id: &str,
     opts: &LoadOptions<'_>,
@@ -225,6 +262,7 @@ pub fn provider_for_profile_opts(
     provider_from_profile(&profile)
 }
 
+#[cfg(feature = "net")]
 fn looks_like_profile_path(id: &str) -> bool {
     if id.contains('/') || id.contains('\\') {
         return true;
@@ -233,7 +271,7 @@ fn looks_like_profile_path(id: &str) -> bool {
     lower.ends_with(".toml") || lower.ends_with(".json")
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "net"))]
 mod tests {
     use super::*;
     use crate::isolated_home::{IsolatedHome, PlantCredentials};
@@ -403,6 +441,11 @@ expires_unit = "s"
             );
         }
         let _ = home;
+    }
+
+    #[test]
+    fn can_refresh_is_false_for_static_only() {
+        assert!(!AnyTokenProvider::from(StaticToken::new("sk")).can_refresh());
     }
 
     #[tokio::test]

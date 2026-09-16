@@ -1,0 +1,28 @@
+[package]
+name = "wiremux-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+wiremux = { path = "../crates/wiremux", default-features = false }
+
+[[bin]]
+name = "sse_frames"
+path = "fuzz_targets/sse_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "eventstream"
+path = "fuzz_targets/eventstream.rs"
+test = false
+doc = false
+bench = false

@@ -10,11 +10,11 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use serde_json::json;
 use wiremux::{
-    ClientError, IrItem, IrPart, IrRequest, IrSampling, IrStreamEvent, WireClient,
-    parse_profile_str,
+    ClientError, IrItem, IrPart, IrRequest, IrStreamEvent, WireClient, parse_profile_str,
 };
 use wiremux_auth::{
     AnyTokenProvider, GcpTokenProvider, IsolatedHome, PlantCredentials, StaticToken,
+    provider_from_profile,
 };
 
 const PLANTED_ACCESS: &str = "sk-ant-oat01-client73";
@@ -22,14 +22,12 @@ const PLANTED_SK: &str = "sk-planted-secret73";
 const PLANTED_XAI: &str = "xai-planted-secret73";
 
 fn simple_ir(model: &str) -> IrRequest {
-    IrRequest {
-        model: model.to_string(),
-        items: vec![IrItem::User {
+    IrRequest::new(
+        model.to_string(),
+        vec![IrItem::User {
             parts: vec![IrPart::Text("hi".into())],
         }],
-        tools: vec![],
-        sampling: IrSampling::default(),
-    }
+    )
 }
 
 fn chat_profile(base: &str) -> wiremux::ResolvedProfile {
@@ -459,7 +457,7 @@ async fn send_chat_complete_tool_calls() {
     let args: String = events
         .iter()
         .filter_map(|ev| match ev {
-            IrStreamEvent::ToolCallArgDelta { delta } => Some(delta.as_str()),
+            IrStreamEvent::ToolCallArgDelta { delta, .. } => Some(delta.as_str()),
             _ => None,
         })
         .collect();
@@ -1431,5 +1429,442 @@ async fn stream_http_200_leftover_vendor_body_redacts_secret_and_userinfo() {
             "Display must not leak {leaked}: {display}"
         );
         assert!(!dbg.contains(leaked), "Debug must not leak {leaked}: {dbg}");
+    }
+}
+
+fn authorization_lines(req: &str) -> Vec<String> {
+    req.lines()
+        .filter(|line| {
+            line.split_once(':')
+                .is_some_and(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+fn converse_complete_body() -> String {
+    json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{"text": "ok"}]
+            }
+        },
+        "stopReason": "end_turn"
+    })
+    .to_string()
+}
+
+fn bedrock_profile(base: &str, extra: &str) -> wiremux::ResolvedProfile {
+    parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "amazon-bedrock"
+wire = "converse"
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "{base}"
+chat_path = "/model/{{model}}/converse"
+{extra}
+"#
+    ))
+    .expect("bedrock profile")
+}
+
+#[tokio::test]
+async fn bearer_and_iam_keys_send_one_authorization_bearer() {
+    let home = IsolatedHome::with_extra_envs(&[
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_REGION",
+    ]);
+    home.set_env("AWS_ACCESS_KEY_ID", "AKIATEST");
+    home.set_env(
+        "AWS_SECRET_ACCESS_KEY",
+        "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+    );
+    home.set_env("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-tok");
+
+    let (base, handle) = spawn_one(200, "OK", "", converse_complete_body());
+    let profile = bedrock_profile(
+        &base,
+        r#"
+auth_scheme = "bearer"
+access_env = ["AWS_BEARER_TOKEN_BEDROCK"]
+"#,
+    );
+    let provider = provider_from_profile(&profile).expect("provider");
+    let client = WireClient::from_resolved(profile, provider).expect("client");
+    let _ = client.send(simple_ir("amazon.titan")).await;
+    let req = handle.join().expect("join");
+    let auths = authorization_lines(&req);
+    assert_eq!(
+        auths.len(),
+        1,
+        "exactly one Authorization, got {auths:?} in {req}"
+    );
+    assert!(
+        auths[0].contains("Bearer bedrock-bearer-tok"),
+        "bearer must win when token and IAM keys are both set: {auths:?}"
+    );
+    assert!(
+        !req.to_ascii_lowercase().contains("aws4-hmac-sha256"),
+        "must not SigV4 when a bearer token is present: {req}"
+    );
+    let _ = home;
+}
+
+#[tokio::test]
+async fn aws_profile_file_credentials_sign() {
+    let home = IsolatedHome::with_extra_envs(&[
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_REGION",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_CONFIG_FILE",
+    ]);
+    let creds_dir = home.path().join(".aws");
+    std::fs::create_dir_all(&creds_dir).expect("mkdir .aws");
+    std::fs::write(
+        creds_dir.join("credentials"),
+        "[dev]\naws_access_key_id = AKIAPROFILE\naws_secret_access_key = profilesecret\n",
+    )
+    .expect("write credentials");
+    home.set_env("AWS_PROFILE", "dev");
+
+    let (base, handle) = spawn_one(200, "OK", "", converse_complete_body());
+    let profile = bedrock_profile(&base, r#"auth_scheme = "none""#);
+    let client = WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("")))
+        .expect("client");
+    let _ = client.send(simple_ir("amazon.titan")).await;
+    let req = handle.join().expect("join");
+    let auths = authorization_lines(&req);
+    assert_eq!(
+        auths.len(),
+        1,
+        "IAM profile keys must produce one Authorization, got {auths:?} in {req}"
+    );
+    assert!(
+        auths[0].to_ascii_lowercase().contains("aws4-hmac-sha256"),
+        "must SigV4 from ~/.aws/credentials: {auths:?}"
+    );
+    assert!(
+        auths[0].contains("AKIAPROFILE"),
+        "credential must use the named profile access key: {auths:?}"
+    );
+    let _ = home;
+}
+
+#[tokio::test]
+async fn aws_service_without_keys_is_local_auth_error() {
+    let home = IsolatedHome::with_extra_envs(&[
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_REGION",
+    ]);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        listener.set_nonblocking(true).ok();
+        accept_timeout(&listener, Duration::from_millis(200))
+    });
+    let profile = bedrock_profile(&format!("http://{addr}"), r#"auth_scheme = "none""#);
+    let client = WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("")))
+        .expect("client");
+    let err = client
+        .send(simple_ir("amazon.titan"))
+        .await
+        .expect_err("missing IAM keys");
+    let accepted = handle.join().expect("join");
+    assert!(
+        accepted.is_none(),
+        "must fail closed locally, no upstream call"
+    );
+    match err {
+        ClientError::Auth { status, message } => {
+            assert_eq!(status, None, "local auth error has no HTTP status");
+            assert!(
+                message.to_ascii_lowercase().contains("aws")
+                    || message.contains("AWS_ACCESS_KEY_ID")
+                    || message.contains("credentials"),
+                "must name what was tried, got {message}"
+            );
+        }
+        other => panic!("expected local Auth, got {other:?}"),
+    }
+    let _ = home;
+}
+
+fn spawn_script(responses: Vec<(u16, String)>) -> (String, JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let mut seen = Vec::new();
+        for (status, body) in responses {
+            let Some(mut stream) = accept_timeout(&listener, Duration::from_secs(2)) else {
+                break;
+            };
+            seen.push(read_http_request(&mut stream));
+            let reason = if status == 200 {
+                "OK"
+            } else if status == 401 {
+                "Unauthorized"
+            } else {
+                "Error"
+            };
+            write_http(&mut stream, status, reason, "", &body);
+        }
+        seen
+    });
+    (format!("http://{addr}"), handle)
+}
+
+fn oauth_retry_profile(
+    api_base: &str,
+    token_url: &str,
+    creds_path: &str,
+) -> wiremux::ResolvedProfile {
+    let creds_unix = creds_path.replace('\\', "/");
+    parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "retry-oauth"
+wire = "chat-completions"
+auth_scheme = "bearer"
+base_url = "{api_base}"
+chat_path = "/v1/chat/completions"
+[oauth]
+token_url = "{token_url}"
+client_id = "retry-client"
+token_request_format = "form"
+creds_format = "json-pointer"
+creds_path = "{creds_unix}"
+access_token_ptr = "/tokens/access"
+refresh_token_ptr = "/tokens/refresh"
+expires_ptr = "/tokens/expiry_unix"
+expires_unit = "s"
+login = "none"
+[oauth.token_response]
+access_token_ptr = "/access_token"
+refresh_token_ptr = "/refresh_token"
+expires_ptr = "/expires_in"
+expires_unit = "s"
+"#
+    ))
+    .expect("oauth retry profile")
+}
+
+#[tokio::test]
+async fn send_401_oauth_retries_once() {
+    let home = IsolatedHome::new();
+    let creds = home.plant_credentials(PlantCredentials::JsonPointer {
+        relative_path: ".config/wiremux/auth-retry.json",
+        document: json!({
+            "tokens": {
+                "access": "first-159",
+                "refresh": "rt-159",
+                "expiry_unix": 4_102_444_800_i64
+            }
+        }),
+    });
+    let (token_base, token_handle) = spawn_one(
+        200,
+        "OK",
+        "",
+        r#"{"access_token":"second-159","refresh_token":"rt2","expires_in":3600}"#,
+    );
+    let (api_base, api_handle) = spawn_script(vec![
+        (401, r#"{"error":{"message":"expired"}}"#.into()),
+        (200, complete_chat_body()),
+    ]);
+    let profile = oauth_retry_profile(
+        &api_base,
+        &format!("{token_base}/token"),
+        &creds.to_string_lossy(),
+    );
+    let provider = provider_from_profile(&profile).expect("provider");
+    let client = WireClient::from_resolved(profile, provider).expect("client");
+    let (events, _) = client.send(simple_ir("gpt-4")).await.expect("401 retry");
+    let seen = api_handle.join().expect("join");
+    let _ = token_handle.join();
+    assert_eq!(seen.len(), 2, "must retry once, got {seen:?}");
+    assert!(
+        seen[0].contains("Bearer first-159"),
+        "first try uses stored access: {}",
+        seen[0]
+    );
+    assert!(
+        seen[1].contains("Bearer second-159"),
+        "retry uses refreshed access: {}",
+        seen[1]
+    );
+    assert!(
+        events.iter().any(
+            |ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "hello from complete")
+        ),
+        "{events:?}"
+    );
+    let _ = home;
+}
+
+#[tokio::test]
+async fn send_401_static_does_not_retry() {
+    let (base, handle) = spawn_script(vec![
+        (401, r#"{"error":{"message":"nope"}}"#.into()),
+        (200, complete_chat_body()),
+    ]);
+    let err = client_for(&base, "sk-static")
+        .send(simple_ir("gpt-4"))
+        .await
+        .expect_err("static 401");
+    let seen = handle.join().expect("join");
+    assert_eq!(seen.len(), 1, "static key must not retry, got {seen:?}");
+    match err {
+        ClientError::Auth { status, .. } => assert_eq!(status, Some(401)),
+        other => panic!("expected Auth 401, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stream_401_oauth_retries_once_before_body() {
+    let home = IsolatedHome::new();
+    let creds = home.plant_credentials(PlantCredentials::JsonPointer {
+        relative_path: ".config/wiremux/auth-retry-stream.json",
+        document: json!({
+            "tokens": {
+                "access": "first-stream",
+                "refresh": "rt-stream",
+                "expiry_unix": 4_102_444_800_i64
+            }
+        }),
+    });
+    let (token_base, token_handle) = spawn_one(
+        200,
+        "OK",
+        "",
+        r#"{"access_token":"second-stream","refresh_token":"rt2","expires_in":3600}"#,
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let mut seen = Vec::new();
+        let (mut stream, _) = listener.accept().expect("first");
+        seen.push(read_http_request(&mut stream));
+        write_http(
+            &mut stream,
+            401,
+            "Unauthorized",
+            "",
+            r#"{"error":{"message":"expired"}}"#,
+        );
+        let (mut stream, _) = listener.accept().expect("retry");
+        seen.push(read_http_request(&mut stream));
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+            sse.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        seen
+    });
+    let profile = oauth_retry_profile(
+        &format!("http://{addr}"),
+        &format!("{token_base}/token"),
+        &creds.to_string_lossy(),
+    );
+    let provider = provider_from_profile(&profile).expect("provider");
+    let client = WireClient::from_resolved(profile, provider).expect("client");
+    let mut stream = std::pin::pin!(client.stream(simple_ir("gpt-4")));
+    let mut saw_text = false;
+    while let Some(item) = stream.next().await {
+        if let Ok(IrStreamEvent::TextDelta { text }) = item
+            && text == "hi"
+        {
+            saw_text = true;
+            break;
+        }
+    }
+    let seen = handle.join().expect("join");
+    let _ = token_handle.join();
+    assert_eq!(
+        seen.len(),
+        2,
+        "stream must retry 401 before body, got {seen:?}"
+    );
+    assert!(seen[0].contains("Bearer first-stream"), "{}", seen[0]);
+    assert!(seen[1].contains("Bearer second-stream"), "{}", seen[1]);
+    assert!(saw_text, "retry must yield remapped SSE");
+    let _ = home;
+}
+
+#[tokio::test]
+async fn read_timeout_secs_is_transient() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        thread::sleep(Duration::from_secs(3));
+        write_http(&mut stream, 200, "OK", "", &complete_chat_body());
+        req
+    });
+    let profile = parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "slow"
+wire = "chat-completions"
+auth_scheme = "bearer"
+base_url = "http://{addr}"
+chat_path = "/v1/chat/completions"
+read_timeout_secs = 1
+"#
+    ))
+    .expect("profile");
+    assert_eq!(profile.http.read_timeout_secs, Some(1));
+    let client =
+        WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("sk-test")))
+            .expect("client");
+    let err = client.send(simple_ir("gpt-4")).await.expect_err("timeout");
+    let _ = handle.join();
+    match err {
+        ClientError::Transient { .. } => {}
+        other => panic!("expected Transient timeout, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn from_resolved_with_client_uses_host_timeout() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        thread::sleep(Duration::from_secs(3));
+        write_http(&mut stream, 200, "OK", "", &complete_chat_body());
+        req
+    });
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .read_timeout(Duration::from_secs(1))
+        .build()
+        .expect("host client");
+    let client = WireClient::from_resolved_with_client(
+        chat_profile(&format!("http://{addr}")),
+        AnyTokenProvider::from(StaticToken::new("sk-test")),
+        http,
+    )
+    .expect("client");
+    let err = client
+        .send(simple_ir("gpt-4"))
+        .await
+        .expect_err("host timeout");
+    let _ = handle.join();
+    match err {
+        ClientError::Transient { .. } => {}
+        other => panic!("expected Transient, got {other:?}"),
     }
 }

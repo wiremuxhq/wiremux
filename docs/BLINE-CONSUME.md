@@ -78,6 +78,12 @@ logger, and `bline diagnose`. Those are not LLM wire.
 `IrRequest` is the LLM request. Do not grow a parallel Bline dialect
 map. A thin host-type shim is allowed only until Bline deletes
 `ChatRequest`. Do not `pub use wiremux::IrRequest as ChatRequest`.
+Public IR and error enums (`IrItem`, `IrPart`, `IrToolChoice`,
+`IrStreamEvent`, `LossAction`, `MapError`, `ClientError`) and the
+structs `IrRequest`, `IrSampling`, and `LossReport` are
+`#[non_exhaustive]`. Hosts build with `IrRequest::new(model, items)`
+and `IrSampling::default()` / `IrSampling::patch`.
+`IrStreamEvent::ToolCallStart` and `ToolCallArgDelta` carry `index`.
 
 `wiremux-auth` must not depend on `bline-types`. `AuthError` stays
 independent of `LlmError`.
@@ -128,9 +134,10 @@ Gemini / Responses.
 
 Bline is on the crates.io form above. Other unpublished hosts may
 still git-pin a tag. `default-features = false` is maps plus
-re-exported profile types. It does not pull clap, a fat tokio, or
-reqwest on the `wiremux` crate. `wiremux-auth` still has its own
-reqwest for TokenProvider.
+re-exported profile types. It does not pull clap, tokio, reqwest,
+hyper, jsonwebtoken, or aws-lc. TokenProvider HTTP lives on
+`wiremux-auth` feature `net`, which `wiremux` features `client`,
+`cli`, and `proxy` enable.
 
 Bline `deny.toml` has `unknown-git = deny` and `allow-git` for workpen
 only. Bline #3991 dropped the `wiremuxhq/wiremux` git allow row.

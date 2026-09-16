@@ -1178,11 +1178,22 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(wrote, POPULAR_VENDORS);
-        for id in POPULAR_VENDORS {
+        let expected: Vec<&str> = POPULAR_VENDORS
+            .iter()
+            .copied()
+            .filter(|id| !shipped(id))
+            .collect();
+        assert_eq!(wrote, expected);
+        for id in &expected {
             let path = dir.path().join(format!("{id}.toml"));
             assert!(path.is_file(), "missing {id}");
             parse_profile_str(&fs::read_to_string(path).unwrap()).unwrap();
+        }
+        for id in POPULAR_VENDORS.iter().copied().filter(|id| shipped(id)) {
+            assert!(
+                !dir.path().join(format!("{id}.toml")).exists(),
+                "shipped {id} must not be rewritten"
+            );
         }
         assert!(!dir.path().join("openai.toml").exists());
         assert!(!dir.path().join("azure.toml").exists());
@@ -1244,12 +1255,12 @@ mod tests {
     #[test]
     fn existing_file_skipped_without_force() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("groq.toml");
+        let path = dir.path().join("togetherai.toml");
         fs::write(&path, "stale").unwrap();
         let report = ingest_catalog(
             MODELS_DEV_FIXTURE,
             &IngestRequest {
-                vendors: vec!["groq".into()],
+                vendors: vec!["togetherai".into()],
                 dir: Some(dir.path().to_path_buf()),
                 ..IngestRequest::default()
             },
@@ -1284,8 +1295,15 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(wrote.contains(&"groq".into()), "groq missing: {wrote:?}");
-        assert!(dir.path().join("groq.toml").is_file());
+        assert!(
+            wrote.contains(&"togetherai".into()),
+            "togetherai missing: {wrote:?}"
+        );
+        assert!(dir.path().join("togetherai.toml").is_file());
+        assert!(
+            !wrote.contains(&"groq".into()),
+            "shipped groq must be skipped: {wrote:?}"
+        );
         assert!(!dir.path().join("azure.toml").exists());
         assert!(!dir.path().join("amazon-bedrock.toml").exists());
         assert!(!dir.path().join("google-vertex.toml").exists());

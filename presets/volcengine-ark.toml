@@ -1,0 +1,8 @@
+schema_version = 1
+id = "volcengine-ark"
+display_name = "Volcengine Ark Chat Completions"
+wire = "chat-completions"
+base_url = "https://ark.cn-beijing.volces.com"
+chat_path = "/api/v3/chat/completions"
+auth_scheme = "bearer"
+access_env = "ARK_API_KEY"

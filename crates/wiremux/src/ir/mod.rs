@@ -1,7 +1,22 @@
 //! Item-centered IR and LossReport.
 
 /// Protocol-neutral conversation. Hosts convert to/from their own types.
+///
+/// Build with [`IrRequest::new`]. Extra fields stay at their defaults.
+///
+/// ```
+/// use wiremux::{IrItem, IrPart, IrRequest};
+/// let req = IrRequest::new(
+///     "gpt-4",
+///     vec![IrItem::User {
+///         parts: vec![IrPart::Text("Hi".into())],
+///     }],
+/// );
+/// assert_eq!(req.model, "gpt-4");
+/// assert!(req.tools.is_empty());
+/// ```
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct IrRequest {
     pub model: String,
     pub items: Vec<IrItem>,
@@ -9,7 +24,41 @@ pub struct IrRequest {
     pub sampling: IrSampling,
 }
 
+impl IrRequest {
+    /// Request with `model` and `items`. Tools and sampling are empty/default.
+    #[must_use]
+    pub fn new(model: impl Into<String>, items: Vec<IrItem>) -> Self {
+        Self {
+            model: model.into(),
+            items,
+            tools: Vec::new(),
+            sampling: IrSampling::default(),
+        }
+    }
+
+    /// Set tools. For hosts that cannot use a struct literal.
+    #[must_use]
+    pub fn with_tools(mut self, tools: Vec<IrTool>) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    /// Set sampling. For hosts that cannot use a struct literal.
+    #[must_use]
+    pub fn with_sampling(mut self, sampling: IrSampling) -> Self {
+        self.sampling = sampling;
+        self
+    }
+}
+
+impl Default for IrRequest {
+    fn default() -> Self {
+        Self::new(String::new(), Vec::new())
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct IrSampling {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
@@ -66,7 +115,19 @@ pub struct IrSampling {
     pub service_tier: Option<String>,
 }
 
+impl IrSampling {
+    /// Build sampling by mutating defaults.
+    ///
+    /// External crates cannot use struct literals on this type.
+    pub fn patch(update: impl FnOnce(&mut Self)) -> Self {
+        let mut sampling = Self::default();
+        update(&mut sampling);
+        sampling
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum IrToolChoice {
     #[default]
     Auto,
@@ -76,6 +137,7 @@ pub enum IrToolChoice {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct IrCache {
     pub enabled: bool,
     /// "5m" or "1h" when the target dialect has a TTL slot.
@@ -85,7 +147,33 @@ pub struct IrCache {
     pub min_cacheable_tokens: Option<u32>,
 }
 
+impl IrCache {
+    /// Enabled cache with no TTL and no token floor.
+    #[must_use]
+    pub fn enabled() -> Self {
+        Self {
+            enabled: true,
+            ..Self::default()
+        }
+    }
+
+    /// Set Messages-style TTL (`5m` / `1h`).
+    #[must_use]
+    pub fn with_retention(mut self, retention: impl Into<String>) -> Self {
+        self.retention = Some(retention.into());
+        self
+    }
+
+    /// Skip `cache_control` below this estimated prompt-token floor.
+    #[must_use]
+    pub fn with_min_cacheable_tokens(mut self, tokens: u32) -> Self {
+        self.min_cacheable_tokens = Some(tokens);
+        self
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum IrItem {
     System {
         text: String,
@@ -127,6 +215,7 @@ pub enum IrItem {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum IrPart {
     Text(String),
     ImageUrl(String),
@@ -146,9 +235,31 @@ pub enum IrPart {
         type_name: String,
         raw: serde_json::Value,
     },
+    /// Messages `document`, Chat/Responses `file`/`input_file`,
+    /// Gemini PDF `inlineData`/`fileData`, Converse `document`.
+    Document {
+        source: IrDocumentSource,
+        media_type: String,
+        name: Option<String>,
+    },
+    /// Chat `input_audio` and Gemini `inlineData` with `audio/*`.
+    Audio {
+        data: String,
+        format: String,
+    },
+}
+
+/// Where a document payload lives.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum IrDocumentSource {
+    Base64(String),
+    Url(String),
+    FileId(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum IrTool {
     Function {
         name: String,
@@ -170,6 +281,7 @@ pub enum IrTool {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum IrStreamEvent {
     TextDelta {
         text: String,
@@ -185,9 +297,14 @@ pub enum IrStreamEvent {
         name: String,
         /// Gemini `thoughtSignature` bound to this function call.
         thought_signature: Option<String>,
+        /// Parallel tool-call slot. Chat Completions `tool_calls[].index`.
+        /// Other dialects use a block/output index or 0.
+        index: u32,
     },
     ToolCallArgDelta {
         delta: String,
+        /// Same slot as the matching [`Self::ToolCallStart`].
+        index: u32,
     },
     ToolCallEnd,
     /// Exclusive buckets (same as Bline `Usage`): prompt excludes cache
@@ -215,6 +332,7 @@ pub enum IrStreamEvent {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct LossReport {
     pub events: Vec<LossEvent>,
 }
@@ -236,6 +354,7 @@ impl LossReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct LossEvent {
     pub path: String,
     pub action: LossAction,
@@ -243,6 +362,7 @@ pub struct LossEvent {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum LossAction {
     Preserve,
     Degrade,
