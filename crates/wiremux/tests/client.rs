@@ -70,6 +70,37 @@ chat_path = "/v1/messages"
         .expect("client")
 }
 
+fn converse_client_for(base: &str) -> WireClient {
+    let profile = parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "mock-converse"
+wire = "converse"
+auth_scheme = "none"
+base_url = "{base}"
+chat_path = "/model/{{model}}/converse"
+"#
+    ))
+    .expect("converse profile");
+    WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("none")))
+        .expect("client")
+}
+
+fn write_http_bytes(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    content_type: &str,
+    body: &[u8],
+) {
+    let header = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
+}
+
 fn read_http_request(stream: &mut TcpStream) -> String {
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     let mut buf = Vec::new();
@@ -684,6 +715,46 @@ async fn stream_error_after_chat_delta_is_transient() {
         Some(ClientError::Transient { status, .. }) => assert_eq!(status, Some(200)),
         Some(other) => panic!("expected Transient status 200, got {other:?}"),
         None => panic!("expected Transient status 200, got empty success"),
+    }
+}
+
+#[tokio::test]
+async fn stream_eventstream_validation_exception_is_vendor() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        let body = wiremux::stream::encode_eventstream_exception(
+            "validationException",
+            br#"{"message":"The provided model identifier is invalid."}"#,
+        );
+        write_http_bytes(
+            &mut stream,
+            200,
+            "OK",
+            "application/vnd.amazon.eventstream",
+            &body,
+        );
+        req
+    });
+    let client = converse_client_for(&format!("http://{addr}"));
+    let mut stream = std::pin::pin!(client.stream(simple_ir("amazon.nova-lite-v1:0")));
+    let first = stream.next().await.expect("first stream item");
+    let _ = handle.join();
+    match first {
+        Err(ClientError::Vendor { status, message }) => {
+            assert_eq!(status, Some(200));
+            assert!(
+                message.contains("validationException") || message.contains("model identifier"),
+                "{message}"
+            );
+        }
+        Err(ClientError::NotFound { status, .. }) => assert_eq!(status, Some(200)),
+        Err(ClientError::Transport(err)) => {
+            panic!("eventstream validationException must not be Transport: {err}");
+        }
+        other => panic!("expected Vendor (or NotFound), got {other:?}"),
     }
 }
 

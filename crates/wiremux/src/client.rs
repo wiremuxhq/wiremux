@@ -553,7 +553,10 @@ async fn pull_live(
                         }
                     }
                     Err(err) => {
-                        return Some((Err(ClientError::Transport(err)), StreamPhase::Done));
+                        return Some((
+                            Err(classify_feed_err(err, live.http_status)),
+                            StreamPhase::Done,
+                        ));
                     }
                 }
             }
@@ -689,6 +692,50 @@ fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize) {
     }
     let take = room.min(chunk.len());
     buf.extend_from_slice(&chunk[..take]);
+}
+
+fn classify_feed_err(err: String, status: u16) -> ClientError {
+    if let Some(classified) = classify_eventstream_exception(&err, status) {
+        return classified;
+    }
+    ClientError::Transport(err)
+}
+
+fn classify_eventstream_exception(err: &str, status: u16) -> Option<ClientError> {
+    let rest = err.strip_prefix("eventstream exception ")?;
+    let (exception_type, message) = match rest.split_once(':') {
+        Some((ty, msg)) => (ty.trim(), msg.trim()),
+        None => (rest.trim(), rest.trim()),
+    };
+    Some(classify_aws_exception_type(
+        status,
+        exception_type,
+        message,
+        err,
+    ))
+}
+
+fn classify_aws_exception_type(
+    status: u16,
+    exception_type: &str,
+    message: &str,
+    full: &str,
+) -> ClientError {
+    let ty = exception_type.to_ascii_lowercase();
+    if ty.contains("throttl") {
+        return ClientError::RateLimit {
+            status: Some(status),
+            retry_after: None,
+            message: full.to_string(),
+        };
+    }
+    if ty.contains("internal") || ty.contains("serviceunavailable") || ty.contains("timeout") {
+        return ClientError::Transient {
+            status: Some(status),
+            message: full.to_string(),
+        };
+    }
+    classify_error_payload(Some(status), None, message, full, None)
 }
 
 fn classify_empty_stream(status: u16, body: &str) -> ClientError {
