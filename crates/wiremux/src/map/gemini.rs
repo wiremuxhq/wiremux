@@ -55,7 +55,7 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
             let name = str_field(fc, "name").unwrap_or_default();
             let args = fc.get("args").cloned().unwrap_or_else(|| json!({}));
             items.push(IrItem::FunctionCall {
-                call_id: name.clone(),
+                call_id: crate::stream::gemini_call_id(fc, &name, items.len()),
                 name,
                 arguments: args.to_string(),
                 thought_signature: part
@@ -74,7 +74,12 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "{}".into());
             items.push(IrItem::FunctionOutput {
-                call_id: name,
+                call_id: fr
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(name.as_str())
+                    .to_string(),
                 output,
             });
             continue;
@@ -324,7 +329,9 @@ pub(super) fn encode(
                 call_names.push((call_id.as_str(), name.as_str()));
                 let args: Value =
                     serde_json::from_str(arguments).unwrap_or_else(|_| json!(arguments));
-                let mut part = json!({ "functionCall": { "name": name, "args": args } });
+                let mut part = json!({
+                    "functionCall": { "id": call_id, "name": name, "args": args }
+                });
                 if let Some(sig) = thought_signature.as_deref().filter(|s| !s.is_empty()) {
                     part["thoughtSignature"] = json!(sig);
                 }
@@ -342,7 +349,11 @@ pub(super) fn encode(
                     &mut contents,
                     "user",
                     json!({
-                        "functionResponse": { "name": name, "response": response }
+                        "functionResponse": {
+                            "id": call_id,
+                            "name": name,
+                            "response": response
+                        }
                     }),
                 );
             }

@@ -51,6 +51,7 @@ pub use eventstream::{
     encode_exception_message as encode_eventstream_exception,
     encode_message as encode_eventstream_message,
 };
+pub(crate) use gemini::gemini_call_id;
 pub use sse::{MAX_SSE_PENDING, SseFrameReader};
 
 /// Incremental frames from SSE or AWS Event Stream.
@@ -190,13 +191,21 @@ pub fn decode_stream_events(
 
 /// Walk every Gemini part. First-part-wins in `decode` would drop a later
 /// `functionCall` after thought or text.
+fn gemini_value_has_function_call(value: &Value) -> bool {
+    value
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array)
+        .is_some_and(|parts| parts.iter().any(|p| p.get("functionCall").is_some()))
+}
+
 fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
     let parts = value
         .pointer("/candidates/0/content/parts")
         .and_then(Value::as_array)?;
     let mut out = Vec::new();
+    let mut call_seq = 0usize;
     for part in parts {
-        out.extend(gemini_part_events(part));
+        out.extend(gemini_part_events(part, &mut call_seq));
     }
     if let Some(reason) = value
         .pointer("/candidates/0/finishReason")
@@ -204,7 +213,7 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
         .filter(|s| !s.is_empty())
     {
         out.push(IrStreamEvent::FinishReason {
-            reason: gemini::map_finish(reason).to_string(),
+            reason: gemini::map_finish(reason, gemini_value_has_function_call(value)).to_string(),
         });
     }
     if let Some(usage) = value.get("usageMetadata").filter(|v| v.is_object()) {
@@ -216,7 +225,7 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
     Some(out)
 }
 
-fn gemini_part_events(part: &Value) -> Vec<IrStreamEvent> {
+fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> {
     let mut out = Vec::new();
     if part.get("thought").and_then(Value::as_bool) == Some(true)
         && let Some(text) = part
@@ -245,8 +254,10 @@ fn gemini_part_events(part: &Value) -> Vec<IrStreamEvent> {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
+        let id = gemini::gemini_call_id(fc, &name, *call_seq);
+        *call_seq += 1;
         out.push(IrStreamEvent::ToolCallStart {
-            id: name.clone(),
+            id,
             name,
             thought_signature,
         });

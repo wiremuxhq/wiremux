@@ -100,7 +100,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                     }));
                 }
                 return Ok(Some(IrStreamEvent::ToolCallStart {
-                    id: name.clone(),
+                    id: gemini_call_id(fc, &name, 0),
                     name,
                     thought_signature,
                 }));
@@ -123,7 +123,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         .filter(|s| !s.is_empty())
     {
         return Ok(Some(IrStreamEvent::FinishReason {
-            reason: map_finish(reason).to_string(),
+            reason: map_finish(reason, candidate_has_function_call(candidate)).to_string(),
         }));
     }
 
@@ -133,8 +133,24 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     Ok(None)
 }
 
-pub(super) fn map_finish(reason: &str) -> &'static str {
+fn candidate_has_function_call(candidate: &Value) -> bool {
+    candidate
+        .pointer("/content/parts")
+        .and_then(Value::as_array)
+        .is_some_and(|parts| parts.iter().any(|p| p.get("functionCall").is_some()))
+}
+
+pub(crate) fn gemini_call_id(fc: &Value, name: &str, seq: usize) -> String {
+    fc.get("id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{name}#{seq}"))
+}
+
+pub(super) fn map_finish(reason: &str, has_function_call: bool) -> &'static str {
     match reason {
+        "STOP" if has_function_call => "tool_calls",
         "STOP" => "stop",
         "MAX_TOKENS" => "max_tokens",
         "SAFETY" | "RECITATION" | "OTHER" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII"
@@ -146,7 +162,7 @@ pub(super) fn map_finish(reason: &str) -> &'static str {
 }
 
 fn map_block(reason: &str) -> &'static str {
-    match map_finish(reason) {
+    match map_finish(reason, false) {
         "stop" if !reason.eq_ignore_ascii_case("stop") => "content_filter",
         mapped => mapped,
     }

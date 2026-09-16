@@ -1711,3 +1711,69 @@ fn converse_eventstream_unwrapped_payload_decodes_to_text_delta() {
         "{ev:?}"
     );
 }
+
+#[test]
+fn gemini_stop_with_function_call_is_tool_calls() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"weather","args":{"city":"Paris"}}}]},"finishReason":"STOP"}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::FinishReason { reason } if reason == "tool_calls"
+        )),
+        "STOP + functionCall must be tool_calls, got {all:?}"
+    );
+}
+
+#[test]
+fn gemini_stop_text_only_is_stop() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}"#
+            .into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+        "text-only STOP must stay stop, got {all:?}"
+    );
+}
+
+#[test]
+fn gemini_parallel_same_name_calls_get_distinct_ids() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc_1","name":"weather","args":{"city":"Paris"}}},{"functionCall":{"id":"fc_2","name":"weather","args":{"city":"Rome"}}}]}}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
+    let ids: Vec<&str> = all
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, ["fc_1", "fc_2"], "{all:?}");
+}
+
+#[test]
+fn gemini_generated_ids_are_distinct_when_vendor_omits_id() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"weather","args":{"city":"Paris"}}},{"functionCall":{"name":"weather","args":{"city":"Rome"}}}]}}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
+    let ids: Vec<&str> = all
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids.len(), 2, "{all:?}");
+    assert_ne!(ids[0], ids[1], "{ids:?}");
+}
