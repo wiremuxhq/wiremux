@@ -37,7 +37,9 @@ pub struct IrSampling {
     pub thinking_budget: Option<u32>,
     /// Dialect effort string (`low`, `high`, `xhigh`). Not a host enum.
     /// Gemini encode emits `thinkingConfig.thinkingLevel` (lowercase;
-    /// `xhigh` / `x-high` degrade to `high`).
+    /// `xhigh` / `x-high` degrade to `high`). Converse encode emits
+    /// `outputConfig.effort` (`low`/`medium`/`high`/`xhigh`/`max`;
+    /// `x-high` degrades to `xhigh`).
     pub reasoning_effort: Option<String>,
     /// Host cap on reasoning tokens.
     ///
@@ -49,7 +51,8 @@ pub struct IrSampling {
     pub max_reasoning_tokens: Option<u32>,
     /// JSON schema for structured output when the dialect has a slot.
     pub json_schema: Option<serde_json::Value>,
-    /// Optional schema name (Responses `text.format.name` / Chat json_schema.name).
+    /// Optional schema name (Responses `text.format.name` / Chat json_schema.name /
+    /// Converse `outputConfig.textFormat.structure.jsonSchema.name`).
     pub json_schema_name: Option<String>,
     /// Responses `include` extras (file_search results, etc.). Empty default.
     pub include: Vec<String>,

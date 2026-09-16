@@ -217,26 +217,55 @@ fn decode_part(block: &Value) -> Option<IrPart> {
 
 fn decode_sampling(value: &Value) -> IrSampling {
     let mut sampling = IrSampling::default();
-    let Some(cfg) = value.get("inferenceConfig") else {
-        return sampling;
-    };
-    sampling.max_tokens = cfg
-        .get("maxTokens")
-        .and_then(Value::as_u64)
-        .map(|n| n as u32);
-    sampling.temperature = cfg
-        .get("temperature")
-        .and_then(Value::as_f64)
-        .map(|n| n as f32);
-    sampling.top_p = cfg.get("topP").and_then(Value::as_f64).map(|n| n as f32);
-    if let Some(stops) = cfg.get("stopSequences").and_then(Value::as_array) {
-        sampling.stop = stops
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect();
+    if let Some(cfg) = value.get("inferenceConfig") {
+        sampling.max_tokens = cfg
+            .get("maxTokens")
+            .and_then(Value::as_u64)
+            .map(|n| n as u32);
+        sampling.temperature = cfg
+            .get("temperature")
+            .and_then(Value::as_f64)
+            .map(|n| n as f32);
+        sampling.top_p = cfg.get("topP").and_then(Value::as_f64).map(|n| n as f32);
+        if let Some(stops) = cfg.get("stopSequences").and_then(Value::as_array) {
+            sampling.stop = stops
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect();
+        }
+    }
+    if let Some(out) = value.get("outputConfig") {
+        sampling.reasoning_effort = out
+            .get("effort")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string);
+        let text_format = out.get("textFormat");
+        let is_json_schema = text_format
+            .and_then(|tf| tf.get("type"))
+            .and_then(Value::as_str)
+            == Some("json_schema");
+        if is_json_schema
+            && let Some(js) = text_format.and_then(|tf| tf.pointer("/structure/jsonSchema"))
+        {
+            sampling.json_schema = converse_json_schema(js.get("schema"));
+            sampling.json_schema_name = js
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
+        }
     }
     sampling
+}
+
+fn converse_json_schema(schema: Option<&Value>) -> Option<Value> {
+    match schema {
+        Some(Value::String(raw)) => serde_json::from_str(raw).ok().filter(Value::is_object),
+        Some(obj) if obj.is_object() => Some(obj.clone()),
+        _ => None,
+    }
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -503,29 +532,97 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.cache.enabled {
         report.record("sampling.cache", LossAction::Drop, "no slot");
     }
+    let mut output = serde_json::Map::new();
+    match &s.json_schema {
+        Some(schema) if schema.is_object() => match serde_json::to_string(schema) {
+            Ok(schema_str) => {
+                let mut json_schema = serde_json::Map::new();
+                json_schema.insert("schema".into(), json!(schema_str));
+                if let Some(name) = &s.json_schema_name {
+                    json_schema.insert("name".into(), json!(name));
+                }
+                output.insert(
+                    "textFormat".into(),
+                    json!({
+                        "type": "json_schema",
+                        "structure": { "jsonSchema": json_schema },
+                    }),
+                );
+            }
+            Err(_) => {
+                report.record(
+                    "sampling.json_schema",
+                    LossAction::Drop,
+                    "json_schema requires object schema",
+                );
+                if s.json_schema_name.is_some() {
+                    report.record("sampling.json_schema_name", LossAction::Drop, "no slot");
+                }
+            }
+        },
+        Some(_) => {
+            report.record(
+                "sampling.json_schema",
+                LossAction::Drop,
+                "json_schema requires object schema",
+            );
+            if s.json_schema_name.is_some() {
+                report.record("sampling.json_schema_name", LossAction::Drop, "no slot");
+            }
+        }
+        None => {
+            if s.json_schema_name.is_some() {
+                report.record("sampling.json_schema_name", LossAction::Drop, "no slot");
+            }
+        }
+    }
+    if let Some(effort) = s.reasoning_effort.as_deref() {
+        match converse_effort(effort) {
+            Some((mapped, degrade)) => {
+                output.insert("effort".into(), json!(mapped));
+                if let Some(detail) = degrade {
+                    report.record("sampling.reasoning_effort", LossAction::Degrade, detail);
+                }
+            }
+            None => {
+                report.record(
+                    "sampling.reasoning_effort",
+                    LossAction::Drop,
+                    "unmapped effort",
+                );
+            }
+        }
+    }
+    if !output.is_empty() {
+        body["outputConfig"] = Value::Object(output);
+    }
     if s.max_reasoning_tokens.is_some() {
         report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
     }
     if s.include_thoughts.is_some() {
         report.record("sampling.include_thoughts", LossAction::Drop, "no slot");
     }
-    if s.reasoning_effort.is_some() {
-        report.record("sampling.reasoning_effort", LossAction::Drop, "no slot");
-    }
     if s.thinking_budget.is_some() {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
-    }
-    if s.json_schema.is_some() {
-        report.record("sampling.json_schema", LossAction::Drop, "no slot");
-    }
-    if s.json_schema_name.is_some() {
-        report.record("sampling.json_schema_name", LossAction::Drop, "no slot");
     }
     if !s.include.is_empty() {
         report.record("sampling.include", LossAction::Drop, "no slot");
     }
     if s.parallel_tool_calls.is_some() {
         report.record("sampling.parallel_tool_calls", LossAction::Drop, "no slot");
+    }
+}
+
+fn converse_effort(effort: &str) -> Option<(String, Option<&'static str>)> {
+    let trimmed = effort.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    match lower.as_str() {
+        "low" | "medium" | "high" | "xhigh" | "max" => Some((lower, None)),
+        "x-high" => Some(("xhigh".into(), Some("x-high maps to xhigh"))),
+        _ => None,
     }
 }
 
