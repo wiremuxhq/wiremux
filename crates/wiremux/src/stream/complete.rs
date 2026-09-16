@@ -16,6 +16,7 @@ pub fn encode_response(wire: Wire, events: &[IrStreamEvent]) -> Result<Value, Ma
         Wire::Messages => Ok(encode_messages_complete(events)),
         Wire::Gemini => Ok(encode_gemini_complete(events)),
         Wire::Responses => Ok(encode_responses_complete(events)),
+        Wire::Converse => Ok(super::converse::encode_complete(events)),
     }
 }
 
@@ -460,6 +461,7 @@ pub fn decode_response(
         Wire::Messages => decode_messages_complete(&value),
         Wire::Responses => decode_responses_complete(&value, profile),
         Wire::Gemini => decode_gemini_complete(&value, profile),
+        Wire::Converse => super::converse::decode_complete(&value),
     }
 }
 

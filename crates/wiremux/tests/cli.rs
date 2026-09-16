@@ -1793,10 +1793,21 @@ fn profile_ingest_from_file_writes_user_dir() {
 }
 
 #[test]
-fn profile_ingest_refuses_azure() {
+fn profile_ingest_writes_azure_deployment_template() {
     let scratch = unique_scratch();
     let catalog = scratch.join("catalog.json");
-    std::fs::write(&catalog, INGEST_FIXTURE).expect("catalog");
+    std::fs::write(
+        &catalog,
+        r#"{
+  "azure": {
+    "id": "azure",
+    "name": "Azure",
+    "env": ["AZURE_RESOURCE_NAME", "AZURE_API_KEY"],
+    "npm": "@ai-sdk/azure"
+  }
+}"#,
+    )
+    .expect("catalog");
     let dest = scratch.join("profiles");
     let (_home, mut cmd) = isolated_home();
     let out = cmd
@@ -1812,12 +1823,8 @@ fn profile_ingest_refuses_azure() {
         ])
         .output()
         .expect("run");
-    assert_ne!(out.status.code(), Some(0), "azure must fail closed");
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("azure"), "{err}");
-    assert!(
-        err.contains("not a simple"),
-        "expected fail-closed reason, got: {err}"
-    );
-    assert!(!dest.join("azure.toml").exists());
+    assert_eq!(out.status.code(), Some(0), "{:?}", out);
+    let body = std::fs::read_to_string(dest.join("azure.toml")).expect("azure");
+    assert!(body.contains("deployments/{model}/chat/completions"));
+    assert!(body.contains("header:api-key"));
 }

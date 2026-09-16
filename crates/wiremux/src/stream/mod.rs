@@ -1,7 +1,8 @@
-//! SSE encode/decode for the four v1 dialects.
+//! SSE encode/decode for the v1 dialects.
 
 mod chat;
 mod complete;
+mod converse;
 mod gemini;
 mod messages;
 mod responses;
@@ -76,6 +77,7 @@ pub fn decode_stream_event(
         Wire::Messages => messages::decode(&name, &value),
         Wire::Responses => responses::decode(&name, &value),
         Wire::Gemini => gemini::decode(&value),
+        Wire::Converse => converse::decode(&value),
     }
 }
 
@@ -230,7 +232,7 @@ fn expand_complete_tool_call(
         Wire::ChatCompletions => expand_chat_tool_call(first, &value),
         Wire::Gemini => expand_gemini_function_call(first, &value),
         Wire::Responses => expand_responses_function_call(first, &value),
-        Wire::Messages => None,
+        Wire::Messages | Wire::Converse => None,
     }
 }
 
@@ -444,6 +446,13 @@ pub fn encode_stream_event(wire: Wire, ev: &IrStreamEvent) -> Result<RawSse, Map
             Wire::Messages => messages::encode(other),
             Wire::Responses => responses::encode(other),
             Wire::Gemini => gemini::encode(other),
+            Wire::Converse => {
+                let value = converse::encode(other)?;
+                Ok(RawSse {
+                    event: None,
+                    data: value.to_string(),
+                })
+            }
         },
     }
 }
@@ -476,6 +485,23 @@ fn frame_event_name(wire: Wire, raw: &RawSse) -> String {
     }
     if matches!(wire, Wire::ChatCompletions | Wire::Gemini) {
         return "chunk".into();
+    }
+    if matches!(wire, Wire::Converse) {
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+            for name in [
+                "contentBlockDelta",
+                "contentBlockStart",
+                "contentBlockStop",
+                "messageStop",
+                "metadata",
+                "messageStart",
+            ] {
+                if value.get(name).is_some() {
+                    return name.to_string();
+                }
+            }
+        }
+        return "contentBlockDelta".into();
     }
     if let Ok(value) = serde_json::from_str::<Value>(trimmed)
         && let Some(ty) = value.get("type").and_then(Value::as_str)

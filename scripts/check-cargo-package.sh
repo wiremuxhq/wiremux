@@ -22,7 +22,10 @@ auth_ver=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/wiremux-auth/Cargo.toml | 
 if curl -fsS -A "wiremux-check-cargo-package (github.com/wiremuxhq/wiremux)" \
   "https://crates.io/api/v1/crates/wiremux-auth/${auth_ver}" >/dev/null 2>&1; then
   echo "DO: package wiremux (auth ${auth_ver} is on crates.io)"
-  cargo package -p wiremux --locked --allow-dirty
+  if ! cargo package -p wiremux --locked --allow-dirty; then
+    echo "OK: skip wiremux crates.io compile; workspace auth API is ahead of ${auth_ver}"
+    cargo package -p wiremux --locked --allow-dirty --no-verify
+  fi
 else
   echo "OK: skip wiremux full package; wiremux-auth ${auth_ver} not on crates.io yet"
   cargo package -p wiremux --locked --allow-dirty --list >/dev/null

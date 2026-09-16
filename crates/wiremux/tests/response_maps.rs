@@ -557,3 +557,44 @@ fn chat_complete_non_function_tool_call_is_protocol() {
         "must not invent a function ToolCallStart: {events:?}"
     );
 }
+
+fn converse_profile() -> ResolvedProfile {
+    parse_profile_str(
+        r#"
+schema_version = 1
+id = "amazon-bedrock"
+wire = "converse"
+"#,
+    )
+    .expect("converse profile")
+}
+
+#[test]
+fn converse_complete_round_trip_text() {
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{ "text": "pong" }]
+            }
+        },
+        "stopReason": "end_turn",
+        "usage": { "inputTokens": 3, "outputTokens": 1 }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile()).expect("decode");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "pong")),
+        "got {events:?}"
+    );
+    let mapped = encode_response(Wire::Converse, &events).expect("encode");
+    assert_eq!(
+        mapped
+            .pointer("/output/message/content/0/text")
+            .and_then(|v| v.as_str()),
+        Some("pong"),
+        "got {mapped}"
+    );
+}

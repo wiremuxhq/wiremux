@@ -9,9 +9,10 @@ use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 use wiremux_auth::{
-    AnyTokenProvider, AuthError, LoadOptions, ProfileError, ResolvedProfile, TokenProvider, Wire,
-    load_profile, not_found_message, provider_for_profile_opts, redact_secret_looking,
-    redact_url_origin, sanitize_oauth_error_text,
+    AnyTokenProvider, AuthError, AwsCredentials, AwsSignParams, LoadOptions, ProfileError,
+    ResolvedProfile, TokenProvider, Wire, load_profile, not_found_message,
+    provider_for_profile_opts, redact_secret_looking, redact_url_origin, sanitize_oauth_error_text,
+    sign_aws_request,
 };
 
 use crate::headers::apply_profile_headers;
@@ -391,8 +392,9 @@ impl WireClient {
             .http
             .post(url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body);
-        apply_profile_headers(req, &self.profile, token)
+            .body(body.clone());
+        let req = apply_profile_headers(req, &self.profile, token);
+        apply_aws_sigv4(&self.profile, url, "POST", &body, req)
             .send()
             .await
     }
@@ -1065,6 +1067,101 @@ fn vision_from_show(value: &Value) -> Option<bool> {
                 )
             })
         })
+}
+
+fn apply_aws_sigv4(
+    profile: &ResolvedProfile,
+    url: &str,
+    method: &str,
+    body: &[u8],
+    req: reqwest::RequestBuilder,
+) -> reqwest::RequestBuilder {
+    let Some(service) = profile
+        .http
+        .aws_service
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    else {
+        return req;
+    };
+    let access = std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_default();
+    let secret = std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_default();
+    if access.is_empty() || secret.is_empty() {
+        return req;
+    }
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return req;
+    };
+    let Some(host) = parsed.host_str().map(str::to_string) else {
+        return req;
+    };
+    let path = if parsed.path().is_empty() {
+        "/"
+    } else {
+        parsed.path()
+    };
+    let query = parsed.query().unwrap_or("");
+    let region = profile
+        .http
+        .aws_region
+        .clone()
+        .or_else(|| std::env::var("AWS_REGION").ok())
+        .unwrap_or_else(|| "us-east-1".into());
+    let session = std::env::var("AWS_SESSION_TOKEN").unwrap_or_default();
+    let amz_date = amz_date_now();
+    let creds = AwsCredentials {
+        access_key_id: access,
+        secret_access_key: secret,
+        session_token: session.clone(),
+        expiration: None,
+    };
+    let extra = [("content-type", "application/json")];
+    let Ok(authorization) = sign_aws_request(
+        &creds,
+        &AwsSignParams {
+            method,
+            host: &host,
+            path,
+            query,
+            region: &region,
+            service,
+            extra_headers: &extra,
+            payload: body,
+            amz_date: &amz_date,
+        },
+    ) else {
+        return req;
+    };
+    let mut req = req
+        .header("x-amz-date", amz_date)
+        .header("authorization", authorization);
+    if !session.is_empty() {
+        req = req.header("x-amz-security-token", session);
+    }
+    req
+}
+
+fn amz_date_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = (secs / 86_400) as i64;
+    let sod = secs % 86_400;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    let hour = sod / 3600;
+    let min = (sod % 3600) / 60;
+    let sec = sod % 60;
+    format!("{year:04}{m:02}{d:02}T{hour:02}{min:02}{sec:02}Z")
 }
 
 #[cfg(test)]

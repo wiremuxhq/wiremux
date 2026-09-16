@@ -26,7 +26,7 @@ enum Command {
         /// Bind address. 127.0.0.1 only.
         #[arg(long, default_value = "127.0.0.1:0")]
         listen: String,
-        /// Incoming harness dialect (`chat-completions` / `chat`, `messages`, `responses`, `gemini`).
+        /// Incoming harness dialect (`chat-completions` / `chat`, `messages`, `responses`, `gemini`, `converse`).
         #[arg(long = "from")]
         from: String,
         /// Profile id or file path.

@@ -357,6 +357,17 @@ fn assistant_text(wire: Wire, value: &Value) -> Option<String> {
                 .join("");
             (!text.is_empty()).then_some(text)
         }
+        Wire::Converse => {
+            let blocks = value
+                .pointer("/output/message/content")
+                .and_then(Value::as_array)?;
+            let text: String = blocks
+                .iter()
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("");
+            (!text.is_empty()).then_some(text)
+        }
         Wire::Gemini => {
             let parts = value
                 .pointer("/candidates/0/content/parts")

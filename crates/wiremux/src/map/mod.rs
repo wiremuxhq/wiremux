@@ -1,6 +1,7 @@
-//! Bidirectional request encode/decode for the four v1 dialects.
+//! Bidirectional request encode/decode for the v1 dialects.
 
 mod chat;
+mod converse;
 mod gemini;
 mod messages;
 mod responses;
@@ -52,6 +53,7 @@ pub fn decode(wire: Wire, bytes: &[u8]) -> Result<(IrRequest, LossReport), MapEr
         Wire::Messages => messages::decode(&value),
         Wire::Responses => responses::decode(&value),
         Wire::Gemini => gemini::decode(&value),
+        Wire::Converse => converse::decode(&value),
     }
 }
 
@@ -70,6 +72,7 @@ pub fn encode(
         Wire::Messages => messages::encode(&ir, &prepared, &mut report)?,
         Wire::Responses => responses::encode(&ir, &prepared, profile, &mut report)?,
         Wire::Gemini => gemini::encode(&ir, &prepared, &mut report)?,
+        Wire::Converse => converse::encode(&ir, &prepared, &mut report)?,
     };
     merge_extra_body(&mut body, profile);
     apply_forbidden_fields(&mut body, profile, &mut report)?;

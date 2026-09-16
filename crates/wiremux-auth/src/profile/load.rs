@@ -132,6 +132,8 @@ fn minimal_profile_for_wire(wire: Wire) -> ResolvedProfile {
             auth_scheme: Some(wire.default_auth_scheme()),
             headers: std::collections::BTreeMap::new(),
             header_merge: ListMerge::default(),
+            aws_service: None,
+            aws_region: None,
         },
         oauth: None,
         access_env: Vec::new(),

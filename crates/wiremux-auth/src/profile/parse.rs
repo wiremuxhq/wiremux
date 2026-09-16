@@ -80,7 +80,7 @@ fn refuse_nested_struct_tables(value: &Value) -> Result<(), ProfileError> {
     for (key, hint) in [
         (
             "dialect",
-            "set top-level `wire` (chat-completions|messages|responses|gemini)",
+            "set top-level `wire` (chat-completions|messages|responses|gemini|converse)",
         ),
         ("http", "set top-level `base_url` and `chat_path`"),
         ("auth", "set top-level `auth_scheme` and `access_env`"),
@@ -129,6 +129,10 @@ pub(crate) struct RawProfile {
     pub(crate) headers: Option<BTreeMap<String, String>>,
     #[serde(default, alias = "headerMerge")]
     pub(crate) header_merge: Option<ListMerge>,
+    #[serde(default, alias = "awsService")]
+    pub(crate) aws_service: Option<String>,
+    #[serde(default, alias = "awsRegion")]
+    pub(crate) aws_region: Option<String>,
     #[serde(default, alias = "accessEnv")]
     pub(crate) access_env: Option<RawAccessEnv>,
     #[serde(default)]
@@ -335,6 +339,8 @@ pub(crate) fn resolve(raw: RawProfile) -> Result<ResolvedProfile, ProfileError> 
                 .or_else(|| wire.map(Wire::default_auth_scheme)),
             headers: raw.headers.unwrap_or_default(),
             header_merge: raw.header_merge.unwrap_or_default(),
+            aws_service: raw.aws_service.filter(|s| !s.is_empty()),
+            aws_region: raw.aws_region.filter(|s| !s.is_empty()),
         },
         oauth,
         access_env: resolve_access_env(raw.access_env),
