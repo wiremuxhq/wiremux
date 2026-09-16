@@ -331,10 +331,15 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 messages.push(json!({ "role": "assistant", "content": [block] }));
             }
             IrItem::FunctionOutput { call_id, output } => {
+                let text = if output.trim().is_empty() {
+                    "."
+                } else {
+                    output.as_str()
+                };
                 let block = json!({
                     "toolResult": {
                         "toolUseId": call_id,
-                        "content": [{ "text": output }]
+                        "content": [{ "text": text }]
                     }
                 });
                 if last_user_has_tool_result(&messages)
@@ -399,6 +404,7 @@ fn last_user_has_tool_result(messages: &[Value]) -> bool {
 
 fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
     match part {
+        IrPart::Text(text) if text.trim().is_empty() => None,
         IrPart::Text(text) => Some(json!({ "text": text })),
         IrPart::Thinking { text, .. } => Some(json!({
             "reasoningContent": { "reasoningText": { "text": text } }

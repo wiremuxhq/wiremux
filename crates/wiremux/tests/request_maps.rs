@@ -4568,3 +4568,81 @@ fn converse_decode_tool_result_json_round_trips_nonempty() {
         "re-encode must not be empty text-only loss, got {body}"
     );
 }
+
+#[test]
+fn converse_whitespace_only_assistant_text_with_tool_use_omits_blank_text() {
+    let ir = IrRequest {
+        model: "amazon.nova-lite-v1:0".into(),
+        items: vec![
+            IrItem::Assistant {
+                parts: vec![IrPart::Text("  \n\t  ".into())],
+            },
+            IrItem::FunctionCall {
+                call_id: "t1".into(),
+                name: "lookup".into(),
+                arguments: r#"{"q":"x"}"#.into(),
+                thought_signature: None,
+            },
+        ],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages must be an array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "whitespace text plus toolUse must stay one assistant turn, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "assistant");
+    let content = messages[0]["content"]
+        .as_array()
+        .expect("content must be an array");
+    assert_eq!(
+        content.len(),
+        1,
+        "blank text block must be omitted; only toolUse remains, got {body}"
+    );
+    assert!(
+        content[0].get("text").is_none(),
+        "must not emit a blank text contentBlock, got {body}"
+    );
+    assert_eq!(content[0]["toolUse"]["toolUseId"], "t1");
+    assert_eq!(content[0]["toolUse"]["name"], "lookup");
+}
+
+#[test]
+fn converse_empty_function_output_encodes_nonempty_tool_result_text() {
+    let ir = IrRequest {
+        model: "amazon.nova-lite-v1:0".into(),
+        items: vec![IrItem::FunctionOutput {
+            call_id: "t1".into(),
+            output: String::new(),
+        }],
+        tools: vec![],
+        sampling: IrSampling::default(),
+    };
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let text = body
+        .pointer("/messages/0/content/0/toolResult/content/0/text")
+        .and_then(Value::as_str);
+    let text = text.expect("toolResult text");
+    assert!(
+        !text.trim().is_empty(),
+        "empty FunctionOutput must not emit blank toolResult text, got {body}"
+    );
+    assert_eq!(
+        text, ".",
+        "empty tool result uses the same '.' placeholder as Messages, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/toolUseId")
+            .and_then(Value::as_str),
+        Some("t1"),
+        "toolUseId must stay, got {body}"
+    );
+}
