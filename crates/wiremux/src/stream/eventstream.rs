@@ -71,6 +71,37 @@ impl EventStreamMessage {
     }
 }
 
+/// Invert [`wrap_event_payload`] for dest Event Stream encode.
+///
+/// AWS puts the discriminant in `:event-type`. The body is the member
+/// struct (`{"delta":{"text":"hi"}}`), not `{"contentBlockDelta":{...}}`.
+pub(crate) fn unwrap_event_payload(event_type: &str, data: &str) -> Vec<u8> {
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str(data) else {
+        return data.as_bytes().to_vec();
+    };
+    let inner = if let Some(inner) = map.get(event_type) {
+        if map.len() != 1 {
+            return data.as_bytes().to_vec();
+        }
+        inner.clone()
+    } else {
+        serde_json::Value::Object(map)
+    };
+    ensure_block_index(event_type, inner)
+}
+
+fn ensure_block_index(event_type: &str, mut value: serde_json::Value) -> Vec<u8> {
+    if matches!(
+        event_type,
+        "contentBlockDelta" | "contentBlockStart" | "contentBlockStop"
+    ) && value.get("contentBlockIndex").is_none()
+        && let serde_json::Value::Object(obj) = &mut value
+    {
+        obj.insert("contentBlockIndex".into(), serde_json::json!(0));
+    }
+    value.to_string().into_bytes()
+}
+
 fn wrap_event_payload(event_type: Option<&str>, payload: &[u8]) -> String {
     let text = String::from_utf8_lossy(payload).into_owned();
     let Some(event_type) = event_type.filter(|name| !name.is_empty()) else {
@@ -283,6 +314,42 @@ fn crc32_ieee(data: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unwrap_strips_internal_wrapper() {
+        let out = unwrap_event_payload(
+            "contentBlockDelta",
+            r#"{"contentBlockDelta":{"delta":{"text":"hi"}}}"#,
+        );
+        let value: serde_json::Value = serde_json::from_slice(&out).expect("json");
+        assert_eq!(
+            value
+                .pointer("/delta/text")
+                .and_then(serde_json::Value::as_str),
+            Some("hi")
+        );
+        assert_eq!(
+            value
+                .get("contentBlockIndex")
+                .and_then(serde_json::Value::as_u64),
+            Some(0)
+        );
+        assert!(value.get("contentBlockDelta").is_none(), "{value}");
+    }
+
+    #[test]
+    fn unwrap_message_stop_is_member_struct() {
+        let out = unwrap_event_payload(
+            "messageStop",
+            r#"{"messageStop":{"stopReason":"end_turn"}}"#,
+        );
+        let value: serde_json::Value = serde_json::from_slice(&out).expect("json");
+        assert_eq!(
+            value.get("stopReason").and_then(serde_json::Value::as_str),
+            Some("end_turn")
+        );
+        assert!(value.get("messageStop").is_none(), "{value}");
+    }
 
     #[test]
     fn round_trip_content_block_delta() {

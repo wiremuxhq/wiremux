@@ -46,6 +46,7 @@ impl RawSse {
 
 pub use complete::{decode_response, encode_response};
 pub use encoder::StreamEncoder;
+pub(crate) use eventstream::unwrap_event_payload;
 pub use eventstream::{
     EventStreamReader, MAX_EVENTSTREAM_PENDING,
     encode_exception_message as encode_eventstream_exception,
@@ -555,7 +556,7 @@ fn sse_event_field(name: &str) -> Option<String> {
     }
 }
 
-fn frame_event_name(wire: Wire, raw: &RawSse) -> String {
+pub(crate) fn frame_event_name(wire: Wire, raw: &RawSse) -> String {
     if let Some(ev) = raw.event.as_deref().filter(|s| !s.is_empty()) {
         return ev.to_string();
     }
