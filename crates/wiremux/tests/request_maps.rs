@@ -4782,18 +4782,36 @@ fn converse_reasoning_text_signature_round_trips() {
 
 #[test]
 fn converse_encode_drops_thinking_schema_and_parallel() {
+    let schema = serde_json::json!({"type": "object"});
     let ir = user_ir(IrSampling {
         max_reasoning_tokens: Some(2048),
         include_thoughts: Some(true),
         reasoning_effort: Some("high".into()),
         thinking_budget: Some(1024),
-        json_schema: Some(serde_json::json!({"type": "object"})),
+        json_schema: Some(schema.clone()),
         json_schema_name: Some("answer".into()),
         parallel_tool_calls: Some(true),
         ..IrSampling::default()
     });
     let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/outputConfig/textFormat/type")
+            .and_then(Value::as_str),
+        Some("json_schema"),
+        "Converse must emit outputConfig.textFormat, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/outputConfig/textFormat/structure/jsonSchema/name")
+            .and_then(Value::as_str),
+        Some("answer"),
+        "Converse must emit jsonSchema.name, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/outputConfig/effort").and_then(Value::as_str),
+        Some("high"),
+        "Converse must emit outputConfig.effort, got {body}"
+    );
     assert!(
         body.get("max_reasoning_tokens").is_none()
             && body.get("maxReasoningTokens").is_none()
@@ -4817,15 +4835,177 @@ fn converse_encode_drops_thinking_schema_and_parallel() {
     for path in [
         "sampling.max_reasoning_tokens",
         "sampling.include_thoughts",
-        "sampling.reasoning_effort",
         "sampling.thinking_budget",
-        "sampling.json_schema",
-        "sampling.json_schema_name",
         "sampling.parallel_tool_calls",
     ] {
         assert!(
             loss_dropped(&report, path),
             "Converse {path} drop missing, got {report:?}"
+        );
+    }
+    for path in [
+        "sampling.reasoning_effort",
+        "sampling.json_schema",
+        "sampling.json_schema_name",
+    ] {
+        assert!(
+            !loss_dropped(&report, path),
+            "Converse has outputConfig and must not Drop {path}, got {report:?}"
+        );
+    }
+}
+
+#[test]
+fn converse_encode_output_config_schema_and_effort() {
+    let schema = serde_json::json!({"type": "object", "properties": {"ok": {"type": "boolean"}}});
+    let ir = user_ir(IrSampling {
+        json_schema: Some(schema.clone()),
+        json_schema_name: Some("answer".into()),
+        reasoning_effort: Some("high".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/outputConfig/textFormat/type")
+            .and_then(Value::as_str),
+        Some("json_schema"),
+        "textFormat.type must be json_schema, got {body}"
+    );
+    let schema_str = body
+        .pointer("/outputConfig/textFormat/structure/jsonSchema/schema")
+        .and_then(Value::as_str)
+        .expect("schema must be a JSON string");
+    let parsed: Value = serde_json::from_str(schema_str).expect("schema string parses");
+    assert_eq!(
+        parsed, schema,
+        "schema string must parse back to the object"
+    );
+    assert_eq!(
+        body.pointer("/outputConfig/textFormat/structure/jsonSchema/name")
+            .and_then(Value::as_str),
+        Some("answer"),
+        "jsonSchema.name must be answer, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/outputConfig/effort").and_then(Value::as_str),
+        Some("high"),
+        "effort must be high, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema")
+            && !loss_dropped(&report, "sampling.json_schema_name")
+            && !loss_dropped(&report, "sampling.reasoning_effort"),
+        "mapped outputConfig fields must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn converse_decode_reads_output_config_schema_and_effort() {
+    let req = br#"{
+      "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+      "outputConfig": {
+        "textFormat": {
+          "type": "json_schema",
+          "structure": {
+            "jsonSchema": {
+              "schema": "{\"type\":\"object\"}",
+              "name": "answer"
+            }
+          }
+        },
+        "effort": "high"
+      }
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    assert_eq!(ir.sampling.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(ir.sampling.json_schema_name.as_deref(), Some("answer"));
+    assert_eq!(
+        ir.sampling.json_schema,
+        Some(serde_json::json!({"type": "object"}))
+    );
+}
+
+#[test]
+fn converse_non_object_json_schema_is_dropped() {
+    let ir = user_ir(IrSampling {
+        json_schema: Some(serde_json::json!(["not", "object"])),
+        json_schema_name: Some("answer".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("outputConfig").is_none(),
+        "non-object json_schema must not emit outputConfig, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "non-object json_schema must Drop, got {report:?}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "sampling.json_schema"
+                && event.action == LossAction::Drop
+                && event.detail == "no slot"
+        }),
+        "Converse has a slot; Drop detail must not be no slot, got {report:?}"
+    );
+}
+
+#[test]
+fn converse_encode_unknown_effort_is_dropped() {
+    let ir = user_ir(IrSampling {
+        reasoning_effort: Some("ultra".into()),
+        ..IrSampling::default()
+    });
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("outputConfig").is_none(),
+        "unknown effort must not invent outputConfig, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.reasoning_effort"),
+        "unknown effort must Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn converse_encode_x_high_effort_degrades_to_xhigh() {
+    for effort in ["x-high", "X-High"] {
+        let ir = user_ir(IrSampling {
+            reasoning_effort: Some(effort.into()),
+            ..IrSampling::default()
+        });
+        let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            body.pointer("/outputConfig/effort").and_then(Value::as_str),
+            Some("xhigh"),
+            "{effort} must map to outputConfig.effort xhigh, got {body}"
+        );
+        assert!(
+            loss_degraded(&report, "sampling.reasoning_effort"),
+            "{effort} must Degrade to xhigh, got {report:?}"
+        );
+    }
+    for effort in ["xhigh", "XHIGH"] {
+        let ir = user_ir(IrSampling {
+            reasoning_effort: Some(effort.into()),
+            ..IrSampling::default()
+        });
+        let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            body.pointer("/outputConfig/effort").and_then(Value::as_str),
+            Some("xhigh"),
+            "{effort} must emit xhigh, got {body}"
+        );
+        assert!(
+            !loss_degraded(&report, "sampling.reasoning_effort")
+                && !loss_dropped(&report, "sampling.reasoning_effort"),
+            "{effort} is a first-class effort and must not Drop/Degrade, got {report:?}"
         );
     }
 }
