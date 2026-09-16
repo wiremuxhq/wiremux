@@ -139,6 +139,7 @@ fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<
     let mut parts = Vec::new();
     for block in arr {
         if let Some(tool) = block.get("toolUse") {
+            flush_assistant(&mut parts, items);
             let id = tool
                 .get("toolUseId")
                 .and_then(Value::as_str)
@@ -164,10 +165,16 @@ fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<
             parts.push(part);
         }
     }
-    if !parts.is_empty() {
-        items.push(IrItem::Assistant { parts });
-    }
+    flush_assistant(&mut parts, items);
     Ok(())
+}
+
+fn flush_assistant(parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
+    if !parts.is_empty() {
+        items.push(IrItem::Assistant {
+            parts: std::mem::take(parts),
+        });
+    }
 }
 
 fn decode_part(block: &Value) -> Option<IrPart> {
