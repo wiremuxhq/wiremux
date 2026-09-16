@@ -358,7 +358,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     if content_type.contains("text/event-stream") || content_type.contains("eventstream") {
         let status = status_from_reqwest(status);
         if target == state.from {
-            return passthrough_sse(status, resp);
+            return passthrough_sse(status, resp, &content_type);
         }
         return map_sse_stream(state, target, status, resp);
     }
@@ -450,7 +450,11 @@ fn json_completion_to_sse(
     wrote.then(|| Bytes::from(out))
 }
 
-fn passthrough_sse(status: StatusCode, resp: reqwest::Response) -> Response<ProxyBody> {
+fn passthrough_sse(
+    status: StatusCode,
+    resp: reqwest::Response,
+    content_type: &str,
+) -> Response<ProxyBody> {
     let url = resp.url().to_string();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(16);
     tokio::spawn(async move {
@@ -479,7 +483,14 @@ fn passthrough_sse(status: StatusCode, resp: reqwest::Response) -> Response<Prox
     });
     Response::builder()
         .status(status)
-        .header("content-type", "text/event-stream")
+        .header(
+            "content-type",
+            if content_type.is_empty() {
+                "text/event-stream"
+            } else {
+                content_type
+            },
+        )
         .body(StreamBody::new(body_stream).boxed_unsync())
         .unwrap_or_else(|_| Response::new(boxed_full("{}\n")))
 }
