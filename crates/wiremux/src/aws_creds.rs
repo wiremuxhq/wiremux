@@ -1086,6 +1086,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sso_session_section_supplies_start_url() {
+        let home = IsolatedHome::with_extra_envs(extra_aws_envs());
+        clear_aws_credential_cache();
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let start = "https://example.awsapps.com/start";
+        let cache_dir = home.path().join("sso-cache");
+        std::fs::create_dir_all(&cache_dir).expect("mkdir cache");
+        std::fs::write(
+            cache_dir.join("token.json"),
+            format!(
+                r#"{{"startUrl":"{start}","accessToken":"sso-session-tok","expiresAt":"2099-01-01T00:00:00Z"}}"#
+            ),
+        )
+        .expect("write token");
+        let role = r#"{"roleCredentials":{"accessKeyId":"AKIASESS","secretAccessKey":"sesssecret","sessionToken":"sesstok","expiration":4102444800000}}"#;
+        let (portal, handle) = spawn_script(vec![(200, role.into())]);
+        let config = home.path().join("config");
+        std::fs::write(
+            &config,
+            format!(
+                "[profile dev]\nsso_session = corp\nsso_account_id = 123456789012\nsso_role_name = Admin\n\n[sso-session corp]\nsso_start_url = {start}\nsso_region = us-east-1\n"
+            ),
+        )
+        .expect("write config");
+        home.set_env("AWS_PROFILE", "dev");
+        home.set_env("AWS_CONFIG_FILE", config.to_str().expect("utf8"));
+        home.set_env("AWS_SSO_CACHE_DIR", cache_dir.to_str().expect("utf8"));
+        home.set_env("AWS_ENDPOINT_URL_SSO", &portal);
+        let creds = resolve_aws_credentials()
+            .await
+            .expect("resolve")
+            .expect("some");
+        let seen = handle.join().expect("join");
+        assert_eq!(creds.access_key_id, "AKIASESS");
+        assert_eq!(creds.session_token, "sesstok");
+        assert!(
+            seen.iter().any(|r| r
+                .to_ascii_lowercase()
+                .contains("x-amz-sso_bearer_token: sso-session-tok")),
+            "SSO must send the cached access token, got {seen:?}"
+        );
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn expired_sso_cache_does_not_call_portal() {
+        let home = IsolatedHome::with_extra_envs(extra_aws_envs());
+        clear_aws_credential_cache();
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let start = "https://example.awsapps.com/start";
+        let cache_dir = home.path().join("sso-cache");
+        std::fs::create_dir_all(&cache_dir).expect("mkdir cache");
+        std::fs::write(
+            cache_dir.join("token.json"),
+            format!(
+                r#"{{"startUrl":"{start}","accessToken":"expired-tok","expiresAt":"2000-01-01T00:00:00Z"}}"#
+            ),
+        )
+        .expect("write token");
+        let config = home.path().join("config");
+        std::fs::write(
+            &config,
+            format!(
+                "[profile dev]\nsso_start_url = {start}\nsso_region = us-east-1\nsso_account_id = 123456789012\nsso_role_name = Admin\n"
+            ),
+        )
+        .expect("write config");
+        home.set_env("AWS_PROFILE", "dev");
+        home.set_env("AWS_CONFIG_FILE", config.to_str().expect("utf8"));
+        home.set_env("AWS_SSO_CACHE_DIR", cache_dir.to_str().expect("utf8"));
+        home.set_env("AWS_ENDPOINT_URL_SSO", "http://127.0.0.1:1");
+        let err = resolve_aws_credentials()
+            .await
+            .expect_err("expired cache must not resolve");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("aws sso login"),
+            "expired SSO cache must mention aws sso login, got {msg}"
+        );
+        let _ = home;
+    }
+
+    #[tokio::test]
     async fn ecs_full_uri_resolves_and_caches() {
         static HITS: AtomicUsize = AtomicUsize::new(0);
         let home = IsolatedHome::with_extra_envs(extra_aws_envs());

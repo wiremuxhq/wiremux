@@ -84,6 +84,9 @@ impl StreamEncoder {
             Wire::Messages => Ok(self.finish_messages()),
             Wire::Responses => Ok(self.finish_responses()),
             Wire::ChatCompletions => Ok(self.finish_chat()),
+            Wire::Gemini | Wire::Converse => {
+                encode_stream_event(self.wire, &IrStreamEvent::Done).map(|frame| vec![frame])
+            }
             _ => Ok(Vec::new()),
         }
     }
