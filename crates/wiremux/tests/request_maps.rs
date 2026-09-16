@@ -4646,3 +4646,121 @@ fn converse_empty_function_output_encodes_nonempty_tool_result_text() {
         "toolUseId must stay, got {body}"
     );
 }
+
+#[test]
+fn converse_mixed_user_tool_result_then_text_round_trips_one_message() {
+    let req = br#"{
+      "modelId": "anthropic.claude-sonnet-4-20250514-v1:0",
+      "messages": [
+        {"role": "user", "content": [
+          {"toolResult": {"toolUseId": "t1", "content": [{"text": "ok"}]}},
+          {"text": "thanks"}
+        ]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode mixed user");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages must be an array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "re-encode must stay one user message, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "user");
+    let content = messages[0]["content"]
+        .as_array()
+        .expect("content must be an array");
+    assert_eq!(
+        content.len(),
+        2,
+        "expected toolResult then text, got {body}"
+    );
+    assert_eq!(content[0]["toolResult"]["toolUseId"], "t1");
+    assert_eq!(content[0]["toolResult"]["content"][0]["text"], "ok");
+    assert_eq!(content[1]["text"], "thanks");
+}
+
+#[test]
+fn converse_mixed_user_text_then_tool_result_round_trips_one_message() {
+    let req = br#"{
+      "modelId": "anthropic.claude-sonnet-4-20250514-v1:0",
+      "messages": [
+        {"role": "user", "content": [
+          {"text": "here is the result"},
+          {"toolResult": {"toolUseId": "t1", "content": [{"text": "ok"}]}}
+        ]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode mixed user");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages must be an array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "re-encode must stay one user message, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "user");
+    let content = messages[0]["content"]
+        .as_array()
+        .expect("content must be an array");
+    assert_eq!(
+        content.len(),
+        2,
+        "expected text then toolResult, got {body}"
+    );
+    assert_eq!(content[0]["text"], "here is the result");
+    assert_eq!(content[1]["toolResult"]["toolUseId"], "t1");
+    assert_eq!(content[1]["toolResult"]["content"][0]["text"], "ok");
+}
+
+#[test]
+fn converse_reasoning_text_signature_round_trips() {
+    let req = br#"{
+      "modelId": "anthropic.claude-sonnet-4-20250514-v1:0",
+      "messages": [
+        {"role": "assistant", "content": [
+          {"reasoningContent": {"reasoningText": {"text": "plan", "signature": "sig_abc"}}},
+          {"text": "done"}
+        ]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode signed reasoning");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::Assistant { parts } if parts.iter().any(|part| matches!(
+                part,
+                IrPart::Thinking { text, signature }
+                    if text == "plan" && signature.as_deref() == Some("sig_abc")
+            ))
+        )),
+        "decode must produce IrPart::Thinking {{ text: \"plan\", signature: Some(\"sig_abc\") }}, got {:?}",
+        ir.items
+    );
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    assert!(
+        content.iter().any(|block| {
+            block
+                .pointer("/reasoningContent/reasoningText/text")
+                .and_then(Value::as_str)
+                == Some("plan")
+                && block
+                    .pointer("/reasoningContent/reasoningText/signature")
+                    .and_then(Value::as_str)
+                    == Some("sig_abc")
+        }),
+        "replay must keep reasoningText.signature, got {body}"
+    );
+    assert_eq!(content[1]["text"], "done");
+}
