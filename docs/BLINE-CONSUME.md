@@ -36,21 +36,27 @@ TokenProviders and named host conversions.
 [blineai/bline#3988](https://github.com/blineai/bline/issues/3988)
 is CLOSED.
 
-Published crates.io is `0.5.0` / tag
-[v0.5.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.5.0).
+Published crates.io is `0.6.0` / tag
+[v0.6.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.6.0).
 Bline leftover-prove first pinned crates.io `0.3.0` after
 [blineai/bline#3996](https://github.com/blineai/bline/pull/3996)
 ([`934e6235`](https://github.com/blineai/bline/commit/934e6235135b79a61730215d615d7f731ad07138)).
 The 0.4.0 leftover-prove tracker is
 [blineai/bline#4010](https://github.com/blineai/bline/issues/4010)
 (tag [v0.4.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.4.0)).
+The 0.5.0 pin was tag
+[v0.5.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.5.0).
 Do not implement that Bline bump here. [#104](https://github.com/wiremuxhq/wiremux/issues/104)
 and [#103](https://github.com/wiremuxhq/wiremux/issues/103)
 are CLOSED.
 
 `shipped_profile_ids()`, `xai-grok-build-messages`, URL-first Grok
-Build headers, and Messages `Continue.` ship in crates.io `0.5.0`.
-They were not in crates.io `0.4.0`.
+Build headers, and Messages `Continue.` shipped in crates.io `0.5.0`.
+They were not in crates.io `0.4.0`. crates.io `0.6.0` adds
+`list_models` `context_window`, the AWS default credential chain,
+Converse `outputConfig` / `serviceTier`, `Wire` plus public IR
+`#[non_exhaustive]`, and the extra shipped presets. Lock the
+catalog with `shipped_profile_ids()` instead of copying names.
 
 The wiremux README stays:
 
@@ -116,13 +122,13 @@ Path-dep `wiremux-auth` first, then maps at the adapter boundary.
 
 crates.io is an attach path for published hosts. Pin the current
 published tag
-[v0.5.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.5.0)
+[v0.6.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.6.0)
 until the next cut:
 
 ```toml
 [dependencies]
-wiremux-auth = "0.5.0"
-wiremux = { version = "0.5.0", default-features = false }
+wiremux-auth = "0.6.0"
+wiremux = { version = "0.6.0", default-features = false }
 ```
 
 Bline #3991 leftover-prove used `0.2.1`. Bline #3996 bumped the
@@ -260,7 +266,9 @@ without clap or the `proxy` stack enable feature `client` on crate
 complete JSON body. `stream` remaps SSE frames. `list_models` GETs
 the models catalog. OpenAI-compat uses the chat version prefix
 (`{base}/v1/models` when `chat_path` is `/v1/chat/completions` or
-`/v1/messages`).
+`/v1/messages`). It reads `context_length` then `context_window`
+(Grok Build `/v1/models` sends the second key). That second key
+is not in crates.io `0.5.0`.
 
 Refresh-only hosts call `token_for_profile_cached`. Do not wrap Bline
 types and do not run `wiremux proxy` for that path. A URL-first host
@@ -290,12 +298,15 @@ proxy `https://cli-chat-proxy.grok.com`, Chat Completions, same
 empty-client `oidc-auth-json` pack as `xai-oauth`, plus
 `x-grok-client-version = 0.1.202` so the proxy does not return HTTP
 426), and `xai-grok-build-messages` (same host and pack, Messages at
-`/v1/messages`). Hosts that need a non-default sxs / composer model
-set `x-grok-model-override` on `[headers]`. Do not ship leftover
-Bline model ids. Key ids use top-level
-`access_env` (first non-empty wins). `lmstudio` and `vllm` are
-`auth_scheme = none`. Do not ship a product client id on either xAI
-OAuth profile.
+`/v1/messages`). crates.io `0.6.0` also ships Bedrock, Azure,
+Vertex, Groq, Together, Mistral, DashScope, Moonshot, Zhipu, and
+the rest of `shipped_profile_ids()`. Lock that function on a
+version bump. Do not hand-copy the name list. Hosts that need a
+non-default sxs / composer model set `x-grok-model-override` on
+`[headers]`. Do not ship leftover Bline model ids. Key ids use
+top-level `access_env` (first non-empty wins). `lmstudio` and
+`vllm` are `auth_scheme = none`. Do not ship a product client id
+on either xAI OAuth profile.
 
 ## Out of scope
 
@@ -309,7 +320,7 @@ OAuth profile.
 
 ## Rollback
 
-Published hosts pin crates.io `0.5.0` (tag `v0.5.0`). Rollback of
+Published hosts pin crates.io `0.6.0` (tag `v0.6.0`). Rollback of
 the consume spike is revert the Bline #3992 commit (then the #3996
 pin if needed). leftover-prove tests remain. Published hosts stay on
-`0.5.0` until they choose a later crates.io cut.
+`0.6.0` until they choose a later crates.io cut.
