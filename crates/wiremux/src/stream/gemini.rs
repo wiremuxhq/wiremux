@@ -42,6 +42,18 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         .and_then(Value::as_array)
         .and_then(|c| c.first())
     else {
+        if let Some(error) = value.get("error").filter(|v| v.is_object()) {
+            let detail = error
+                .get("message")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("vendor error")
+                .to_string();
+            return Err(MapError::HardError {
+                path: "error".into(),
+                detail,
+            });
+        }
         if let Some(usage) = value.get("usageMetadata").filter(|v| v.is_object()) {
             return Ok(Some(usage::from_gemini(usage)));
         }
