@@ -604,6 +604,14 @@ impl StreamEncoder {
                     index,
                 ));
             }
+            IrStreamEvent::ReasoningSignature { signature } => {
+                out.extend(self.ensure_converse_block(BlockKind::Thinking));
+                let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                out.push(converse_frame_with_index(
+                    super::converse::encode(&IrStreamEvent::ReasoningSignature { signature })?,
+                    index,
+                ));
+            }
             IrStreamEvent::ToolCallStart {
                 id,
                 name,
@@ -744,6 +752,22 @@ mod tests {
             stop_reason(&tool_frames).as_deref(),
             Some("tool_use"),
             "Chat tool_calls must become AWS tool_use, got {tool_frames:?}"
+        );
+
+        let mut filtered = StreamEncoder::new(Wire::Converse);
+        assert!(
+            filtered
+                .push(IrStreamEvent::FinishReason {
+                    reason: "content_filter".into(),
+                })
+                .expect("push content_filter")
+                .is_empty()
+        );
+        let filtered_frames = filtered.finish().expect("finish content_filter");
+        assert_eq!(
+            stop_reason(&filtered_frames).as_deref(),
+            Some("content_filtered"),
+            "IR content_filter must become AWS content_filtered, got {filtered_frames:?}"
         );
     }
 

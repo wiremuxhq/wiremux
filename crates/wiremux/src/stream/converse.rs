@@ -91,6 +91,9 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
         IrStreamEvent::ReasoningDelta { text } => Ok(json!({
             "contentBlockDelta": { "delta": { "reasoningContent": { "text": text } } }
         })),
+        IrStreamEvent::ReasoningSignature { signature } => Ok(json!({
+            "contentBlockDelta": { "delta": { "reasoningContent": { "signature": signature } } }
+        })),
         IrStreamEvent::ToolCallStart { id, name, .. } => Ok(json!({
             "contentBlockStart": {
                 "start": { "toolUse": { "toolUseId": id, "name": name } }
@@ -269,7 +272,7 @@ fn finish_reason(reason: &str) -> &'static str {
     match reason {
         "tool_use" | "tool-use" | "tool_calls" => "tool_use",
         "max_tokens" | "length" => "max_tokens",
-        "content_filtered" => "content_filtered",
+        "content_filtered" | "content_filter" | "content-filter" => "content_filtered",
         "stop_sequence" => "stop_sequence",
         "guardrail_intervened" => "guardrail_intervened",
         _ => "end_turn",
@@ -309,6 +312,43 @@ mod tests {
                 .and_then(Value::as_str),
             Some("end_turn"),
             "Done stays end_turn, got {done}"
+        );
+    }
+
+    #[test]
+    fn converse_encode_finish_maps_content_filter() {
+        let stop = encode(&IrStreamEvent::FinishReason {
+            reason: "content_filter".into(),
+        })
+        .expect("encode content_filter");
+        assert_eq!(
+            stop.pointer("/messageStop/stopReason")
+                .and_then(Value::as_str),
+            Some("content_filtered"),
+            "IR content_filter must become AWS content_filtered, got {stop}"
+        );
+        let complete = encode_complete(&[IrStreamEvent::FinishReason {
+            reason: "content_filter".into(),
+        }]);
+        assert_eq!(
+            complete.get("stopReason").and_then(Value::as_str),
+            Some("content_filtered"),
+            "complete JSON must map content_filter, got {complete}"
+        );
+    }
+
+    #[test]
+    fn converse_encode_reasoning_signature() {
+        let value = encode(&IrStreamEvent::ReasoningSignature {
+            signature: "sig-1".into(),
+        })
+        .expect("encode signature");
+        assert_eq!(
+            value
+                .pointer("/contentBlockDelta/delta/reasoningContent/signature")
+                .and_then(Value::as_str),
+            Some("sig-1"),
+            "dest Converse must emit reasoningContent.signature, got {value}"
         );
     }
 }
