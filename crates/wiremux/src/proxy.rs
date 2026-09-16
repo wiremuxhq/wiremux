@@ -446,14 +446,19 @@ fn json_completion_to_sse(
         if !event_has_slot(from, &ev) {
             continue;
         }
-        for raw in encoder.push(ev).ok()? {
+        let Ok(frames) = encoder.push(ev) else {
+            continue;
+        };
+        for raw in frames {
             out.extend_from_slice(&dest_frame_bytes(from, &raw));
             wrote = true;
         }
     }
-    for raw in encoder.finish().ok()? {
-        out.extend_from_slice(&dest_frame_bytes(from, &raw));
-        wrote = true;
+    if let Ok(frames) = encoder.finish() {
+        for raw in frames {
+            out.extend_from_slice(&dest_frame_bytes(from, &raw));
+            wrote = true;
+        }
     }
     wrote.then(|| Bytes::from(out))
 }

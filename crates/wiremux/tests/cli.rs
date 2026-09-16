@@ -2524,6 +2524,117 @@ chat_path = "/v1/chat/completions"
             .any(|frame| frame.event.as_deref() == Some("messageStop")),
         "dest Event Stream must finish with messageStop, got: {frames:?}"
     );
+    assert!(
+        payloads
+            .iter()
+            .any(|value| value == &serde_json::json!({"stopReason": "end_turn"})),
+        "dest Event Stream messageStop raw payload must be {{\"stopReason\":\"end_turn\"}}, got: {payloads:?}"
+    );
+}
+
+#[test]
+fn proxy_dest_converse_remaps_chat_sse_text_then_tool_indexes() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = concat!(
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"}}]}}]}\n\n",
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-to-converse-sse-tool.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-to-converse-sse-tool"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"modelId":"amazon.nova-lite-v1:0","messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /model/amazon.nova-lite-v1:0/converse-stream HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = Vec::new();
+    let _ = client.read_to_end(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    let (head, body) = http_head_and_body(&resp);
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("content-type: application/vnd.amazon.eventstream"),
+        "dest Converse remap must advertise Event Stream, got: {head}"
+    );
+    let payloads = eventstream_raw_payloads(&body);
+    assert!(
+        payloads.iter().any(|value| {
+            value.pointer("/delta/text").and_then(|v| v.as_str()) == Some("hi")
+                && value
+                    .get("contentBlockIndex")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(0)
+        }),
+        "text contentBlockDelta must use contentBlockIndex 0, got: {payloads:?}"
+    );
+    assert!(
+        payloads.iter().any(|value| {
+            value.pointer("/start/toolUse").is_some()
+                && value
+                    .get("contentBlockIndex")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(1)
+        }),
+        "tool contentBlockStart must use contentBlockIndex 1, got: {payloads:?}"
+    );
+    assert!(
+        payloads
+            .iter()
+            .any(|value| value == &serde_json::json!({"stopReason": "tool_use"})),
+        "dest Event Stream messageStop must be tool_use after Chat tool_calls, got: {payloads:?}"
+    );
 }
 
 #[test]
@@ -2614,6 +2725,165 @@ chat_path = "/v1/chat/completions"
             frame.event.as_deref() == Some("contentBlockDelta") && frame.data.contains("hi")
         }),
         "JSON wrap must dest-encode text as Event Stream, got: {frames:?}"
+    );
+}
+
+#[test]
+fn proxy_dest_converse_wraps_json_completion_with_signature_as_eventstream() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi","reasoning_signature":"sig-1"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-to-converse-json-sig.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-to-converse-json-sig"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"modelId":"amazon.nova-lite-v1:0","messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /model/amazon.nova-lite-v1:0/converse-stream HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = Vec::new();
+    let _ = client.read_to_end(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    let (head, _body) = http_head_and_body(&resp);
+    let head_lc = head.to_ascii_lowercase();
+    assert!(
+        head_lc.contains("content-type: application/vnd.amazon.eventstream"),
+        "dest Converse JSON wrap with reasoning_signature must stay Event Stream, got: {head}"
+    );
+    assert!(
+        !head_lc.contains("application/json"),
+        "dest Converse JSON wrap must not fall through to unary JSON, got: {head}"
+    );
+}
+
+#[test]
+fn proxy_dest_converse_remaps_chat_sse_content_filter() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = concat!(
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-to-converse-sse-filter.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-to-converse-sse-filter"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"modelId":"amazon.nova-lite-v1:0","messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /model/amazon.nova-lite-v1:0/converse-stream HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = Vec::new();
+    let _ = client.read_to_end(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    let (head, body) = http_head_and_body(&resp);
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("content-type: application/vnd.amazon.eventstream"),
+        "dest Converse content_filter remap must advertise Event Stream, got: {head}"
+    );
+    let payloads = eventstream_raw_payloads(&body);
+    assert!(
+        payloads
+            .iter()
+            .any(|value| value == &serde_json::json!({"stopReason": "content_filtered"})),
+        "Chat finish_reason content_filter must dest-encode as content_filtered, got: {payloads:?}"
     );
 }
 
