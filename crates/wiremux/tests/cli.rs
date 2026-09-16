@@ -2012,6 +2012,87 @@ chat_path = "/v1beta/models/{{model}}:generateContent"
     );
 }
 
+#[test]
+fn proxy_upstream_stream_error_is_sse_data() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        // Promise a body, write one byte, then drop so bytes_stream yields Err.
+        let header = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "Content-Type: text/event-stream\r\n",
+            "Content-Length: 4096\r\n",
+            "Connection: close\r\n",
+            "\r\n",
+            "d",
+        );
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.flush();
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "gemini-stream-err.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "gemini-stream-err"
+wire = "gemini"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1beta/models/{{model}}:generateContent"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body =
+        r#"{"model":"gemini-2.5-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("data:"),
+        "upstream stream transport error must be an SSE data frame, got: {resp}"
+    );
+    assert!(
+        resp.contains("upstream stream"),
+        "must name the stream transport context, got: {resp}"
+    );
+}
+
 fn read_listen_addr(stdout: &mut impl Read) -> std::net::SocketAddr {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut buf = Vec::new();

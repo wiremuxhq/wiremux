@@ -455,10 +455,10 @@ fn map_sse_stream(
                 Ok(b) => b,
                 Err(err) => {
                     let _ = tx
-                        .send(Ok(Frame::data(Bytes::from(format!(
-                            "{}\n",
-                            format_oauth_transport_error("upstream stream", &err, &url)
-                        )))))
+                        .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
+                            event: Some("error".into()),
+                            data: format_oauth_transport_error("upstream stream", &err, &url),
+                        })))))
                         .await;
                     return;
                 }
