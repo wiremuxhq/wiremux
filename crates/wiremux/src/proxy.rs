@@ -163,7 +163,9 @@ async fn send_upstream(
             encoded,
             upstream,
             bearer_token_applied(&state.profile, token.as_deref()),
-        ) {
+        )
+        .await
+        {
             Ok(req) => req,
             Err(crate::aws_sign::AwsSignError::Auth(err)) => {
                 return Err(text(StatusCode::UNAUTHORIZED, format!("{err}\n")));

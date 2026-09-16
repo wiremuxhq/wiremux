@@ -413,6 +413,7 @@ impl WireClient {
             req,
             bearer_token_applied(&self.profile, token),
         )
+        .await
         .map_err(aws_sign_err)?;
         self.http.execute(built).await.map_err(classify_send_err)
     }
