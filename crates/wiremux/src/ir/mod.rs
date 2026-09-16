@@ -26,10 +26,13 @@ pub struct IrRequest {
 
 impl IrRequest {
     /// Request with `model` and `items`. Tools and sampling are empty/default.
+    ///
+    /// Pass a string slice (`"gpt-4o"`). Do not write `model.into()`:
+    /// hosts that also depend on `bytes` or `reqwest` see `E0283`.
     #[must_use]
-    pub fn new(model: impl Into<String>, items: Vec<IrItem>) -> Self {
+    pub fn new(model: impl AsRef<str>, items: Vec<IrItem>) -> Self {
         Self {
-            model: model.into(),
+            model: model.as_ref().to_owned(),
             items,
             tools: Vec::new(),
             sampling: IrSampling::default(),
@@ -158,9 +161,11 @@ impl IrCache {
     }
 
     /// Set Messages-style TTL (`5m` / `1h`).
+    ///
+    /// Pass a string slice (`"5m"`). Do not write `retention.into()`.
     #[must_use]
-    pub fn with_retention(mut self, retention: impl Into<String>) -> Self {
-        self.retention = Some(retention.into());
+    pub fn with_retention(mut self, retention: impl AsRef<str>) -> Self {
+        self.retention = Some(retention.as_ref().to_owned());
         self
     }
 
@@ -566,5 +571,17 @@ mod tests {
             estimate_prompt_tokens(&req) >= 1024,
             "5000 thinking chars must meet a 1024-token floor"
         );
+    }
+
+    #[test]
+    fn new_and_retention_take_str_next_to_bytes() {
+        let _owned = bytes::Bytes::from_static(b"x");
+        let req = IrRequest::new("gpt-4o", vec![]).with_sampling(IrSampling::patch(|s| {
+            s.cache = IrCache::enabled().with_retention("5m");
+        }));
+        assert_eq!(req.model, "gpt-4o");
+        assert_eq!(req.sampling.cache.retention.as_deref(), Some("5m"));
+        let owned = IrRequest::new(String::from("gpt-4o"), vec![]);
+        assert_eq!(owned.model, "gpt-4o");
     }
 }
