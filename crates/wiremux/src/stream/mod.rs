@@ -46,6 +46,7 @@ impl RawSse {
 
 pub use complete::{decode_response, encode_response};
 pub use encoder::StreamEncoder;
+#[cfg(feature = "proxy")]
 pub(crate) use eventstream::unwrap_event_payload;
 pub use eventstream::{
     EventStreamReader, MAX_EVENTSTREAM_PENDING,

@@ -75,6 +75,7 @@ impl EventStreamMessage {
 ///
 /// AWS puts the discriminant in `:event-type`. The body is the member
 /// struct (`{"delta":{"text":"hi"}}`), not `{"contentBlockDelta":{...}}`.
+#[cfg(any(feature = "proxy", test))]
 pub(crate) fn unwrap_event_payload(event_type: &str, data: &str) -> Vec<u8> {
     let Ok(serde_json::Value::Object(map)) = serde_json::from_str(data) else {
         return data.as_bytes().to_vec();
@@ -90,6 +91,7 @@ pub(crate) fn unwrap_event_payload(event_type: &str, data: &str) -> Vec<u8> {
     ensure_block_index(event_type, inner)
 }
 
+#[cfg(any(feature = "proxy", test))]
 fn ensure_block_index(event_type: &str, mut value: serde_json::Value) -> Vec<u8> {
     if matches!(
         event_type,
