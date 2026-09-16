@@ -179,10 +179,17 @@ fn gcp_from_profile(
     if env_name.is_empty() {
         return Ok(None);
     }
-    let path = match std::env::var(env_name) {
-        Ok(path) if !path.trim().is_empty() => path,
-        _ => return Ok(None),
+    if let Ok(path) = std::env::var(env_name)
+        && !path.trim().is_empty()
+    {
+        return Ok(Some(crate::GcpTokenProvider::from_key_file(path)?.into()));
+    }
+    let Some(path) = crate::providers::gcp::default_adc_path() else {
+        return Ok(None);
     };
+    if !path.is_file() {
+        return Ok(None);
+    }
     Ok(Some(crate::GcpTokenProvider::from_key_file(path)?.into()))
 }
 

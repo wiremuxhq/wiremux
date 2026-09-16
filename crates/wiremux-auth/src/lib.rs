@@ -34,7 +34,7 @@ pub use providers::aws::{
     AwsCredentials, AwsSignParams, AwsStsConfig, AwsStsTokenProvider, sign_aws_request,
 };
 pub use providers::azure::AzureTokenProvider;
-pub use providers::gcp::GcpTokenProvider;
+pub use providers::gcp::{GcpTokenProvider, default_adc_path};
 pub use providers::oauth::{
     ProfileTokenProvider, provider_from_oauth, provider_from_oauth_opts, provider_from_profile,
 };

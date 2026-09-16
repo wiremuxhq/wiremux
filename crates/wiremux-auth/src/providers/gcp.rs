@@ -1,6 +1,6 @@
-//! Google Cloud service-account JWT TokenProvider.
+//! Google Cloud TokenProvider: service-account JWT or user ADC refresh.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -19,6 +19,8 @@ const DEFAULT_LIFETIME_SECS: u64 = 3600;
 const DEFAULT_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 const DEFAULT_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
 const JWT_BEARER: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
+const REFRESH_TOKEN: &str = "refresh_token";
+const ADC_FILE: &str = "application_default_credentials.json";
 
 struct CachedToken {
     access_token: String,
@@ -32,17 +34,28 @@ impl CachedToken {
     }
 }
 
-/// Service-account JWT bearer grant.
+/// Service-account JWT bearer grant, or `authorized_user` ADC refresh.
 #[derive(Clone)]
 pub struct GcpTokenProvider {
     inner: Arc<Inner>,
 }
 
+enum GcpGrant {
+    ServiceAccount {
+        client_email: String,
+        private_key_pem: String,
+        scope: String,
+    },
+    AuthorizedUser {
+        client_id: String,
+        client_secret: String,
+        refresh_token: String,
+    },
+}
+
 struct Inner {
-    client_email: String,
-    private_key_pem: String,
+    grant: GcpGrant,
     token_uri: String,
-    scope: String,
     http: reqwest::Client,
     force_refresh: AtomicBool,
     state: RwLock<Option<CachedToken>>,
@@ -51,27 +64,72 @@ struct Inner {
 
 impl std::fmt::Debug for GcpTokenProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GcpTokenProvider")
-            .field("client_email", &self.inner.client_email)
-            .field("private_key", &"[REDACTED]")
-            .field("token_uri", &redact_url_origin(&self.inner.token_uri))
-            .field("scope", &self.inner.scope)
+        let mut dbg = f.debug_struct("GcpTokenProvider");
+        match &self.inner.grant {
+            GcpGrant::ServiceAccount { client_email, .. } => {
+                dbg.field("grant", &"service_account")
+                    .field("client_email", client_email)
+                    .field("private_key", &"[REDACTED]");
+            }
+            GcpGrant::AuthorizedUser { client_id, .. } => {
+                dbg.field("grant", &"authorized_user")
+                    .field("client_id", client_id)
+                    .field("client_secret", &"[REDACTED]")
+                    .field("refresh_token", &"[REDACTED]");
+            }
+        }
+        dbg.field("token_uri", &redact_url_origin(&self.inner.token_uri))
             .finish()
     }
 }
 
 #[derive(Debug, Deserialize)]
-struct ServiceAccountKey {
-    client_email: String,
-    private_key: String,
+struct AdcFile {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    client_email: Option<String>,
+    #[serde(default)]
+    private_key: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    client_secret: Option<String>,
+    #[serde(default)]
+    refresh_token: Option<String>,
     #[serde(default)]
     token_uri: Option<String>,
     #[serde(default)]
     scope: Option<String>,
 }
 
+/// Well-known `gcloud` ADC path (`CLOUDSDK_CONFIG`, else `~/.config/gcloud`).
+pub fn default_adc_path() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("CLOUDSDK_CONFIG")
+        && !dir.trim().is_empty()
+    {
+        return Some(PathBuf::from(dir).join(ADC_FILE));
+    }
+    #[cfg(windows)]
+    if let Some(appdata) = std::env::var_os("APPDATA")
+        && !appdata.is_empty()
+    {
+        return Some(PathBuf::from(appdata).join("gcloud").join(ADC_FILE));
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    if home.is_empty() {
+        return None;
+    }
+    Some(
+        PathBuf::from(home)
+            .join(".config")
+            .join("gcloud")
+            .join(ADC_FILE),
+    )
+}
+
 impl GcpTokenProvider {
-    /// Build from a service-account JSON key file.
+    /// Build from a service-account key or `authorized_user` ADC JSON file.
     pub fn from_key_file(path: impl AsRef<Path>) -> Result<Self, AuthError> {
         let path = path.as_ref();
         let meta =
@@ -87,30 +145,22 @@ impl GcpTokenProvider {
         Self::from_key(&text)
     }
 
-    /// Build from service-account JSON (`client_email`, `private_key`, optional `token_uri`).
+    /// Build from service-account JSON or `authorized_user` ADC JSON.
     pub fn from_key(json: &str) -> Result<Self, AuthError> {
-        let key: ServiceAccountKey = serde_json::from_str(json)
-            .map_err(|e| AuthError::TokenProvider(format!("GCP service-account key: {e}")))?;
-        if key.client_email.trim().is_empty() {
-            return Err(AuthError::MissingField("GCP client_email".into()));
-        }
-        if key.private_key.trim().is_empty() {
-            return Err(AuthError::MissingField("GCP private_key".into()));
-        }
-        let token_uri = key
+        let file: AdcFile = serde_json::from_str(json)
+            .map_err(|e| AuthError::TokenProvider(format!("GCP credentials: {e}")))?;
+        let token_uri = file
             .token_uri
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_TOKEN_URI.to_string());
-        let scope = key
-            .scope
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_TOKEN_URI)
+            .to_string();
+        let grant = grant_from_adc(file)?;
         Ok(Self {
             inner: Arc::new(Inner {
-                client_email: key.client_email,
-                private_key_pem: key.private_key,
+                grant,
                 token_uri,
-                scope,
                 http: oauth_http_client()?,
                 force_refresh: AtomicBool::new(false),
                 state: RwLock::new(None),
@@ -120,21 +170,31 @@ impl GcpTokenProvider {
     }
 
     fn signed_jwt(&self) -> Result<String, AuthError> {
+        let GcpGrant::ServiceAccount {
+            client_email,
+            private_key_pem,
+            scope,
+        } = &self.inner.grant
+        else {
+            return Err(AuthError::TokenProvider(
+                "GCP authorized_user has no JWT key".into(),
+            ));
+        };
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         let claims = GcpJwtClaims {
-            iss: self.inner.client_email.clone(),
-            sub: self.inner.client_email.clone(),
+            iss: client_email.clone(),
+            sub: client_email.clone(),
             aud: self.inner.token_uri.clone(),
             iat: now,
             exp: now + 3600,
-            scope: self.inner.scope.clone(),
+            scope: scope.clone(),
         };
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
         header.typ = Some("JWT".into());
-        let key = jsonwebtoken::EncodingKey::from_rsa_pem(self.inner.private_key_pem.as_bytes())
+        let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
             .map_err(|e| AuthError::TokenProvider(format!("GCP private_key PEM: {e}")))?;
         jsonwebtoken::encode(&header, &claims, &key)
             .map_err(|e| AuthError::TokenProvider(format!("GCP JWT sign: {e}")))
@@ -150,12 +210,29 @@ impl GcpTokenProvider {
                 return Ok(tok.access_token.clone());
             }
         }
-        let assertion = self.signed_jwt()?;
-        let form = [
-            ("grant_type", JWT_BEARER),
-            ("assertion", assertion.as_str()),
-        ];
-        let (status, body) = post_form_url(&self.inner.http, &self.inner.token_uri, &form).await?;
+        let (status, body) = match &self.inner.grant {
+            GcpGrant::ServiceAccount { .. } => {
+                let assertion = self.signed_jwt()?;
+                let form = [
+                    ("grant_type", JWT_BEARER),
+                    ("assertion", assertion.as_str()),
+                ];
+                post_form_url(&self.inner.http, &self.inner.token_uri, &form).await?
+            }
+            GcpGrant::AuthorizedUser {
+                client_id,
+                client_secret,
+                refresh_token,
+            } => {
+                let form = [
+                    ("grant_type", REFRESH_TOKEN),
+                    ("client_id", client_id.as_str()),
+                    ("client_secret", client_secret.as_str()),
+                    ("refresh_token", refresh_token.as_str()),
+                ];
+                post_form_url(&self.inner.http, &self.inner.token_uri, &form).await?
+            }
+        };
         if !(200..300).contains(&status) {
             return Err(AuthError::VendorRejected {
                 status,
@@ -195,6 +272,53 @@ struct GcpJwtClaims {
 struct ParsedGcpToken {
     access_token: String,
     expires_in: Option<u64>,
+}
+
+fn grant_from_adc(file: AdcFile) -> Result<GcpGrant, AuthError> {
+    let kind = file.kind.as_deref().unwrap_or("").trim();
+    match kind {
+        "authorized_user" => {
+            let client_id = file.client_id.unwrap_or_default();
+            let client_secret = file.client_secret.unwrap_or_default();
+            let refresh_token = file.refresh_token.unwrap_or_default();
+            if client_id.trim().is_empty() {
+                return Err(AuthError::MissingField("GCP client_id".into()));
+            }
+            if client_secret.trim().is_empty() {
+                return Err(AuthError::MissingField("GCP client_secret".into()));
+            }
+            if refresh_token.trim().is_empty() {
+                return Err(AuthError::MissingField("GCP refresh_token".into()));
+            }
+            Ok(GcpGrant::AuthorizedUser {
+                client_id,
+                client_secret,
+                refresh_token,
+            })
+        }
+        "service_account" | "" => {
+            let client_email = file.client_email.unwrap_or_default();
+            let private_key = file.private_key.unwrap_or_default();
+            if client_email.trim().is_empty() {
+                return Err(AuthError::MissingField("GCP client_email".into()));
+            }
+            if private_key.trim().is_empty() {
+                return Err(AuthError::MissingField("GCP private_key".into()));
+            }
+            let scope = file
+                .scope
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+            Ok(GcpGrant::ServiceAccount {
+                client_email,
+                private_key_pem: private_key,
+                scope,
+            })
+        }
+        other => Err(AuthError::TokenProvider(format!(
+            "GCP ADC type `{other}` is not supported (service_account or authorized_user)"
+        ))),
+    }
 }
 
 fn parse_gcp_token(body: &str) -> Result<ParsedGcpToken, AuthError> {
@@ -409,6 +533,86 @@ c+5RXVheoFNjzJpbLyOIeEEttw==
     fn gcp_missing_email_fails() {
         let err = GcpTokenProvider::from_key(r#"{"private_key":"x"}"#).expect_err("missing");
         assert!(err.to_string().contains("client_email"), "{err}");
+    }
+
+    fn authorized_user_json(token_uri: &str) -> String {
+        serde_json::json!({
+            "type": "authorized_user",
+            "client_id": "123.apps.googleusercontent.com",
+            "client_secret": "user-secret",
+            "refresh_token": "1//refresh-me",
+            "token_uri": token_uri,
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn authorized_user_refresh_returns_access_token() {
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"ya29.user","expires_in":3600,"token_type":"Bearer"}"#,
+        );
+        let p = GcpTokenProvider::from_key(&authorized_user_json(&url)).expect("from_key");
+        assert_eq!(p.get_token().await.expect("token"), "ya29.user");
+        let req = handle.join().expect("join");
+        assert!(req.contains("grant_type=refresh_token"), "{req}");
+        assert!(
+            req.contains("client_id=123.apps.googleusercontent.com"),
+            "{req}"
+        );
+        assert!(req.contains("refresh_token="), "{req}");
+    }
+
+    #[test]
+    fn authorized_user_debug_redacts_secrets() {
+        let p =
+            GcpTokenProvider::from_key(&authorized_user_json(DEFAULT_TOKEN_URI)).expect("from_key");
+        let debug = format!("{p:?}");
+        assert!(debug.contains("authorized_user"), "{debug}");
+        assert!(debug.contains("[REDACTED]"), "{debug}");
+        assert!(!debug.contains("user-secret"), "{debug}");
+        assert!(!debug.contains("1//refresh-me"), "{debug}");
+    }
+
+    #[test]
+    fn external_account_adc_is_refused() {
+        let err = GcpTokenProvider::from_key(
+            r#"{"type":"external_account","audience":"//iam.googleapis.com/x"}"#,
+        )
+        .expect_err("wif");
+        assert!(err.to_string().contains("external_account"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn provider_from_profile_uses_default_adc_file() {
+        use crate::{IsolatedHome, parse_profile_str, provider_from_profile};
+
+        let (url, handle) = spawn_http_server(
+            200,
+            r#"{"access_token":"ya29.adc","expires_in":3600,"token_type":"Bearer"}"#,
+        );
+        let home = IsolatedHome::new();
+        let adc = home
+            .path()
+            .join(".config")
+            .join("gcloud")
+            .join("application_default_credentials.json");
+        std::fs::create_dir_all(adc.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&adc, authorized_user_json(&url)).expect("write adc");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "google-vertex"
+wire = "gemini"
+gcp_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
+access_env = ["GOOGLE_OAUTH_ACCESS_TOKEN"]
+"#,
+        )
+        .expect("parse");
+        let provider = provider_from_profile(&profile).expect("adc");
+        assert_eq!(provider.get_token().await.expect("token"), "ya29.adc");
+        handle.join().expect("join");
+        let _ = home;
     }
 
     #[tokio::test]
