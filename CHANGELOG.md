@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.0](https://github.com/wiremuxhq/wiremux/compare/v0.5.0...v0.6.0) (2026-09-16)
+
+
+### Features
+
+* **aws:** resolve SSO, credential_process, ECS, and IMDS ([#167](https://github.com/wiremuxhq/wiremux/issues/167)) ([7b3d345](https://github.com/wiremuxhq/wiremux/commit/7b3d345b9f8f80524511f00c7e2b59867abe70cb)), closes [#153](https://github.com/wiremuxhq/wiremux/issues/153)
+* mark Wire non-exhaustive and honor Converse tool none ([#144](https://github.com/wiremuxhq/wiremux/issues/144)) ([0a752a7](https://github.com/wiremuxhq/wiremux/commit/0a752a78585e25fa86abe7d69ddc12fa0cffb6e9))
+* stream grammar, AWS sign, presets, and IR extras ([#165](https://github.com/wiremuxhq/wiremux/issues/165)) ([0043d0b](https://github.com/wiremuxhq/wiremux/commit/0043d0b0bd593fea28597194fc45db13811c9230))
+
+
+### Bug Fixes
+
+* emit Converse outputConfig for schema and effort ([#145](https://github.com/wiremuxhq/wiremux/issues/145)) ([0e93db1](https://github.com/wiremuxhq/wiremux/commit/0e93db1fb6d038c07eccb6f3a0195cbc85adeded))
+* emit Converse serviceTier for mapped service_tier ([#146](https://github.com/wiremuxhq/wiremux/issues/146)) ([c2e8451](https://github.com/wiremuxhq/wiremux/commit/c2e84516810c960a14632955962e65cc2fbcf9db))
+* encode model URL segments and reject proxy CSRF ([#164](https://github.com/wiremuxhq/wiremux/issues/164)) ([0532019](https://github.com/wiremuxhq/wiremux/commit/05320197c4d5ea2b1f99bb640f9ebc058927f358))
+* keep maps-only path-dep extras when syncing versions ([#166](https://github.com/wiremuxhq/wiremux/issues/166)) ([1d9b4e9](https://github.com/wiremuxhq/wiremux/commit/1d9b4e92746ff008c7fde26eb4ec419030eb492f))
+* pin consume notes 0.5.0 and report Converse sampling loss ([#140](https://github.com/wiremuxhq/wiremux/issues/140)) ([28876b1](https://github.com/wiremuxhq/wiremux/commit/28876b1317c4af64633e673fe6e9780b555e01db))
+* read context_window from OpenAI-compat /models ([#143](https://github.com/wiremuxhq/wiremux/issues/143)) ([6f2de75](https://github.com/wiremuxhq/wiremux/commit/6f2de751133bb65dc1d4d0b742581209be55100f)), closes [#142](https://github.com/wiremuxhq/wiremux/issues/142)
+
 ## [0.5.0](https://github.com/wiremuxhq/wiremux/compare/v0.4.0...v0.5.0) (2026-09-16)
 
 
