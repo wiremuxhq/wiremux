@@ -47,7 +47,9 @@ impl RawSse {
 pub(crate) use chat::map_finish;
 pub use complete::{decode_response, encode_response};
 pub use eventstream::{
-    EventStreamReader, MAX_EVENTSTREAM_PENDING, encode_message as encode_eventstream_message,
+    EventStreamReader, MAX_EVENTSTREAM_PENDING,
+    encode_exception_message as encode_eventstream_exception,
+    encode_message as encode_eventstream_message,
 };
 pub use sse::{MAX_SSE_PENDING, SseFrameReader};
 
