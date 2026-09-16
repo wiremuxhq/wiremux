@@ -60,7 +60,9 @@ pub struct IrSampling {
     /// emit it. Messages and Gemini drop.
     pub prompt_cache_key: Option<String>,
     /// OpenAI / Codex `service_tier` (`flex`, `priority`, `auto`).
-    /// Chat Completions and Responses emit it. Messages and Gemini drop.
+    /// Chat Completions and Responses emit it. Converse emits
+    /// `serviceTier.type` (`flex` / `priority` / `reserved` /
+    /// `default`; `auto` degrades to `default`). Messages and Gemini drop.
     pub service_tier: Option<String>,
 }
 

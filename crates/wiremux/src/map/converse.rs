@@ -235,6 +235,11 @@ fn decode_sampling(value: &Value) -> IrSampling {
                 .collect();
         }
     }
+    sampling.service_tier = value
+        .pointer("/serviceTier/type")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string);
     if let Some(out) = value.get("outputConfig") {
         sampling.reasoning_effort = out
             .get("effort")
@@ -523,8 +528,22 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.prompt_cache_key.is_some() {
         report.record("sampling.prompt_cache_key", LossAction::Drop, "no slot");
     }
-    if s.service_tier.is_some() {
-        report.record("sampling.service_tier", LossAction::Drop, "no slot");
+    if let Some(tier) = s.service_tier.as_deref() {
+        match converse_service_tier(tier) {
+            Some((mapped, degrade)) => {
+                body["serviceTier"] = json!({ "type": mapped });
+                if let Some(detail) = degrade {
+                    report.record("sampling.service_tier", LossAction::Degrade, detail);
+                }
+            }
+            None => {
+                report.record(
+                    "sampling.service_tier",
+                    LossAction::Drop,
+                    "unmapped service_tier",
+                );
+            }
+        }
     }
     if s.previous_response_id.is_some() {
         report.record("sampling.previous_response_id", LossAction::Drop, "no slot");
@@ -610,6 +629,19 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.parallel_tool_calls.is_some() {
         report.record("sampling.parallel_tool_calls", LossAction::Drop, "no slot");
+    }
+}
+
+fn converse_service_tier(tier: &str) -> Option<(String, Option<&'static str>)> {
+    let trimmed = tier.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    match lower.as_str() {
+        "flex" | "priority" | "reserved" | "default" => Some((lower, None)),
+        "auto" => Some(("default".into(), Some("auto maps to default"))),
+        _ => None,
     }
 }
 
