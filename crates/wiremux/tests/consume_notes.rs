@@ -60,6 +60,8 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
     );
     assert!(
         notes.contains("`--provider xai`")
+            && notes.contains("`--provider grok-build`")
+            && notes.contains("`--provider grok-build-messages`")
             && notes.contains("`xai`")
             && notes.contains("`anthropic`")
             && notes.contains("`anthropic-oauth`")

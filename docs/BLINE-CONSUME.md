@@ -266,7 +266,9 @@ Shipped catalog ids and the canact mapping:
 
 | canact | wiremux catalog id |
 |--------|--------------------|
-| `--provider xai` | `xai` |
+| `--provider xai` / `--provider grok` | `xai` / `xai-oauth` |
+| `--provider grok-build` | `xai-grok-build` |
+| `--provider grok-build-messages` | `xai-grok-build-messages` |
 | claude + API key | `anthropic` |
 | claude, no key | `anthropic-oauth` |
 | openai | `openai` |
