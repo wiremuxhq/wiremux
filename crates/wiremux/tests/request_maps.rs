@@ -4282,6 +4282,113 @@ fn dest_gemini_response_schema_reaches_chat_json_schema() {
 }
 
 #[test]
+fn dest_gemini_response_format_schema_reaches_chat() {
+    let req = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "city"}]}],
+        "generationConfig": {
+            "responseFormat": {
+                "text": {
+                    "mimeType": "APPLICATION_JSON",
+                    "schema": {"type": "object", "properties": {"city": {"type": "string"}}}
+                }
+            }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/response_format/type")
+            .and_then(Value::as_str),
+        Some("json_schema"),
+        "dest Gemini responseFormat.text.schema must reach Chat json_schema, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/response_format/json_schema/schema/properties/city/type")
+            .and_then(Value::as_str),
+        Some("string"),
+        "dest Gemini responseFormat schema properties must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema"),
+        "dest Gemini responseFormat schema must not Drop on Chat encode, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_response_format_json_mime_reaches_chat() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "responseFormat": { "text": { "mimeType": "APPLICATION_JSON" } }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    assert_eq!(
+        ir.sampling.json_object,
+        Some(true),
+        "dest Gemini responseFormat APPLICATION_JSON without schema must land on IR"
+    );
+    assert!(ir.sampling.json_schema.is_none());
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/response_format/type")
+            .and_then(Value::as_str),
+        Some("json_object"),
+        "dest Gemini responseFormat json mime must reach Chat json_object, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_object"),
+        "Chat has json_object and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_parameters_json_schema_reaches_chat() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "weather"}]}],
+        "tools": [{
+            "functionDeclarations": [{
+                "name": "get_weather",
+                "parametersJsonSchema": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}}
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    let Some(IrTool::Function { parameters, .. }) = ir.tools.first() else {
+        panic!(
+            "dest Gemini parametersJsonSchema must decode a function tool, got {:?}",
+            ir.tools
+        );
+    };
+    assert_eq!(
+        parameters
+            .pointer("/properties/city/type")
+            .and_then(Value::as_str),
+        Some("string"),
+        "dest Gemini parametersJsonSchema must land on IR, got {parameters}"
+    );
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/tools/0/function/parameters/properties/city/type")
+            .and_then(Value::as_str),
+        Some("string"),
+        "dest Gemini parametersJsonSchema must reach Chat tools[0].function.parameters, got {body}"
+    );
+    assert_ne!(
+        body.pointer("/tools/0/function/parameters"),
+        Some(&serde_json::json!({"type": "object", "properties": {}})),
+        "dest-only parametersJsonSchema must not remap as empty parameters, got {body}"
+    );
+}
+
+#[test]
 fn dest_gemini_store_reaches_chat() {
     for want in [false, true] {
         let req = format!(
