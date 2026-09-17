@@ -314,6 +314,11 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     if matches!(state.from, Wire::Converse) && path.ends_with("/converse-stream") {
         ir.sampling.stream = Some(true);
     }
+    if ir.model.is_empty()
+        && let Some(model) = model_from_dest_path(state.from, &path)
+    {
+        ir.model = model;
+    }
     let target = match state.profile.dialect.wire {
         Some(w) => w,
         None => {
@@ -689,6 +694,28 @@ fn boxed_full(bytes: impl Into<Bytes>) -> ProxyBody {
         .boxed_unsync()
 }
 
+fn model_from_dest_path(from: Wire, path: &str) -> Option<String> {
+    match from {
+        Wire::Gemini => {
+            let rest = path.split("/models/").nth(1)?;
+            let model = rest
+                .strip_suffix(":streamGenerateContent")
+                .or_else(|| rest.strip_suffix(":generateContent"))
+                .unwrap_or(rest);
+            let model = model.split('?').next().unwrap_or(model);
+            (!model.is_empty()).then(|| model.to_string())
+        }
+        Wire::Converse => {
+            let rest = path.strip_prefix("/model/")?;
+            let model = rest
+                .strip_suffix("/converse-stream")
+                .or_else(|| rest.strip_suffix("/converse"))?;
+            (!model.is_empty()).then(|| model.to_string())
+        }
+        _ => None,
+    }
+}
+
 fn dest_stream_content_type(from: Wire) -> &'static str {
     if matches!(from, Wire::Converse) {
         "application/vnd.amazon.eventstream"
@@ -814,6 +841,49 @@ mod tests {
         let total = u32::from_be_bytes(bytes[0..4].try_into().expect("total")) as usize;
         let headers_len = u32::from_be_bytes(bytes[4..8].try_into().expect("headers")) as usize;
         &bytes[12 + headers_len..total - 4]
+    }
+
+    #[test]
+    fn dest_path_supplies_gemini_and_converse_model() {
+        assert_eq!(
+            super::model_from_dest_path(
+                wiremux_auth::Wire::Gemini,
+                "/v1beta/models/llama3.2:3b:generateContent"
+            )
+            .as_deref(),
+            Some("llama3.2:3b")
+        );
+        assert_eq!(
+            super::model_from_dest_path(
+                wiremux_auth::Wire::Gemini,
+                "/v1beta/models/gemini-2.5-flash:streamGenerateContent"
+            )
+            .as_deref(),
+            Some("gemini-2.5-flash")
+        );
+        assert_eq!(
+            super::model_from_dest_path(
+                wiremux_auth::Wire::Converse,
+                "/model/amazon.nova-lite-v1:0/converse"
+            )
+            .as_deref(),
+            Some("amazon.nova-lite-v1:0")
+        );
+        assert_eq!(
+            super::model_from_dest_path(
+                wiremux_auth::Wire::Converse,
+                "/model/amazon.nova-lite-v1:0/converse-stream"
+            )
+            .as_deref(),
+            Some("amazon.nova-lite-v1:0")
+        );
+        assert_eq!(
+            super::model_from_dest_path(
+                wiremux_auth::Wire::ChatCompletions,
+                "/v1/chat/completions"
+            ),
+            None
+        );
     }
 
     #[test]
