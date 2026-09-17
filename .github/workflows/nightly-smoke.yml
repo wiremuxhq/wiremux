@@ -56,7 +56,7 @@ jobs:
           toolchain: nightly
       - name: Prepend nightly toolchain to PATH
         run: dirname "$(rustup which --toolchain nightly cargo)" >> "$GITHUB_PATH"
-      - uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
         with:
           tool: cargo-fuzz
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
