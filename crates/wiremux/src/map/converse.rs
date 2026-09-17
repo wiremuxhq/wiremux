@@ -17,7 +17,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     }
     if let Some(messages) = value.get("messages").and_then(Value::as_array) {
         for msg in messages {
-            decode_message(msg, &mut items)?;
+            decode_message(msg, &mut items, &mut report)?;
         }
     }
     let model = value
@@ -78,17 +78,25 @@ fn decode_system(system: &Value, items: &mut Vec<IrItem>) {
     }
 }
 
-fn decode_message(msg: &Value, items: &mut Vec<IrItem>) -> Result<(), MapError> {
+fn decode_message(
+    msg: &Value,
+    items: &mut Vec<IrItem>,
+    report: &mut LossReport,
+) -> Result<(), MapError> {
     let role = msg.get("role").and_then(Value::as_str).unwrap_or("");
     let content = msg.get("content");
     match role {
-        "user" => decode_user(content, items),
-        "assistant" => decode_assistant(content, items),
+        "user" => decode_user(content, items, report),
+        "assistant" => decode_assistant(content, items, report),
         _ => Ok(()),
     }
 }
 
-fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), MapError> {
+fn decode_user(
+    content: Option<&Value>,
+    items: &mut Vec<IrItem>,
+    report: &mut LossReport,
+) -> Result<(), MapError> {
     let Some(arr) = content.and_then(Value::as_array) else {
         if let Some(s) = content.and_then(Value::as_str) {
             items.push(IrItem::User {
@@ -112,7 +120,7 @@ fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), M
             });
             continue;
         }
-        if let Some(part) = decode_part(block) {
+        if let Some(part) = decode_part(block, report) {
             parts.push(part);
         }
     }
@@ -128,7 +136,11 @@ fn flush_user(parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
     }
 }
 
-fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), MapError> {
+fn decode_assistant(
+    content: Option<&Value>,
+    items: &mut Vec<IrItem>,
+    report: &mut LossReport,
+) -> Result<(), MapError> {
     let Some(arr) = content.and_then(Value::as_array) else {
         if let Some(s) = content.and_then(Value::as_str) {
             items.push(IrItem::Assistant {
@@ -162,7 +174,7 @@ fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<
             });
             continue;
         }
-        if let Some(part) = decode_part(block) {
+        if let Some(part) = decode_part(block, report) {
             parts.push(part);
         }
     }
@@ -197,7 +209,7 @@ fn tool_result_output(result: &Value) -> String {
         .unwrap_or_default()
 }
 
-fn decode_part(block: &Value) -> Option<IrPart> {
+fn decode_part(block: &Value, report: &mut LossReport) -> Option<IrPart> {
     if let Some(text) = block.get("text").and_then(Value::as_str) {
         return Some(IrPart::Text(text.to_string()));
     }
@@ -217,6 +229,12 @@ fn decode_part(block: &Value) -> Option<IrPart> {
     }
     if let Some(doc) = block.get("document") {
         return decode_document(doc);
+    }
+    if let Some(image) = block.get("image") {
+        return decode_image(image);
+    }
+    if let Some(audio) = block.get("audio") {
+        return decode_audio(audio, report);
     }
     None
 }
@@ -241,6 +259,45 @@ fn decode_document(doc: &Value) -> Option<IrPart> {
         media_type: super::media_type_from_converse_format(&format),
         name,
     })
+}
+
+fn decode_image(image: &Value) -> Option<IrPart> {
+    let format = str_field(image, "format").unwrap_or_else(|| "png".into());
+    let media_type = super::media_type_from_converse_image_format(&format);
+    let source = image.get("source")?;
+    if let Some(bytes) = str_field(source, "bytes") {
+        return Some(IrPart::ImageBase64 {
+            media_type,
+            data: bytes,
+        });
+    }
+    if let Some(uri) = source
+        .pointer("/s3Location/uri")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(IrPart::ImageUrl(uri.to_string()));
+    }
+    None
+}
+
+fn decode_audio(audio: &Value, report: &mut LossReport) -> Option<IrPart> {
+    let format = str_field(audio, "format").unwrap_or_else(|| "mp3".into());
+    let source = audio.get("source")?;
+    if let Some(bytes) = str_field(source, "bytes") {
+        return Some(IrPart::Audio {
+            data: bytes,
+            format,
+        });
+    }
+    if source
+        .pointer("/s3Location/uri")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
+    {
+        report.record("part.audio", LossAction::Drop, "audio s3 has no chat slot");
+    }
+    None
 }
 
 fn decode_sampling(value: &Value) -> IrSampling {
@@ -513,15 +570,66 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             media_type,
             name,
         } => encode_document(source, media_type, name.as_deref(), report),
-        IrPart::Audio { .. } => {
-            report.record("part.audio", LossAction::Drop, "audio has no converse slot");
-            None
-        }
-        IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. } | IrPart::Raw { .. } => {
+        IrPart::Audio { data, format } => encode_audio(data, format, report),
+        IrPart::ImageUrl(url) => encode_image_url(url, report),
+        IrPart::ImageBase64 { media_type, data } => encode_image_bytes(media_type, data, report),
+        IrPart::Raw { .. } => {
             report.record("content", LossAction::Drop, "converse image/raw dropped");
             None
         }
     }
+}
+
+fn encode_image_bytes(media_type: &str, data: &str, report: &mut LossReport) -> Option<Value> {
+    let Some(format) = super::converse_image_format(media_type) else {
+        report.record(
+            "part.image",
+            LossAction::Drop,
+            "image format has no converse slot",
+        );
+        return None;
+    };
+    Some(json!({
+        "image": {
+            "format": format,
+            "source": { "bytes": data }
+        }
+    }))
+}
+
+fn encode_image_url(url: &str, report: &mut LossReport) -> Option<Value> {
+    if !url.to_ascii_lowercase().starts_with("s3://") {
+        report.record(
+            "part.image",
+            LossAction::Drop,
+            "image url has no converse slot",
+        );
+        return None;
+    }
+    let format = super::converse_image_format_from_url(url);
+    Some(json!({
+        "image": {
+            "format": format,
+            "source": { "s3Location": { "uri": url } }
+        }
+    }))
+}
+
+fn encode_audio(data: &str, format: &str, report: &mut LossReport) -> Option<Value> {
+    let Some(format) = super::converse_audio_format(format) else {
+        report.record(
+            "part.audio",
+            LossAction::Drop,
+            "audio format has no converse slot",
+        );
+        return None;
+    };
+    Some(json!({
+        "audio": {
+            "format": format,
+            "source": { "bytes": data }
+        }
+    }))
 }
 
 fn encode_document(

@@ -3713,6 +3713,190 @@ fn dest_converse_document_reaches_chat() {
 }
 
 #[test]
+fn dest_converse_image_reaches_chat() {
+    let req = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"text": "see"},
+                {
+                    "image": {
+                        "format": "png",
+                        "source": {"bytes": "iVBORw0KGgo"}
+                    }
+                }
+            ]
+        }]
+    }"#;
+    let (ir, decode_report) = decode(Wire::Converse, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::ImageBase64 { media_type, data }
+                    if media_type == "image/png" && data == "iVBORw0KGgo"
+            ))
+        )),
+        "dest Converse image must land on IR, got {:?}",
+        ir.items
+    );
+    assert!(
+        !loss_dropped(&decode_report, "part.image") && !loss_dropped(&decode_report, "content"),
+        "dest Converse image decode must not Drop, got {decode_report:?}"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    let image = content
+        .iter()
+        .find(|part| part.get("type").and_then(Value::as_str) == Some("image_url"))
+        .expect("image_url part");
+    let url = image
+        .pointer("/image_url/url")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert_chat_file_data_prefix(url, "image/png", "iVBORw0KGgo");
+    assert!(
+        !loss_dropped(&report, "part.image") && !loss_dropped(&report, "content"),
+        "Chat has image_url and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_converse_audio_reaches_chat() {
+    let req = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"text": "hear"},
+                {
+                    "audio": {
+                        "format": "mp3",
+                        "source": {"bytes": "SUQz"}
+                    }
+                }
+            ]
+        }]
+    }"#;
+    let (ir, decode_report) = decode(Wire::Converse, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::Audio { data, format } if data == "SUQz" && format == "mp3"
+            ))
+        )),
+        "dest Converse audio must land on IR, got {:?}",
+        ir.items
+    );
+    assert!(
+        !loss_dropped(&decode_report, "part.audio"),
+        "dest Converse audio decode must not Drop, got {decode_report:?}"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    let audio = content
+        .iter()
+        .find(|part| part.get("type").and_then(Value::as_str) == Some("input_audio"))
+        .expect("input_audio part");
+    assert_eq!(
+        audio.pointer("/input_audio/data").and_then(Value::as_str),
+        Some("SUQz"),
+        "Chat input_audio data must be SUQz, got {body}"
+    );
+    assert_eq!(
+        audio.pointer("/input_audio/format").and_then(Value::as_str),
+        Some("mp3"),
+        "Chat input_audio format must be mp3, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "part.audio"),
+        "Chat has input_audio and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_image_reaches_converse() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "see"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,iVBORw0KGgo"}
+                }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/1/image/format")
+            .and_then(Value::as_str),
+        Some("png"),
+        "dest Chat image_url must reach Converse image.format, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/1/image/source/bytes")
+            .and_then(Value::as_str),
+        Some("iVBORw0KGgo"),
+        "dest Chat image_url must reach Converse image.source.bytes, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "part.image") && !loss_dropped(&report, "content"),
+        "Converse has image and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_audio_reaches_converse() {
+    let req = br#"{
+        "model": "gpt-4o-audio-preview",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hear"},
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "SUQz", "format": "mp3"}
+                }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/1/audio/format")
+            .and_then(Value::as_str),
+        Some("mp3"),
+        "dest Chat input_audio must reach Converse audio.format, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/1/audio/source/bytes")
+            .and_then(Value::as_str),
+        Some("SUQz"),
+        "dest Chat input_audio must reach Converse audio.source.bytes, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "part.audio"),
+        "Converse has audio and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_chat_json_object_round_trips() {
     let req = br#"{
         "model": "gpt-4o",
@@ -4624,7 +4808,7 @@ fn chat_input_audio_maps_to_gemini_inline_data() {
 }
 
 #[test]
-fn chat_input_audio_records_loss_on_messages_and_converse() {
+fn chat_input_audio_records_loss_on_messages() {
     let req = br#"{
         "model": "gpt-4o-audio-preview",
         "messages": [{
@@ -4642,21 +4826,14 @@ fn chat_input_audio_records_loss_on_messages_and_converse() {
         }]
     }"#;
     let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
-    for wire in [Wire::Messages, Wire::Converse] {
-        let profile = match wire {
-            Wire::Messages => messages_profile(),
-            Wire::Converse => converse_profile(),
-            _ => unreachable!(),
-        };
-        let (_, report) = encode(wire, &ir, &profile).expect("encode");
-        assert!(
-            report
-                .events
-                .iter()
-                .any(|event| { event.path.contains("audio") && event.action == LossAction::Drop }),
-            "{wire:?} has no audio slot and must Drop, got {report:?}"
-        );
-    }
+    let (_, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| { event.path.contains("audio") && event.action == LossAction::Drop }),
+        "Messages has no audio slot and must Drop, got {report:?}"
+    );
 }
 
 #[test]
