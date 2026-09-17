@@ -36,6 +36,7 @@ pub struct StreamEncoder {
     last_tool: HashMap<u32, u32>,
     tool_items: HashMap<u32, (String, String, String)>,
     text_items: HashMap<u32, String>,
+    reasoning_items: HashMap<u32, String>,
 }
 
 impl StreamEncoder {
@@ -58,6 +59,7 @@ impl StreamEncoder {
             last_tool: HashMap::new(),
             tool_items: HashMap::new(),
             text_items: HashMap::new(),
+            reasoning_items: HashMap::new(),
         }
     }
 
@@ -375,6 +377,10 @@ impl StreamEncoder {
             IrStreamEvent::ReasoningDelta { text } => {
                 out.extend(self.ensure_item(BlockKind::Thinking));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                self.reasoning_items
+                    .entry(index)
+                    .or_default()
+                    .push_str(&text);
                 out.push(named(
                     "response.reasoning_summary_text.delta",
                     json!({
@@ -496,7 +502,13 @@ impl StreamEncoder {
                     "content": [{ "type": "output_text", "text": text }]
                 })
             }
-            BlockKind::Thinking => json!({ "type": "reasoning" }),
+            BlockKind::Thinking => {
+                let text = self.reasoning_items.remove(&index).unwrap_or_default();
+                json!({
+                    "type": "reasoning",
+                    "summary": [{ "type": "summary_text", "text": text }]
+                })
+            }
             BlockKind::Tool => match self.tool_items.remove(&index) {
                 Some((id, name, arguments)) => json!({
                     "type": "function_call",
@@ -855,6 +867,31 @@ mod tests {
                 && item_done.data.contains("\"text\":\"Pong\""),
             "output_item.done must keep assembled text, got {}",
             item_done.data
+        );
+    }
+
+    #[test]
+    fn responses_encoder_output_item_done_keeps_reasoning() {
+        let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4o");
+        enc.push(IrStreamEvent::ReasoningDelta {
+            text: "think".into(),
+        })
+        .expect("reason");
+        let mut frames = enc
+            .push(IrStreamEvent::TextDelta { text: "hi".into() })
+            .expect("text");
+        frames.extend(enc.finish().expect("finish"));
+        let reason_done = frames
+            .iter()
+            .find(|frame| {
+                frame.event.as_deref() == Some("response.output_item.done")
+                    && frame.data.contains("\"type\":\"reasoning\"")
+            })
+            .expect("reasoning output_item.done");
+        assert!(
+            reason_done.data.contains("think"),
+            "output_item.done must keep assembled reasoning, got {}",
+            reason_done.data
         );
     }
 
