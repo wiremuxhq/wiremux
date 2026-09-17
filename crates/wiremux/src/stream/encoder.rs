@@ -35,6 +35,7 @@ pub struct StreamEncoder {
     tool_got_arg: HashSet<u32>,
     last_tool: HashMap<u32, u32>,
     tool_items: HashMap<u32, (String, String, String)>,
+    text_items: HashMap<u32, String>,
 }
 
 impl StreamEncoder {
@@ -56,6 +57,7 @@ impl StreamEncoder {
             tool_got_arg: HashSet::new(),
             last_tool: HashMap::new(),
             tool_items: HashMap::new(),
+            text_items: HashMap::new(),
         }
     }
 
@@ -360,6 +362,7 @@ impl StreamEncoder {
             IrStreamEvent::TextDelta { text } => {
                 out.extend(self.ensure_item(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                self.text_items.entry(index).or_default().push_str(&text);
                 out.push(named(
                     "response.output_text.delta",
                     json!({
@@ -485,7 +488,14 @@ impl StreamEncoder {
             return Vec::new();
         };
         let item = match kind {
-            BlockKind::Text => json!({ "type": "message" }),
+            BlockKind::Text => {
+                let text = self.text_items.remove(&index).unwrap_or_default();
+                json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": text }]
+                })
+            }
             BlockKind::Thinking => json!({ "type": "reasoning" }),
             BlockKind::Tool => match self.tool_items.remove(&index) {
                 Some((id, name, arguments)) => json!({
@@ -824,6 +834,26 @@ mod tests {
                     .contains(r#""arguments":"{\"city\":\"Paris\"}""#)
                 && item_done.data.contains("\"call_id\":\"call_1\""),
             "output_item.done must keep the function_call item, got {}",
+            item_done.data
+        );
+    }
+
+    #[test]
+    fn responses_encoder_output_item_done_keeps_text() {
+        let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4o");
+        enc.push(IrStreamEvent::TextDelta { text: "P".into() })
+            .expect("p");
+        enc.push(IrStreamEvent::TextDelta { text: "ong".into() })
+            .expect("ong");
+        let done = enc.finish().expect("finish");
+        let item_done = done
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.output_item.done"))
+            .expect("response.output_item.done");
+        assert!(
+            item_done.data.contains("\"type\":\"message\"")
+                && item_done.data.contains("\"text\":\"Pong\""),
+            "output_item.done must keep assembled text, got {}",
             item_done.data
         );
     }
