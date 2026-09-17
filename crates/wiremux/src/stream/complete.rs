@@ -14,7 +14,7 @@ pub fn encode_response(wire: Wire, events: &[IrStreamEvent]) -> Result<Value, Ma
     encode_response_with_model(wire, events, "")
 }
 
-/// Same as [`encode_response`], with dest `model` for Messages JSON.
+/// Same as [`encode_response`], with dest `model` for Messages and Gemini.
 pub fn encode_response_with_model(
     wire: Wire,
     events: &[IrStreamEvent],
@@ -23,7 +23,7 @@ pub fn encode_response_with_model(
     match wire {
         Wire::ChatCompletions => Ok(encode_chat_complete(events)),
         Wire::Messages => Ok(encode_messages_complete(events, model)),
-        Wire::Gemini => Ok(encode_gemini_complete(events)),
+        Wire::Gemini => Ok(encode_gemini_complete(events, model)),
         Wire::Responses => Ok(encode_responses_complete(events)),
         Wire::Converse => Ok(super::converse::encode_complete(events)),
         _ => Err(MapError::Invalid(format!(
@@ -246,7 +246,7 @@ fn messages_tool_use_value(id: &str, name: &str, args: &str) -> Value {
     })
 }
 
-fn encode_gemini_complete(events: &[IrStreamEvent]) -> Value {
+fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
@@ -327,6 +327,9 @@ fn encode_gemini_complete(events: &[IrStreamEvent]) -> Value {
     let mut out = json!({
         "candidates": [candidate],
     });
+    if !model.is_empty() {
+        out["modelVersion"] = json!(model);
+    }
     if let Some((prompt, completion, cache_read, reasoning_tokens)) = usage {
         let encoded = super::usage::encode_gemini(prompt, completion, cache_read, reasoning_tokens);
         if let Some(meta) = encoded.get("usageMetadata") {

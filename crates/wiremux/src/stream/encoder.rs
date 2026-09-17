@@ -57,7 +57,7 @@ impl StreamEncoder {
         }
     }
 
-    /// Dest request model for Messages `message_start`.
+    /// Dest request model for Messages `message_start` and Gemini `modelVersion`.
     #[must_use]
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
@@ -79,6 +79,10 @@ impl StreamEncoder {
                 Wire::Responses => self.push_responses(other),
                 Wire::ChatCompletions => self.push_chat(other),
                 Wire::Converse => self.push_converse(other),
+                Wire::Gemini => {
+                    let frame = encode_stream_event(self.wire, &other)?;
+                    Ok(vec![self.attach_dest_model(frame)])
+                }
                 _ => Ok(vec![encode_stream_event(self.wire, &other)?]),
             },
         }
@@ -99,6 +103,23 @@ impl StreamEncoder {
             }
             Wire::Converse => self.finish_converse(),
             _ => Ok(Vec::new()),
+        }
+    }
+
+    fn attach_dest_model(&self, frame: RawSse) -> RawSse {
+        if self.model.is_empty() || frame.data.trim() == "[DONE]" {
+            return frame;
+        }
+        let Ok(mut value) = serde_json::from_str::<Value>(&frame.data) else {
+            return frame;
+        };
+        let Value::Object(obj) = &mut value else {
+            return frame;
+        };
+        obj.insert("modelVersion".into(), json!(self.model.clone()));
+        RawSse {
+            event: frame.event,
+            data: value.to_string(),
         }
     }
 
@@ -728,6 +749,30 @@ mod tests {
                         .map(str::to_string)
                 })
         })
+    }
+
+    #[test]
+    fn gemini_encoder_chunks_use_dest_model_version() {
+        let mut enc = StreamEncoder::new(Wire::Gemini).with_model("gemini-2.5-flash");
+        let frames = enc
+            .push(IrStreamEvent::TextDelta { text: "hi".into() })
+            .expect("push");
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.data.contains("\"modelVersion\":\"gemini-2.5-flash\"")),
+            "dest Gemini chunk must include modelVersion, got {frames:?}"
+        );
+        let done = enc.finish().expect("finish");
+        assert!(
+            done.iter().any(|frame| frame.data.trim() == "[DONE]"),
+            "Gemini finish stays [DONE], got {done:?}"
+        );
+        assert!(
+            done.iter()
+                .all(|frame| !frame.data.contains("modelVersion")),
+            "[DONE] must not grow a modelVersion, got {done:?}"
+        );
     }
 
     #[test]
