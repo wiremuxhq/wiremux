@@ -221,6 +221,7 @@ fn parts_text(parts: &[IrPart]) -> String {
 
 fn decode_sampling(value: &Value) -> IrSampling {
     let (json_schema, json_schema_name) = responses_json_schema(value);
+    let json_object = responses_json_object(value);
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
@@ -248,6 +249,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
             .and_then(|r| u32_field(r, "max_tokens")),
         json_schema,
         json_schema_name,
+        json_object,
         include: decode_include(value),
         prompt_cache_key: str_field(value, "prompt_cache_key").filter(|s| !s.trim().is_empty()),
         service_tier: str_field(value, "service_tier").filter(|s| !s.trim().is_empty()),
@@ -275,6 +277,11 @@ fn encode_include(extras: &[String]) -> Vec<String> {
         }
     }
     include
+}
+
+fn responses_json_object(value: &Value) -> Option<bool> {
+    let format = value.get("text").and_then(|t| t.get("format"))?;
+    (format.get("type").and_then(Value::as_str) == Some("json_object")).then_some(true)
 }
 
 fn responses_json_schema(value: &Value) -> (Option<Value>, Option<String>) {
@@ -696,6 +703,8 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
                 "schema": schema,
             }
         });
+    } else if s.json_object == Some(true) {
+        body["text"] = json!({ "format": { "type": "json_object" } });
     }
 }
 

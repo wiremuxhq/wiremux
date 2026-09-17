@@ -714,6 +714,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.thinking_budget.is_some() {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
     }
+    if s.json_object == Some(true) && s.json_schema.is_none() {
+        report.record("sampling.json_object", LossAction::Drop, "no slot");
+    }
     if !s.include.is_empty() {
         report.record("sampling.include", LossAction::Drop, "no slot");
     }

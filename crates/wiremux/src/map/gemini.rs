@@ -229,6 +229,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         .as_ref()
         .is_some()
         .then(|| "response".to_string());
+    let json_object = gemini_json_object(cfg, json_schema.is_some());
     IrSampling {
         temperature: f32_field(cfg, "temperature"),
         top_p: f32_field(cfg, "topP").or_else(|| f32_field(cfg, "top_p")),
@@ -250,10 +251,22 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         max_reasoning_tokens: None,
         json_schema,
         json_schema_name,
+        json_object,
         include: Vec::new(),
         prompt_cache_key: None,
         service_tier: None,
     }
+}
+
+fn gemini_json_object(cfg: &Value, has_schema: bool) -> Option<bool> {
+    if has_schema {
+        return None;
+    }
+    let mime = cfg
+        .get("responseMimeType")
+        .or_else(|| cfg.get("response_mime_type"))
+        .and_then(Value::as_str)?;
+    (mime == "application/json").then_some(true)
 }
 
 fn gemini_json_schema(cfg: &Value) -> Option<Value> {
@@ -623,6 +636,8 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
                 "json_schema requires object schema",
             );
         }
+    } else if s.json_object == Some(true) {
+        cfg["responseMimeType"] = json!("application/json");
     }
     if cfg.as_object().is_some_and(|o| !o.is_empty()) {
         body["generationConfig"] = cfg;

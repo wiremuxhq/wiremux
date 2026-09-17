@@ -106,6 +106,10 @@ pub struct IrSampling {
     /// Optional schema name (Responses `text.format.name` / Chat json_schema.name /
     /// Converse `outputConfig.textFormat.structure.jsonSchema.name`).
     pub json_schema_name: Option<String>,
+    /// Unconstrained JSON object mode (Chat `response_format.type=json_object`,
+    /// Responses `text.format.type=json_object`, Gemini `responseMimeType=
+    /// application/json` without a schema). `json_schema` wins when both are set.
+    pub json_object: Option<bool>,
     /// Responses `include` extras (file_search results, etc.). Empty default.
     pub include: Vec<String>,
     /// OpenAI / Codex `prompt_cache_key`. Chat Completions and Responses
