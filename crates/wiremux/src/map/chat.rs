@@ -173,6 +173,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         include: Vec::new(),
         prompt_cache_key: str_field(value, "prompt_cache_key").filter(|s| !s.trim().is_empty()),
         service_tier: str_field(value, "service_tier").filter(|s| !s.trim().is_empty()),
+        user: str_field(value, "user").filter(|s| !s.trim().is_empty()),
     }
 }
 
@@ -574,6 +575,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             LossAction::Preserve,
             "chat prompt_cache_key",
         );
+    }
+    if let Some(user) = s.user.as_deref().filter(|s| !s.trim().is_empty()) {
+        body["user"] = json!(user);
     }
     if let Some(tier) = s.service_tier.as_deref().filter(|s| !s.trim().is_empty()) {
         body["service_tier"] = json!(tier);

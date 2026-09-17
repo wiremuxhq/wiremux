@@ -255,6 +255,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         include: Vec::new(),
         prompt_cache_key: None,
         service_tier: None,
+        user: None,
     }
 }
 
@@ -647,6 +648,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.prompt_cache_key.is_some() {
         report.record("sampling.prompt_cache_key", LossAction::Drop, "no slot");
+    }
+    if s.user.is_some() {
+        report.record("sampling.user", LossAction::Drop, "no slot");
     }
     if s.service_tier.is_some() {
         report.record("sampling.service_tier", LossAction::Drop, "no slot");
