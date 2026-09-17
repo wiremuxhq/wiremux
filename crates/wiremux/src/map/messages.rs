@@ -261,7 +261,8 @@ fn tool_result_output(block: &Value) -> String {
 }
 
 fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
-    if messages_source_has_json_schema(value) {
+    let (json_schema, json_schema_name) = decode_output_config_schema(value);
+    if messages_source_has_json_schema(value) && json_schema.is_none() {
         report.record("sampling.json_schema", LossAction::Drop, "no slot");
     }
     let (include_thoughts, max_reasoning_tokens) = decode_thinking(value, report);
@@ -278,10 +279,15 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         stream: bool_field(value, "stream"),
         include_thoughts,
         thinking_budget: None,
-        reasoning_effort: None,
+        reasoning_effort: value
+            .pointer("/output_config/effort")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
         max_reasoning_tokens,
-        json_schema: None,
-        json_schema_name: None,
+        json_schema,
+        json_schema_name,
         json_object: None,
         include: Vec::new(),
         prompt_cache_key: None,
@@ -292,6 +298,19 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+    }
+}
+
+fn decode_output_config_schema(value: &Value) -> (Option<Value>, Option<String>) {
+    let Some(format) = value.pointer("/output_config/format") else {
+        return (None, None);
+    };
+    if format.get("type").and_then(Value::as_str) != Some("json_schema") {
+        return (None, None);
+    }
+    match format.get("schema").filter(|v| v.is_object()).cloned() {
+        Some(schema) => (Some(schema), Some("response".into())),
+        None => (None, None),
     }
 }
 
@@ -314,6 +333,7 @@ fn messages_source_has_json_schema(value: &Value) -> bool {
         || value.get("response_format").is_some()
         || value.get("json_schema").is_some()
         || value.pointer("/text/format/type").and_then(Value::as_str) == Some("json_schema")
+        || value.pointer("/output_config/format").is_some()
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -1134,14 +1154,56 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if !s.include.is_empty() {
         report.record("sampling.include", LossAction::Drop, "no slot");
     }
-    if s.json_schema.is_some() {
-        report.record("sampling.json_schema", LossAction::Drop, "no slot");
-    }
+    encode_output_config(s, body, report);
     if s.json_object == Some(true) {
         report.record("sampling.json_object", LossAction::Drop, "no slot");
     }
     if let Some(user) = s.user.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
         body["metadata"] = json!({ "user_id": user });
+    }
+}
+
+fn encode_output_config(s: &IrSampling, body: &mut Value, report: &mut LossReport) {
+    let mut out = serde_json::Map::new();
+    if let Some(effort) = s
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty())
+    {
+        out.insert("effort".into(), json!(effort));
+    }
+    if let Some(schema) = &s.json_schema {
+        if schema.is_object() {
+            out.insert(
+                "format".into(),
+                json!({
+                    "type": "json_schema",
+                    "schema": schema,
+                }),
+            );
+            report.record(
+                "sampling.json_schema",
+                LossAction::Preserve,
+                "messages output_config.format",
+            );
+            if s.json_schema_name.is_some() {
+                report.record(
+                    "sampling.json_schema_name",
+                    LossAction::Drop,
+                    "messages output_config.format has no name",
+                );
+            }
+        } else {
+            report.record(
+                "sampling.json_schema",
+                LossAction::Drop,
+                "json_schema requires object schema",
+            );
+        }
+    }
+    if !out.is_empty() {
+        body["output_config"] = Value::Object(out);
     }
 }
 
