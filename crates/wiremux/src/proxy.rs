@@ -722,6 +722,12 @@ fn model_from_dest_path(from: Wire, path: &str) -> Option<String> {
             let model = model.split('?').next().unwrap_or(model);
             (!model.is_empty()).then(|| model.to_string())
         }
+        Wire::ChatCompletions => {
+            let rest = path.strip_prefix("/openai/deployments/")?;
+            let model = rest.strip_suffix("/chat/completions")?;
+            let model = model.split('?').next().unwrap_or(model);
+            (!model.is_empty() && !model.contains('/')).then(|| model.to_string())
+        }
         _ => None,
     }
 }
@@ -907,6 +913,14 @@ mod tests {
                 "/v1/chat/completions"
             ),
             None
+        );
+        assert_eq!(
+            super::model_from_dest_path(
+                wiremux_auth::Wire::ChatCompletions,
+                "/openai/deployments/gpt-4o/chat/completions"
+            )
+            .as_deref(),
+            Some("gpt-4o")
         );
         assert_eq!(
             super::model_from_dest_path(
