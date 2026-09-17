@@ -183,7 +183,10 @@ fn decode_tools(value: &Value) -> Vec<crate::ir::IrTool> {
                     name: str_field(decl, "name").unwrap_or_default(),
                     description: str_field(decl, "description").unwrap_or_default(),
                     parameters: decl
-                        .get("parameters")
+                        .get("parametersJsonSchema")
+                        .or_else(|| decl.get("parameters_json_schema"))
+                        .filter(|v| v.is_object())
+                        .or_else(|| decl.get("parameters"))
                         .cloned()
                         .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
                 });
@@ -266,8 +269,15 @@ fn gemini_json_object(cfg: &Value, has_schema: bool) -> Option<bool> {
     let mime = cfg
         .get("responseMimeType")
         .or_else(|| cfg.get("response_mime_type"))
+        .and_then(Value::as_str);
+    if mime == Some("application/json") {
+        return Some(true);
+    }
+    let format_mime = cfg
+        .pointer("/responseFormat/text/mimeType")
+        .or_else(|| cfg.pointer("/response_format/text/mimeType"))
         .and_then(Value::as_str)?;
-    (mime == "application/json").then_some(true)
+    matches!(format_mime, "APPLICATION_JSON" | "application/json").then_some(true)
 }
 
 fn gemini_json_schema(cfg: &Value) -> Option<Value> {
@@ -275,6 +285,8 @@ fn gemini_json_schema(cfg: &Value) -> Option<Value> {
         .or_else(|| cfg.get("responseJsonSchema"))
         .or_else(|| cfg.get("response_schema"))
         .or_else(|| cfg.get("response_json_schema"))
+        .or_else(|| cfg.pointer("/responseFormat/text/schema"))
+        .or_else(|| cfg.pointer("/response_format/text/schema"))
         .filter(|v| v.is_object())
         .cloned()
 }
