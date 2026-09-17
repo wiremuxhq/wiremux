@@ -77,15 +77,23 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
                 .get("response")
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "{}".into());
-            items.push(IrItem::FunctionOutput {
-                call_id: fr
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(name.as_str())
-                    .to_string(),
-                output,
-            });
+            let call_id = fr
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    items.iter().rev().find_map(|item| match item {
+                        IrItem::FunctionCall {
+                            call_id,
+                            name: call_name,
+                            ..
+                        } if call_name == &name => Some(call_id.clone()),
+                        _ => None,
+                    })
+                })
+                .unwrap_or(name);
+            items.push(IrItem::FunctionOutput { call_id, output });
             continue;
         }
         if part.get("thought").and_then(Value::as_bool) == Some(true) {

@@ -719,6 +719,34 @@ wire = "gemini"
 }
 
 #[test]
+fn dest_gemini_function_response_reuses_function_call_id() {
+    let req = br#"{
+        "contents": [
+            { "role": "user", "parts": [{ "text": "weather Paris" }] },
+            { "role": "model", "parts": [{ "functionCall": { "name": "get_weather", "args": { "city": "Paris" } } }] },
+            { "role": "user", "parts": [{ "functionResponse": { "name": "get_weather", "response": { "content": "sunny 22C" } } }] }
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let call_id = body
+        .pointer("/messages/1/tool_calls/0/id")
+        .and_then(Value::as_str);
+    let result_id = body
+        .pointer("/messages/2/tool_call_id")
+        .and_then(Value::as_str);
+    assert_eq!(
+        call_id, result_id,
+        "dest Gemini functionResponse must reuse the functionCall id, got {body}"
+    );
+    assert!(
+        call_id.is_some_and(|id| !id.is_empty()),
+        "expected a Chat tool call id, got {body}"
+    );
+}
+
+#[test]
 fn function_call_thought_signature_round_trips_on_next_request() {
     let req = br#"{
         "contents": [{

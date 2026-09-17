@@ -3992,6 +3992,90 @@ chat_path = "/v1/chat/completions"
 }
 
 #[test]
+fn proxy_dest_gemini_function_response_matches_tool_call_id() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 16384];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
+        let up: serde_json::Value =
+            serde_json::from_str(&req[body_start..]).expect("upstream json");
+        let call_id = up
+            .pointer("/messages/1/tool_calls/0/id")
+            .and_then(serde_json::Value::as_str);
+        let result_id = up
+            .pointer("/messages/2/tool_call_id")
+            .and_then(serde_json::Value::as_str);
+        assert_eq!(
+            call_id, result_id,
+            "dest Gemini functionResponse must reuse the functionCall id, got: {req}"
+        );
+        let body = r#"{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"sunny"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-from-gemini-tool-result.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-from-gemini-tool-result"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "gemini",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"contents":[{"role":"user","parts":[{"text":"weather Paris"}]},{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"Paris"}}}]},{"role":"user","parts":[{"functionResponse":{"name":"get_weather","response":{"content":"sunny 22C"}}}]}],"tools":[{"functionDeclarations":[{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}]}]}"#;
+    let req = format!(
+        "POST /v1beta/models/gemini-2.5-flash:generateContent HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("HTTP/1.1 200") && resp.contains("sunny"),
+        "dest Gemini tool-result follow-up must remap, got: {resp}"
+    );
+}
+
+#[test]
 fn proxy_eventstream_exception_is_sse_data() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
