@@ -290,6 +290,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
 
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
+    let query = req.uri().query().unwrap_or("").to_string();
     if let Some(len) = req
         .headers()
         .get(hyper::header::CONTENT_LENGTH)
@@ -311,7 +312,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         Ok(v) => v,
         Err(err) => return text(StatusCode::BAD_REQUEST, format!("{err}\n")),
     };
-    if matches!(state.from, Wire::Converse) && path.ends_with("/converse-stream") {
+    if dest_stream_from_request(state.from, &path, &query) {
         ir.sampling.stream = Some(true);
     }
     if ir.model.is_empty()
@@ -712,7 +713,30 @@ fn model_from_dest_path(from: Wire, path: &str) -> Option<String> {
                 .or_else(|| rest.strip_suffix("/converse"))?;
             (!model.is_empty()).then(|| model.to_string())
         }
+        Wire::Messages => {
+            let rest = path.split("/models/").nth(1)?;
+            let model = rest
+                .strip_suffix(":streamRawPredict")
+                .or_else(|| rest.strip_suffix(":rawPredict"))
+                .unwrap_or(rest);
+            let model = model.split('?').next().unwrap_or(model);
+            (!model.is_empty()).then(|| model.to_string())
+        }
         _ => None,
+    }
+}
+
+fn dest_stream_from_request(from: Wire, path: &str, query: &str) -> bool {
+    match from {
+        Wire::Converse => path.ends_with("/converse-stream"),
+        Wire::Gemini => {
+            path.ends_with(":streamGenerateContent")
+                || query
+                    .split('&')
+                    .any(|part| part == "alt=sse" || part.starts_with("alt=sse"))
+        }
+        Wire::Messages => path.ends_with(":streamRawPredict"),
+        _ => false,
     }
 }
 
@@ -884,6 +908,34 @@ mod tests {
             ),
             None
         );
+        assert_eq!(
+            super::model_from_dest_path(
+                wiremux_auth::Wire::Messages,
+                "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4:rawPredict"
+            )
+            .as_deref(),
+            Some("claude-sonnet-4")
+        );
+        assert!(super::dest_stream_from_request(
+            wiremux_auth::Wire::Gemini,
+            "/v1beta/models/gemini-2.5-flash:streamGenerateContent",
+            ""
+        ));
+        assert!(super::dest_stream_from_request(
+            wiremux_auth::Wire::Gemini,
+            "/v1beta/models/gemini-2.5-flash:generateContent",
+            "alt=sse"
+        ));
+        assert!(!super::dest_stream_from_request(
+            wiremux_auth::Wire::Gemini,
+            "/v1beta/models/gemini-2.5-flash:generateContent",
+            ""
+        ));
+        assert!(super::dest_stream_from_request(
+            wiremux_auth::Wire::Messages,
+            "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4:streamRawPredict",
+            ""
+        ));
     }
 
     #[test]

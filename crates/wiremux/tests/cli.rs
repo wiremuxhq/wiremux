@@ -3122,6 +3122,159 @@ chat_path = "/v1/chat/completions"
 }
 
 #[test]
+fn proxy_dest_gemini_stream_path_sets_upstream_stream() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            req.contains("\"stream\":true") || req.contains("\"stream\": true"),
+            "dest Gemini :streamGenerateContent must set Chat stream, got: {req}"
+        );
+        let body = concat!(
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-from-gemini-stream.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-from-gemini-stream"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "gemini",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /v1beta/models/gemini-2.5-flash:streamGenerateContent HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("data:") || resp.contains("hi"),
+        "dest Gemini stream path must remap as SSE, got: {resp}"
+    );
+}
+
+#[test]
+fn proxy_dest_messages_path_model_reaches_upstream() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            req.contains("\"model\":\"claude-sonnet-4\""),
+            "dest Messages Vertex path model must reach Chat upstream, got: {req}"
+        );
+        let body = r#"{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-from-messages-path.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-from-messages-path"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "messages",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4:rawPredict HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("200") || resp.contains("hi"),
+        "dest Messages path-model remap must reach upstream, got: {resp}"
+    );
+}
+
+#[test]
 fn proxy_eventstream_exception_is_sse_data() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
