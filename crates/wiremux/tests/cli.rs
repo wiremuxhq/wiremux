@@ -4111,6 +4111,174 @@ chat_path = "/v1/chat/completions"
 }
 
 #[test]
+fn proxy_dest_gemini_store_reaches_chat() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 16384];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            req.contains("\"store\":false"),
+            "dest Gemini store:false must reach Chat store, got: {req}"
+        );
+        let body = r#"{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-from-gemini-store.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-from-gemini-store"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "gemini",
+            "--profile",
+            profile.to_str().expect("utf8"),
+            "--dump-loss",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"store":false,"contents":[{"role":"user","parts":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /v1beta/models/gemini-2.5-flash:generateContent HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut dump = String::new();
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut dump);
+    }
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("HTTP/1.1 200") && resp.contains("ok"),
+        "dest Gemini store follow-up must remap, got: {resp}"
+    );
+    assert!(
+        !dump.contains("path: \"sampling.store\", action: Drop"),
+        "--dump-loss must not Drop sampling.store, got: {dump}"
+    );
+}
+
+#[test]
+fn proxy_dest_gemini_service_tier_reaches_chat() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 16384];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            req.contains("\"service_tier\":\"priority\""),
+            "dest Gemini serviceTier must reach Chat service_tier, got: {req}"
+        );
+        let body = r#"{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-from-gemini-tier.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-from-gemini-tier"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "gemini",
+            "--profile",
+            profile.to_str().expect("utf8"),
+            "--dump-loss",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"serviceTier":"priority","contents":[{"role":"user","parts":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /v1beta/models/gemini-2.5-flash:generateContent HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut dump = String::new();
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut dump);
+    }
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("HTTP/1.1 200") && resp.contains("ok"),
+        "dest Gemini serviceTier follow-up must remap, got: {resp}"
+    );
+    assert!(
+        !dump.contains("path: \"sampling.service_tier\", action: Drop"),
+        "--dump-loss must not Drop sampling.service_tier, got: {dump}"
+    );
+}
+
+#[test]
 fn proxy_dest_messages_path_model_reaches_upstream() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
