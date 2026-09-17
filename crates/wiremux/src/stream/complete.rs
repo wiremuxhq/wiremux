@@ -14,7 +14,7 @@ pub fn encode_response(wire: Wire, events: &[IrStreamEvent]) -> Result<Value, Ma
     encode_response_with_model(wire, events, "")
 }
 
-/// Same as [`encode_response`], with dest `model` for Messages and Gemini.
+/// Same as [`encode_response`], with dest `model` for Messages, Gemini, and Responses.
 pub fn encode_response_with_model(
     wire: Wire,
     events: &[IrStreamEvent],
@@ -24,7 +24,7 @@ pub fn encode_response_with_model(
         Wire::ChatCompletions => Ok(encode_chat_complete(events)),
         Wire::Messages => Ok(encode_messages_complete(events, model)),
         Wire::Gemini => Ok(encode_gemini_complete(events, model)),
-        Wire::Responses => Ok(encode_responses_complete(events)),
+        Wire::Responses => Ok(encode_responses_complete(events, model)),
         Wire::Converse => Ok(super::converse::encode_complete(events)),
         _ => Err(MapError::Invalid(format!(
             "unsupported wire `{}`",
@@ -349,7 +349,7 @@ fn gemini_function_call_value(id: &str, name: &str, args: &str) -> Value {
     })
 }
 
-fn encode_responses_complete(events: &[IrStreamEvent]) -> Value {
+fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
@@ -431,6 +431,9 @@ fn encode_responses_complete(events: &[IrStreamEvent]) -> Value {
         "status": status,
         "output": output,
     });
+    if !model.is_empty() {
+        out["model"] = json!(model);
+    }
     if !text.is_empty() {
         out["output_text"] = json!(text);
     }

@@ -57,7 +57,7 @@ impl StreamEncoder {
         }
     }
 
-    /// Dest request model for Messages `message_start` and Gemini `modelVersion`.
+    /// Dest request model for Messages, Gemini, and Responses encode.
     #[must_use]
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
@@ -342,11 +342,15 @@ impl StreamEncoder {
         let mut out = Vec::new();
         if !self.started {
             self.started = true;
+            let mut created = json!({ "id": "resp_wiremux", "status": "in_progress" });
+            if !self.model.is_empty() {
+                created["model"] = json!(self.model);
+            }
             out.push(named(
                 "response.created",
                 json!({
                     "type": "response.created",
-                    "response": { "id": "resp_wiremux", "status": "in_progress" }
+                    "response": created
                 }),
             ));
         }
@@ -497,6 +501,9 @@ impl StreamEncoder {
             _ => ("response.completed", "completed"),
         };
         let mut response = json!({ "status": status });
+        if !self.model.is_empty() {
+            response["model"] = json!(self.model);
+        }
         if let Some((p, c, cr, _cw, r)) = self.usage {
             let encoded = usage::encode_responses(p, c, cr, r);
             if let Some(u) = encoded.pointer("/response/usage") {
@@ -749,6 +756,29 @@ mod tests {
                         .map(str::to_string)
                 })
         })
+    }
+
+    #[test]
+    fn responses_encoder_created_uses_dest_model() {
+        let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4o");
+        let frames = enc
+            .push(IrStreamEvent::TextDelta { text: "hi".into() })
+            .expect("push");
+        let created = frames
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.created"))
+            .expect("response.created");
+        assert!(
+            created.data.contains("\"model\":\"gpt-4o\""),
+            "response.created must use dest model, got {}",
+            created.data
+        );
+        let done = enc.finish().expect("finish");
+        assert!(
+            done.iter()
+                .any(|frame| frame.data.contains("\"model\":\"gpt-4o\"")),
+            "response.completed must use dest model, got {done:?}"
+        );
     }
 
     #[test]
