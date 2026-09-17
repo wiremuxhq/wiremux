@@ -700,8 +700,21 @@ async fn read_body(
     Ok(buf)
 }
 
+fn transport_message(err: &reqwest::Error) -> String {
+    let mut message = err.to_string();
+    let lower = message.to_ascii_lowercase();
+    if err.is_connect() {
+        if !lower.contains("connect") && !lower.contains("connection refused") {
+            message.push_str(": error trying to connect");
+        }
+    } else if err.is_timeout() && !lower.contains("timed out") && !lower.contains("timeout") {
+        message.push_str(": timed out");
+    }
+    message
+}
+
 fn classify_send_err(err: reqwest::Error) -> ClientError {
-    let message = err.to_string();
+    let message = transport_message(&err);
     if err.is_timeout() || err.is_connect() || looks_like_reset(&message) {
         ClientError::Transient {
             status: err.status().map(|s| s.as_u16()),
@@ -718,7 +731,7 @@ fn classify_send_err(err: reqwest::Error) -> ClientError {
 }
 
 fn classify_read_err(err: reqwest::Error) -> ClientError {
-    let message = err.to_string();
+    let message = transport_message(&err);
     if err.is_timeout() || looks_like_reset(&message) {
         ClientError::Transient {
             status: err.status().map(|s| s.as_u16()),
