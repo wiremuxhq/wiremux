@@ -237,7 +237,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         stop: stop_values(cfg, &["stopSequences", "stop"]),
         tool_choice,
         parallel_tool_calls: bool_field(value, "parallel_tool_calls"),
-        store: None,
+        store: bool_field(value, "store"),
         previous_response_id: None,
         cache: IrCache::default(),
         stream: bool_field(value, "stream"),
@@ -254,7 +254,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         json_object,
         include: Vec::new(),
         prompt_cache_key: None,
-        service_tier: None,
+        service_tier: gemini_decode_service_tier(value),
         user: None,
     }
 }
@@ -284,6 +284,28 @@ fn thinking_config_obj(value: &Value) -> &Value {
         .get("thinkingConfig")
         .or_else(|| value.pointer("/generationConfig/thinkingConfig"))
         .unwrap_or(&Value::Null)
+}
+
+fn gemini_decode_service_tier(value: &Value) -> Option<String> {
+    str_field(value, "serviceTier")
+        .or_else(|| str_field(value, "service_tier"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .filter(|s| !s.eq_ignore_ascii_case("unspecified"))
+}
+
+fn gemini_service_tier(tier: &str) -> Option<(String, Option<&'static str>)> {
+    let trimmed = tier.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    match lower.as_str() {
+        "flex" | "priority" | "standard" => Some((lower, None)),
+        "default" => Some(("standard".into(), Some("default maps to standard"))),
+        "auto" => Some(("standard".into(), Some("auto maps to standard"))),
+        _ => None,
+    }
 }
 
 /// Official `thinkingLevel` is `low` | `medium` | `high` | `minimal`.
@@ -643,8 +665,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if cfg.as_object().is_some_and(|o| !o.is_empty()) {
         body["generationConfig"] = cfg;
     }
-    if s.store.is_some() {
-        report.record("sampling.store", LossAction::Drop, "no slot");
+    if let Some(store) = s.store {
+        body["store"] = json!(store);
+        report.record("sampling.store", LossAction::Preserve, "gemini store");
     }
     if s.prompt_cache_key.is_some() {
         report.record("sampling.prompt_cache_key", LossAction::Drop, "no slot");
@@ -652,8 +675,25 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.user.is_some() {
         report.record("sampling.user", LossAction::Drop, "no slot");
     }
-    if s.service_tier.is_some() {
-        report.record("sampling.service_tier", LossAction::Drop, "no slot");
+    if let Some(tier) = s.service_tier.as_deref() {
+        let trimmed = tier.trim();
+        if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("unspecified") {
+            match gemini_service_tier(trimmed) {
+                Some((mapped, degrade)) => {
+                    body["serviceTier"] = json!(mapped);
+                    if let Some(detail) = degrade {
+                        report.record("sampling.service_tier", LossAction::Degrade, detail);
+                    }
+                }
+                None => {
+                    report.record(
+                        "sampling.service_tier",
+                        LossAction::Drop,
+                        "unmapped service_tier",
+                    );
+                }
+            }
+        }
     }
     if s.previous_response_id.is_some() {
         report.record("sampling.previous_response_id", LossAction::Drop, "no slot");

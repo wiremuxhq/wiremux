@@ -265,7 +265,7 @@ fn chat_store_forbidden_is_hard_error() {
 }
 
 #[test]
-fn messages_and_gemini_do_not_invent_store() {
+fn messages_drops_store_gemini_emits_store() {
     let ir = user_ir(IrSampling::patch(|s| {
         s.store = Some(true);
     }));
@@ -281,13 +281,14 @@ fn messages_and_gemini_do_not_invent_store() {
     );
     let (gem_bytes, gem_report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let gem: Value = serde_json::from_slice(&gem_bytes).expect("json");
-    assert!(
-        gem.get("store").is_none(),
-        "Gemini must not invent store, got {gem}"
+    assert_eq!(
+        gem.get("store").and_then(Value::as_bool),
+        Some(true),
+        "Gemini must emit store, got {gem}"
     );
     assert!(
-        loss_dropped(&gem_report, "sampling.store"),
-        "Gemini store drop missing, got {gem_report:?}"
+        !loss_dropped(&gem_report, "sampling.store"),
+        "Gemini has store and must not Drop, got {gem_report:?}"
     );
 }
 
@@ -337,7 +338,7 @@ fn responses_and_chat_round_trip_codex_cache_key_and_tier() {
 }
 
 #[test]
-fn messages_and_gemini_drop_codex_cache_key_and_tier() {
+fn messages_drops_codex_cache_and_tier_gemini_emits_service_tier() {
     let ir = user_ir(IrSampling::patch(|s| {
         s.prompt_cache_key = Some("sess-1".into());
         s.service_tier = Some("flex".into());
@@ -359,16 +360,25 @@ fn messages_and_gemini_drop_codex_cache_key_and_tier() {
     let (gem_bytes, gem_report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let gem: Value = serde_json::from_slice(&gem_bytes).expect("json");
     assert!(
-        gem.get("prompt_cache_key").is_none() && gem.get("service_tier").is_none(),
-        "Gemini must not invent Codex cache/tier, got {gem}"
+        gem.get("prompt_cache_key").is_none(),
+        "Gemini must still Drop prompt_cache_key, got {gem}"
+    );
+    assert!(
+        gem.get("service_tier").is_none(),
+        "Gemini must not emit Chat service_tier key, got {gem}"
+    );
+    assert_eq!(
+        gem.get("serviceTier").and_then(Value::as_str),
+        Some("flex"),
+        "Gemini flex must emit serviceTier, got {gem}"
     );
     assert!(
         loss_dropped(&gem_report, "sampling.prompt_cache_key"),
         "Gemini prompt_cache_key drop missing, got {gem_report:?}"
     );
     assert!(
-        loss_dropped(&gem_report, "sampling.service_tier"),
-        "Gemini service_tier drop missing, got {gem_report:?}"
+        !loss_dropped(&gem_report, "sampling.service_tier"),
+        "Gemini has serviceTier; flex must not Drop, got {gem_report:?}"
     );
     let (cv_bytes, cv_report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let cv: Value = serde_json::from_slice(&cv_bytes).expect("json");
@@ -3917,6 +3927,170 @@ fn dest_gemini_response_schema_reaches_chat_json_schema() {
     assert!(
         !loss_dropped(&report, "sampling.json_schema"),
         "dest Gemini schema must not Drop on Chat encode, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_store_reaches_chat() {
+    for want in [false, true] {
+        let req = format!(
+            r#"{{
+                "model": "gemini-2.5-flash",
+                "store": {want},
+                "contents": [{{"role": "user", "parts": [{{"text": "hi"}}]}}]
+            }}"#
+        );
+        let (ir, decode_report) = decode(Wire::Gemini, req.as_bytes()).expect("decode dest Gemini");
+        assert_eq!(
+            ir.sampling.store,
+            Some(want),
+            "dest Gemini store {want} must land on IR"
+        );
+        assert!(
+            !loss_dropped(&decode_report, "sampling.store"),
+            "dest Gemini store decode must not Drop, got {decode_report:?}"
+        );
+        let (bytes, report) =
+            encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            body.get("store").and_then(Value::as_bool),
+            Some(want),
+            "dest Gemini store must reach Chat store {want}, got {body}"
+        );
+        assert!(
+            !loss_dropped(&report, "sampling.store"),
+            "Chat has store and must not Drop, got {report:?}"
+        );
+    }
+}
+
+#[test]
+fn dest_gemini_service_tier_reaches_chat() {
+    let req = br#"{
+        "model": "gemini-2.5-flash",
+        "serviceTier": "priority",
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}]
+    }"#;
+    let (ir, decode_report) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    assert_eq!(
+        ir.sampling.service_tier.as_deref(),
+        Some("priority"),
+        "dest Gemini serviceTier must land on IR"
+    );
+    assert!(
+        !loss_dropped(&decode_report, "sampling.service_tier"),
+        "dest Gemini serviceTier decode must not Drop, got {decode_report:?}"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("service_tier").and_then(Value::as_str),
+        Some("priority"),
+        "dest Gemini serviceTier must reach Chat service_tier, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.service_tier"),
+        "Chat has service_tier and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_store_reaches_gemini() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "store": true,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("store").and_then(Value::as_bool),
+        Some(true),
+        "dest Chat store must reach Gemini store, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.store"),
+        "Gemini has store and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_service_tier_reaches_gemini() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "service_tier": "flex",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("service_tier").is_none(),
+        "Gemini must not emit Chat service_tier key, got {body}"
+    );
+    assert_eq!(
+        body.get("serviceTier").and_then(Value::as_str),
+        Some("flex"),
+        "dest Chat service_tier flex must reach Gemini serviceTier, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.service_tier"),
+        "Gemini has serviceTier and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_default_service_tier_degrades_to_gemini_standard() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "service_tier": "default",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("serviceTier").and_then(Value::as_str),
+        Some("standard"),
+        "dest Chat default must degrade to Gemini standard, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "sampling.service_tier"),
+        "default must Degrade to standard, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.service_tier"),
+        "default must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_unknown_service_tier_drops_on_gemini() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "service_tier": "turbo",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("serviceTier").is_none() && body.get("service_tier").is_none(),
+        "unknown service_tier must not invent Gemini serviceTier, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.service_tier"),
+        "unknown service_tier must Drop, got {report:?}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "sampling.service_tier"
+                && event.action == LossAction::Drop
+                && event.detail == "no slot"
+        }),
+        "Gemini has a slot; Drop detail must not be no slot, got {report:?}"
     );
 }
 

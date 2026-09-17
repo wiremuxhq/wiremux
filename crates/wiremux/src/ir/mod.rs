@@ -73,7 +73,8 @@ pub struct IrSampling {
     pub stop: Vec<String>,
     pub tool_choice: IrToolChoice,
     pub parallel_tool_calls: Option<bool>,
-    /// Chat Completions and Responses `store`. Messages and Gemini drop.
+    /// Chat Completions and Responses `store`. Gemini emits request-root
+    /// `store`. Messages drops.
     pub store: Option<bool>,
     pub previous_response_id: Option<String>,
     pub cache: IrCache,
@@ -121,7 +122,9 @@ pub struct IrSampling {
     /// OpenAI / Codex `service_tier` (`flex`, `priority`, `auto`).
     /// Chat Completions and Responses emit it. Converse emits
     /// `serviceTier.type` (`flex` / `priority` / `reserved` /
-    /// `default`; `auto` degrades to `default`). Messages and Gemini drop.
+    /// `default`; `auto` degrades to `default`). Gemini emits
+    /// request-root `serviceTier` (`flex` / `priority` / `standard`;
+    /// `default` / `auto` degrade to `standard`). Messages drops.
     pub service_tier: Option<String>,
 }
 
