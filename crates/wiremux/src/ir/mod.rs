@@ -115,6 +115,9 @@ pub struct IrSampling {
     /// OpenAI / Codex `prompt_cache_key`. Chat Completions and Responses
     /// emit it. Messages and Gemini drop.
     pub prompt_cache_key: Option<String>,
+    /// Chat Completions and Responses `user`. Messages, Gemini, and
+    /// Converse drop.
+    pub user: Option<String>,
     /// OpenAI / Codex `service_tier` (`flex`, `priority`, `auto`).
     /// Chat Completions and Responses emit it. Converse emits
     /// `serviceTier.type` (`flex` / `priority` / `reserved` /

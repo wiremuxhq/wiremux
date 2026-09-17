@@ -3380,6 +3380,50 @@ fn dest_responses_json_object_reaches_chat() {
 }
 
 #[test]
+fn dest_responses_user_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "user": "dest-user-42",
+        "input": "hi"
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(ir.sampling.user.as_deref(), Some("dest-user-42"));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("user").and_then(Value::as_str),
+        Some("dest-user-42"),
+        "dest Responses user must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.user"),
+        "Chat has user and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_user_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "user": "dest-user-42",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.user.as_deref(), Some("dest-user-42"));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("user").and_then(Value::as_str),
+        Some("dest-user-42"),
+        "dest Chat user must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.user"),
+        "Chat has user and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_chat_json_object_round_trips() {
     let req = br#"{
         "model": "gpt-4o",
