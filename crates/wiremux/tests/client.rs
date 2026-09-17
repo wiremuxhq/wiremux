@@ -1893,8 +1893,45 @@ read_timeout_secs = 1
     let err = client.send(simple_ir("gpt-4")).await.expect_err("timeout");
     let _ = handle.join();
     match err {
-        ClientError::Transient { .. } => {}
+        ClientError::Transient { message, .. } => {
+            let lower = message.to_ascii_lowercase();
+            assert!(
+                lower.contains("timed out") || lower.contains("timeout"),
+                "read timeout Transient must name timeout, got {message}"
+            );
+            assert!(
+                !lower.contains("error trying to connect") && !lower.contains("failed to connect"),
+                "read timeout must not look like connect abort, got {message}"
+            );
+        }
         other => panic!("expected Transient timeout, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn closed_port_transient_names_connect() {
+    let addr = {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.local_addr().expect("addr")
+    };
+    let client = WireClient::from_resolved(
+        chat_profile(&format!("http://{addr}")),
+        AnyTokenProvider::from(StaticToken::new("sk-test")),
+    )
+    .expect("client");
+    let err = client
+        .send(simple_ir("gpt-4"))
+        .await
+        .expect_err("closed port");
+    match err {
+        ClientError::Transient { message, .. } => {
+            let lower = message.to_ascii_lowercase();
+            assert!(
+                lower.contains("connect") || lower.contains("connection refused"),
+                "closed-port Transient must name connect, got {message}"
+            );
+        }
+        other => panic!("expected Transient connect, got {other:?}"),
     }
 }
 
