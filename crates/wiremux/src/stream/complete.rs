@@ -11,9 +11,18 @@ use super::{MAX_TOOL_CALL_INDEX, RawSse, check_index, decode_stream_events, str_
 
 /// Encode IR stream events as a complete (non-SSE) client body.
 pub fn encode_response(wire: Wire, events: &[IrStreamEvent]) -> Result<Value, MapError> {
+    encode_response_with_model(wire, events, "")
+}
+
+/// Same as [`encode_response`], with dest `model` for Messages JSON.
+pub fn encode_response_with_model(
+    wire: Wire,
+    events: &[IrStreamEvent],
+    model: &str,
+) -> Result<Value, MapError> {
     match wire {
         Wire::ChatCompletions => Ok(encode_chat_complete(events)),
-        Wire::Messages => Ok(encode_messages_complete(events)),
+        Wire::Messages => Ok(encode_messages_complete(events, model)),
         Wire::Gemini => Ok(encode_gemini_complete(events)),
         Wire::Responses => Ok(encode_responses_complete(events)),
         Wire::Converse => Ok(super::converse::encode_complete(events)),
@@ -134,7 +143,7 @@ fn chat_tool_call_value(id: &str, name: &str, args: &str) -> Value {
     })
 }
 
-fn encode_messages_complete(events: &[IrStreamEvent]) -> Value {
+fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
@@ -207,6 +216,7 @@ fn encode_messages_complete(events: &[IrStreamEvent]) -> Value {
         "id": "msg_wiremux",
         "type": "message",
         "role": "assistant",
+        "model": model,
         "content": content,
     });
     if let Some(reason) = finish {

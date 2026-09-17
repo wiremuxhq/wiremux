@@ -44,7 +44,7 @@ impl RawSse {
     }
 }
 
-pub use complete::{decode_response, encode_response};
+pub use complete::{decode_response, encode_response, encode_response_with_model};
 pub use encoder::StreamEncoder;
 #[cfg(feature = "proxy")]
 pub(crate) use eventstream::unwrap_event_payload;

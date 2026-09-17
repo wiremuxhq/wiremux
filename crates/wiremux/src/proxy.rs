@@ -26,7 +26,7 @@ use crate::map::{decode, encode};
 use crate::stream::{
     RawSse, StreamEncoder, ToolCallAssembler, UpstreamFrames, decode_response,
     decode_stream_events, encode_eventstream_exception, encode_eventstream_message,
-    encode_response, event_has_slot, frame_event_name, unwrap_event_payload,
+    encode_response_with_model, event_has_slot, frame_event_name, unwrap_event_payload,
 };
 use crate::upstream::upstream_url_for_model;
 
@@ -370,7 +370,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         if target == state.from {
             return passthrough_sse(status, resp, &content_type);
         }
-        return map_sse_stream(state, target, status, resp);
+        return map_sse_stream(state, target, status, resp, ir.model.clone());
     }
     let body = match read_capped_upstream(resp, MAX_UPSTREAM_BODY).await {
         Ok(b) => b,
@@ -380,7 +380,8 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     };
     if ir.sampling.stream == Some(true)
         && status.is_success()
-        && let Some(sse) = json_completion_to_sse(state.from, target, &body, &state.profile)
+        && let Some(sse) =
+            json_completion_to_sse(state.from, target, &body, &state.profile, &ir.model)
     {
         return bytes_response(
             status_from_reqwest(status),
@@ -393,7 +394,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     }
     match decode_response(target, &body, &state.profile) {
         Ok(events) => {
-            if let Ok(mapped) = encode_response(state.from, &events) {
+            if let Ok(mapped) = encode_response_with_model(state.from, &events, &ir.model) {
                 let bytes = Bytes::from(mapped.to_string());
                 return bytes_response(status_from_reqwest(status), "application/json", bytes);
             }
@@ -440,12 +441,13 @@ fn json_completion_to_sse(
     target: Wire,
     body: &Bytes,
     profile: &ResolvedProfile,
+    model: &str,
 ) -> Option<Bytes> {
     let events = decode_response(target, body, profile).ok()?;
     if events.is_empty() {
         return None;
     }
-    let mut encoder = StreamEncoder::new(from);
+    let mut encoder = StreamEncoder::new(from).with_model(model);
     let mut out = Vec::new();
     let mut wrote = false;
     for ev in events {
@@ -524,6 +526,7 @@ fn map_sse_stream(
     target: Wire,
     status: StatusCode,
     resp: reqwest::Response,
+    model: String,
 ) -> Response<ProxyBody> {
     let url = resp.url().to_string();
     let dest_ct = dest_stream_content_type(state.from);
@@ -532,7 +535,7 @@ fn map_sse_stream(
         let mut stream = resp.bytes_stream();
         let mut reader = UpstreamFrames::for_wire(target);
         let mut assembler = ToolCallAssembler::new();
-        let mut encoder = StreamEncoder::new(state.from);
+        let mut encoder = StreamEncoder::new(state.from).with_model(model);
         while let Some(item) = stream.next().await {
             let bytes = match item {
                 Ok(b) => b,
