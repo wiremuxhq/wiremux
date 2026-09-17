@@ -34,6 +34,7 @@ pub struct StreamEncoder {
     tool_slots: HashMap<u32, VecDeque<u32>>,
     tool_got_arg: HashSet<u32>,
     last_tool: HashMap<u32, u32>,
+    tool_items: HashMap<u32, (String, String, String)>,
 }
 
 impl StreamEncoder {
@@ -54,6 +55,7 @@ impl StreamEncoder {
             tool_slots: HashMap::new(),
             tool_got_arg: HashSet::new(),
             last_tool: HashMap::new(),
+            tool_items: HashMap::new(),
         }
     }
 
@@ -410,10 +412,15 @@ impl StreamEncoder {
                         }
                     }),
                 ));
+                self.tool_items
+                    .insert(enc, (id.clone(), name.clone(), String::new()));
                 self.open = Some((enc, BlockKind::Tool));
             }
             IrStreamEvent::ToolCallArgDelta { delta, index } => {
                 let enc = self.tool_enc(index);
+                if let Some((_, _, args)) = self.tool_items.get_mut(&enc) {
+                    args.push_str(&delta);
+                }
                 out.push(named(
                     "response.function_call_arguments.delta",
                     json!({
@@ -477,17 +484,26 @@ impl StreamEncoder {
         let Some((index, kind)) = self.open.take() else {
             return Vec::new();
         };
-        let item_type = match kind {
-            BlockKind::Text => "message",
-            BlockKind::Thinking => "reasoning",
-            BlockKind::Tool => "function_call",
+        let item = match kind {
+            BlockKind::Text => json!({ "type": "message" }),
+            BlockKind::Thinking => json!({ "type": "reasoning" }),
+            BlockKind::Tool => match self.tool_items.remove(&index) {
+                Some((id, name, arguments)) => json!({
+                    "type": "function_call",
+                    "id": id,
+                    "call_id": id,
+                    "name": name,
+                    "arguments": arguments
+                }),
+                None => json!({ "type": "function_call" }),
+            },
         };
         vec![named(
             "response.output_item.done",
             json!({
                 "type": "response.output_item.done",
                 "output_index": index,
-                "item": { "type": item_type }
+                "item": item
             }),
         )]
     }
@@ -778,6 +794,37 @@ mod tests {
             done.iter()
                 .any(|frame| frame.data.contains("\"model\":\"gpt-4o\"")),
             "response.completed must use dest model, got {done:?}"
+        );
+    }
+
+    #[test]
+    fn responses_encoder_output_item_done_keeps_function_call() {
+        let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4o");
+        enc.push(IrStreamEvent::ToolCallStart {
+            id: "call_1".into(),
+            name: "get_weather".into(),
+            thought_signature: None,
+            index: 0,
+        })
+        .expect("start");
+        enc.push(IrStreamEvent::ToolCallArgDelta {
+            delta: r#"{"city":"Paris"}"#.into(),
+            index: 0,
+        })
+        .expect("args");
+        let done = enc.finish().expect("finish");
+        let item_done = done
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.output_item.done"))
+            .expect("response.output_item.done");
+        assert!(
+            item_done.data.contains("\"name\":\"get_weather\"")
+                && item_done
+                    .data
+                    .contains(r#""arguments":"{\"city\":\"Paris\"}""#)
+                && item_done.data.contains("\"call_id\":\"call_1\""),
+            "output_item.done must keep the function_call item, got {}",
+            item_done.data
         );
     }
 
