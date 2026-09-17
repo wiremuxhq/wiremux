@@ -3495,6 +3495,149 @@ fn dest_chat_user_reaches_messages_user_id() {
 }
 
 #[test]
+fn dest_messages_output_config_effort_reaches_chat() {
+    let req = br#"{
+        "model": "claude-sonnet-4",
+        "max_tokens": 16,
+        "output_config": { "effort": "high" },
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, decode_report) = decode(Wire::Messages, req).expect("decode");
+    assert_eq!(
+        ir.sampling.reasoning_effort.as_deref(),
+        Some("high"),
+        "dest Messages output_config.effort must land on IR"
+    );
+    assert!(
+        !loss_dropped(&decode_report, "sampling.reasoning_effort"),
+        "dest Messages output_config.effort decode must not Drop, got {decode_report:?}"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("reasoning_effort").and_then(Value::as_str),
+        Some("high"),
+        "dest Messages output_config.effort must reach Chat reasoning_effort, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.reasoning_effort"),
+        "Chat has reasoning_effort and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_messages_output_config_format_reaches_chat() {
+    let req = br#"{
+        "model": "claude-sonnet-4",
+        "max_tokens": 16,
+        "output_config": {
+            "format": {
+                "type": "json_schema",
+                "schema": {"type": "object", "properties": {"city": {"type": "string"}}}
+            }
+        },
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, decode_report) = decode(Wire::Messages, req).expect("decode");
+    assert_eq!(
+        ir.sampling.json_schema,
+        Some(serde_json::json!({"type": "object", "properties": {"city": {"type": "string"}}}))
+    );
+    assert_eq!(
+        ir.sampling.json_schema_name.as_deref(),
+        Some("response"),
+        "dest Messages format has no name; default must be response"
+    );
+    assert!(
+        !loss_dropped(&decode_report, "sampling.json_schema"),
+        "dest Messages output_config.format decode must not Drop, got {decode_report:?}"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/response_format/type")
+            .and_then(Value::as_str),
+        Some("json_schema"),
+        "dest Messages output_config.format must reach Chat json_schema, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/response_format/json_schema/schema/properties/city/type")
+            .and_then(Value::as_str),
+        Some("string"),
+        "dest Messages schema properties must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema"),
+        "dest Messages schema must not Drop on Chat encode, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_reasoning_effort_reaches_messages_output_config() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "reasoning_effort": "high",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/output_config/effort")
+            .and_then(Value::as_str),
+        Some("high"),
+        "dest Chat reasoning_effort must reach Messages output_config.effort, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.reasoning_effort"),
+        "Messages has output_config.effort and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_json_schema_reaches_messages_output_config() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "schema": {"type": "object", "properties": {"city": {"type": "string"}}}
+            }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/output_config/format/type")
+            .and_then(Value::as_str),
+        Some("json_schema"),
+        "dest Chat json_schema must reach Messages output_config.format, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/output_config/format/schema/properties/city/type")
+            .and_then(Value::as_str),
+        Some("string"),
+        "dest Chat schema properties must reach Messages, got {body}"
+    );
+    assert!(
+        body.pointer("/output_config/format/name").is_none()
+            && body.pointer("/output_config/format/schema/name").is_none(),
+        "Messages output_config.format has no name slot, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema"),
+        "Messages has output_config.format and must not Drop json_schema, got {report:?}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema_name"),
+        "Messages output_config.format has no name and must Drop json_schema_name, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_converse_document_reaches_chat() {
     let req = br#"{
         "messages": [{
@@ -3676,20 +3819,35 @@ fn responses_json_schema_without_name_is_dropped() {
 }
 
 #[test]
-fn messages_json_schema_is_dropped() {
+fn messages_json_schema_reaches_output_config_format() {
     let ir = user_ir(IrSampling::patch(|s| {
         s.json_schema = Some(serde_json::json!({"type": "object"}));
         s.json_schema_name = Some("answer".into());
     }));
     let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/output_config/format/type")
+            .and_then(Value::as_str),
+        Some("json_schema"),
+        "Messages must emit output_config.format.type, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/output_config/format/schema"),
+        Some(&serde_json::json!({"type": "object"})),
+        "Messages must emit output_config.format.schema, got {body}"
+    );
     assert!(
         body.get("response_format").is_none() && body.get("output_format").is_none(),
         "Messages must not invent a structured-output slot, got {body}"
     );
     assert!(
-        loss_dropped(&report, "sampling.json_schema"),
-        "Messages must Drop json_schema with no slot, got {report:?}"
+        !loss_dropped(&report, "sampling.json_schema"),
+        "Messages has output_config.format and must not Drop json_schema, got {report:?}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.json_schema_name"),
+        "Messages output_config.format has no name and must Drop json_schema_name, got {report:?}"
     );
 }
 
