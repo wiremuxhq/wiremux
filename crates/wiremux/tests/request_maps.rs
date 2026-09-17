@@ -3470,7 +3470,38 @@ fn gemini_json_schema_round_trips() {
     );
     assert!(
         !loss_dropped(&report, "sampling.json_schema"),
-        "Gemini has a slot and must not Drop json_schema, got {report:?}"
+        "Gemini has responseSchema and must not Drop on encode, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_response_schema_reaches_chat_json_schema() {
+    let req = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "city"}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": {"type": "object", "properties": {"city": {"type": "string"}}}
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/response_format/type")
+            .and_then(Value::as_str),
+        Some("json_schema"),
+        "dest Gemini responseSchema must reach Chat json_schema, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/response_format/json_schema/schema/properties/city/type")
+            .and_then(Value::as_str),
+        Some("string"),
+        "dest Gemini schema properties must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema"),
+        "dest Gemini schema must not Drop on Chat encode, got {report:?}"
     );
 }
 
