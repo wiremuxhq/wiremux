@@ -451,8 +451,8 @@ fn responses_complete_status(reason: &str) -> &str {
     match reason {
         "failed" => "failed",
         "incomplete" | "length" | "max_tokens" => "incomplete",
-        "stop" => "completed",
-        other => other,
+        // Chat `tool_calls` is a completed Responses turn with function_call output.
+        _ => "completed",
     }
 }
 
