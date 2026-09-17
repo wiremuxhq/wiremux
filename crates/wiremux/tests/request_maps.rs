@@ -3353,6 +3353,83 @@ fn responses_json_schema_round_trips() {
 }
 
 #[test]
+fn dest_responses_json_object_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "input": "hi",
+        "text": { "format": { "type": "json_object" } }
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(
+        ir.sampling.json_object,
+        Some(true),
+        "dest Responses json_object must land on IR"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/response_format/type")
+            .and_then(Value::as_str),
+        Some("json_object"),
+        "dest Responses json_object must reach Chat response_format, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_object"),
+        "Chat has json_object and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_json_object_round_trips() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": { "type": "json_object" }
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.json_object, Some(true));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/response_format/type")
+            .and_then(Value::as_str),
+        Some("json_object"),
+        "dest Chat json_object must emit Chat response_format, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_object"),
+        "Chat has json_object and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_json_mime_reaches_chat() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": { "responseMimeType": "application/json" }
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    assert_eq!(
+        ir.sampling.json_object,
+        Some(true),
+        "dest Gemini application/json without schema must land on IR"
+    );
+    assert!(ir.sampling.json_schema.is_none());
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/response_format/type")
+            .and_then(Value::as_str),
+        Some("json_object"),
+        "dest Gemini json mime must reach Chat json_object, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_object"),
+        "Chat has json_object and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn chat_json_schema_without_name_is_dropped() {
     let ir = user_ir(IrSampling::patch(|s| {
         s.json_schema = Some(serde_json::json!({"type": "object"}));

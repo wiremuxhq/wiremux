@@ -150,6 +150,7 @@ fn parts_text(parts: &[IrPart]) -> String {
 
 fn decode_sampling(value: &Value) -> IrSampling {
     let (json_schema, json_schema_name) = chat_json_schema(value);
+    let json_object = chat_json_object(value);
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
@@ -168,10 +169,16 @@ fn decode_sampling(value: &Value) -> IrSampling {
         max_reasoning_tokens: u32_field(value, "max_reasoning_tokens"),
         json_schema,
         json_schema_name,
+        json_object,
         include: Vec::new(),
         prompt_cache_key: str_field(value, "prompt_cache_key").filter(|s| !s.trim().is_empty()),
         service_tier: str_field(value, "service_tier").filter(|s| !s.trim().is_empty()),
     }
+}
+
+fn chat_json_object(value: &Value) -> Option<bool> {
+    let format = value.get("response_format")?;
+    (format.get("type").and_then(Value::as_str) == Some("json_object")).then_some(true)
 }
 
 fn chat_json_schema(value: &Value) -> (Option<Value>, Option<String>) {
@@ -612,6 +619,8 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
                 "schema": schema,
             },
         });
+    } else if s.json_object == Some(true) {
+        body["response_format"] = json!({ "type": "json_object" });
     }
 }
 
