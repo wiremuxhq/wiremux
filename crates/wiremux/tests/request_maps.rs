@@ -2164,6 +2164,25 @@ fn loss_dropped(report: &LossReport, path: &str) -> bool {
         .any(|event| event.path == path && event.action == LossAction::Drop)
 }
 
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn assert_chat_file_data_prefix(file_data: &str, media_type: &str, b64: &str) {
+    let got = file_data.as_bytes();
+    let mut expected = Vec::with_capacity(5 + media_type.len() + 8 + b64.len());
+    expected.extend_from_slice(b"data:");
+    expected.extend_from_slice(media_type.as_bytes());
+    expected.extend_from_slice(b";base64,");
+    expected.extend_from_slice(b64.as_bytes());
+    assert!(
+        got.starts_with(&expected),
+        "Chat file_data prefix mismatch: got hex {} want hex {}",
+        hex_bytes(&got[..got.len().min(expected.len() + 8)]),
+        hex_bytes(&expected)
+    );
+}
+
 fn loss_degraded(report: &LossReport, path: &str) -> bool {
     report
         .events
@@ -3420,6 +3439,71 @@ fn dest_chat_user_reaches_chat() {
     assert!(
         !loss_dropped(&report, "sampling.user"),
         "Chat has user and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_converse_document_reaches_chat() {
+    let req = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"text": "summarize"},
+                {
+                    "document": {
+                        "format": "pdf",
+                        "name": "note",
+                        "source": {"bytes": "JVBERi0x"}
+                    }
+                }
+            ]
+        }]
+    }"#;
+    let (ir, decode_report) = decode(Wire::Converse, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::Document {
+                    source: IrDocumentSource::Base64(data),
+                    media_type,
+                    name: Some(name),
+                } if data == "JVBERi0x"
+                    && media_type == "application/pdf"
+                    && name == "note"
+            ))
+        )),
+        "dest Converse document must land on IR, got {:?}",
+        ir.items
+    );
+    assert!(
+        !loss_dropped(&decode_report, "part.document"),
+        "dest Converse document decode must not Drop, got {decode_report:?}"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    let file = content
+        .iter()
+        .find(|part| part.get("type").and_then(Value::as_str) == Some("file"))
+        .expect("file part");
+    assert_eq!(
+        file.pointer("/file/filename").and_then(Value::as_str),
+        Some("note"),
+        "Chat filename must be note, got {body}"
+    );
+    let file_data = file
+        .pointer("/file/file_data")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert_chat_file_data_prefix(file_data, "application/pdf", "JVBERi0x");
+    assert!(
+        !loss_dropped(&report, "part.document"),
+        "Chat has file_data and must not Drop, got {report:?}"
     );
 }
 
