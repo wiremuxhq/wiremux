@@ -263,6 +263,72 @@ fn media_type_from_converse_format(format: &str) -> String {
     }
 }
 
+fn media_type_from_converse_image_format(format: &str) -> String {
+    let format = format.trim();
+    if format.contains('/') {
+        return format.to_string();
+    }
+    match format.to_ascii_lowercase().as_str() {
+        "png" => "image/png".into(),
+        "jpeg" | "jpg" => "image/jpeg".into(),
+        "gif" => "image/gif".into(),
+        "webp" => "image/webp".into(),
+        "" => "image/png".into(),
+        other => format!("image/{other}"),
+    }
+}
+
+fn converse_image_format(media_type: &str) -> Option<&'static str> {
+    let media = media_type.to_ascii_lowercase();
+    let media = media.strip_prefix("image/").unwrap_or(media.as_str());
+    match media {
+        "png" => Some("png"),
+        "jpeg" | "jpg" => Some("jpeg"),
+        "gif" => Some("gif"),
+        "webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+fn converse_image_format_from_url(url: &str) -> &'static str {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let ext = path
+        .rsplit_once('.')
+        .map(|(_, ext)| ext)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "png",
+        "jpg" | "jpeg" => "jpeg",
+        "gif" => "gif",
+        "webp" => "webp",
+        _ => "png",
+    }
+}
+
+fn converse_audio_format(format: &str) -> Option<&'static str> {
+    let lower = format.to_ascii_lowercase();
+    let lower = lower.strip_prefix("audio/").unwrap_or(&lower);
+    Some(match lower {
+        "mp3" => "mp3",
+        "opus" => "opus",
+        "wav" => "wav",
+        "aac" => "aac",
+        "flac" => "flac",
+        "mp4" => "mp4",
+        "ogg" => "ogg",
+        "mkv" => "mkv",
+        "mka" => "mka",
+        "x-aac" => "x-aac",
+        "m4a" => "m4a",
+        "mpeg" => "mpeg",
+        "mpga" => "mpga",
+        "pcm" => "pcm",
+        "webm" => "webm",
+        _ => return None,
+    })
+}
+
 fn document_filename(name: Option<&str>, media_type: &str) -> String {
     if let Some(name) = name.map(str::trim).filter(|s| !s.is_empty()) {
         return name.to_string();

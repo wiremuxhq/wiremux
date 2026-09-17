@@ -4036,6 +4036,233 @@ chat_path = "/v1/chat/completions"
 }
 
 #[test]
+fn proxy_dest_converse_image_reaches_chat() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 16384];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = &buf[..n];
+        let body_start = req
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|i| i + 4)
+            .unwrap_or(req.len());
+        let up: serde_json::Value =
+            serde_json::from_slice(&req[body_start..]).expect("upstream json");
+        let content = up
+            .pointer("/messages/0/content")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let image = content
+            .iter()
+            .find(|part| part.get("type").and_then(serde_json::Value::as_str) == Some("image_url"));
+        let url = image
+            .and_then(|part| part.pointer("/image_url/url"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let got = url.as_bytes();
+        let mut expected = Vec::from(*b"data:");
+        expected.extend_from_slice(b"image/png");
+        expected.extend_from_slice(b";base64,");
+        expected.extend_from_slice(b"iVBORw0KGgo");
+        assert!(
+            got.starts_with(&expected),
+            "dest Converse image url prefix mismatch: got hex {} want hex {}",
+            got.iter()
+                .take(expected.len() + 8)
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            expected
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        let body = r#"{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-from-converse-image.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-from-converse-image"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+            "--dump-loss",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"messages":[{"role":"user","content":[{"text":"see"},{"image":{"format":"png","source":{"bytes":"iVBORw0KGgo"}}}]}]}"#;
+    let req = format!(
+        "POST /model/amazon.nova-lite-v1:0/converse HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut dump = String::new();
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut dump);
+    }
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("HTTP/1.1 200") && resp.contains("ok"),
+        "dest Converse image follow-up must remap, got: {resp}"
+    );
+    assert!(
+        !dump.contains("part.image") && !dump.contains("converse image"),
+        "--dump-loss must not Drop dest Converse image, got: {dump}"
+    );
+}
+
+#[test]
+fn proxy_dest_converse_audio_reaches_chat() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 16384];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = &buf[..n];
+        let body_start = req
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|i| i + 4)
+            .unwrap_or(req.len());
+        let up: serde_json::Value =
+            serde_json::from_slice(&req[body_start..]).expect("upstream json");
+        let content = up
+            .pointer("/messages/0/content")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let audio = content.iter().find(|part| {
+            part.get("type").and_then(serde_json::Value::as_str) == Some("input_audio")
+        });
+        let data = audio
+            .and_then(|part| part.pointer("/input_audio/data"))
+            .and_then(serde_json::Value::as_str);
+        let format = audio
+            .and_then(|part| part.pointer("/input_audio/format"))
+            .and_then(serde_json::Value::as_str);
+        assert_eq!(
+            data,
+            Some("SUQz"),
+            "dest Converse audio data must reach Chat input_audio, got {up}"
+        );
+        assert_eq!(
+            format,
+            Some("mp3"),
+            "dest Converse audio format must reach Chat input_audio, got {up}"
+        );
+        let body = r#"{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "chat-from-converse-audio.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "chat-from-converse-audio"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+            "--dump-loss",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"messages":[{"role":"user","content":[{"text":"hear"},{"audio":{"format":"mp3","source":{"bytes":"SUQz"}}}]}]}"#;
+    let req = format!(
+        "POST /model/amazon.nova-lite-v1:0/converse HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut dump = String::new();
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut dump);
+    }
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("HTTP/1.1 200") && resp.contains("ok"),
+        "dest Converse audio follow-up must remap, got: {resp}"
+    );
+    assert!(
+        !dump.contains("part.audio"),
+        "--dump-loss must not Drop part.audio, got: {dump}"
+    );
+}
+
+#[test]
 fn proxy_dest_gemini_json_mime_reaches_chat() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
