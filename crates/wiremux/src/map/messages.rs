@@ -286,7 +286,12 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         include: Vec::new(),
         prompt_cache_key: None,
         service_tier: None,
-        user: None,
+        user: value
+            .pointer("/metadata/user_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     }
 }
 
@@ -1135,8 +1140,8 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.json_object == Some(true) {
         report.record("sampling.json_object", LossAction::Drop, "no slot");
     }
-    if s.user.is_some() {
-        report.record("sampling.user", LossAction::Drop, "no slot");
+    if let Some(user) = s.user.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        body["metadata"] = json!({ "user_id": user });
     }
 }
 

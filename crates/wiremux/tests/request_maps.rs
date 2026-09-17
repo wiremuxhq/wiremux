@@ -3443,6 +3443,58 @@ fn dest_chat_user_reaches_chat() {
 }
 
 #[test]
+fn dest_messages_user_id_reaches_chat() {
+    let req = br#"{
+        "model": "claude-sonnet-4",
+        "metadata": { "user_id": "dest-user-42" },
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, decode_report) = decode(Wire::Messages, req).expect("decode");
+    assert_eq!(
+        ir.sampling.user.as_deref(),
+        Some("dest-user-42"),
+        "dest Messages metadata.user_id must land on IR"
+    );
+    assert!(
+        !loss_dropped(&decode_report, "sampling.user"),
+        "dest Messages metadata.user_id decode must not Drop, got {decode_report:?}"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("user").and_then(Value::as_str),
+        Some("dest-user-42"),
+        "dest Messages metadata.user_id must reach Chat user, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.user"),
+        "Chat has user and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_user_reaches_messages_user_id() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "user": "dest-user-42",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/metadata/user_id").and_then(Value::as_str),
+        Some("dest-user-42"),
+        "dest Chat user must reach Messages metadata.user_id, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.user"),
+        "Messages has metadata.user_id and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_converse_document_reaches_chat() {
     let req = br#"{
         "messages": [{
