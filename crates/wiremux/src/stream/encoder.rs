@@ -22,6 +22,7 @@ enum BlockKind {
 /// Accumulates IR events into dialect-correct SSE frames.
 pub struct StreamEncoder {
     wire: Wire,
+    model: String,
     started: bool,
     finished: bool,
     next_block: u32,
@@ -41,6 +42,7 @@ impl StreamEncoder {
     pub fn new(wire: Wire) -> Self {
         Self {
             wire,
+            model: String::new(),
             started: false,
             finished: false,
             next_block: 0,
@@ -53,6 +55,13 @@ impl StreamEncoder {
             tool_got_arg: HashSet::new(),
             last_tool: HashMap::new(),
         }
+    }
+
+    /// Dest request model for Messages `message_start`.
+    #[must_use]
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
     }
 
     /// Encode one IR event. May emit opening or close frames first.
@@ -153,7 +162,7 @@ impl StreamEncoder {
                         "type": "message",
                         "role": "assistant",
                         "content": [],
-                        "model": "",
+                        "model": self.model,
                         "stop_reason": null,
                         "stop_sequence": null,
                         "usage": { "input_tokens": 0, "output_tokens": 0 }
@@ -719,6 +728,28 @@ mod tests {
                         .map(str::to_string)
                 })
         })
+    }
+
+    #[test]
+    fn messages_encoder_message_start_uses_dest_model() {
+        let mut enc = StreamEncoder::new(Wire::Messages).with_model("claude-sonnet-4");
+        let frames = enc
+            .push(IrStreamEvent::TextDelta { text: "hi".into() })
+            .expect("push");
+        let start = frames
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("message_start"))
+            .expect("message_start");
+        assert!(
+            start.data.contains("\"model\":\"claude-sonnet-4\""),
+            "message_start must use dest model, got {}",
+            start.data
+        );
+        assert!(
+            !start.data.contains("\"model\":\"\""),
+            "message_start must not emit empty model, got {}",
+            start.data
+        );
     }
 
     #[test]
