@@ -225,6 +225,10 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             "json_schema requires object schema",
         );
     }
+    let json_schema_name = json_schema
+        .as_ref()
+        .is_some()
+        .then(|| "response".to_string());
     IrSampling {
         temperature: f32_field(cfg, "temperature"),
         top_p: f32_field(cfg, "topP").or_else(|| f32_field(cfg, "top_p")),
@@ -245,7 +249,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .filter(|s| !s.trim().is_empty()),
         max_reasoning_tokens: None,
         json_schema,
-        json_schema_name: None,
+        json_schema_name,
         include: Vec::new(),
         prompt_cache_key: None,
         service_tier: None,
