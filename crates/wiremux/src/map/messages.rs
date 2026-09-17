@@ -272,7 +272,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         max_tokens: u32_field(value, "max_tokens"),
         stop: stop_values(value, &["stop_sequences", "stop"]),
         tool_choice: decode_tool_choice(value.get("tool_choice")),
-        parallel_tool_calls: bool_field(value, "parallel_tool_calls"),
+        parallel_tool_calls: decode_parallel_tool_calls(value),
         store: bool_field(value, "store"),
         previous_response_id: str_field(value, "previous_response_id"),
         cache: IrCache::default(),
@@ -291,7 +291,9 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         json_object: None,
         include: Vec::new(),
         prompt_cache_key: None,
-        service_tier: None,
+        service_tier: str_field(value, "service_tier")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
         user: value
             .pointer("/metadata/user_id")
             .and_then(Value::as_str)
@@ -334,6 +336,18 @@ fn messages_source_has_json_schema(value: &Value) -> bool {
         || value.get("json_schema").is_some()
         || value.pointer("/text/format/type").and_then(Value::as_str) == Some("json_schema")
         || value.pointer("/output_config/format").is_some()
+}
+
+fn decode_parallel_tool_calls(value: &Value) -> Option<bool> {
+    if let Some(disable) = value
+        .get("tool_choice")
+        .filter(|choice| choice.is_object())
+        .and_then(|choice| choice.get("disable_parallel_tool_use"))
+        .and_then(Value::as_bool)
+    {
+        return Some(!disable);
+    }
+    bool_field(value, "parallel_tool_calls")
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -1113,22 +1127,14 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         body["stop_sequences"] = json!(s.stop);
     }
     encode_tool_choice(&s.tool_choice, body);
-    if s.parallel_tool_calls.is_some() {
-        report.record(
-            "sampling.parallel_tool_calls",
-            LossAction::Preserve,
-            "implicit parallel tool_use",
-        );
-    }
+    encode_disable_parallel_tool_use(s.parallel_tool_calls, body, report);
     if s.store.is_some() {
         report.record("sampling.store", LossAction::Drop, "no slot");
     }
     if s.prompt_cache_key.is_some() {
         report.record("sampling.prompt_cache_key", LossAction::Drop, "no slot");
     }
-    if s.service_tier.is_some() {
-        report.record("sampling.service_tier", LossAction::Drop, "no slot");
-    }
+    encode_service_tier(s.service_tier.as_deref(), body, report);
     if s.previous_response_id.is_some() {
         report.record(
             "sampling.previous_response_id",
@@ -1331,5 +1337,73 @@ fn encode_tool_choice(choice: &IrToolChoice, body: &mut Value) {
         IrToolChoice::Named(name) => {
             body["tool_choice"] = json!({"type": "tool", "name": name});
         }
+    }
+}
+
+fn encode_disable_parallel_tool_use(
+    parallel: Option<bool>,
+    body: &mut Value,
+    report: &mut LossReport,
+) {
+    let Some(parallel) = parallel else {
+        return;
+    };
+    let has_obj = body.get("tool_choice").is_some_and(Value::is_object);
+    if parallel {
+        if !has_obj {
+            return;
+        }
+        body["tool_choice"]["disable_parallel_tool_use"] = json!(false);
+    } else {
+        if !has_obj {
+            body["tool_choice"] = json!({ "type": "auto" });
+        }
+        body["tool_choice"]["disable_parallel_tool_use"] = json!(true);
+    }
+    report.record(
+        "sampling.parallel_tool_calls",
+        LossAction::Preserve,
+        "messages disable_parallel_tool_use",
+    );
+}
+
+fn encode_service_tier(tier: Option<&str>, body: &mut Value, report: &mut LossReport) {
+    let Some(tier) = tier else {
+        return;
+    };
+    let trimmed = tier.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("unspecified") {
+        return;
+    }
+    match messages_service_tier(trimmed) {
+        Some((mapped, degrade)) => {
+            body["service_tier"] = json!(mapped);
+            if let Some(detail) = degrade {
+                report.record("sampling.service_tier", LossAction::Degrade, detail);
+            }
+        }
+        None => {
+            report.record(
+                "sampling.service_tier",
+                LossAction::Drop,
+                "unmapped service_tier",
+            );
+        }
+    }
+}
+
+fn messages_service_tier(tier: &str) -> Option<(String, Option<&'static str>)> {
+    let lower = tier.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "auto" | "standard_only" => Some((lower, None)),
+        "default" => Some((
+            "standard_only".into(),
+            Some("default maps to standard_only"),
+        )),
+        "standard" => Some((
+            "standard_only".into(),
+            Some("standard maps to standard_only"),
+        )),
+        _ => None,
     }
 }

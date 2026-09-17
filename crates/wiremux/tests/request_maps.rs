@@ -3648,6 +3648,173 @@ fn dest_chat_json_schema_reaches_messages_output_config() {
 }
 
 #[test]
+fn dest_messages_service_tier_reaches_chat() {
+    let req = br#"{
+        "model": "claude-sonnet-4",
+        "max_tokens": 16,
+        "service_tier": "auto",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, decode_report) = decode(Wire::Messages, req).expect("decode dest Messages");
+    assert_eq!(
+        ir.sampling.service_tier.as_deref(),
+        Some("auto"),
+        "dest Messages service_tier must land on IR"
+    );
+    assert!(
+        !loss_dropped(&decode_report, "sampling.service_tier"),
+        "dest Messages service_tier decode must not Drop, got {decode_report:?}"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("service_tier").and_then(Value::as_str),
+        Some("auto"),
+        "dest Messages service_tier must reach Chat service_tier, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.service_tier"),
+        "Chat has service_tier and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_auto_service_tier_reaches_messages() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "service_tier": "auto",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("service_tier").and_then(Value::as_str),
+        Some("auto"),
+        "dest Chat service_tier auto must reach Messages service_tier, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.service_tier"),
+        "Messages has service_tier and must not Drop auto, got {report:?}"
+    );
+    assert!(
+        !loss_degraded(&report, "sampling.service_tier"),
+        "auto is official dest Messages and must not Degrade, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_default_service_tier_degrades_to_messages_standard_only() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "service_tier": "default",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("service_tier").and_then(Value::as_str),
+        Some("standard_only"),
+        "dest Chat default must degrade to Messages standard_only, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "sampling.service_tier"),
+        "default must Degrade to standard_only, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.service_tier"),
+        "default must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_flex_service_tier_drops_on_messages() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "service_tier": "flex",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("service_tier").is_none(),
+        "dest Chat flex must not invent Messages service_tier, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.service_tier"),
+        "dest Chat flex must Drop on Messages, got {report:?}"
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "sampling.service_tier"
+                && event.action == LossAction::Drop
+                && event.detail == "no slot"
+        }),
+        "Messages has a slot; Drop detail must not be no slot, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_messages_disable_parallel_tool_use_reaches_chat() {
+    let req = br#"{
+        "model": "claude-sonnet-4",
+        "max_tokens": 16,
+        "tool_choice": {"type": "auto", "disable_parallel_tool_use": true},
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, decode_report) = decode(Wire::Messages, req).expect("decode dest Messages");
+    assert_eq!(
+        ir.sampling.parallel_tool_calls,
+        Some(false),
+        "dest Messages disable_parallel_tool_use must invert onto IR parallel_tool_calls"
+    );
+    assert!(
+        !loss_dropped(&decode_report, "sampling.parallel_tool_calls"),
+        "dest Messages disable_parallel_tool_use decode must not Drop, got {decode_report:?}"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("parallel_tool_calls").and_then(Value::as_bool),
+        Some(false),
+        "dest Messages disable_parallel_tool_use must reach Chat parallel_tool_calls false, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.parallel_tool_calls"),
+        "Chat has parallel_tool_calls and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_parallel_tool_calls_false_reaches_messages() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "parallel_tool_calls": false,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/tool_choice/disable_parallel_tool_use")
+            .and_then(Value::as_bool),
+        Some(true),
+        "dest Chat parallel_tool_calls false must reach Messages disable_parallel_tool_use, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/tool_choice/type").and_then(Value::as_str),
+        Some("auto"),
+        "absent Messages tool_choice must become type auto to carry disable_parallel_tool_use, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.parallel_tool_calls"),
+        "Messages has disable_parallel_tool_use and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_converse_document_reaches_chat() {
     let req = br#"{
         "messages": [{
