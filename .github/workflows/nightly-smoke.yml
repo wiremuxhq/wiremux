@@ -72,6 +72,8 @@ jobs:
           RUSTUP_TOOLCHAIN: nightly
         run: |
           set -euo pipefail
-          cargo fuzz build
-          cargo fuzz run sse_frames -- -max_total_time=5
-          cargo fuzz run eventstream -- -max_total_time=5
+          # taiki-e cargo-fuzz is a musl binary. cargo-fuzz then defaults
+          # --target to musl, and ASAN refuses statically linked libc.
+          cargo fuzz build --target x86_64-unknown-linux-gnu
+          cargo fuzz run --target x86_64-unknown-linux-gnu sse_frames -- -max_total_time=5
+          cargo fuzz run --target x86_64-unknown-linux-gnu eventstream -- -max_total_time=5
