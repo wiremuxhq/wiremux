@@ -179,6 +179,10 @@ pub struct IrSampling {
     /// (Chat encode defaults to `wav` when emitting `audio`). Dest
     /// Messages, dest Responses, and dest Converse drop.
     pub audio_format: Option<String>,
+    /// Dest Chat `logprobs` boolean. Dest Gemini
+    /// `generationConfig.responseLogprobs`. Distinct from `top_logprobs`.
+    /// Dest Messages, dest Responses, and dest Converse drop.
+    pub logprobs: Option<bool>,
 }
 
 impl IrSampling {

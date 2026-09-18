@@ -235,6 +235,11 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         .then(|| "response".to_string());
     let json_object = gemini_json_object(cfg, json_schema.is_some());
     gemini_drop_speech_language(cfg, report);
+    let top_logprobs = u32_field(cfg, "logprobs").or_else(|| u32_field(cfg, "top_logprobs"));
+    let logprobs = bool_field(cfg, "responseLogprobs")
+        .or_else(|| bool_field(cfg, "response_logprobs"))
+        .or_else(|| bool_field(cfg, "logprobs"))
+        .or(top_logprobs.is_some().then_some(true));
     IrSampling {
         temperature: f32_field(cfg, "temperature"),
         top_p: f32_field(cfg, "topP").or_else(|| f32_field(cfg, "top_p")),
@@ -262,7 +267,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         prompt_cache_retention: None,
         prompt_cache_mode: None,
         prompt_cache_ttl: None,
-        top_logprobs: u32_field(cfg, "logprobs").or_else(|| u32_field(cfg, "top_logprobs")),
+        top_logprobs,
         moderation_model: None,
         moderation_input: None,
         moderation_output: None,
@@ -281,6 +286,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         output_modalities: gemini_output_modalities(cfg, report),
         audio_voice: gemini_speech_voice(cfg),
         audio_format: None,
+        logprobs,
     }
 }
 
@@ -733,9 +739,18 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if let Some(n) = s.n {
         cfg["candidateCount"] = json!(n);
     }
+    if s.logprobs == Some(true) || s.top_logprobs.is_some() {
+        cfg["responseLogprobs"] = json!(true);
+    }
+    if s.logprobs == Some(true) {
+        report.record(
+            "sampling.logprobs",
+            LossAction::Preserve,
+            "gemini generationConfig.responseLogprobs",
+        );
+    }
     if let Some(n) = s.top_logprobs {
         cfg["logprobs"] = json!(n);
-        cfg["responseLogprobs"] = json!(true);
         report.record(
             "sampling.top_logprobs",
             LossAction::Preserve,

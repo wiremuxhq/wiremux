@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use super::MapError;
 use super::drop_dest_chat_sampling_extras;
+use super::drop_dest_logprobs;
 use super::drop_dest_n_and_penalties;
 use super::drop_dest_output_modalities;
 use super::drop_dest_top_logprobs;
@@ -741,6 +742,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     drop_dest_chat_sampling_extras(s, report);
     drop_dest_top_logprobs(s, report);
+    drop_dest_logprobs(s, report);
     drop_dest_n_and_penalties(s, report);
     drop_dest_output_modalities(s, report);
     if let Some(tier) = s.service_tier.as_deref() {
