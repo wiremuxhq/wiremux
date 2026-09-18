@@ -54,6 +54,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("crates/wiremux/Cargo.toml", text)
         self.assertIn("crates/wiremux-auth/Cargo.toml", text)
         self.assertIn("$.dependencies.wiremux-auth.version", text)
+        self.assertIn("docs/BLINE-CONSUME.md", text)
 
     def test_release_please_is_main_only(self) -> None:
         text = (WORKFLOWS / "release-please.yml").read_text(encoding="utf-8")

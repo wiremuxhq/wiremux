@@ -2,9 +2,14 @@
 
 #[test]
 fn consume_notes_do_not_claim_consume_is_unstarted() {
+    let version = env!("CARGO_PKG_VERSION");
     let notes = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../docs/BLINE-CONSUME.md"
+    ));
+    let release_please = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../release-please-config.json"
     ));
     assert!(
         !notes.contains("Bline consume is not started"),
@@ -20,14 +25,15 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         .and_then(|rest| rest.split("```").next())
         .expect("suggested attach toml fence");
     assert!(
-        attach.contains("wiremux-auth = \"0.6.0\"")
-            && attach.contains("version = \"0.6.0\"")
-            && attach.contains("default-features = false"),
-        "published-host attach must list crates.io form, got {attach}"
+        attach.contains(&format!("wiremux-auth = \"{version}\""))
+            && attach.contains(&format!("version = \"{version}\""))
+            && attach.contains("default-features = false")
+            && attach.contains("x-release-please-version"),
+        "published-host attach must list crates.io {version} with a release-please marker, got {attach}"
     );
     assert!(
         !notes.contains("tag = \"v0.1.0\""),
-        "Bline attach is crates.io 0.6.0, not git tag v0.1.0"
+        "Bline attach is crates.io {version}, not git tag v0.1.0"
     );
     assert!(
         !notes.contains("leftover-only")
@@ -42,15 +48,52 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         "notes must record the live Bline wrap, not leftover-only"
     );
     assert!(
-        notes.contains("crates.io is `0.6.0`")
+        notes.contains(&format!("crates.io is `{version}`"))
+            && notes.contains(&format!("v{version}"))
             && notes.contains("v0.6.0")
             && notes.contains("v0.5.0")
             && notes.contains("3996")
             && notes.contains("4010")
             && notes.contains("v0.4.0")
             && notes.contains("not in crates.io `0.4.0`")
-            && notes.contains("not in crates.io `0.5.0`"),
-        "notes must name crates.io 0.6.0 and keep the Bline 3996/4010/0.4.0/0.5.0 history"
+            && notes.contains("not in crates.io `0.5.0`")
+            && notes.contains("#181"),
+        "notes must name crates.io {version} and keep the Bline 3996/4010/0.4.0/0.5.0/0.6.0 history"
+    );
+    for needle in [
+        format!("crates.io is `{version}`"),
+        format!("Current tag is `v{version}`"),
+        format!("published tag `v{version}`"),
+        format!("pin crates.io `{version}`"),
+        format!("Matching tag is `v{version}`"),
+        format!("stay on `{version}`"),
+    ] {
+        let line = notes
+            .lines()
+            .find(|line| line.contains(&needle))
+            .unwrap_or_else(|| panic!("missing current-pin line: {needle}"));
+        assert!(
+            line.contains("x-release-please-version"),
+            "current-pin line must carry a release-please marker: {line}"
+        );
+        assert_eq!(
+            line.matches(version).count(),
+            1,
+            "generic extra-files rewrites only the first semver on a marked line: {line}"
+        );
+    }
+    let history_pin = notes
+        .lines()
+        .find(|line| line.contains("The 0.6.0 pin was tag"))
+        .expect("0.6.0 leftover-prove history");
+    assert!(
+        !history_pin.contains("x-release-please-version"),
+        "history pins must not be extra-files targets: {history_pin}"
+    );
+    assert!(
+        release_please.contains("docs/BLINE-CONSUME.md")
+            && release_please.contains("\"type\": \"generic\""),
+        "release-please extra-files must bump the consume pin as generic"
     );
     assert!(
         notes.contains("default-features = false"),
