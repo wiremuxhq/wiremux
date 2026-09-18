@@ -5002,6 +5002,94 @@ fn dest_chat_seed_reaches_chat() {
 }
 
 #[test]
+fn dest_chat_logit_bias_reaches_chat() {
+    let req = br#"{
+        "model":"gpt-4o",
+        "messages":[{"role":"user","content":"hi"}],
+        "logit_bias":{"123":-100}
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/logit_bias/123").and_then(Value::as_f64),
+        Some(-100.0),
+        "dest Chat logit_bias must emit Chat logit_bias, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.logit_bias"),
+        "Chat has logit_bias and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_prediction_reaches_chat() {
+    let req = br#"{
+        "model":"gpt-4o",
+        "messages":[{"role":"user","content":"hi"}],
+        "prediction":{"type":"content","content":"hello"}
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("prediction"),
+        Some(&serde_json::json!({"type":"content","content":"hello"})),
+        "dest Chat prediction must emit Chat prediction, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.prediction"),
+        "Chat has prediction and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_web_search_options_reaches_chat() {
+    let req = br#"{
+        "model":"gpt-4o",
+        "messages":[{"role":"user","content":"hi"}],
+        "web_search_options":{"search_context_size":"low"}
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/web_search_options/search_context_size")
+            .and_then(Value::as_str),
+        Some("low"),
+        "dest Chat web_search_options must emit Chat web_search_options, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.web_search_options"),
+        "Chat has web_search_options and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_logit_bias_drops() {
+    let req = br#"{
+        "model":"gpt-4o",
+        "messages":[{"role":"user","content":"hi"}],
+        "logit_bias":{"123":-100}
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode dest Gemini");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("logit_bias").is_none(),
+        "dest Gemini must not invent logit_bias, got {body}"
+    );
+    assert!(
+        body.pointer("/generationConfig/logit_bias").is_none(),
+        "dest Gemini must not invent generationConfig.logit_bias, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.logit_bias"),
+        "dest Gemini has no logit_bias slot and must Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_gemini_candidate_count_reaches_chat_n() {
     let req = br#"{
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],

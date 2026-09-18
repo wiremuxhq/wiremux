@@ -183,6 +183,15 @@ pub struct IrSampling {
     /// `generationConfig.responseLogprobs`. Distinct from `top_logprobs`.
     /// Dest Messages, dest Responses, and dest Converse drop.
     pub logprobs: Option<bool>,
+    /// Dest Chat `logit_bias` token-id to bias (-100..100). Dest Responses,
+    /// dest Gemini, dest Messages, and dest Converse drop.
+    pub logit_bias: BTreeMap<String, f64>,
+    /// Dest Chat `prediction` object (`type` + `content`). Dest Responses,
+    /// dest Gemini, dest Messages, and dest Converse drop.
+    pub prediction: Option<serde_json::Value>,
+    /// Dest Chat `web_search_options` object. Dest Responses, dest Gemini,
+    /// dest Messages, and dest Converse drop.
+    pub web_search_options: Option<serde_json::Value>,
 }
 
 impl IrSampling {

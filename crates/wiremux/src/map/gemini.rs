@@ -287,6 +287,9 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         audio_voice: gemini_speech_voice(cfg),
         audio_format: None,
         logprobs,
+        logit_bias: std::collections::BTreeMap::new(),
+        prediction: None,
+        web_search_options: None,
     }
 }
 
