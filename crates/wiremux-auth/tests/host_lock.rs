@@ -1,4 +1,4 @@
-//! Keep wiremux-auth versions compatible with a Bline host lock.
+//! Keep wiremux-auth versions compatible with a host lock.
 
 #[test]
 fn cargo_toml_aligns_keyring_reqwest_toml() {
@@ -9,7 +9,7 @@ fn cargo_toml_aligns_keyring_reqwest_toml() {
     );
     assert!(
         !manifest.contains("toml = \"1.1.6\""),
-        "1.1.6 floor rejects Bline's 1.1.5 lock"
+        "1.1.6 floor rejects a 1.1.5 host lock"
     );
     assert!(
         manifest.contains("version = \"0.13"),

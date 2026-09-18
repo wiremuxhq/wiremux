@@ -54,7 +54,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("crates/wiremux/Cargo.toml", text)
         self.assertIn("crates/wiremux-auth/Cargo.toml", text)
         self.assertIn("$.dependencies.wiremux-auth.version", text)
-        self.assertIn("docs/BLINE-CONSUME.md", text)
+        self.assertIn("docs/CONSUME.md", text)
 
     def test_release_please_is_main_only(self) -> None:
         text = (WORKFLOWS / "release-please.yml").read_text(encoding="utf-8")
@@ -209,7 +209,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("fail: ${{ github.event_name != 'pull_request' }}", links)
         lychee = (ROOT / "lychee.toml").read_text(encoding="utf-8")
         self.assertIn("exclude_path = [\"CHANGELOG.md\"]", lychee)
-        self.assertIn("github\\\\.com/blineai/bline", lychee)
+        self.assertNotIn("blineai/bline", lychee)
 
     def test_apply_release_notes_dry_run(self) -> None:
         import subprocess

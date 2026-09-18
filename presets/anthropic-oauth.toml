@@ -33,7 +33,7 @@ creds_format = "claude-credentials"
 # Alias of json-pointer: /claudeAiOauth/accessToken|refreshToken|expiresAt, expires_unit = "ms"
 access_env = "CLAUDE_CODE_OAUTH_TOKEN"
 login = "setup-token"
-setup_token_hint = "run `claude setup-token` (Bline and wiremux do not implement Anthropic login in the shipped profile)"
+setup_token_hint = "run `claude setup-token` (this profile does not implement Anthropic login)"
 keychain_service = "Claude Code-credentials"
 keychain_accounts = ["Claude Code", "credentials"]
 

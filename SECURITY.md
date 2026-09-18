@@ -11,8 +11,8 @@ to reproduce the issue (version or commit, steps, and impact). Credit
 in `CHANGELOG.md` when a fix ships.
 
 This workspace publishes `wiremux-auth` and `wiremux`. Reports that
-only affect a host (Bline, canact, or another consumer) belong in
-that host's advisory process.
+only affect a host application belong in that host's advisory
+process.
 
 | Check | Where |
 | --- | --- |

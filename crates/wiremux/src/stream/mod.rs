@@ -133,8 +133,9 @@ pub fn decode_stream_event(
 
 /// Decode one SSE frame into every IR event it carries.
 ///
-/// Bline emits usage and finish from the same `message_delta`. A 1:1 map
-/// would drop one. Empty vec is a recognized no-op.
+/// Chat Completions can emit usage and finish from the same
+/// `message_delta`. A 1:1 map would drop one. Empty vec is a
+/// recognized no-op.
 pub fn decode_stream_events(
     wire: Wire,
     raw: &RawSse,
