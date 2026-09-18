@@ -14,14 +14,14 @@ pub fn encode_response(wire: Wire, events: &[IrStreamEvent]) -> Result<Value, Ma
     encode_response_with_model(wire, events, "")
 }
 
-/// Same as [`encode_response`], with dest `model` for Messages, Gemini, and Responses.
+/// Same as [`encode_response`], with dest `model` for Chat, Messages, Gemini, and Responses.
 pub fn encode_response_with_model(
     wire: Wire,
     events: &[IrStreamEvent],
     model: &str,
 ) -> Result<Value, MapError> {
     match wire {
-        Wire::ChatCompletions => Ok(encode_chat_complete(events)),
+        Wire::ChatCompletions => Ok(encode_chat_complete(events, model)),
         Wire::Messages => Ok(encode_messages_complete(events, model)),
         Wire::Gemini => Ok(encode_gemini_complete(events, model)),
         Wire::Responses => Ok(encode_responses_complete(events, model)),
@@ -33,7 +33,7 @@ pub fn encode_response_with_model(
     }
 }
 
-fn encode_chat_complete(events: &[IrStreamEvent]) -> Value {
+fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
@@ -120,6 +120,9 @@ fn encode_chat_complete(events: &[IrStreamEvent]) -> Value {
         "object": "chat.completion",
         "choices": [choice],
     });
+    if !model.is_empty() {
+        out["model"] = json!(model);
+    }
     if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens)) = usage {
         let encoded = super::usage::encode_chat(
             prompt,
@@ -752,4 +755,24 @@ fn decode_gemini_complete(
         },
         profile,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::IrStreamEvent;
+
+    #[test]
+    fn dest_chat_complete_uses_dest_model() {
+        let events = [IrStreamEvent::TextDelta {
+            text: "pong".into(),
+        }];
+        let mapped = encode_response_with_model(Wire::ChatCompletions, &events, "claude-haiku-4-5")
+            .expect("encode Chat");
+        assert_eq!(
+            mapped.get("model").and_then(Value::as_str),
+            Some("claude-haiku-4-5"),
+            "dest Chat complete must keep dest model, got {mapped}"
+        );
+    }
 }
