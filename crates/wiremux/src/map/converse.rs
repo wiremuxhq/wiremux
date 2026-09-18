@@ -828,6 +828,15 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.user.is_some() {
         report.record("sampling.user", LossAction::Drop, "no slot");
     }
+    if s.verbosity.is_some() {
+        report.record("sampling.verbosity", LossAction::Drop, "no slot");
+    }
+    if s.safety_identifier.is_some() {
+        report.record("sampling.safety_identifier", LossAction::Drop, "no slot");
+    }
+    if !s.metadata.is_empty() {
+        report.record("sampling.metadata", LossAction::Drop, "no slot");
+    }
     if !s.include.is_empty() {
         report.record("sampling.include", LossAction::Drop, "no slot");
     }

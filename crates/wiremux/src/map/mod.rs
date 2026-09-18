@@ -7,6 +7,8 @@ mod messages;
 mod responses;
 mod tools;
 
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 use wiremux_auth::{ForbiddenFieldPolicy, ResolvedProfile, ToolNameCase, Wire};
 
@@ -198,6 +200,15 @@ fn apply_forbidden_fields(
 
 fn str_field(value: &Value, key: &str) -> Option<String> {
     value.get(key)?.as_str().map(str::to_string)
+}
+
+fn string_object_field(value: &Value, key: &str) -> BTreeMap<String, String> {
+    let Some(obj) = value.get(key).and_then(Value::as_object) else {
+        return BTreeMap::new();
+    };
+    obj.iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+        .collect()
 }
 
 fn split_data_url(url: &str) -> Option<(&str, &str)> {

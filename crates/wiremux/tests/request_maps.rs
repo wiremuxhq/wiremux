@@ -3453,6 +3453,193 @@ fn dest_chat_user_reaches_chat() {
 }
 
 #[test]
+fn dest_responses_verbosity_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "text": {"verbosity": "low"},
+        "input": "hi"
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(ir.sampling.verbosity.as_deref(), Some("low"));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("verbosity").and_then(Value::as_str),
+        Some("low"),
+        "dest Responses verbosity must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.verbosity"),
+        "Chat has verbosity and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_verbosity_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "verbosity": "high",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.verbosity.as_deref(), Some("high"));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("verbosity").and_then(Value::as_str),
+        Some("high"),
+        "dest Chat verbosity must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.verbosity"),
+        "Chat has verbosity and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_responses_safety_identifier_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "safety_identifier": "dest-safety-9",
+        "input": "hi"
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(
+        ir.sampling.safety_identifier.as_deref(),
+        Some("dest-safety-9")
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("safety_identifier").and_then(Value::as_str),
+        Some("dest-safety-9"),
+        "dest Responses safety_identifier must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.safety_identifier"),
+        "Chat has safety_identifier and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_safety_identifier_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "safety_identifier": "dest-safety-9",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(
+        ir.sampling.safety_identifier.as_deref(),
+        Some("dest-safety-9")
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("safety_identifier").and_then(Value::as_str),
+        Some("dest-safety-9"),
+        "dest Chat safety_identifier must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.safety_identifier"),
+        "Chat has safety_identifier and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_responses_metadata_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "metadata": {"ticket": "42"},
+        "input": "hi"
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(
+        ir.sampling.metadata.get("ticket").map(String::as_str),
+        Some("42")
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/metadata/ticket").and_then(Value::as_str),
+        Some("42"),
+        "dest Responses metadata must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.metadata"),
+        "Chat has metadata and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_metadata_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "metadata": {"ticket": "42"},
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(
+        ir.sampling.metadata.get("ticket").map(String::as_str),
+        Some("42")
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/metadata/ticket").and_then(Value::as_str),
+        Some("42"),
+        "dest Chat metadata must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.metadata"),
+        "Chat has metadata and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_responses_verbosity_keeps_json_schema() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "input": "hi",
+        "text": {
+            "verbosity": "low",
+            "format": {
+                "type": "json_schema",
+                "name": "answer",
+                "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+            }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(ir.sampling.verbosity.as_deref(), Some("low"));
+    assert!(
+        ir.sampling.json_schema.is_some(),
+        "dest Responses json_schema must land on IR"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/response_format/type")
+            .and_then(Value::as_str),
+        Some("json_schema"),
+        "dest Responses json_schema must reach Chat, got {body}"
+    );
+    assert_eq!(
+        body.get("verbosity").and_then(Value::as_str),
+        Some("low"),
+        "dest Responses verbosity must keep json_schema on Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.verbosity"),
+        "Chat has verbosity and must not Drop, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema"),
+        "Chat has json_schema and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_messages_user_id_reaches_chat() {
     let req = br#"{
         "model": "claude-sonnet-4",

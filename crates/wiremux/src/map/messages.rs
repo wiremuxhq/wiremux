@@ -300,6 +300,9 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        verbosity: None,
+        safety_identifier: None,
+        metadata: std::collections::BTreeMap::new(),
     }
 }
 
@@ -1133,6 +1136,15 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.prompt_cache_key.is_some() {
         report.record("sampling.prompt_cache_key", LossAction::Drop, "no slot");
+    }
+    if s.verbosity.is_some() {
+        report.record("sampling.verbosity", LossAction::Drop, "no slot");
+    }
+    if s.safety_identifier.is_some() {
+        report.record("sampling.safety_identifier", LossAction::Drop, "no slot");
+    }
+    if !s.metadata.is_empty() {
+        report.record("sampling.metadata", LossAction::Drop, "no slot");
     }
     encode_service_tier(s.service_tier.as_deref(), body, report);
     if s.previous_response_id.is_some() {

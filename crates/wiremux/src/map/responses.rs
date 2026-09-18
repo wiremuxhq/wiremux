@@ -6,8 +6,8 @@ use wiremux_auth::{ResolvedProfile, ToolTypePolicy};
 use super::tools::{PreparedTool, decode_tool, qualify_call_name, split_namespace_name};
 use super::{
     MapError, bool_field, decode_input_audio_part, decode_openai_file_part, f32_field,
-    off_dialect_raw_path, responses_raw_passthrough, stop_values, str_field, u32_field,
-    value_as_string,
+    off_dialect_raw_path, responses_raw_passthrough, stop_values, str_field, string_object_field,
+    u32_field, value_as_string,
 };
 use crate::ir::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
@@ -254,6 +254,14 @@ fn decode_sampling(value: &Value) -> IrSampling {
         prompt_cache_key: str_field(value, "prompt_cache_key").filter(|s| !s.trim().is_empty()),
         service_tier: str_field(value, "service_tier").filter(|s| !s.trim().is_empty()),
         user: str_field(value, "user").filter(|s| !s.trim().is_empty()),
+        verbosity: value
+            .pointer("/text/verbosity")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        safety_identifier: str_field(value, "safety_identifier").filter(|s| !s.trim().is_empty()),
+        metadata: string_object_field(value, "metadata"),
     }
 }
 
@@ -658,6 +666,37 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if let Some(user) = s.user.as_deref().filter(|s| !s.trim().is_empty()) {
         body["user"] = json!(user);
     }
+    if let Some(id) = s
+        .safety_identifier
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        body["safety_identifier"] = json!(id);
+        report.record(
+            "sampling.safety_identifier",
+            LossAction::Preserve,
+            "responses safety_identifier",
+        );
+    }
+    if !s.metadata.is_empty() {
+        body["metadata"] = json!(s.metadata);
+        report.record(
+            "sampling.metadata",
+            LossAction::Preserve,
+            "responses metadata",
+        );
+    }
+    if let Some(verbosity) = s.verbosity.as_deref().filter(|s| !s.trim().is_empty()) {
+        if !body.get("text").is_some_and(Value::is_object) {
+            body["text"] = json!({});
+        }
+        body["text"]["verbosity"] = json!(verbosity);
+        report.record(
+            "sampling.verbosity",
+            LossAction::Preserve,
+            "responses text.verbosity",
+        );
+    }
     if let Some(tier) = s.service_tier.as_deref().filter(|s| !s.trim().is_empty()) {
         body["service_tier"] = json!(tier);
         report.record(
@@ -700,15 +739,19 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         && let Some((schema, name)) =
             super::official_json_schema(schema, s.json_schema_name.as_deref(), report)
     {
-        body["text"] = json!({
-            "format": {
-                "type": "json_schema",
-                "name": name,
-                "schema": schema,
-            }
+        if !body.get("text").is_some_and(Value::is_object) {
+            body["text"] = json!({});
+        }
+        body["text"]["format"] = json!({
+            "type": "json_schema",
+            "name": name,
+            "schema": schema,
         });
     } else if s.json_object == Some(true) {
-        body["text"] = json!({ "format": { "type": "json_object" } });
+        if !body.get("text").is_some_and(Value::is_object) {
+            body["text"] = json!({});
+        }
+        body["text"]["format"] = json!({ "type": "json_object" });
     }
 }
 
