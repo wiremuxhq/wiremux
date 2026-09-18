@@ -3640,6 +3640,48 @@ fn dest_responses_verbosity_keeps_json_schema() {
 }
 
 #[test]
+fn dest_chat_verbosity_and_schema_reach_responses() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "verbosity": "low",
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+            }
+        },
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.verbosity.as_deref(), Some("low"));
+    assert!(
+        ir.sampling.json_schema.is_some(),
+        "dest Chat json_schema must land on IR"
+    );
+    let (bytes, report) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/text/verbosity").and_then(Value::as_str),
+        Some("low"),
+        "dest Chat verbosity must reach Responses text.verbosity, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/text/format/type").and_then(Value::as_str),
+        Some("json_schema"),
+        "dest Responses encode must keep text.format next to verbosity, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.verbosity"),
+        "Responses has text.verbosity and must not Drop, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema"),
+        "Responses has text.format json_schema and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_messages_user_id_reaches_chat() {
     let req = br#"{
         "model": "claude-sonnet-4",
