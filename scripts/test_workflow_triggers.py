@@ -241,6 +241,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertNotIn("pull_request:", on_block)
         self.assertNotIn("push:", on_block)
         self.assertIn("cargo fuzz", text)
+        self.assertIn("--target x86_64-unknown-linux-gnu", text)
         self.assertIn("no live vendor secrets; skip", text)
 
     def test_msrv_is_1_95(self) -> None:
