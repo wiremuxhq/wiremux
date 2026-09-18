@@ -226,6 +226,21 @@ fn drop_dest_chat_sampling_extras(s: &IrSampling, report: &mut LossReport) {
     }
 }
 
+fn drop_dest_n_and_penalties(s: &IrSampling, report: &mut LossReport) {
+    if s.frequency_penalty.is_some() {
+        report.record("sampling.frequency_penalty", LossAction::Drop, "no slot");
+    }
+    if s.presence_penalty.is_some() {
+        report.record("sampling.presence_penalty", LossAction::Drop, "no slot");
+    }
+    if s.seed.is_some() {
+        report.record("sampling.seed", LossAction::Drop, "no slot");
+    }
+    if s.n.is_some() {
+        report.record("sampling.n", LossAction::Drop, "no slot");
+    }
+}
+
 fn string_object_field(value: &Value, key: &str) -> BTreeMap<String, String> {
     let Some(obj) = value.get(key).and_then(Value::as_object) else {
         return BTreeMap::new();
@@ -444,6 +459,10 @@ fn decode_input_audio_part(part: &Value) -> Option<IrPart> {
 
 fn f32_field(value: &Value, key: &str) -> Option<f32> {
     value.get(key)?.as_f64().map(|n| n as f32)
+}
+
+fn i64_field(value: &Value, key: &str) -> Option<i64> {
+    value.get(key)?.as_i64()
 }
 
 fn u32_field(value: &Value, key: &str) -> Option<u32> {

@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use super::tools::PreparedTool;
 use super::{
     MapError, audio_format_from_mime, audio_mime_from_format, bool_field, document_ref_source,
-    drop_dest_chat_sampling_extras, f32_field, is_audio_media_type, is_pdf_media_type, stop_values,
-    str_field, u32_field,
+    drop_dest_chat_sampling_extras, f32_field, i64_field, is_audio_media_type, is_pdf_media_type,
+    stop_values, str_field, u32_field,
 };
 use crate::ir::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
@@ -271,6 +271,12 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         verbosity: None,
         safety_identifier: None,
         metadata: std::collections::BTreeMap::new(),
+        frequency_penalty: f32_field(cfg, "frequencyPenalty")
+            .or_else(|| f32_field(cfg, "frequency_penalty")),
+        presence_penalty: f32_field(cfg, "presencePenalty")
+            .or_else(|| f32_field(cfg, "presence_penalty")),
+        seed: i64_field(cfg, "seed"),
+        n: u32_field(cfg, "candidateCount").or_else(|| u32_field(cfg, "candidate_count")),
     }
 }
 
@@ -650,6 +656,18 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if !s.stop.is_empty() {
         cfg["stopSequences"] = json!(s.stop);
+    }
+    if let Some(fp) = s.frequency_penalty {
+        cfg["frequencyPenalty"] = json!(fp);
+    }
+    if let Some(pp) = s.presence_penalty {
+        cfg["presencePenalty"] = json!(pp);
+    }
+    if let Some(seed) = s.seed {
+        cfg["seed"] = json!(seed);
+    }
+    if let Some(n) = s.n {
+        cfg["candidateCount"] = json!(n);
     }
     let thinking_budget = s.thinking_budget.or(s.max_reasoning_tokens);
     let thinking_level = s

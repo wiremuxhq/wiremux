@@ -148,6 +148,18 @@ pub struct IrSampling {
     /// Chat Completions and Responses `metadata` string map.
     /// Messages `metadata.user_id` stays on `user`. Gemini and Converse drop.
     pub metadata: BTreeMap<String, String>,
+    /// Chat Completions `frequency_penalty`. Gemini `generationConfig.frequencyPenalty`.
+    /// Messages, Responses, and Converse drop.
+    pub frequency_penalty: Option<f32>,
+    /// Chat Completions `presence_penalty`. Gemini `generationConfig.presencePenalty`.
+    /// Messages, Responses, and Converse drop.
+    pub presence_penalty: Option<f32>,
+    /// Chat Completions `seed`. Gemini `generationConfig.seed`.
+    /// Messages, Responses, and Converse drop.
+    pub seed: Option<i64>,
+    /// Chat Completions `n`. Gemini `generationConfig.candidateCount`.
+    /// Messages, Responses, and Converse drop.
+    pub n: Option<u32>,
     /// OpenAI / Codex `service_tier` (`flex`, `priority`, `auto`).
     /// Chat Completions and Responses emit it. Converse emits
     /// `serviceTier.type` (`flex` / `priority` / `reserved` /

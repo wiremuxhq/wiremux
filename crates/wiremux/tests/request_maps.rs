@@ -4748,6 +4748,193 @@ fn dest_gemini_json_mime_reaches_chat() {
 }
 
 #[test]
+fn dest_gemini_frequency_penalty_reaches_chat() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {"frequencyPenalty": 0.5}
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("frequency_penalty").and_then(Value::as_f64),
+        Some(0.5),
+        "dest Gemini frequencyPenalty must reach Chat frequency_penalty, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.frequency_penalty"),
+        "Chat has frequency_penalty and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_frequency_penalty_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "frequency_penalty": 0.5
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("frequency_penalty").and_then(Value::as_f64),
+        Some(0.5),
+        "dest Chat frequency_penalty must emit Chat frequency_penalty, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.frequency_penalty"),
+        "Chat has frequency_penalty and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_frequency_penalty_reaches_gemini() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "frequency_penalty": 0.5
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode Gemini");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/frequencyPenalty")
+            .and_then(Value::as_f64),
+        Some(0.5),
+        "dest Chat frequency_penalty must reach Gemini frequencyPenalty, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.frequency_penalty"),
+        "Gemini has frequencyPenalty and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_presence_penalty_reaches_chat() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {"presencePenalty": 0.5}
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("presence_penalty").and_then(Value::as_f64),
+        Some(0.5),
+        "dest Gemini presencePenalty must reach Chat presence_penalty, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.presence_penalty"),
+        "Chat has presence_penalty and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_presence_penalty_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "presence_penalty": 0.5
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("presence_penalty").and_then(Value::as_f64),
+        Some(0.5),
+        "dest Chat presence_penalty must emit Chat presence_penalty, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.presence_penalty"),
+        "Chat has presence_penalty and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_seed_reaches_chat() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {"seed": 7}
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("seed").and_then(Value::as_i64),
+        Some(7),
+        "dest Gemini seed must reach Chat seed, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.seed"),
+        "Chat has seed and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_seed_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "seed": 7
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("seed").and_then(Value::as_i64),
+        Some(7),
+        "dest Chat seed must emit Chat seed, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.seed"),
+        "Chat has seed and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_candidate_count_reaches_chat_n() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {"candidateCount": 2}
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("n").and_then(Value::as_u64),
+        Some(2),
+        "dest Gemini candidateCount must reach Chat n, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.n"),
+        "Chat has n and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_n_reaches_gemini_candidate_count() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "n": 2
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode Gemini");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/candidateCount")
+            .and_then(Value::as_u64),
+        Some(2),
+        "dest Chat n must reach Gemini candidateCount, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.n"),
+        "Gemini has candidateCount and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn chat_json_schema_without_name_is_dropped() {
     let ir = user_ir(IrSampling::patch(|s| {
         s.json_schema = Some(serde_json::json!({"type": "object"}));
