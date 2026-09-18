@@ -211,7 +211,52 @@ fn decode_sampling(value: &Value) -> IrSampling {
         presence_penalty: f32_field(value, "presence_penalty"),
         seed: i64_field(value, "seed"),
         n: u32_field(value, "n"),
+        output_modalities: chat_output_modalities(value),
+        audio_voice: chat_audio_voice(value),
+        audio_format: chat_audio_format(value),
     }
+}
+
+fn chat_output_modalities(value: &Value) -> Vec<String> {
+    let Some(arr) = value.get("modalities").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(Value::as_str)
+        .filter_map(|raw| {
+            if raw.eq_ignore_ascii_case("text") {
+                Some("text".to_string())
+            } else if raw.eq_ignore_ascii_case("audio") {
+                Some("audio".to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn chat_audio_voice(value: &Value) -> Option<String> {
+    let audio = value.get("audio")?;
+    if let Some(voice) = audio.get("voice").and_then(Value::as_str) {
+        let trimmed = voice.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
+    audio
+        .get("voice")
+        .and_then(|v| str_field(v, "id"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn chat_audio_format(value: &Value) -> Option<String> {
+    value
+        .get("audio")
+        .and_then(|audio| str_field(audio, "format"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn chat_json_object(value: &Value) -> Option<bool> {
@@ -729,6 +774,60 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     } else if s.json_object == Some(true) {
         body["response_format"] = json!({ "type": "json_object" });
     }
+    encode_output_modalities_and_audio(s, body, report);
+}
+
+fn encode_output_modalities_and_audio(s: &IrSampling, body: &mut Value, report: &mut LossReport) {
+    let modalities: Vec<String> = s
+        .output_modalities
+        .iter()
+        .filter_map(|raw| {
+            if raw.eq_ignore_ascii_case("text") {
+                Some("text".to_string())
+            } else if raw.eq_ignore_ascii_case("audio") {
+                Some("audio".to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    if !s.output_modalities.is_empty() && !modalities.is_empty() {
+        body["modalities"] = json!(modalities);
+        report.record(
+            "sampling.output_modalities",
+            LossAction::Preserve,
+            "chat modalities",
+        );
+    }
+    let has_audio_modality = s
+        .output_modalities
+        .iter()
+        .any(|raw| raw.eq_ignore_ascii_case("audio"));
+    let voice = s
+        .audio_voice
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    if voice.is_none() && !has_audio_modality {
+        return;
+    }
+    let format = s
+        .audio_format
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("wav");
+    let mut audio = serde_json::Map::new();
+    if let Some(voice) = voice {
+        audio.insert("voice".into(), json!(voice));
+        report.record(
+            "sampling.audio_voice",
+            LossAction::Preserve,
+            "chat audio.voice",
+        );
+    }
+    audio.insert("format".into(), json!(format));
+    body["audio"] = Value::Object(audio);
 }
 
 fn encode_prompt_cache_options(s: &IrSampling, body: &mut Value, report: &mut LossReport) {

@@ -234,6 +234,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         .is_some()
         .then(|| "response".to_string());
     let json_object = gemini_json_object(cfg, json_schema.is_some());
+    gemini_drop_speech_language(cfg, report);
     IrSampling {
         temperature: f32_field(cfg, "temperature"),
         top_p: f32_field(cfg, "topP").or_else(|| f32_field(cfg, "top_p")),
@@ -277,6 +278,69 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .or_else(|| f32_field(cfg, "presence_penalty")),
         seed: i64_field(cfg, "seed"),
         n: u32_field(cfg, "candidateCount").or_else(|| u32_field(cfg, "candidate_count")),
+        output_modalities: gemini_output_modalities(cfg, report),
+        audio_voice: gemini_speech_voice(cfg),
+        audio_format: None,
+    }
+}
+
+fn gemini_output_modalities(cfg: &Value, report: &mut LossReport) -> Vec<String> {
+    let Some(arr) = cfg
+        .get("responseModalities")
+        .or_else(|| cfg.get("response_modalities"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut saw_image = false;
+    for item in arr {
+        let Some(raw) = item.as_str() else {
+            continue;
+        };
+        if raw.eq_ignore_ascii_case("text") {
+            out.push("text".to_string());
+        } else if raw.eq_ignore_ascii_case("audio") {
+            out.push("audio".to_string());
+        } else if raw.eq_ignore_ascii_case("image") {
+            saw_image = true;
+        }
+    }
+    if saw_image {
+        report.record(
+            "sampling.output_modalities",
+            LossAction::Drop,
+            "image has no dest Chat slot",
+        );
+    }
+    out
+}
+
+fn gemini_speech_obj(cfg: &Value) -> Option<&Value> {
+    cfg.get("speechConfig").or_else(|| cfg.get("speech_config"))
+}
+
+fn gemini_speech_voice(cfg: &Value) -> Option<String> {
+    let speech = gemini_speech_obj(cfg)?;
+    let voice_cfg = speech
+        .get("voiceConfig")
+        .or_else(|| speech.get("voice_config"))?;
+    let prebuilt = voice_cfg
+        .get("prebuiltVoiceConfig")
+        .or_else(|| voice_cfg.get("prebuilt_voice_config"))?;
+    str_field(prebuilt, "voiceName")
+        .or_else(|| str_field(prebuilt, "voice_name"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn gemini_drop_speech_language(cfg: &Value, report: &mut LossReport) {
+    let Some(speech) = gemini_speech_obj(cfg) else {
+        return;
+    };
+    let lang = str_field(speech, "languageCode").or_else(|| str_field(speech, "language_code"));
+    if lang.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        report.record("sampling.audio_language", LossAction::Drop, "no slot");
     }
 }
 
@@ -712,6 +776,49 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         }
     } else if s.json_object == Some(true) {
         cfg["responseMimeType"] = json!("application/json");
+    }
+    let modalities: Vec<String> = s
+        .output_modalities
+        .iter()
+        .filter_map(|raw| {
+            if raw.eq_ignore_ascii_case("text") {
+                Some("TEXT".to_string())
+            } else if raw.eq_ignore_ascii_case("audio") {
+                Some("AUDIO".to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    if !s.output_modalities.is_empty() && !modalities.is_empty() {
+        cfg["responseModalities"] = json!(modalities);
+        report.record(
+            "sampling.output_modalities",
+            LossAction::Preserve,
+            "gemini generationConfig.responseModalities",
+        );
+    }
+    if let Some(voice) = s
+        .audio_voice
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        cfg["speechConfig"] = json!({
+            "voiceConfig": {
+                "prebuiltVoiceConfig": {
+                    "voiceName": voice
+                }
+            }
+        });
+        report.record(
+            "sampling.audio_voice",
+            LossAction::Preserve,
+            "gemini generationConfig.speechConfig",
+        );
+    }
+    if s.audio_format.is_some() {
+        report.record("sampling.audio_format", LossAction::Drop, "no slot");
     }
     if cfg.as_object().is_some_and(|o| !o.is_empty()) {
         body["generationConfig"] = cfg;

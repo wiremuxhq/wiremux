@@ -167,6 +167,18 @@ pub struct IrSampling {
     /// request-root `serviceTier` (`flex` / `priority` / `standard`;
     /// `default` / `auto` degrade to `standard`). Messages drops.
     pub service_tier: Option<String>,
+    /// Dest Chat `modalities` (`text` / `audio`). Dest Gemini
+    /// `generationConfig.responseModalities` (`TEXT` / `AUDIO`).
+    /// Dest Messages, dest Responses, and dest Converse drop.
+    pub output_modalities: Vec<String>,
+    /// Dest Chat `audio.voice` (string or object `id`). Dest Gemini
+    /// `generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName`.
+    /// Dest Messages, dest Responses, and dest Converse drop.
+    pub audio_voice: Option<String>,
+    /// Dest Chat `audio.format`. Dest Gemini speechConfig has no format
+    /// (Chat encode defaults to `wav` when emitting `audio`). Dest
+    /// Messages, dest Responses, and dest Converse drop.
+    pub audio_format: Option<String>,
 }
 
 impl IrSampling {

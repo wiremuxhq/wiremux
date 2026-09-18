@@ -244,6 +244,18 @@ fn drop_dest_n_and_penalties(s: &IrSampling, report: &mut LossReport) {
     }
 }
 
+fn drop_dest_output_modalities(s: &IrSampling, report: &mut LossReport) {
+    if !s.output_modalities.is_empty() {
+        report.record("sampling.output_modalities", LossAction::Drop, "no slot");
+    }
+    if s.audio_voice.is_some() {
+        report.record("sampling.audio_voice", LossAction::Drop, "no slot");
+    }
+    if s.audio_format.is_some() {
+        report.record("sampling.audio_format", LossAction::Drop, "no slot");
+    }
+}
+
 fn string_object_field(value: &Value, key: &str) -> BTreeMap<String, String> {
     let Some(obj) = value.get(key).and_then(Value::as_object) else {
         return BTreeMap::new();
