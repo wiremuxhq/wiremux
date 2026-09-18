@@ -4,8 +4,9 @@ use serde_json::{Value, json};
 
 use super::tools::{PreparedTool, decode_tool};
 use super::{
-    MapError, bool_field, drop_dest_chat_sampling_extras, f32_field, messages_raw_passthrough,
-    off_dialect_raw_path, stop_values, str_field, u32_field, value_as_string,
+    MapError, bool_field, drop_dest_chat_sampling_extras, drop_dest_n_and_penalties, f32_field,
+    messages_raw_passthrough, off_dialect_raw_path, stop_values, str_field, u32_field,
+    value_as_string,
 };
 use crate::ir::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
@@ -311,6 +312,10 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         verbosity: None,
         safety_identifier: None,
         metadata: std::collections::BTreeMap::new(),
+        frequency_penalty: None,
+        presence_penalty: None,
+        seed: None,
+        n: None,
     }
 }
 
@@ -1153,6 +1158,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         );
     }
     drop_dest_chat_sampling_extras(s, report);
+    drop_dest_n_and_penalties(s, report);
     if s.verbosity.is_some() {
         report.record("sampling.verbosity", LossAction::Drop, "no slot");
     }

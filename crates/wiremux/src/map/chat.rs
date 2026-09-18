@@ -4,8 +4,8 @@ use serde_json::{Value, json};
 
 use super::tools::{PreparedTool, decode_tool};
 use super::{
-    MapError, bool_field, decode_input_audio_part, decode_openai_file_part, f32_field, stop_values,
-    str_field, string_object_field, u32_field, value_as_string,
+    MapError, bool_field, decode_input_audio_part, decode_openai_file_part, f32_field, i64_field,
+    stop_values, str_field, string_object_field, u32_field, value_as_string,
 };
 use crate::ir::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
@@ -207,6 +207,10 @@ fn decode_sampling(value: &Value) -> IrSampling {
         verbosity: str_field(value, "verbosity").filter(|s| !s.trim().is_empty()),
         safety_identifier: str_field(value, "safety_identifier").filter(|s| !s.trim().is_empty()),
         metadata: string_object_field(value, "metadata"),
+        frequency_penalty: f32_field(value, "frequency_penalty"),
+        presence_penalty: f32_field(value, "presence_penalty"),
+        seed: i64_field(value, "seed"),
+        n: u32_field(value, "n"),
     }
 }
 
@@ -573,6 +577,18 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if !s.stop.is_empty() {
         body["stop"] = json!(s.stop);
+    }
+    if let Some(fp) = s.frequency_penalty {
+        body["frequency_penalty"] = json!(fp);
+    }
+    if let Some(pp) = s.presence_penalty {
+        body["presence_penalty"] = json!(pp);
+    }
+    if let Some(seed) = s.seed {
+        body["seed"] = json!(seed);
+    }
+    if let Some(n) = s.n {
+        body["n"] = json!(n);
     }
     encode_tool_choice(&s.tool_choice, body);
     if let Some(parallel) = s.parallel_tool_calls {

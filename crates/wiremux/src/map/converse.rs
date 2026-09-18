@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use super::MapError;
 use super::drop_dest_chat_sampling_extras;
+use super::drop_dest_n_and_penalties;
 use super::str_field;
 use super::string_object_field;
 use super::tools::PreparedTool;
@@ -737,6 +738,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         );
     }
     drop_dest_chat_sampling_extras(s, report);
+    drop_dest_n_and_penalties(s, report);
     if let Some(tier) = s.service_tier.as_deref() {
         match converse_service_tier(tier) {
             Some((mapped, degrade)) => {
