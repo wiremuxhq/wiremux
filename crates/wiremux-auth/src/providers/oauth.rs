@@ -21,7 +21,7 @@ use crate::helpers::{
 };
 use crate::keychain_guard::keychain_disabled;
 use crate::profile::{
-    AuthScheme, CredsFormat, ExpiresUnit, OauthPack, ResolvedProfile, TokenRequestFormat,
+    AuthScheme, CredsFormat, ExpiresUnit, Login, OauthPack, ResolvedProfile, TokenRequestFormat,
     TokenResponse,
 };
 use crate::providers::static_token::StaticToken;
@@ -1270,6 +1270,9 @@ fn absolute_write_back_path(path: &Path) -> Option<PathBuf> {
 }
 
 fn setup_hint(oauth: &OauthPack) -> String {
+    if matches!(oauth.login, Some(Login::None)) {
+        return "this profile does not start vendor login (set oauth.login to pkce or device and a wiremux client id, or overlay a store)".into();
+    }
     let hint = oauth
         .setup_token_hint
         .as_deref()
@@ -2801,6 +2804,31 @@ access_env = "WIREMUX_TEST_ACCESS"
         assert!(
             debug.contains("https://auth.example.invalid"),
             "Debug must keep redacted origin: {debug}"
+        );
+    }
+
+    #[test]
+    fn missing_creds_login_none_does_not_say_login_flow() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "none-login"
+[oauth]
+token_url = "https://auth.example.invalid/token"
+creds_path = "~/missing-store.json"
+login = "none"
+"#,
+        )
+        .expect("test profile");
+        let oauth = profile.oauth.as_ref().expect("oauth");
+        let msg = missing_creds(oauth).to_string();
+        assert!(
+            !msg.contains("login flow"),
+            "login=none must not tell the user to run auth login, got {msg}"
+        );
+        assert!(
+            msg.contains("does not start vendor login"),
+            "login=none must say vendor login is off, got {msg}"
         );
     }
 

@@ -22,6 +22,21 @@ pub fn load_cli_profile(profile_arg: &str) -> Result<ResolvedProfile, ProfileErr
     load_profile_from_cli(profile_arg, &LoadOptions::default())
 }
 
+/// Resolve `auth login` / `auth status` profile from `--profile` or a
+/// positional id (`profile validate` is already positional).
+pub fn pick_auth_profile(
+    flag: Option<String>,
+    positional: Option<String>,
+) -> Result<String, String> {
+    match (flag, positional) {
+        (Some(flag), Some(positional)) if flag != positional => {
+            Err("pass a profile id or --profile, not both (values differ)".into())
+        }
+        (Some(profile), _) | (None, Some(profile)) => Ok(profile),
+        (None, None) => Err("profile id required (positional or --profile)".into()),
+    }
+}
+
 /// Catalog ids from shipped presets plus user overlay dirs.
 pub fn list_cli_profiles() -> Result<Vec<String>, ProfileError> {
     list_profiles(&LoadOptions::default())
@@ -702,6 +717,29 @@ login = "none"
             reason.contains("overlay"),
             "must say overlay sets login, got {reason}"
         );
+    }
+
+    #[test]
+    fn pick_auth_profile_accepts_positional_or_flag() {
+        assert_eq!(
+            pick_auth_profile(None, Some("anthropic-oauth".into())).unwrap(),
+            "anthropic-oauth"
+        );
+        assert_eq!(
+            pick_auth_profile(Some("openai-codex".into()), None).unwrap(),
+            "openai-codex"
+        );
+        assert_eq!(
+            pick_auth_profile(Some("xai-oauth".into()), Some("xai-oauth".into())).unwrap(),
+            "xai-oauth"
+        );
+        let err = pick_auth_profile(None, None).expect_err("neither");
+        assert!(
+            err.contains("positional") && err.contains("--profile"),
+            "{err}"
+        );
+        let err = pick_auth_profile(Some("a".into()), Some("b".into())).expect_err("both");
+        assert!(err.contains("not both"), "{err}");
     }
 
     #[test]
