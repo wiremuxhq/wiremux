@@ -475,15 +475,15 @@ fn ingest_one(
             reason: skip_reason(id).to_string(),
         });
     }
+    let Some(vendor) = by_id.get(id) else {
+        return Err(vendor_err(id, "not in catalog"));
+    };
     if shipped(id) && !req.force {
         return Ok(IngestAction::Skipped {
             vendor: id.to_string(),
             reason: "already shipped (pass --force to write a user overlay)".into(),
         });
     }
-    let Some(vendor) = by_id.get(id) else {
-        return Err(vendor_err(id, "not in catalog"));
-    };
     let toml = profile_toml(vendor)?;
     parse_profile_str(&toml)
         .map_err(|e| vendor_err(id, &format!("emitted TOML failed parse: {e}")))?;
@@ -1197,6 +1197,33 @@ mod tests {
         }
         assert!(!dir.path().join("openai.toml").exists());
         assert!(!dir.path().join("azure.toml").exists());
+    }
+
+    #[test]
+    fn shipped_id_absent_from_catalog_is_not_in_catalog() {
+        assert!(
+            shipped("groq"),
+            "test needs a shipped id missing from LITELLM_FIXTURE"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let err = ingest_catalog(
+            LITELLM_FIXTURE,
+            &IngestRequest {
+                kind: CatalogKind::LiteLlm,
+                vendors: vec!["groq".into()],
+                dir: Some(dir.path().to_path_buf()),
+                dry_run: true,
+                ..IngestRequest::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("groq"), "{err}");
+        assert!(err.contains("not in catalog"), "{err}");
+        assert!(
+            !err.contains("already shipped"),
+            "catalog miss must win over shipped skip, got {err}"
+        );
     }
 
     #[test]
