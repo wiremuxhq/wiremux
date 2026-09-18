@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use super::tools::{PreparedTool, decode_tool};
 use super::{
     MapError, bool_field, decode_input_audio_part, decode_openai_file_part, f32_field, stop_values,
-    str_field, u32_field, value_as_string,
+    str_field, string_object_field, u32_field, value_as_string,
 };
 use crate::ir::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
@@ -174,6 +174,9 @@ fn decode_sampling(value: &Value) -> IrSampling {
         prompt_cache_key: str_field(value, "prompt_cache_key").filter(|s| !s.trim().is_empty()),
         service_tier: str_field(value, "service_tier").filter(|s| !s.trim().is_empty()),
         user: str_field(value, "user").filter(|s| !s.trim().is_empty()),
+        verbosity: str_field(value, "verbosity").filter(|s| !s.trim().is_empty()),
+        safety_identifier: str_field(value, "safety_identifier").filter(|s| !s.trim().is_empty()),
+        metadata: string_object_field(value, "metadata"),
     }
 }
 
@@ -578,6 +581,26 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(user) = s.user.as_deref().filter(|s| !s.trim().is_empty()) {
         body["user"] = json!(user);
+    }
+    if let Some(verbosity) = s.verbosity.as_deref().filter(|s| !s.trim().is_empty()) {
+        body["verbosity"] = json!(verbosity);
+        report.record("sampling.verbosity", LossAction::Preserve, "chat verbosity");
+    }
+    if let Some(id) = s
+        .safety_identifier
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        body["safety_identifier"] = json!(id);
+        report.record(
+            "sampling.safety_identifier",
+            LossAction::Preserve,
+            "chat safety_identifier",
+        );
+    }
+    if !s.metadata.is_empty() {
+        body["metadata"] = json!(s.metadata);
+        report.record("sampling.metadata", LossAction::Preserve, "chat metadata");
     }
     if let Some(tier) = s.service_tier.as_deref().filter(|s| !s.trim().is_empty()) {
         body["service_tier"] = json!(tier);

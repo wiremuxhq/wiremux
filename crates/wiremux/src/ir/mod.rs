@@ -1,5 +1,7 @@
 //! Item-centered IR and LossReport.
 
+use std::collections::BTreeMap;
+
 /// Protocol-neutral conversation. Hosts convert to/from their own types.
 ///
 /// Build with [`IrRequest::new`]. Extra fields stay at their defaults.
@@ -119,6 +121,15 @@ pub struct IrSampling {
     /// Chat Completions and Responses `user`. Messages, Gemini, and
     /// Converse drop.
     pub user: Option<String>,
+    /// Chat Completions `verbosity` and Responses `text.verbosity`
+    /// (`low` / `medium` / `high`). Gemini, Messages, and Converse drop.
+    pub verbosity: Option<String>,
+    /// Chat Completions and Responses `safety_identifier`.
+    /// Distinct from `user`. Gemini, Messages, and Converse drop.
+    pub safety_identifier: Option<String>,
+    /// Chat Completions and Responses `metadata` string map.
+    /// Messages `metadata.user_id` stays on `user`. Gemini and Converse drop.
+    pub metadata: BTreeMap<String, String>,
     /// OpenAI / Codex `service_tier` (`flex`, `priority`, `auto`).
     /// Chat Completions and Responses emit it. Converse emits
     /// `serviceTier.type` (`flex` / `priority` / `reserved` /
