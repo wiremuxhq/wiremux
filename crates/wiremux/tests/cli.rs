@@ -1405,6 +1405,10 @@ chat_path = "/v1/messages"
         "cross-dialect stream must remap assistant text, got: {resp}"
     );
     assert!(
+        resp.contains(r#""model":"claude-haiku""#),
+        "dest Chat stream must keep dest model, got: {resp}"
+    );
+    assert!(
         resp.contains("[DONE]"),
         "cross-dialect stream must end with Chat [DONE], got: {resp}"
     );
@@ -1484,6 +1488,10 @@ chat_path = "/v1/messages"
     assert!(
         resp.contains("200") && resp.contains("pong") && resp.contains("choices"),
         "non-stream chat→messages must return a Chat completion, got: {resp}"
+    );
+    assert!(
+        resp.contains(r#""model":"claude-haiku""#),
+        "dest Chat complete must keep dest model, got: {resp}"
     );
     assert!(
         !resp.contains("not mapped"),

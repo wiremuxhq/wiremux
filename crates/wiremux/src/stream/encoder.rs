@@ -63,7 +63,7 @@ impl StreamEncoder {
         }
     }
 
-    /// Dest request model for Messages, Gemini, and Responses encode.
+    /// Dest request model for Chat, Messages, Gemini, and Responses encode.
     #[must_use]
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
@@ -113,6 +113,14 @@ impl StreamEncoder {
     }
 
     fn attach_dest_model(&self, frame: RawSse) -> RawSse {
+        self.attach_dest_model_key(frame, "modelVersion")
+    }
+
+    fn attach_chat_dest_model(&self, frame: RawSse) -> RawSse {
+        self.attach_dest_model_key(frame, "model")
+    }
+
+    fn attach_dest_model_key(&self, frame: RawSse, key: &str) -> RawSse {
         if self.model.is_empty() || frame.data.trim() == "[DONE]" {
             return frame;
         }
@@ -122,7 +130,7 @@ impl StreamEncoder {
         let Value::Object(obj) = &mut value else {
             return frame;
         };
-        obj.insert("modelVersion".into(), json!(self.model.clone()));
+        obj.insert(key.into(), json!(self.model.clone()));
         RawSse {
             event: frame.event,
             data: value.to_string(),
@@ -632,7 +640,10 @@ impl StreamEncoder {
             IrStreamEvent::ToolCallEnd => {}
             other => out.push(encode_stream_event(Wire::ChatCompletions, &other)?),
         }
-        Ok(out)
+        Ok(out
+            .into_iter()
+            .map(|frame| self.attach_chat_dest_model(frame))
+            .collect())
     }
 
     fn finish_chat(&mut self) -> Vec<RawSse> {
@@ -657,7 +668,9 @@ impl StreamEncoder {
             event: None,
             data: "[DONE]".into(),
         });
-        out
+        out.into_iter()
+            .map(|frame| self.attach_chat_dest_model(frame))
+            .collect()
     }
 
     fn push_converse(&mut self, ev: IrStreamEvent) -> Result<Vec<RawSse>, MapError> {
@@ -916,6 +929,20 @@ mod tests {
             done.iter()
                 .all(|frame| !frame.data.contains("modelVersion")),
             "[DONE] must not grow a modelVersion, got {done:?}"
+        );
+    }
+
+    #[test]
+    fn chat_encoder_chunks_use_dest_model() {
+        let mut enc = StreamEncoder::new(Wire::ChatCompletions).with_model("claude-haiku-4-5");
+        let frames = enc
+            .push(IrStreamEvent::TextDelta { text: "hi".into() })
+            .expect("push");
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.data.contains("\"model\":\"claude-haiku-4-5\"")),
+            "dest Chat stream must include dest model, got {frames:?}"
         );
     }
 
