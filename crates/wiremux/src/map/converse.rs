@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use super::MapError;
 use super::str_field;
+use super::string_object_field;
 use super::tools::PreparedTool;
 use crate::ir::{
     IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction, LossReport,
@@ -347,6 +348,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
                 .map(str::to_string);
         }
     }
+    sampling.metadata = string_object_field(value, "requestMetadata");
     sampling
 }
 
@@ -842,7 +844,12 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         report.record("sampling.safety_identifier", LossAction::Drop, "no slot");
     }
     if !s.metadata.is_empty() {
-        report.record("sampling.metadata", LossAction::Drop, "no slot");
+        body["requestMetadata"] = json!(s.metadata);
+        report.record(
+            "sampling.metadata",
+            LossAction::Preserve,
+            "converse requestMetadata",
+        );
     }
     if !s.include.is_empty() {
         report.record("sampling.include", LossAction::Drop, "no slot");
