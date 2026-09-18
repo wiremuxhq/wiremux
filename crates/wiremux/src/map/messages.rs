@@ -291,6 +291,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         json_object: None,
         include: Vec::new(),
         prompt_cache_key: None,
+        prompt_cache_retention: None,
         service_tier: str_field(value, "service_tier")
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
@@ -1136,6 +1137,13 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.prompt_cache_key.is_some() {
         report.record("sampling.prompt_cache_key", LossAction::Drop, "no slot");
+    }
+    if s.prompt_cache_retention.is_some() {
+        report.record(
+            "sampling.prompt_cache_retention",
+            LossAction::Drop,
+            "no slot",
+        );
     }
     if s.verbosity.is_some() {
         report.record("sampling.verbosity", LossAction::Drop, "no slot");
