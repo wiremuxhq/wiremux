@@ -257,6 +257,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         json_object,
         include: Vec::new(),
         prompt_cache_key: None,
+        prompt_cache_retention: None,
         service_tier: gemini_decode_service_tier(value),
         user: None,
         verbosity: None,
@@ -686,6 +687,13 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.prompt_cache_key.is_some() {
         report.record("sampling.prompt_cache_key", LossAction::Drop, "no slot");
+    }
+    if s.prompt_cache_retention.is_some() {
+        report.record(
+            "sampling.prompt_cache_retention",
+            LossAction::Drop,
+            "no slot",
+        );
     }
     if s.user.is_some() {
         report.record("sampling.user", LossAction::Drop, "no slot");

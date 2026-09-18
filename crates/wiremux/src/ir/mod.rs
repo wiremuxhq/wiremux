@@ -118,6 +118,10 @@ pub struct IrSampling {
     /// OpenAI / Codex `prompt_cache_key`. Chat Completions and Responses
     /// emit it. Messages and Gemini drop.
     pub prompt_cache_key: Option<String>,
+    /// Chat Completions and Responses `prompt_cache_retention`
+    /// (`24h` / `in_memory`). Distinct from Messages `IrCache.retention`.
+    /// Gemini, Messages, and Converse drop.
+    pub prompt_cache_retention: Option<String>,
     /// Chat Completions and Responses `user`. Messages, Gemini, and
     /// Converse drop.
     pub user: Option<String>,

@@ -3497,6 +3497,72 @@ fn dest_chat_verbosity_reaches_chat() {
 }
 
 #[test]
+fn dest_responses_prompt_cache_retention_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "prompt_cache_retention": "24h",
+        "input": "hi"
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(ir.sampling.prompt_cache_retention.as_deref(), Some("24h"));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("prompt_cache_retention").and_then(Value::as_str),
+        Some("24h"),
+        "dest Responses prompt_cache_retention must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.prompt_cache_retention"),
+        "Chat has prompt_cache_retention and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_prompt_cache_retention_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "prompt_cache_retention": "24h",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.prompt_cache_retention.as_deref(), Some("24h"));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("prompt_cache_retention").and_then(Value::as_str),
+        Some("24h"),
+        "dest Chat prompt_cache_retention must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.prompt_cache_retention"),
+        "Chat has prompt_cache_retention and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_prompt_cache_retention_reaches_responses() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "prompt_cache_retention": "24h",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.prompt_cache_retention.as_deref(), Some("24h"));
+    let (bytes, report) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("prompt_cache_retention").and_then(Value::as_str),
+        Some("24h"),
+        "dest Chat prompt_cache_retention must reach Responses, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.prompt_cache_retention"),
+        "Responses has prompt_cache_retention and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_responses_safety_identifier_reaches_chat() {
     let req = br#"{
         "model": "gpt-4o",

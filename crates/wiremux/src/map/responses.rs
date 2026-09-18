@@ -252,6 +252,8 @@ fn decode_sampling(value: &Value) -> IrSampling {
         json_object,
         include: decode_include(value),
         prompt_cache_key: str_field(value, "prompt_cache_key").filter(|s| !s.trim().is_empty()),
+        prompt_cache_retention: str_field(value, "prompt_cache_retention")
+            .filter(|s| !s.trim().is_empty()),
         service_tier: str_field(value, "service_tier").filter(|s| !s.trim().is_empty()),
         user: str_field(value, "user").filter(|s| !s.trim().is_empty()),
         verbosity: value
@@ -661,6 +663,18 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             "sampling.prompt_cache_key",
             LossAction::Preserve,
             "responses prompt_cache_key",
+        );
+    }
+    if let Some(retention) = s
+        .prompt_cache_retention
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        body["prompt_cache_retention"] = json!(retention);
+        report.record(
+            "sampling.prompt_cache_retention",
+            LossAction::Preserve,
+            "responses prompt_cache_retention",
         );
     }
     if let Some(user) = s.user.as_deref().filter(|s| !s.trim().is_empty()) {

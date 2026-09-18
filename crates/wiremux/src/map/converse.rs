@@ -726,6 +726,13 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.prompt_cache_key.is_some() {
         report.record("sampling.prompt_cache_key", LossAction::Drop, "no slot");
     }
+    if s.prompt_cache_retention.is_some() {
+        report.record(
+            "sampling.prompt_cache_retention",
+            LossAction::Drop,
+            "no slot",
+        );
+    }
     if let Some(tier) = s.service_tier.as_deref() {
         match converse_service_tier(tier) {
             Some((mapped, degrade)) => {
