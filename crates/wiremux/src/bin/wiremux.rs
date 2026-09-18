@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use wiremux::cli::{
     EXIT_ERROR, EXIT_NOT_READY, EXIT_OK, format_status, list_cli_profiles, load_cli_profile,
-    parse_wire, run_login, token_status, validate_report,
+    parse_wire, pick_auth_profile, run_login, token_status, validate_report,
 };
 use wiremux::ingest::{
     CatalogKind, IngestAction, IngestRequest, fetch_catalog_url, ingest_catalog,
@@ -57,13 +57,19 @@ enum AuthCommand {
     Login {
         /// Profile id or file path.
         #[arg(long)]
-        profile: String,
+        profile: Option<String>,
+        /// Profile id or file path (same as `--profile`).
+        #[arg(value_name = "PROFILE")]
+        id: Option<String>,
     },
     /// Whether a token can be loaded (does not print it).
     Status {
         /// Profile id or file path.
         #[arg(long)]
-        profile: String,
+        profile: Option<String>,
+        /// Profile id or file path (same as `--profile`).
+        #[arg(value_name = "PROFILE")]
+        id: Option<String>,
     },
 }
 
@@ -136,11 +142,23 @@ async fn main() -> ExitCode {
             .await
         }
         Command::Auth {
-            command: AuthCommand::Login { profile },
-        } => cmd_login(&profile).await,
+            command: AuthCommand::Login { profile, id },
+        } => match pick_auth_profile(profile, id) {
+            Ok(profile) => cmd_login(&profile).await,
+            Err(err) => {
+                eprintln!("{err}");
+                EXIT_ERROR
+            }
+        },
         Command::Auth {
-            command: AuthCommand::Status { profile },
-        } => cmd_status(&profile),
+            command: AuthCommand::Status { profile, id },
+        } => match pick_auth_profile(profile, id) {
+            Ok(profile) => cmd_status(&profile),
+            Err(err) => {
+                eprintln!("{err}");
+                EXIT_ERROR
+            }
+        },
         Command::Proxy {
             listen,
             from,
