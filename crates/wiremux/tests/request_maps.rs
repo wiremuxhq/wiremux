@@ -5087,8 +5087,41 @@ fn dest_gemini_image_modality_drops() {
         "dest Gemini IMAGE must not reach Chat modalities, got {body}"
     );
     assert!(
-        loss_dropped(&decode_report, "sampling.output_modalities"),
+        loss_dropped(&decode_report, "sampling.output_modalities.image"),
         "dest Gemini IMAGE has no dest Chat slot and must Drop, got {decode_report:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_image_plus_audio_still_reaches_chat() {
+    let req = br#"{
+        "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+        "generationConfig":{"responseModalities":["IMAGE","AUDIO"]}
+    }"#;
+    let (ir, decode_report) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    assert_eq!(ir.sampling.output_modalities, ["audio"]);
+    assert!(
+        loss_dropped(&decode_report, "sampling.output_modalities.image"),
+        "dest Gemini IMAGE must Drop on its own key, got {decode_report:?}"
+    );
+    assert!(
+        !loss_dropped(&decode_report, "sampling.output_modalities"),
+        "dest Gemini AUDIO must not share the IMAGE Drop key, got {decode_report:?}"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let modalities = body
+        .get("modalities")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        modalities.iter().any(|v| v.as_str() == Some("audio")),
+        "dest Gemini AUDIO next to IMAGE must reach Chat modalities, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.output_modalities"),
+        "Chat has modalities and must not Drop AUDIO, got {report:?}"
     );
 }
 

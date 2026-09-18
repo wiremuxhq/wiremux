@@ -308,7 +308,7 @@ fn gemini_output_modalities(cfg: &Value, report: &mut LossReport) -> Vec<String>
     }
     if saw_image {
         report.record(
-            "sampling.output_modalities",
+            "sampling.output_modalities.image",
             LossAction::Drop,
             "image has no dest Chat slot",
         );
