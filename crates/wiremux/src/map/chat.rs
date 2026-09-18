@@ -1,5 +1,7 @@
 //! Chat Completions request map.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 use super::tools::{PreparedTool, decode_tool};
@@ -217,7 +219,26 @@ fn decode_sampling(value: &Value) -> IrSampling {
         audio_voice: chat_audio_voice(value),
         audio_format: chat_audio_format(value),
         logprobs,
+        logit_bias: chat_logit_bias(value),
+        prediction: chat_object_field(value, "prediction"),
+        web_search_options: chat_object_field(value, "web_search_options"),
     }
+}
+
+fn chat_logit_bias(value: &Value) -> BTreeMap<String, f64> {
+    let Some(obj) = value.get("logit_bias").and_then(Value::as_object) else {
+        return BTreeMap::new();
+    };
+    obj.iter()
+        .filter_map(|(k, v)| v.as_f64().map(|n| (k.clone(), n)))
+        .collect()
+}
+
+fn chat_object_field(value: &Value, key: &str) -> Option<Value> {
+    value
+        .get(key)
+        .filter(|v| v.as_object().is_some_and(|o| !o.is_empty()))
+        .cloned()
 }
 
 fn chat_output_modalities(value: &Value) -> Vec<String> {
@@ -783,6 +804,30 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         body["response_format"] = json!({ "type": "json_object" });
     }
     encode_output_modalities_and_audio(s, body, report);
+    if !s.logit_bias.is_empty() {
+        body["logit_bias"] = json!(s.logit_bias);
+        report.record(
+            "sampling.logit_bias",
+            LossAction::Preserve,
+            "chat logit_bias",
+        );
+    }
+    if let Some(prediction) = &s.prediction {
+        body["prediction"] = prediction.clone();
+        report.record(
+            "sampling.prediction",
+            LossAction::Preserve,
+            "chat prediction",
+        );
+    }
+    if let Some(opts) = &s.web_search_options {
+        body["web_search_options"] = opts.clone();
+        report.record(
+            "sampling.web_search_options",
+            LossAction::Preserve,
+            "chat web_search_options",
+        );
+    }
 }
 
 fn encode_output_modalities_and_audio(s: &IrSampling, body: &mut Value, report: &mut LossReport) {

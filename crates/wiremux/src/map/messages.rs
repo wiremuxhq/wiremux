@@ -321,6 +321,9 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         audio_voice: None,
         audio_format: None,
         logprobs: None,
+        logit_bias: std::collections::BTreeMap::new(),
+        prediction: None,
+        web_search_options: None,
     }
 }
 

@@ -221,6 +221,19 @@ fn drop_dest_chat_sampling_extras(s: &IrSampling, report: &mut LossReport) {
     if s.include_obfuscation.is_some() {
         report.record("sampling.include_obfuscation", LossAction::Drop, "no slot");
     }
+    drop_dest_chat_logit_bias(s, report);
+}
+
+fn drop_dest_chat_logit_bias(s: &IrSampling, report: &mut LossReport) {
+    if !s.logit_bias.is_empty() {
+        report.record("sampling.logit_bias", LossAction::Drop, "no slot");
+    }
+    if s.prediction.is_some() {
+        report.record("sampling.prediction", LossAction::Drop, "no slot");
+    }
+    if s.web_search_options.is_some() {
+        report.record("sampling.web_search_options", LossAction::Drop, "no slot");
+    }
 }
 
 fn drop_dest_top_logprobs(s: &IrSampling, report: &mut LossReport) {
