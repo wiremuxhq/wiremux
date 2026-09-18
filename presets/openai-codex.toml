@@ -1,0 +1,10 @@
+schema_version = 1
+id = "openai-codex"
+display_name = "OpenAI Responses (API key)"
+wire = "responses"
+tool_type_policy = "hard-error"
+stream_unknown_policy = "hard-error"
+base_url = "https://api.openai.com"
+chat_path = "/v1/responses"
+auth_scheme = "bearer"
+access_env = "OPENAI_API_KEY"

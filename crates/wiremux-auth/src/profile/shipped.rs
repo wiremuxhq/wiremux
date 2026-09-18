@@ -39,6 +39,7 @@ shipped_presets! {
     ("gemini", "gemini.toml"),
     ("grok-ollama", "grok-ollama.toml"),
     ("lmstudio", "lmstudio.toml"),
+    ("openai-codex", "openai-codex.toml"),
     ("openai-codex-oauth", "openai-codex-oauth.toml"),
     ("openai", "openai.toml"),
     ("openrouter-codex", "openrouter-codex.toml"),

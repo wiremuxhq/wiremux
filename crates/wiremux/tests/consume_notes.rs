@@ -91,6 +91,7 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
             && notes.contains("`anthropic`")
             && notes.contains("`anthropic-oauth`")
             && notes.contains("`openai`")
+            && notes.contains("`openai-codex`")
             && notes.contains("`openrouter`")
             && notes.contains("`gemini`")
             && notes.contains("`lmstudio`")
