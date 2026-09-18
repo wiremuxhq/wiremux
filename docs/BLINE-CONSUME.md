@@ -36,8 +36,8 @@ TokenProviders and named host conversions.
 [blineai/bline#3988](https://github.com/blineai/bline/issues/3988)
 is CLOSED.
 
-Published crates.io is `0.6.0` / tag
-[v0.6.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.6.0).
+Published crates.io is `0.7.0`. <!-- x-release-please-version -->
+Current tag is `v0.7.0`. <!-- x-release-please-version -->
 Bline leftover-prove first pinned crates.io `0.3.0` after
 [blineai/bline#3996](https://github.com/blineai/bline/pull/3996)
 ([`934e6235`](https://github.com/blineai/bline/commit/934e6235135b79a61730215d615d7f731ad07138)).
@@ -46,6 +46,8 @@ The 0.4.0 leftover-prove tracker is
 (tag [v0.4.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.4.0)).
 The 0.5.0 pin was tag
 [v0.5.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.5.0).
+The 0.6.0 pin was tag
+[v0.6.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.6.0).
 Do not implement that Bline bump here. [#104](https://github.com/wiremuxhq/wiremux/issues/104)
 and [#103](https://github.com/wiremuxhq/wiremux/issues/103)
 are CLOSED.
@@ -55,7 +57,9 @@ Build headers, and Messages `Continue.` shipped in crates.io `0.5.0`.
 They were not in crates.io `0.4.0`. crates.io `0.6.0` adds
 `list_models` `context_window`, the AWS default credential chain,
 Converse `outputConfig` / `serviceTier`, `Wire` plus public IR
-`#[non_exhaustive]`, and the extra shipped presets. Lock the
+`#[non_exhaustive]`, and the extra shipped presets. crates.io
+`0.7.0` adds transient connect vs timeout `Display` suffixes
+([#181](https://github.com/wiremuxhq/wiremux/pull/181)). Lock the
 catalog with `shipped_profile_ids()` instead of copying names.
 
 The wiremux README stays:
@@ -121,14 +125,12 @@ Path-dep `wiremux-auth` first, then maps at the adapter boundary.
    `secret_store`, and host SigV4 Bedrock signing stay in Bline.
 
 crates.io is an attach path for published hosts. Pin the current
-published tag
-[v0.6.0](https://github.com/wiremuxhq/wiremux/releases/tag/v0.6.0)
-until the next cut:
+published tag `v0.7.0` until the next cut: <!-- x-release-please-version -->
 
 ```toml
 [dependencies]
-wiremux-auth = "0.6.0"
-wiremux = { version = "0.6.0", default-features = false }
+wiremux-auth = "0.7.0" # x-release-please-version
+wiremux = { version = "0.7.0", default-features = false } # x-release-please-version
 ```
 
 Bline #3991 leftover-prove used `0.2.1`. Bline #3996 bumped the
@@ -320,7 +322,8 @@ on either xAI OAuth profile.
 
 ## Rollback
 
-Published hosts pin crates.io `0.6.0` (tag `v0.6.0`). Rollback of
-the consume spike is revert the Bline #3992 commit (then the #3996
-pin if needed). leftover-prove tests remain. Published hosts stay on
-`0.6.0` until they choose a later crates.io cut.
+Published hosts pin crates.io `0.7.0`. <!-- x-release-please-version -->
+Matching tag is `v0.7.0`. <!-- x-release-please-version -->
+Rollback of the consume spike is revert the Bline #3992 commit
+(then the #3996 pin if needed). leftover-prove tests remain.
+Published hosts stay on `0.7.0` until they choose a later crates.io cut. <!-- x-release-please-version -->

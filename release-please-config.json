@@ -19,6 +19,10 @@
           "type": "toml",
           "path": "crates/wiremux-auth/Cargo.toml",
           "jsonpath": "$.package.version"
+        },
+        {
+          "type": "generic",
+          "path": "docs/BLINE-CONSUME.md"
         }
       ]
     }
