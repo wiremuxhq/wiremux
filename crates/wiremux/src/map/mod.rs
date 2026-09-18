@@ -209,9 +209,6 @@ fn drop_dest_chat_sampling_extras(s: &IrSampling, report: &mut LossReport) {
     if s.prompt_cache_ttl.is_some() {
         report.record("sampling.prompt_cache_ttl", LossAction::Drop, "no slot");
     }
-    if s.top_logprobs.is_some() {
-        report.record("sampling.top_logprobs", LossAction::Drop, "no slot");
-    }
     if s.moderation_model.is_some() {
         report.record("sampling.moderation_model", LossAction::Drop, "no slot");
     }
@@ -223,6 +220,12 @@ fn drop_dest_chat_sampling_extras(s: &IrSampling, report: &mut LossReport) {
     }
     if s.include_obfuscation.is_some() {
         report.record("sampling.include_obfuscation", LossAction::Drop, "no slot");
+    }
+}
+
+fn drop_dest_top_logprobs(s: &IrSampling, report: &mut LossReport) {
+    if s.top_logprobs.is_some() {
+        report.record("sampling.top_logprobs", LossAction::Drop, "no slot");
     }
 }
 
