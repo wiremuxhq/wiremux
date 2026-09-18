@@ -6429,6 +6429,48 @@ fn profile_ingest_from_file_writes_user_dir() {
 }
 
 #[test]
+fn profile_ingest_litellm_missing_shipped_id_is_not_in_catalog() {
+    let scratch = unique_scratch();
+    let catalog = scratch.join("litellm.json");
+    std::fs::write(
+        &catalog,
+        r#"{
+  "publicai": {
+    "base_url": "https://api.publicai.co/v1",
+    "api_key_env": "PUBLICAI_API_KEY"
+  }
+}"#,
+    )
+    .expect("catalog");
+    let dest = scratch.join("profiles");
+    let (_home, mut cmd) = isolated_home();
+    let out = cmd
+        .args([
+            "profile",
+            "ingest",
+            "--source",
+            "litellm",
+            "--from-file",
+            catalog.to_str().expect("utf8"),
+            "--vendor",
+            "groq",
+            "--dry-run",
+            "--dir",
+            dest.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(1), "{:?}", out);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("groq"), "{err}");
+    assert!(err.contains("not in catalog"), "{err}");
+    assert!(
+        !err.contains("already shipped"),
+        "catalog miss must win over shipped skip, got {err}"
+    );
+}
+
+#[test]
 fn profile_ingest_writes_azure_deployment_template() {
     let scratch = unique_scratch();
     let catalog = scratch.join("catalog.json");
