@@ -204,12 +204,13 @@ Shipped catalog ids:
 | claude + API key | `anthropic` |
 | claude, no key | `anthropic-oauth` |
 | openai | `openai` |
+| openai Responses API key | `openai-codex` |
 | openrouter Chat Completions | `openrouter` |
 | gemini | `gemini` |
 | lmstudio | `lmstudio` |
 | vllm | `vllm` |
 
-Also shipped: `grok-ollama`, `openai-codex-oauth`, `openrouter-codex`,
+Also shipped: `grok-ollama`, `openai-codex`, `openai-codex-oauth`, `openrouter-codex`,
 `xai-oauth` (`https://api.x.ai`), `xai-grok-build` (Grok Build CLI
 proxy `https://cli-chat-proxy.grok.com`, Chat Completions, same
 empty-client `oidc-auth-json` pack as `xai-oauth`, plus

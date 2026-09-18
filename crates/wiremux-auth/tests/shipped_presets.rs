@@ -432,6 +432,22 @@ async fn token_for_profile_xai_grok_build_reads_grok_auth_json() {
 }
 
 #[test]
+fn load_profile_openai_codex_from_shipped_catalog() {
+    let _home = IsolatedHome::new();
+    let profile = load_profile("openai-codex", &shipped_opts())
+        .expect("include_shipped must expose openai-codex");
+    assert_eq!(profile.id, "openai-codex");
+    assert_eq!(profile.dialect.wire, Some(Wire::Responses));
+    assert_eq!(
+        profile.http.base_url.as_deref(),
+        Some("https://api.openai.com")
+    );
+    assert_eq!(profile.http.chat_path.as_deref(), Some("/v1/responses"));
+    assert_eq!(profile.access_env, ["OPENAI_API_KEY"]);
+    assert!(profile.oauth.is_none());
+}
+
+#[test]
 fn load_profile_openai_from_shipped_catalog() {
     let _home = IsolatedHome::new();
     let profile =
