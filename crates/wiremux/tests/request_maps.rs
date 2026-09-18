@@ -3663,6 +3663,57 @@ fn dest_chat_metadata_reaches_chat() {
 }
 
 #[test]
+fn dest_converse_request_metadata_reaches_chat() {
+    let req = br#"{
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+        "inferenceConfig": {"maxTokens": 16},
+        "requestMetadata": {"ticket": "42"}
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    assert_eq!(
+        ir.sampling.metadata.get("ticket").map(String::as_str),
+        Some("42")
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/metadata/ticket").and_then(Value::as_str),
+        Some("42"),
+        "dest Converse requestMetadata must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.metadata"),
+        "Chat has metadata and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_metadata_reaches_converse() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "metadata": {"ticket": "42"},
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(
+        ir.sampling.metadata.get("ticket").map(String::as_str),
+        Some("42")
+    );
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/requestMetadata/ticket")
+            .and_then(Value::as_str),
+        Some("42"),
+        "dest Chat metadata must reach Converse requestMetadata, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.metadata"),
+        "Converse has requestMetadata and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_responses_verbosity_keeps_json_schema() {
     let req = br#"{
         "model": "gpt-4o",
