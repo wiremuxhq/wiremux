@@ -1,23 +1,19 @@
-//! Consume notes stay current after the first Bline pin.
+//! Consume notes stay current for any host, not one product.
 
 #[test]
 fn consume_notes_do_not_claim_consume_is_unstarted() {
     let version = env!("CARGO_PKG_VERSION");
     let notes = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/BLINE-CONSUME.md"
+        "/../../docs/CONSUME.md"
     ));
     let release_please = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../release-please-config.json"
     ));
     assert!(
-        !notes.contains("Bline consume is not started"),
-        "first leftover prove already landed in Bline"
-    );
-    assert!(
-        !notes.contains("has no\n`wiremux` dep") && !notes.contains("has no `wiremux` dep"),
-        "Bline Cargo.toml now pins wiremux"
+        !notes.to_ascii_lowercase().contains("bline"),
+        "host attach notes must not name Bline"
     );
     let attach = notes
         .split("```toml")
@@ -33,32 +29,20 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
     );
     assert!(
         !notes.contains("tag = \"v0.1.0\""),
-        "Bline attach is crates.io {version}, not git tag v0.1.0"
+        "host attach is crates.io {version}, not git tag v0.1.0"
     );
     assert!(
-        !notes.contains("leftover-only")
-            && !notes.contains("Production still uses host TokenProviders")
-            && !notes.contains("production does not wrap it"),
-        "notes must not still describe the leftover-only pin as current"
-    );
-    assert!(
-        notes.contains("Wrap `wiremux_auth::TokenProvider` inside `bline_auth::TokenProvider`.\n   Done in Bline #3992")
-            && notes.contains("Bline production now wraps")
-            && notes.contains("21b56488"),
-        "notes must record the live Bline wrap, not leftover-only"
+        notes.contains("Wrap `wiremux_auth::TokenProvider` inside the host token type.")
+            && notes.contains("Map requests at the host adapter boundary only"),
+        "notes must describe a generic host wrap"
     );
     assert!(
         notes.contains(&format!("crates.io is `{version}`"))
             && notes.contains(&format!("v{version}"))
-            && notes.contains("v0.6.0")
-            && notes.contains("v0.5.0")
-            && notes.contains("3996")
-            && notes.contains("4010")
-            && notes.contains("v0.4.0")
             && notes.contains("not in crates.io `0.4.0`")
             && notes.contains("not in crates.io `0.5.0`")
             && notes.contains("#181"),
-        "notes must name crates.io {version} and keep the Bline 3996/4010/0.4.0/0.5.0/0.6.0 history"
+        "notes must name crates.io {version} and keep crate-cut history"
     );
     for needle in [
         format!("crates.io is `{version}`"),
@@ -82,26 +66,22 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
             "generic extra-files rewrites only the first semver on a marked line: {line}"
         );
     }
-    let history_pin = notes
+    let history_cut = notes
         .lines()
-        .find(|line| line.contains("The 0.6.0 pin was tag"))
-        .expect("0.6.0 leftover-prove history");
+        .find(|line| line.contains("crates.io `0.6.0` adds"))
+        .expect("0.6.0 crate-cut history");
     assert!(
-        !history_pin.contains("x-release-please-version"),
-        "history pins must not be extra-files targets: {history_pin}"
+        !history_cut.contains("x-release-please-version"),
+        "history cuts must not be extra-files targets: {history_cut}"
     );
     assert!(
-        release_please.contains("docs/BLINE-CONSUME.md")
+        release_please.contains("docs/CONSUME.md")
             && release_please.contains("\"type\": \"generic\""),
         "release-please extra-files must bump the consume pin as generic"
     );
     assert!(
         notes.contains("default-features = false"),
         "maps pin stays maps-only"
-    );
-    assert!(
-        !notes.contains("crates.io is not the attach path"),
-        "crates.io is now an attach path for published hosts"
     );
     assert!(
         notes.contains("`--provider xai`")
@@ -122,17 +102,11 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
             && notes.contains("x-grok-client-version")
             && notes.contains("x-grok-model-override")
             && notes.contains("shipped_profile_ids"),
-        "consume notes must list catalog ids and the canact mapping"
+        "consume notes must list catalog ids"
     );
     assert!(
         notes.contains("LLM layer is wiremux"),
         "heading must say the LLM layer is wiremux"
-    );
-    assert!(
-        !notes.contains("DESIGN non-goal for v1")
-            && !notes.contains("Same crate later")
-            && !notes.contains("IrCache` is only `enabled` + `retention`"),
-        "notes must not leave Gcp/Azure/AwsSts or the cache floor in Bline"
     );
     assert!(
         notes.contains("`GcpTokenProvider`, `AzureTokenProvider`, `AwsStsTokenProvider`")

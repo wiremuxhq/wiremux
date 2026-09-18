@@ -300,7 +300,7 @@ fn usage_cache_token_fields_are_accurate() {
     )
     .expect("decode chat cache usage");
     // Exclusive buckets: Chat prompt/completion are inclusive on the wire.
-    // 100-40 cache, 20-7 reasoning. Matches Bline normalize_oai_usage.
+    // 100-40 cache, 20-7 reasoning. Matches exclusive usage buckets.
     assert_eq!(usage_tuple(&chat), (60, 13, 40, 0, 7));
 
     let messages = decode_all(
@@ -310,7 +310,7 @@ fn usage_cache_token_fields_are_accurate() {
     )
     .expect("decode messages cache usage");
     // Anthropic input_tokens is already exclusive of cache. output includes
-    // thinking: 12-3. Matches Bline anthropic conversions.
+    // thinking: 12-3. Matches Anthropic exclusive usage buckets.
     assert_eq!(usage_tuple(&messages), (80, 9, 25, 9, 3));
 
     let responses = decode_all(

@@ -11,11 +11,11 @@ auth_scheme = "bearer"
 header_merge = "union"
 
 [oauth]
-# URLs from Bline known_providers() "openai" (auth.rs).
 authorize_url = "https://auth.openai.com/oauth/authorize"
 device_auth_url = "https://auth.openai.com/oauth/device/code"
 token_url = "https://auth.openai.com/oauth/token"
-# Do not impersonate Bline's client id "bline-cli". Empty after subst:
+# Do not impersonate another product's OAuth client id (including "bline-cli").
+# Empty after subst:
 # `wiremux auth login` exits 2 (not-ready). A later greenfield legal pass
 # may set a wiremux public client and flip login to "pkce".
 client_id = ""

@@ -388,7 +388,7 @@ pub enum IrStreamEvent {
         index: u32,
     },
     ToolCallEnd,
-    /// Exclusive buckets (same as Bline `Usage`): prompt excludes cache
+    /// Exclusive buckets: prompt excludes cache
     /// read, completion excludes reasoning. Encoders re-inflate inclusive
     /// wire totals for Chat and Responses.
     Usage {
