@@ -229,6 +229,12 @@ fn drop_dest_top_logprobs(s: &IrSampling, report: &mut LossReport) {
     }
 }
 
+fn drop_dest_logprobs(s: &IrSampling, report: &mut LossReport) {
+    if s.logprobs.is_some() {
+        report.record("sampling.logprobs", LossAction::Drop, "no slot");
+    }
+}
+
 fn drop_dest_n_and_penalties(s: &IrSampling, report: &mut LossReport) {
     if s.frequency_penalty.is_some() {
         report.record("sampling.frequency_penalty", LossAction::Drop, "no slot");

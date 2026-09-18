@@ -4898,6 +4898,32 @@ fn dest_gemini_logprobs_reaches_chat_top_logprobs() {
 }
 
 #[test]
+fn dest_gemini_response_logprobs_reaches_chat_logprobs() {
+    let req = br#"{
+        "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+        "generationConfig":{"responseLogprobs":true}
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    assert_eq!(ir.sampling.logprobs, Some(true));
+    assert_eq!(ir.sampling.top_logprobs, None);
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("logprobs").and_then(Value::as_bool),
+        Some(true),
+        "dest Gemini responseLogprobs must reach Chat logprobs, got {body}"
+    );
+    assert!(
+        body.get("top_logprobs").is_none(),
+        "dest Gemini boolean-only responseLogprobs must not invent Chat top_logprobs, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.logprobs"),
+        "Chat has logprobs and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_chat_top_logprobs_reaches_gemini_logprobs() {
     let req = br#"{
         "model": "gpt-4o",
@@ -4923,6 +4949,34 @@ fn dest_chat_top_logprobs_reaches_gemini_logprobs() {
     assert!(
         !loss_dropped(&report, "sampling.top_logprobs"),
         "Gemini has generationConfig.logprobs and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_logprobs_reaches_gemini_response_logprobs() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "logprobs": true
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    assert_eq!(ir.sampling.logprobs, Some(true));
+    assert_eq!(ir.sampling.top_logprobs, None);
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode dest Gemini");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/responseLogprobs")
+            .and_then(Value::as_bool),
+        Some(true),
+        "dest Chat logprobs must reach Gemini responseLogprobs, got {body}"
+    );
+    assert!(
+        body.pointer("/generationConfig/logprobs").is_none(),
+        "dest Chat boolean-only logprobs must not invent Gemini integer logprobs, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.logprobs"),
+        "Gemini has responseLogprobs and must not Drop, got {report:?}"
     );
 }
 

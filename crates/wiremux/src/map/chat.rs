@@ -151,6 +151,8 @@ fn parts_text(parts: &[IrPart]) -> String {
 fn decode_sampling(value: &Value) -> IrSampling {
     let (json_schema, json_schema_name) = chat_json_schema(value);
     let json_object = chat_json_object(value);
+    let top_logprobs = u32_field(value, "top_logprobs");
+    let logprobs = bool_field(value, "logprobs").or(top_logprobs.is_some().then_some(true));
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
@@ -182,7 +184,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
             .get("prompt_cache_options")
             .and_then(|opts| str_field(opts, "ttl"))
             .filter(|s| !s.trim().is_empty()),
-        top_logprobs: u32_field(value, "top_logprobs"),
+        top_logprobs,
         moderation_model: value
             .get("moderation")
             .and_then(|m| str_field(m, "model"))
@@ -214,6 +216,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         output_modalities: chat_output_modalities(value),
         audio_voice: chat_audio_voice(value),
         audio_format: chat_audio_format(value),
+        logprobs,
     }
 }
 
@@ -683,9 +686,14 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         );
     }
     encode_prompt_cache_options(s, body, report);
+    if s.logprobs == Some(true) || s.top_logprobs.is_some() {
+        body["logprobs"] = json!(true);
+    }
+    if s.logprobs == Some(true) {
+        report.record("sampling.logprobs", LossAction::Preserve, "chat logprobs");
+    }
     if let Some(n) = s.top_logprobs {
         body["top_logprobs"] = json!(n);
-        body["logprobs"] = json!(true);
         report.record(
             "sampling.top_logprobs",
             LossAction::Preserve,

@@ -5,7 +5,7 @@ use wiremux_auth::{ResolvedProfile, ToolTypePolicy};
 
 use super::tools::{PreparedTool, decode_tool, qualify_call_name, split_namespace_name};
 use super::{
-    MapError, bool_field, decode_input_audio_part, decode_openai_file_part,
+    MapError, bool_field, decode_input_audio_part, decode_openai_file_part, drop_dest_logprobs,
     drop_dest_n_and_penalties, drop_dest_output_modalities, f32_field, off_dialect_raw_path,
     responses_raw_passthrough, stop_values, str_field, string_object_field, u32_field,
     value_as_string,
@@ -300,6 +300,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         output_modalities: Vec::new(),
         audio_voice: None,
         audio_format: None,
+        logprobs: None,
     }
 }
 
@@ -808,6 +809,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     drop_dest_n_and_penalties(s, report);
     drop_dest_output_modalities(s, report);
+    drop_dest_logprobs(s, report);
     if let Some(schema) = &s.json_schema
         && let Some((schema, name)) =
             super::official_json_schema(schema, s.json_schema_name.as_deref(), report)
