@@ -122,6 +122,20 @@ pub struct IrSampling {
     /// (`24h` / `in_memory`). Distinct from Messages `IrCache.retention`.
     /// Gemini, Messages, and Converse drop.
     pub prompt_cache_retention: Option<String>,
+    /// Chat / Responses `prompt_cache_options.mode` (`implicit` / `explicit`).
+    pub prompt_cache_mode: Option<String>,
+    /// Chat / Responses `prompt_cache_options.ttl` (`30m`). Distinct from Messages IrCache.retention.
+    pub prompt_cache_ttl: Option<String>,
+    /// Chat / Responses `top_logprobs` (0-20).
+    pub top_logprobs: Option<u32>,
+    /// Chat / Responses `moderation.model`.
+    pub moderation_model: Option<String>,
+    /// Chat / Responses `moderation.policy.input.mode` (`score` / `block`).
+    pub moderation_input: Option<String>,
+    /// Chat / Responses `moderation.policy.output.mode`.
+    pub moderation_output: Option<String>,
+    /// Chat / Responses `stream_options.include_obfuscation`.
+    pub include_obfuscation: Option<bool>,
     /// Chat Completions and Responses `user`. Messages, Gemini, and
     /// Converse drop.
     pub user: Option<String>,

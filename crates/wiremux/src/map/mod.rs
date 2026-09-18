@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 use wiremux_auth::{ForbiddenFieldPolicy, ResolvedProfile, ToolNameCase, Wire};
 
-use crate::ir::{IrDocumentSource, IrItem, IrPart, IrRequest, LossAction, LossReport};
+use crate::ir::{IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, LossAction, LossReport};
 
 /// Failure from request decode or encode.
 #[derive(Debug, thiserror::Error)]
@@ -200,6 +200,30 @@ fn apply_forbidden_fields(
 
 fn str_field(value: &Value, key: &str) -> Option<String> {
     value.get(key)?.as_str().map(str::to_string)
+}
+
+fn drop_dest_chat_sampling_extras(s: &IrSampling, report: &mut LossReport) {
+    if s.prompt_cache_mode.is_some() {
+        report.record("sampling.prompt_cache_mode", LossAction::Drop, "no slot");
+    }
+    if s.prompt_cache_ttl.is_some() {
+        report.record("sampling.prompt_cache_ttl", LossAction::Drop, "no slot");
+    }
+    if s.top_logprobs.is_some() {
+        report.record("sampling.top_logprobs", LossAction::Drop, "no slot");
+    }
+    if s.moderation_model.is_some() {
+        report.record("sampling.moderation_model", LossAction::Drop, "no slot");
+    }
+    if s.moderation_input.is_some() {
+        report.record("sampling.moderation_input", LossAction::Drop, "no slot");
+    }
+    if s.moderation_output.is_some() {
+        report.record("sampling.moderation_output", LossAction::Drop, "no slot");
+    }
+    if s.include_obfuscation.is_some() {
+        report.record("sampling.include_obfuscation", LossAction::Drop, "no slot");
+    }
 }
 
 fn string_object_field(value: &Value, key: &str) -> BTreeMap<String, String> {
