@@ -6,8 +6,9 @@ use wiremux_auth::{ResolvedProfile, ToolTypePolicy};
 use super::tools::{PreparedTool, decode_tool, qualify_call_name, split_namespace_name};
 use super::{
     MapError, bool_field, decode_input_audio_part, decode_openai_file_part,
-    drop_dest_n_and_penalties, f32_field, off_dialect_raw_path, responses_raw_passthrough,
-    stop_values, str_field, string_object_field, u32_field, value_as_string,
+    drop_dest_n_and_penalties, drop_dest_output_modalities, f32_field, off_dialect_raw_path,
+    responses_raw_passthrough, stop_values, str_field, string_object_field, u32_field,
+    value_as_string,
 };
 use crate::ir::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
@@ -296,6 +297,9 @@ fn decode_sampling(value: &Value) -> IrSampling {
         presence_penalty: None,
         seed: None,
         n: None,
+        output_modalities: Vec::new(),
+        audio_voice: None,
+        audio_format: None,
     }
 }
 
@@ -803,6 +807,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
     }
     drop_dest_n_and_penalties(s, report);
+    drop_dest_output_modalities(s, report);
     if let Some(schema) = &s.json_schema
         && let Some((schema, name)) =
             super::official_json_schema(schema, s.json_schema_name.as_deref(), report)

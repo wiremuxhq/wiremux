@@ -4990,6 +4990,168 @@ fn dest_chat_n_reaches_gemini_candidate_count() {
 }
 
 #[test]
+fn dest_gemini_response_modalities_and_speech_reach_chat() {
+    let req = br#"{
+        "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+        "generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Puck"}}}}
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    assert_eq!(ir.sampling.output_modalities, ["audio"]);
+    assert_eq!(ir.sampling.audio_voice.as_deref(), Some("Puck"));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let modalities = body
+        .get("modalities")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        modalities.iter().any(|v| v.as_str() == Some("audio")),
+        "dest Gemini responseModalities AUDIO must reach Chat modalities, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/audio/voice").and_then(Value::as_str),
+        Some("Puck"),
+        "dest Gemini speechConfig voiceName must reach Chat audio.voice, got {body}"
+    );
+    assert!(
+        body.pointer("/audio/format")
+            .and_then(Value::as_str)
+            .is_some(),
+        "dest Chat audio.format must be present, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.output_modalities"),
+        "Chat has modalities and must not Drop, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.audio_voice"),
+        "Chat has audio.voice and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_modalities_and_audio_reach_gemini() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "modalities": ["audio"],
+        "audio": {"voice": "Puck", "format": "wav"}
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode dest Gemini");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let modalities = body
+        .pointer("/generationConfig/responseModalities")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        modalities.iter().any(|v| v.as_str() == Some("AUDIO")),
+        "dest Chat modalities audio must reach Gemini responseModalities, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/generationConfig/speechConfig/voiceConfig/prebuiltVoiceConfig/voiceName")
+            .and_then(Value::as_str),
+        Some("Puck"),
+        "dest Chat audio.voice must reach Gemini speechConfig voiceName, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.output_modalities"),
+        "Gemini has responseModalities and must not Drop, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.audio_voice"),
+        "Gemini has speechConfig voiceName and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_image_modality_drops() {
+    let req = br#"{
+        "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+        "generationConfig":{"responseModalities":["IMAGE"]}
+    }"#;
+    let (ir, decode_report) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let modalities = body
+        .get("modalities")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        modalities
+            .iter()
+            .all(|v| { v.as_str().is_none_or(|s| !s.eq_ignore_ascii_case("image")) }),
+        "dest Gemini IMAGE must not reach Chat modalities, got {body}"
+    );
+    assert!(
+        loss_dropped(&decode_report, "sampling.output_modalities.image"),
+        "dest Gemini IMAGE has no dest Chat slot and must Drop, got {decode_report:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_image_plus_audio_still_reaches_chat() {
+    let req = br#"{
+        "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+        "generationConfig":{"responseModalities":["IMAGE","AUDIO"]}
+    }"#;
+    let (ir, decode_report) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    assert_eq!(ir.sampling.output_modalities, ["audio"]);
+    assert!(
+        loss_dropped(&decode_report, "sampling.output_modalities.image"),
+        "dest Gemini IMAGE must Drop on its own key, got {decode_report:?}"
+    );
+    assert!(
+        !loss_dropped(&decode_report, "sampling.output_modalities"),
+        "dest Gemini AUDIO must not share the IMAGE Drop key, got {decode_report:?}"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let modalities = body
+        .get("modalities")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        modalities.iter().any(|v| v.as_str() == Some("audio")),
+        "dest Gemini AUDIO next to IMAGE must reach Chat modalities, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.output_modalities"),
+        "Chat has modalities and must not Drop AUDIO, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_messages_output_modalities_drop() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "modalities": ["audio"],
+        "audio": {"voice": "Puck", "format": "wav"}
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    let (bytes, report) =
+        encode(Wire::Messages, &ir, &messages_profile()).expect("encode Messages");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("modalities").is_none(),
+        "Messages must not invent modalities, got {body}"
+    );
+    assert!(
+        body.pointer("/audio/voice").is_none(),
+        "Messages must not invent audio.voice, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.output_modalities"),
+        "Messages has no modalities slot and must Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn chat_json_schema_without_name_is_dropped() {
     let ir = user_ir(IrSampling::patch(|s| {
         s.json_schema = Some(serde_json::json!({"type": "object"}));
