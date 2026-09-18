@@ -4872,6 +4872,61 @@ fn dest_gemini_seed_reaches_chat() {
 }
 
 #[test]
+fn dest_gemini_logprobs_reaches_chat_top_logprobs() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {"logprobs": 5}
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    assert_eq!(ir.sampling.top_logprobs, Some(5));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("top_logprobs").and_then(Value::as_u64),
+        Some(5),
+        "dest Gemini logprobs must reach Chat top_logprobs, got {body}"
+    );
+    assert_eq!(
+        body.get("logprobs").and_then(Value::as_bool),
+        Some(true),
+        "dest Chat top_logprobs must emit logprobs true, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.top_logprobs"),
+        "Chat has top_logprobs and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_top_logprobs_reaches_gemini_logprobs() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "top_logprobs": 5,
+        "logprobs": true
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode dest Chat");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode dest Gemini");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/logprobs")
+            .and_then(Value::as_u64),
+        Some(5),
+        "dest Chat top_logprobs must reach Gemini logprobs, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/generationConfig/responseLogprobs")
+            .and_then(Value::as_bool),
+        Some(true),
+        "dest Gemini logprobs must emit responseLogprobs, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.top_logprobs"),
+        "Gemini has generationConfig.logprobs and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_chat_seed_reaches_chat() {
     let req = br#"{
         "model": "gpt-4o",

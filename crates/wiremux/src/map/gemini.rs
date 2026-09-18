@@ -261,7 +261,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         prompt_cache_retention: None,
         prompt_cache_mode: None,
         prompt_cache_ttl: None,
-        top_logprobs: None,
+        top_logprobs: u32_field(cfg, "logprobs").or_else(|| u32_field(cfg, "top_logprobs")),
         moderation_model: None,
         moderation_input: None,
         moderation_output: None,
@@ -668,6 +668,15 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(n) = s.n {
         cfg["candidateCount"] = json!(n);
+    }
+    if let Some(n) = s.top_logprobs {
+        cfg["logprobs"] = json!(n);
+        cfg["responseLogprobs"] = json!(true);
+        report.record(
+            "sampling.top_logprobs",
+            LossAction::Preserve,
+            "gemini generationConfig.logprobs",
+        );
     }
     let thinking_budget = s.thinking_budget.or(s.max_reasoning_tokens);
     let thinking_level = s
