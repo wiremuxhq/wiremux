@@ -134,6 +134,8 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
     );
     assert!(
         notes.contains("WireClient")
+            && notes.contains("TransientKind")
+            && notes.contains("is_connect()")
             && notes.contains("from_profile")
             && notes.contains("send")
             && notes.contains("stream")

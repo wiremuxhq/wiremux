@@ -10,7 +10,8 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use serde_json::json;
 use wiremux::{
-    ClientError, IrItem, IrPart, IrRequest, IrStreamEvent, WireClient, parse_profile_str,
+    ClientError, IrItem, IrPart, IrRequest, IrStreamEvent, TransientKind, WireClient,
+    parse_profile_str,
 };
 use wiremux_auth::{
     AnyTokenProvider, GcpTokenProvider, IsolatedHome, PlantCredentials, StaticToken,
@@ -838,7 +839,12 @@ async fn http_503_is_transient() {
         .expect_err("503");
     let _ = handle.join();
     match err {
-        ClientError::Transient { status, .. } => assert_eq!(status, Some(503)),
+        ClientError::Transient { status, kind, .. } => {
+            assert_eq!(status, Some(503));
+            assert_eq!(kind, TransientKind::Http);
+            assert!(!err.is_connect());
+            assert!(!err.is_timeout());
+        }
         other => panic!("expected Transient, got {other}"),
     }
 }
@@ -884,7 +890,12 @@ async fn http_200_wrapped_overload_is_transient() {
         .expect_err("200 error");
     let _ = handle.join();
     match err {
-        ClientError::Transient { status, .. } => assert_eq!(status, Some(200)),
+        ClientError::Transient { status, kind, .. } => {
+            assert_eq!(status, Some(200));
+            assert_eq!(kind, TransientKind::Http);
+            assert!(!err.is_connect());
+            assert!(!err.is_timeout());
+        }
         other => panic!("expected Transient, not {other}"),
     }
 }
@@ -1893,7 +1904,12 @@ read_timeout_secs = 1
     let err = client.send(simple_ir("gpt-4")).await.expect_err("timeout");
     let _ = handle.join();
     match err {
-        ClientError::Transient { message, .. } => {
+        ClientError::Transient {
+            ref message, kind, ..
+        } => {
+            assert_eq!(kind, TransientKind::Timeout);
+            assert!(err.is_timeout());
+            assert!(!err.is_connect());
             let lower = message.to_ascii_lowercase();
             assert!(
                 lower.contains("timed out") || lower.contains("timeout"),
@@ -1924,11 +1940,25 @@ async fn closed_port_transient_names_connect() {
         .await
         .expect_err("closed port");
     match err {
-        ClientError::Transient { message, .. } => {
+        ClientError::Transient {
+            ref message, kind, ..
+        } => {
+            assert_eq!(kind, TransientKind::Connect);
+            assert!(err.is_connect());
+            assert!(!err.is_timeout());
             let lower = message.to_ascii_lowercase();
             assert!(
                 lower.contains("connect") || lower.contains("connection refused"),
                 "closed-port Transient must name connect, got {message}"
+            );
+            let display = err.to_string();
+            assert!(
+                display.starts_with("transient:"),
+                "Display must stay 0.7.0-shaped, got {display}"
+            );
+            assert!(
+                !display.to_ascii_lowercase().contains("kind"),
+                "Display must not name TransientKind, got {display}"
             );
         }
         other => panic!("expected Transient connect, got {other:?}"),
@@ -1964,7 +1994,11 @@ async fn from_resolved_with_client_uses_host_timeout() {
         .expect_err("host timeout");
     let _ = handle.join();
     match err {
-        ClientError::Transient { .. } => {}
+        ClientError::Transient { kind, .. } => {
+            assert_eq!(kind, TransientKind::Timeout);
+            assert!(err.is_timeout());
+            assert!(!err.is_connect());
+        }
         other => panic!("expected Transient, got {other:?}"),
     }
 }

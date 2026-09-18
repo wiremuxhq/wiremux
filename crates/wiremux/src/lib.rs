@@ -38,7 +38,7 @@ pub use wiremux_auth::{
 };
 
 #[cfg(feature = "client")]
-pub use client::{ClientError, ListedModel, WireClient};
+pub use client::{ClientError, ListedModel, TransientKind, WireClient};
 
 #[cfg(test)]
 mod tests {

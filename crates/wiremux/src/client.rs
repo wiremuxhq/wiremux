@@ -23,6 +23,22 @@ use crate::upstream::upstream_url_for_model;
 const MAX_SUCCESS_BODY: usize = 16 * 1024 * 1024;
 const MAX_ERROR_BODY: usize = 64 * 1024;
 
+/// Why [`ClientError::Transient`] fired. Hosts match this instead of
+/// scraping Display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TransientKind {
+    /// Never reached the host (closed port, DNS, SYN timeout).
+    Connect,
+    /// Reached the host, then timed out (read / hung-after-accept).
+    Timeout,
+    /// Connection reset or broken pipe after connect.
+    Reset,
+    /// Leftover transient: HTTP 408/5xx, empty stream, 200-wrapped
+    /// overload, or a send failure that is not connect, timeout, or reset.
+    Http,
+}
+
 /// Matchable HTTP / map / transport failure. Display and Debug redact secrets.
 #[non_exhaustive]
 pub enum ClientError {
@@ -55,6 +71,8 @@ pub enum ClientError {
         status: Option<u16>,
         /// Redacted on Display.
         message: String,
+        /// Connect vs timeout vs HTTP. Not shown on Display.
+        kind: TransientKind,
     },
     /// Other 4xx (validation, region-forbidden 403).
     Vendor {
@@ -92,10 +110,15 @@ impl fmt::Debug for ClientError {
                 .field("retry_after", retry_after)
                 .field("message", &redact_client_text(message))
                 .finish(),
-            Self::Transient { status, message } => f
+            Self::Transient {
+                status,
+                message,
+                kind,
+            } => f
                 .debug_struct("Transient")
                 .field("status", status)
                 .field("message", &redact_client_text(message))
+                .field("kind", kind)
                 .finish(),
             Self::Vendor { status, message } => f
                 .debug_struct("Vendor")
@@ -131,7 +154,9 @@ impl fmt::Display for ClientError {
                 (None, Some(ra)) => format!("rate limit (retry-after {ra}s): {message}"),
                 (None, None) => format!("rate limit: {message}"),
             },
-            Self::Transient { status, message } => format_status("transient", *status, message),
+            Self::Transient {
+                status, message, ..
+            } => format_status("transient", *status, message),
             Self::Vendor { status, message } => format_status("vendor", *status, message),
             Self::Map(err) => err.to_string(),
             Self::Transport(message) => message.clone(),
@@ -152,6 +177,38 @@ impl std::error::Error for ClientError {
 impl From<MapError> for ClientError {
     fn from(err: MapError) -> Self {
         Self::Map(err)
+    }
+}
+
+impl ClientError {
+    /// Closed port, DNS, or SYN timeout. Not a hung-after-accept read.
+    pub fn is_connect(&self) -> bool {
+        matches!(
+            self,
+            Self::Transient {
+                kind: TransientKind::Connect,
+                ..
+            }
+        )
+    }
+
+    /// Read / hung-after-accept timeout. Not [`Self::is_connect`].
+    pub fn is_timeout(&self) -> bool {
+        matches!(
+            self,
+            Self::Transient {
+                kind: TransientKind::Timeout,
+                ..
+            }
+        )
+    }
+}
+
+fn transient(status: Option<u16>, message: impl Into<String>, kind: TransientKind) -> ClientError {
+    ClientError::Transient {
+        status,
+        message: message.into(),
+        kind,
     }
 }
 
@@ -715,30 +772,39 @@ fn transport_message(err: &reqwest::Error) -> String {
 
 fn classify_send_err(err: reqwest::Error) -> ClientError {
     let message = transport_message(&err);
-    if err.is_timeout() || err.is_connect() || looks_like_reset(&message) {
-        ClientError::Transient {
-            status: err.status().map(|s| s.as_u16()),
-            message,
-        }
-    } else if err.is_builder() {
-        ClientError::Transport(message)
-    } else {
-        ClientError::Transient {
-            status: err.status().map(|s| s.as_u16()),
-            message,
-        }
+    let status = err.status().map(|s| s.as_u16());
+    if err.is_builder() && !err.is_connect() && !err.is_timeout() && !looks_like_reset(&message) {
+        return ClientError::Transport(message);
     }
+    let kind = send_transient_kind(
+        err.is_connect(),
+        err.is_timeout(),
+        looks_like_reset(&message),
+    );
+    transient(status, message, kind)
 }
 
 fn classify_read_err(err: reqwest::Error) -> ClientError {
     let message = transport_message(&err);
-    if err.is_timeout() || looks_like_reset(&message) {
-        ClientError::Transient {
-            status: err.status().map(|s| s.as_u16()),
-            message,
-        }
+    let status = err.status().map(|s| s.as_u16());
+    if err.is_timeout() {
+        transient(status, message, TransientKind::Timeout)
+    } else if looks_like_reset(&message) {
+        transient(status, message, TransientKind::Reset)
     } else {
         ClientError::Transport(message)
+    }
+}
+
+fn send_transient_kind(is_connect: bool, is_timeout: bool, reset: bool) -> TransientKind {
+    if is_connect {
+        TransientKind::Connect
+    } else if is_timeout {
+        TransientKind::Timeout
+    } else if reset {
+        TransientKind::Reset
+    } else {
+        TransientKind::Http
     }
 }
 
@@ -792,10 +858,7 @@ fn classify_aws_exception_type(
         };
     }
     if ty.contains("internal") || ty.contains("serviceunavailable") || ty.contains("timeout") {
-        return ClientError::Transient {
-            status: Some(status),
-            message: full.to_string(),
-        };
+        return transient(Some(status), full.to_string(), TransientKind::Http);
     }
     classify_error_payload(Some(status), None, message, full, None)
 }
@@ -810,10 +873,7 @@ fn classify_empty_stream(status: u16, body: &str) -> ClientError {
             message: error_message(body),
         };
     }
-    ClientError::Transient {
-        status: Some(status),
-        message: "empty stream".into(),
-    }
+    transient(Some(status), "empty stream", TransientKind::Http)
 }
 
 fn classify_sse_wrapped_error(data: &str, status: u16) -> Option<ClientError> {
@@ -869,10 +929,7 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
         });
     }
     if status == 408 || (500..600).contains(&status) {
-        return Some(ClientError::Transient {
-            status: Some(status),
-            message,
-        });
+        return Some(transient(Some(status), message, TransientKind::Http));
     }
     if status == 404 {
         return Some(ClientError::NotFound {
@@ -904,10 +961,7 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
             message,
         });
     }
-    Some(ClientError::Transient {
-        status: Some(status),
-        message,
-    })
+    Some(transient(Some(status), message, TransientKind::Http))
 }
 
 fn classify_error_payload(
@@ -940,10 +994,7 @@ fn classify_error_payload(
         || looks_like_overload(body)
         || looks_like_overload(message)
     {
-        return ClientError::Transient {
-            status,
-            message: message.to_string(),
-        };
+        return transient(status, message.to_string(), TransientKind::Http);
     }
     ClientError::Vendor {
         status,
@@ -1357,5 +1408,21 @@ wire = "messages"
         let body = r#"{"error":{"message":"invalid argument: mime type is unsupported"}}"#;
         let msg = error_message(body);
         assert_eq!(msg, "invalid argument: mime type is unsupported");
+    }
+
+    #[test]
+    fn syn_timeout_flags_classify_as_connect() {
+        assert_eq!(
+            send_transient_kind(true, true, false),
+            TransientKind::Connect
+        );
+        assert_eq!(
+            send_transient_kind(false, true, false),
+            TransientKind::Timeout
+        );
+        assert_eq!(
+            send_transient_kind(false, false, true),
+            TransientKind::Reset
+        );
     }
 }
