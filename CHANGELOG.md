@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.7.0](https://github.com/wiremuxhq/wiremux/compare/v0.6.0...v0.7.0) (2026-09-18)
+
+
+### Features
+
+* dest-encode Converse remaps as Event Stream ([#178](https://github.com/wiremuxhq/wiremux/issues/178)) ([199af11](https://github.com/wiremuxhq/wiremux/commit/199af11a5159a05fe7388fb69109f6b93e5b09a2))
+
+
+### Bug Fixes
+
+* **ci:** run nightly cargo-fuzz on the GNU target ([#208](https://github.com/wiremuxhq/wiremux/issues/208)) ([8f708ac](https://github.com/wiremuxhq/wiremux/commit/8f708ac2b94a33509d3a73b510e5fa11e847a34b))
+* dest Chat logit_bias, prediction, and web_search_options reach Chat ([#214](https://github.com/wiremuxhq/wiremux/issues/214)) ([6675c37](https://github.com/wiremuxhq/wiremux/commit/6675c37e4e389bb105722cf004a34aff30ec9000))
+* dest Chat prompt_cache_options, top_logprobs, moderation, and stream obfuscation reach Chat ([#209](https://github.com/wiremuxhq/wiremux/issues/209)) ([d3cb375](https://github.com/wiremuxhq/wiremux/commit/d3cb375adccd2bf295e084cd173e0a25c068a8a9))
+* dest Chat user reaches Chat ([#194](https://github.com/wiremuxhq/wiremux/issues/194)) ([56a879b](https://github.com/wiremuxhq/wiremux/commit/56a879bae9411a76d841009a0e3ed4b99ae53549))
+* dest Converse image and audio reach Chat ([#202](https://github.com/wiremuxhq/wiremux/issues/202)) ([9dff5e5](https://github.com/wiremuxhq/wiremux/commit/9dff5e55a712762001b96913e235628a8c960831))
+* dest Converse requestMetadata reaches Chat metadata ([#207](https://github.com/wiremuxhq/wiremux/issues/207)) ([4420a49](https://github.com/wiremuxhq/wiremux/commit/4420a493e32acbf943d331fbecd4d7ed0b6bca50))
+* dest Converse stopReason, block index, and wrap ([#179](https://github.com/wiremuxhq/wiremux/issues/179)) ([32dfd47](https://github.com/wiremuxhq/wiremux/commit/32dfd47afadf47fa6cb0d776f8b6da077a6d6575))
+* dest Gemini frequencyPenalty, presencePenalty, seed, and candidateCount reach Chat ([#210](https://github.com/wiremuxhq/wiremux/issues/210)) ([cabe097](https://github.com/wiremuxhq/wiremux/commit/cabe0978a114c1f2937a41016476b9ea34ee3157))
+* dest Gemini functionResponse reuses the functionCall id ([#189](https://github.com/wiremuxhq/wiremux/issues/189)) ([2e9b334](https://github.com/wiremuxhq/wiremux/commit/2e9b3342cee151f15138171017e6bbf5b99abe15))
+* dest Gemini logprobs reaches Chat top_logprobs ([#211](https://github.com/wiremuxhq/wiremux/issues/211)) ([120e47d](https://github.com/wiremuxhq/wiremux/commit/120e47d03982e9af1308bacf83ecf2061e92956d))
+* dest Gemini path model as modelVersion ([#185](https://github.com/wiremuxhq/wiremux/issues/185)) ([7d01db2](https://github.com/wiremuxhq/wiremux/commit/7d01db2c273eb12c3daf57712e4b8fbb1fa95edf))
+* dest Gemini responseFormat and parametersJsonSchema reach Chat ([#204](https://github.com/wiremuxhq/wiremux/issues/204)) ([64c1592](https://github.com/wiremuxhq/wiremux/commit/64c1592c4e60710e59f5888438e4daf9cd1961a0))
+* dest Gemini responseLogprobs reaches Chat logprobs ([#213](https://github.com/wiremuxhq/wiremux/issues/213)) ([837188d](https://github.com/wiremuxhq/wiremux/commit/837188d36db0ee7da574b3c7eaaebc44d59b8b76))
+* dest Gemini responseModalities and speechConfig reach Chat ([#212](https://github.com/wiremuxhq/wiremux/issues/212)) ([7d88ec6](https://github.com/wiremuxhq/wiremux/commit/7d88ec673176361ff00ebb22249d752a489e43ab))
+* dest Gemini responseSchema reaches Chat json_schema ([#190](https://github.com/wiremuxhq/wiremux/issues/190)) ([97ad67d](https://github.com/wiremuxhq/wiremux/commit/97ad67da2aa284a555622fc5204417889496b334))
+* dest Gemini store and serviceTier reach Chat ([#201](https://github.com/wiremuxhq/wiremux/issues/201)) ([19c35f2](https://github.com/wiremuxhq/wiremux/commit/19c35f2add5019c775fc28f4d40d6c58bb14774a))
+* dest Gemini stream path and Messages Vertex model ([#182](https://github.com/wiremuxhq/wiremux/issues/182)) ([7c848f1](https://github.com/wiremuxhq/wiremux/commit/7c848f173c005d0b3b6503c7b9d6c15e7580117b))
+* dest json_object reaches Chat response_format ([#193](https://github.com/wiremuxhq/wiremux/issues/193)) ([d646a1f](https://github.com/wiremuxhq/wiremux/commit/d646a1f79c7554868180e93b4eec21d981aa5652))
+* dest Messages metadata.user_id reaches Chat user ([#199](https://github.com/wiremuxhq/wiremux/issues/199)) ([9858d6d](https://github.com/wiremuxhq/wiremux/commit/9858d6dbe0e50bc6053e7b06e146717fe2fe3fed))
+* dest Messages output_config reaches Chat ([#200](https://github.com/wiremuxhq/wiremux/issues/200)) ([54b7e24](https://github.com/wiremuxhq/wiremux/commit/54b7e24824ea38039f340b5e1ea37d6274d46f32))
+* dest Messages path model in message_start and unary JSON ([#184](https://github.com/wiremuxhq/wiremux/issues/184)) ([6714f98](https://github.com/wiremuxhq/wiremux/commit/6714f9892bcee30f086d3a592c38ed4df3f7478c))
+* dest Messages service_tier and disable_parallel reach Chat ([#203](https://github.com/wiremuxhq/wiremux/issues/203)) ([b3e879e](https://github.com/wiremuxhq/wiremux/commit/b3e879ec6eaed6858322447b3b0ea149e4ac83ef))
+* dest Responses path model on created and unary JSON ([#186](https://github.com/wiremuxhq/wiremux/issues/186)) ([a52c9fc](https://github.com/wiremuxhq/wiremux/commit/a52c9fc06396b6a1ada73b3d418bf7d3b19eb279))
+* dest Responses prompt_cache_retention reaches Chat ([#206](https://github.com/wiremuxhq/wiremux/issues/206)) ([79a4219](https://github.com/wiremuxhq/wiremux/commit/79a4219118ce2a71d958bcfe1c40f5a23ebfdedd))
+* dest Responses stream output_item.done keeps assembled text ([#191](https://github.com/wiremuxhq/wiremux/issues/191)) ([23dbf9b](https://github.com/wiremuxhq/wiremux/commit/23dbf9b51cfc10392d5aca4375686f5eeb3b5966))
+* dest Responses stream output_item.done keeps reasoning summary ([#192](https://github.com/wiremuxhq/wiremux/issues/192)) ([70714bf](https://github.com/wiremuxhq/wiremux/commit/70714bf00dceb0ce23faaa0ba8cd988ab69ab04f))
+* dest Responses stream output_item.done keeps the function_call ([#188](https://github.com/wiremuxhq/wiremux/issues/188)) ([5809075](https://github.com/wiremuxhq/wiremux/commit/58090753d11bf9bef803b6ae88fe3eebafd818b7))
+* dest Responses tool turn status is completed ([#187](https://github.com/wiremuxhq/wiremux/issues/187)) ([df5eb2c](https://github.com/wiremuxhq/wiremux/commit/df5eb2c980acdb6acf511b3d20dcece116288b61))
+* dest Responses verbosity, safety_identifier, and metadata reach Chat ([#205](https://github.com/wiremuxhq/wiremux/issues/205)) ([34be7a2](https://github.com/wiremuxhq/wiremux/commit/34be7a2dd329e0b62e98550472b79980936e1c55))
+* emit Gemini and Converse stream terminals ([#172](https://github.com/wiremuxhq/wiremux/issues/172)) ([a393123](https://github.com/wiremuxhq/wiremux/commit/a393123ac1811e72719916034073bedcd58a16b9))
+* keep Event Stream Content-Type on Converse passthrough ([#174](https://github.com/wiremuxhq/wiremux/issues/174)) ([89c47de](https://github.com/wiremuxhq/wiremux/commit/89c47dee44af2d0d1323437806c8316755b97383))
+* lift dest Chat Azure deployment model from the request path ([#183](https://github.com/wiremuxhq/wiremux/issues/183)) ([b5af145](https://github.com/wiremuxhq/wiremux/commit/b5af1451583f1933f2a674fa6c287cb51cab99e3))
+* lift dest Gemini and Converse model from the request path ([#180](https://github.com/wiremuxhq/wiremux/issues/180)) ([8a61023](https://github.com/wiremuxhq/wiremux/commit/8a61023b04ae8cd9634ed2b77b4058a7d58a3766))
+* one Converse messageStop and no SSE on Event Stream errors ([#176](https://github.com/wiremuxhq/wiremux/issues/176)) ([3d3ac47](https://github.com/wiremuxhq/wiremux/commit/3d3ac4711489bfb849abc2d6e2caa1938cd94a34))
+* put timeout and connect kind on Transient transport messages ([#181](https://github.com/wiremuxhq/wiremux/issues/181)) ([4632fe8](https://github.com/wiremuxhq/wiremux/commit/4632fe87186584eaddfe2a0efd39838731f6768f))
+* take AsRef&lt;str&gt; on IrRequest::new and cache TTL ([#175](https://github.com/wiremuxhq/wiremux/issues/175)) ([5a4e31e](https://github.com/wiremuxhq/wiremux/commit/5a4e31e6f4cd7434e6875dc81b000046eed5891b))
+
 ## [0.6.0](https://github.com/wiremuxhq/wiremux/compare/v0.5.0...v0.6.0) (2026-09-16)
 
 
