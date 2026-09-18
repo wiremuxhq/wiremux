@@ -3563,6 +3563,294 @@ fn dest_chat_prompt_cache_retention_reaches_responses() {
 }
 
 #[test]
+fn dest_responses_prompt_cache_options_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
+        "input": "hi"
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(ir.sampling.prompt_cache_mode.as_deref(), Some("explicit"));
+    assert_eq!(ir.sampling.prompt_cache_ttl.as_deref(), Some("30m"));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/prompt_cache_options/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "dest Responses prompt_cache_options.mode must reach Chat, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/prompt_cache_options/ttl")
+            .and_then(Value::as_str),
+        Some("30m"),
+        "dest Responses prompt_cache_options.ttl must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.prompt_cache_mode"),
+        "Chat has prompt_cache_options and must not Drop mode, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.prompt_cache_ttl"),
+        "Chat has prompt_cache_options and must not Drop ttl, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_prompt_cache_options_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.prompt_cache_mode.as_deref(), Some("explicit"));
+    assert_eq!(ir.sampling.prompt_cache_ttl.as_deref(), Some("30m"));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/prompt_cache_options/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "dest Chat prompt_cache_options.mode must reach Chat, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/prompt_cache_options/ttl")
+            .and_then(Value::as_str),
+        Some("30m"),
+        "dest Chat prompt_cache_options.ttl must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.prompt_cache_mode"),
+        "Chat has prompt_cache_options and must not Drop mode, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.prompt_cache_ttl"),
+        "Chat has prompt_cache_options and must not Drop ttl, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_prompt_cache_options_reaches_responses() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.prompt_cache_mode.as_deref(), Some("explicit"));
+    assert_eq!(ir.sampling.prompt_cache_ttl.as_deref(), Some("30m"));
+    let (bytes, report) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/prompt_cache_options/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "dest Chat prompt_cache_options.mode must reach Responses, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/prompt_cache_options/ttl")
+            .and_then(Value::as_str),
+        Some("30m"),
+        "dest Chat prompt_cache_options.ttl must reach Responses, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.prompt_cache_mode"),
+        "Responses has prompt_cache_options and must not Drop mode, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.prompt_cache_ttl"),
+        "Responses has prompt_cache_options and must not Drop ttl, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_responses_top_logprobs_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "top_logprobs": 5,
+        "input": "hi"
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(ir.sampling.top_logprobs, Some(5));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("top_logprobs").and_then(Value::as_u64),
+        Some(5),
+        "dest Responses top_logprobs must reach Chat, got {body}"
+    );
+    assert_eq!(
+        body.get("logprobs").and_then(Value::as_bool),
+        Some(true),
+        "dest Chat encode must set logprobs true with top_logprobs, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.top_logprobs"),
+        "Chat has top_logprobs and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_top_logprobs_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "top_logprobs": 5,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.top_logprobs, Some(5));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("top_logprobs").and_then(Value::as_u64),
+        Some(5),
+        "dest Chat top_logprobs must reach Chat, got {body}"
+    );
+    assert_eq!(
+        body.get("logprobs").and_then(Value::as_bool),
+        Some(true),
+        "dest Chat encode must set logprobs true with top_logprobs, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.top_logprobs"),
+        "Chat has top_logprobs and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_responses_moderation_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "moderation": {
+            "model": "omni-moderation-latest",
+            "policy": {"input": {"mode": "block"}}
+        },
+        "input": "hi"
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(
+        ir.sampling.moderation_model.as_deref(),
+        Some("omni-moderation-latest")
+    );
+    assert_eq!(ir.sampling.moderation_input.as_deref(), Some("block"));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/moderation/model").and_then(Value::as_str),
+        Some("omni-moderation-latest"),
+        "dest Responses moderation.model must reach Chat, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/moderation/policy/input/mode")
+            .and_then(Value::as_str),
+        Some("block"),
+        "dest Responses moderation.policy.input.mode must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.moderation_model"),
+        "Chat has moderation and must not Drop model, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.moderation_input"),
+        "Chat has moderation and must not Drop input, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_moderation_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "moderation": {
+            "model": "omni-moderation-latest",
+            "policy": {"input": {"mode": "block"}}
+        },
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(
+        ir.sampling.moderation_model.as_deref(),
+        Some("omni-moderation-latest")
+    );
+    assert_eq!(ir.sampling.moderation_input.as_deref(), Some("block"));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/moderation/model").and_then(Value::as_str),
+        Some("omni-moderation-latest"),
+        "dest Chat moderation.model must reach Chat, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/moderation/policy/input/mode")
+            .and_then(Value::as_str),
+        Some("block"),
+        "dest Chat moderation.policy.input.mode must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.moderation_model"),
+        "Chat has moderation and must not Drop model, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.moderation_input"),
+        "Chat has moderation and must not Drop input, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_chat_include_obfuscation_keeps_include_usage() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "stream": true,
+        "stream_options": {"include_obfuscation": false},
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.include_obfuscation, Some(false));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/stream_options/include_usage")
+            .and_then(Value::as_bool),
+        Some(true),
+        "dest Chat stream_options.include_usage must stay true, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/stream_options/include_obfuscation")
+            .and_then(Value::as_bool),
+        Some(false),
+        "dest Chat include_obfuscation must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.include_obfuscation"),
+        "Chat has include_obfuscation and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn dest_responses_include_obfuscation_reaches_chat() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "stream": true,
+        "stream_options": {"include_obfuscation": false},
+        "input": "hi"
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(ir.sampling.include_obfuscation, Some(false));
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/stream_options/include_obfuscation")
+            .and_then(Value::as_bool),
+        Some(false),
+        "dest Responses include_obfuscation must reach Chat, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.include_obfuscation"),
+        "Chat has include_obfuscation and must not Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_responses_safety_identifier_reaches_chat() {
     let req = br#"{
         "model": "gpt-4o",

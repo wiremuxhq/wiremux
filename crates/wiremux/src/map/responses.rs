@@ -254,6 +254,34 @@ fn decode_sampling(value: &Value) -> IrSampling {
         prompt_cache_key: str_field(value, "prompt_cache_key").filter(|s| !s.trim().is_empty()),
         prompt_cache_retention: str_field(value, "prompt_cache_retention")
             .filter(|s| !s.trim().is_empty()),
+        prompt_cache_mode: value
+            .get("prompt_cache_options")
+            .and_then(|opts| str_field(opts, "mode"))
+            .filter(|s| !s.trim().is_empty()),
+        prompt_cache_ttl: value
+            .get("prompt_cache_options")
+            .and_then(|opts| str_field(opts, "ttl"))
+            .filter(|s| !s.trim().is_empty()),
+        top_logprobs: u32_field(value, "top_logprobs"),
+        moderation_model: value
+            .get("moderation")
+            .and_then(|m| str_field(m, "model"))
+            .filter(|s| !s.trim().is_empty()),
+        moderation_input: value
+            .pointer("/moderation/policy/input/mode")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        moderation_output: value
+            .pointer("/moderation/policy/output/mode")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        include_obfuscation: value
+            .get("stream_options")
+            .and_then(|opts| bool_field(opts, "include_obfuscation")),
         service_tier: str_field(value, "service_tier").filter(|s| !s.trim().is_empty()),
         user: str_field(value, "user").filter(|s| !s.trim().is_empty()),
         verbosity: value
@@ -677,6 +705,16 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             "responses prompt_cache_retention",
         );
     }
+    encode_prompt_cache_options(s, body, report);
+    if let Some(n) = s.top_logprobs {
+        body["top_logprobs"] = json!(n);
+        report.record(
+            "sampling.top_logprobs",
+            LossAction::Preserve,
+            "responses top_logprobs",
+        );
+    }
+    encode_moderation(s, body, report);
     if let Some(user) = s.user.as_deref().filter(|s| !s.trim().is_empty()) {
         body["user"] = json!(user);
     }
@@ -721,6 +759,17 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(stream) = s.stream {
         body["stream"] = json!(stream);
+    }
+    if let Some(include_obfuscation) = s.include_obfuscation {
+        if !body.get("stream_options").is_some_and(Value::is_object) {
+            body["stream_options"] = json!({});
+        }
+        body["stream_options"]["include_obfuscation"] = json!(include_obfuscation);
+        report.record(
+            "sampling.include_obfuscation",
+            LossAction::Preserve,
+            "responses stream_options.include_obfuscation",
+        );
     }
     body["include"] = json!(encode_include(&s.include));
     if let Some(effort) = s
@@ -767,6 +816,91 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         }
         body["text"]["format"] = json!({ "type": "json_object" });
     }
+}
+
+fn encode_prompt_cache_options(s: &IrSampling, body: &mut Value, report: &mut LossReport) {
+    let mode = s
+        .prompt_cache_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let ttl = s
+        .prompt_cache_ttl
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    if mode.is_none() && ttl.is_none() {
+        return;
+    }
+    let mut opts = serde_json::Map::new();
+    if let Some(mode) = mode {
+        opts.insert("mode".into(), json!(mode));
+        report.record(
+            "sampling.prompt_cache_mode",
+            LossAction::Preserve,
+            "responses prompt_cache_options.mode",
+        );
+    }
+    if let Some(ttl) = ttl {
+        opts.insert("ttl".into(), json!(ttl));
+        report.record(
+            "sampling.prompt_cache_ttl",
+            LossAction::Preserve,
+            "responses prompt_cache_options.ttl",
+        );
+    }
+    body["prompt_cache_options"] = Value::Object(opts);
+}
+
+fn encode_moderation(s: &IrSampling, body: &mut Value, report: &mut LossReport) {
+    let model = s
+        .moderation_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let input = s
+        .moderation_input
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let output = s
+        .moderation_output
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    if model.is_none() && input.is_none() && output.is_none() {
+        return;
+    }
+    let mut obj = serde_json::Map::new();
+    if let Some(model) = model {
+        obj.insert("model".into(), json!(model));
+        report.record(
+            "sampling.moderation_model",
+            LossAction::Preserve,
+            "responses moderation.model",
+        );
+    }
+    if input.is_some() || output.is_some() {
+        let mut policy = serde_json::Map::new();
+        if let Some(mode) = input {
+            policy.insert("input".into(), json!({ "mode": mode }));
+            report.record(
+                "sampling.moderation_input",
+                LossAction::Preserve,
+                "responses moderation.policy.input.mode",
+            );
+        }
+        if let Some(mode) = output {
+            policy.insert("output".into(), json!({ "mode": mode }));
+            report.record(
+                "sampling.moderation_output",
+                LossAction::Preserve,
+                "responses moderation.policy.output.mode",
+            );
+        }
+        obj.insert("policy".into(), Value::Object(policy));
+    }
+    body["moderation"] = Value::Object(obj);
 }
 
 fn encode_tool_choice(choice: &IrToolChoice, body: &mut Value) {

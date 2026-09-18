@@ -5,7 +5,8 @@ use serde_json::{Value, json};
 use super::tools::PreparedTool;
 use super::{
     MapError, audio_format_from_mime, audio_mime_from_format, bool_field, document_ref_source,
-    f32_field, is_audio_media_type, is_pdf_media_type, stop_values, str_field, u32_field,
+    drop_dest_chat_sampling_extras, f32_field, is_audio_media_type, is_pdf_media_type, stop_values,
+    str_field, u32_field,
 };
 use crate::ir::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
@@ -258,6 +259,13 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         include: Vec::new(),
         prompt_cache_key: None,
         prompt_cache_retention: None,
+        prompt_cache_mode: None,
+        prompt_cache_ttl: None,
+        top_logprobs: None,
+        moderation_model: None,
+        moderation_input: None,
+        moderation_output: None,
+        include_obfuscation: None,
         service_tier: gemini_decode_service_tier(value),
         user: None,
         verbosity: None,
@@ -695,6 +703,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             "no slot",
         );
     }
+    drop_dest_chat_sampling_extras(s, report);
     if s.user.is_some() {
         report.record("sampling.user", LossAction::Drop, "no slot");
     }
