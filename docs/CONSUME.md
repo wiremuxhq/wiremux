@@ -178,6 +178,12 @@ instead of copying catalog names by hand. The list is the same table
 without clap or the `proxy` stack enable feature `client` on crate
 `wiremux` only.
 
+`ClientError::Transient` carries `TransientKind` (`Connect`,
+`Timeout`, `Reset`, `Http`). Hosts call `is_connect()` /
+`is_timeout()` instead of scraping Display
+([#216](https://github.com/wiremuxhq/wiremux/issues/216)). Display
+text is unchanged from 0.7.0.
+
 `WireClient::from_profile` loads a catalog id (shipped `base_url`,
 `chat_path`, `auth_scheme`, `[headers]`, `[betas]`) and
 `provider_for_profile`. `send` encodes IR, POSTs, and decodes a
