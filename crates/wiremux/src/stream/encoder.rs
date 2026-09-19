@@ -36,6 +36,7 @@ pub struct StreamEncoder {
     last_tool: HashMap<u32, u32>,
     tool_items: HashMap<u32, (String, String, String)>,
     text_items: HashMap<u32, String>,
+    refusal_items: HashMap<u32, String>,
     reasoning_items: HashMap<u32, String>,
 }
 
@@ -59,6 +60,7 @@ impl StreamEncoder {
             last_tool: HashMap::new(),
             tool_items: HashMap::new(),
             text_items: HashMap::new(),
+            refusal_items: HashMap::new(),
             reasoning_items: HashMap::new(),
         }
     }
@@ -385,6 +387,7 @@ impl StreamEncoder {
             IrStreamEvent::RefusalDelta { text } => {
                 out.extend(self.ensure_item(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                self.refusal_items.entry(index).or_default().push_str(&text);
                 out.push(named(
                     "response.refusal.delta",
                     json!({
@@ -516,10 +519,21 @@ impl StreamEncoder {
         let item = match kind {
             BlockKind::Text => {
                 let text = self.text_items.remove(&index).unwrap_or_default();
+                let refusal = self.refusal_items.remove(&index).unwrap_or_default();
+                let mut content = Vec::new();
+                if !text.is_empty() {
+                    content.push(json!({ "type": "output_text", "text": text }));
+                }
+                if !refusal.is_empty() {
+                    content.push(json!({ "type": "refusal", "refusal": refusal }));
+                }
+                if content.is_empty() {
+                    content.push(json!({ "type": "output_text", "text": "" }));
+                }
                 json!({
                     "type": "message",
                     "role": "assistant",
-                    "content": [{ "type": "output_text", "text": text }]
+                    "content": content
                 })
             }
             BlockKind::Thinking => {
@@ -977,6 +991,20 @@ mod tests {
                     && frame.data.contains(r#""delta":"nope""#)
             }),
             "dest Responses stream encode must emit response.refusal.delta, got {frames:?}"
+        );
+        let done = enc.finish().expect("finish dest Responses refusal");
+        let item_done = done
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.output_item.done"))
+            .expect("response.output_item.done");
+        assert!(
+            item_done.data.contains(r#""type":"refusal""#)
+                && item_done.data.contains(r#""refusal":"nope""#),
+            "dest Responses output_item.done must keep dest Chat refusal, got {item_done:?}"
+        );
+        assert!(
+            !item_done.data.contains(r#""type":"output_text""#),
+            "dest Responses output_item.done must not overwrite dest Chat refusal as output_text, got {item_done:?}"
         );
     }
 
