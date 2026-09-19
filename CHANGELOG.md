@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.8.0](https://github.com/wiremuxhq/wiremux/compare/v0.7.0...v0.8.0) (2026-09-19)
+
+
+### Features
+
+* expose TransientKind on ClientError ([#221](https://github.com/wiremuxhq/wiremux/issues/221)) ([861ae3f](https://github.com/wiremuxhq/wiremux/commit/861ae3f496dab333d0efdf13b238946d5259a9d3)), closes [#216](https://github.com/wiremuxhq/wiremux/issues/216)
+* ship openai-codex API-key profile ([#219](https://github.com/wiremuxhq/wiremux/issues/219)) ([728e6c2](https://github.com/wiremuxhq/wiremux/commit/728e6c28d29d240bc9d2f1dddb62f620eec2a0e0))
+
+
+### Bug Fixes
+
+* **cli:** accept positional auth profile and drop login-flow hint ([#222](https://github.com/wiremuxhq/wiremux/issues/222)) ([e6530dc](https://github.com/wiremuxhq/wiremux/commit/e6530dc4139a63c21404884ff0c11654947b0ba1))
+* dest Chat audio remaps dest Messages transcript and dest Gemini ([fbb6062](https://github.com/wiremuxhq/wiremux/commit/fbb6062799af72ae45c5abafabfd0be05da94bea))
+* dest Chat audio remaps dest Messages transcript and dest Gemini inlineData ([#230](https://github.com/wiremuxhq/wiremux/issues/230)) ([fbb6062](https://github.com/wiremuxhq/wiremux/commit/fbb6062799af72ae45c5abafabfd0be05da94bea))
+* dest Chat complete function_call remaps dest Messages and dest Gemini ([#234](https://github.com/wiremuxhq/wiremux/issues/234)) ([d44110f](https://github.com/wiremuxhq/wiremux/commit/d44110f893e90b800e522d4feebda8bd2d0c15c5))
+* dest Chat remapped complete and stream keep dest model ([#223](https://github.com/wiremuxhq/wiremux/issues/223)) ([50ac3b7](https://github.com/wiremuxhq/wiremux/commit/50ac3b7ff1f91c7c7792ba8cfccd3dc6c6d14936))
+* dest Chat STREAM annotations remaps dest Messages and dest Gemini ([#237](https://github.com/wiremuxhq/wiremux/issues/237)) ([67468e6](https://github.com/wiremuxhq/wiremux/commit/67468e6765f55bdefe8ac015981323efbb462d1c))
+* dest Chat STREAM audio remaps dest Gemini, dest Messages, and dest Responses ([#236](https://github.com/wiremuxhq/wiremux/issues/236)) ([c0ed4df](https://github.com/wiremuxhq/wiremux/commit/c0ed4df91f14e76c49bd71f0c1dda16a05ce3944))
+* dest Chat STREAM function_call remaps dest Messages and dest Gemini ([#235](https://github.com/wiremuxhq/wiremux/issues/235)) ([ff07b74](https://github.com/wiremuxhq/wiremux/commit/ff07b74214c4c421809d52fd649a90369b97ba99))
+* dest Chat STREAM logprobs remaps dest Gemini and dest Responses ([#232](https://github.com/wiremuxhq/wiremux/issues/232)) ([16e21a8](https://github.com/wiremuxhq/wiremux/commit/16e21a8adf845e05746a1d4346487e3e07805126))
+* dest Chat STREAM logprobs.refusal remaps dest Gemini ([#233](https://github.com/wiremuxhq/wiremux/issues/233)) ([8e91e6a](https://github.com/wiremuxhq/wiremux/commit/8e91e6a62f8c7946fd3edac0b7acd55050275c49))
+* dest Chat url_citation remapped dest Messages, Gemini, and Converse ([e2c20d1](https://github.com/wiremuxhq/wiremux/commit/e2c20d13c40716d2452189d200aacb325e5a759b))
+* dest Chat url_citation remaps dest Messages, Gemini, and Converse ([#227](https://github.com/wiremuxhq/wiremux/issues/227)) ([e2c20d1](https://github.com/wiremuxhq/wiremux/commit/e2c20d13c40716d2452189d200aacb325e5a759b))
+* dest Gemini grounding and dest Converse citation remap dest Chat ([8206f7f](https://github.com/wiremuxhq/wiremux/commit/8206f7fb959047d4892197dde9ebd884ecbf8f5b))
+* dest Gemini grounding and dest Converse citation remap dest Chat ([#229](https://github.com/wiremuxhq/wiremux/issues/229)) ([8206f7f](https://github.com/wiremuxhq/wiremux/commit/8206f7fb959047d4892197dde9ebd884ecbf8f5b))
+* dest Gemini STREAM citationMetadata remaps dest Chat url_citation ([#238](https://github.com/wiremuxhq/wiremux/issues/238)) ([cecb102](https://github.com/wiremuxhq/wiremux/commit/cecb102c337987d64860fb96d1daba4f62e301c9))
+* dest Gemini STREAM tokenCount remaps dest Chat usage ([#241](https://github.com/wiremuxhq/wiremux/issues/241)) ([6f93d09](https://github.com/wiremuxhq/wiremux/commit/6f93d09456b3851330c0818a213b13755e96f660))
+* dest ingest catalog miss beats shipped skip ([#224](https://github.com/wiremuxhq/wiremux/issues/224)) ([020e3bb](https://github.com/wiremuxhq/wiremux/commit/020e3bb8dff806beee8915014a8b35702b7415d8))
+* dest Messages and dest Converse skip empty audio-byte frames ([efa10f4](https://github.com/wiremuxhq/wiremux/commit/efa10f471cd6db739e9635978e3b8a63c8ce81a0))
+* dest Messages and dest Converse skip empty audio-byte frames ([#231](https://github.com/wiremuxhq/wiremux/issues/231)) ([efa10f4](https://github.com/wiremuxhq/wiremux/commit/efa10f471cd6db739e9635978e3b8a63c8ce81a0))
+* dest Messages citations_delta remaps dest Chat url_citation ([4e284bb](https://github.com/wiremuxhq/wiremux/commit/4e284bb00f0689a1cd25d57f4941d5fb6e551629))
+* dest Messages citations_delta remaps dest Chat url_citation ([#228](https://github.com/wiremuxhq/wiremux/issues/228)) ([4e284bb](https://github.com/wiremuxhq/wiremux/commit/4e284bb00f0689a1cd25d57f4941d5fb6e551629))
+* dest Responses complete output_text logprobs remaps dest Chat ([#239](https://github.com/wiremuxhq/wiremux/issues/239)) ([1a7b114](https://github.com/wiremuxhq/wiremux/commit/1a7b1146910d7bb41bea95cf145f1e0f01980c1e))
+* dest Responses STREAM output_text.done keeps logprobs ([#240](https://github.com/wiremuxhq/wiremux/issues/240)) ([018bd89](https://github.com/wiremuxhq/wiremux/commit/018bd8937c2a7c8a3e25d114bfd3a9feb8768dff))
+* dest Responses stream remaps Chat annotations, audio, and custom tools ([#226](https://github.com/wiremuxhq/wiremux/issues/226)) ([5853916](https://github.com/wiremuxhq/wiremux/commit/5853916a2fd63ced6cd8109a18092b89a7ac1287))
+* dest Responses stream remaps Chat refusal, filter, and usage ([#225](https://github.com/wiremuxhq/wiremux/issues/225)) ([95f6e88](https://github.com/wiremuxhq/wiremux/commit/95f6e88461ea426934e9778b22b4cb2c9738e694))
+
 ## [0.7.0](https://github.com/wiremuxhq/wiremux/compare/v0.6.0...v0.7.0) (2026-09-18)
 
 
