@@ -33,6 +33,12 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             return Ok(Some(decode_tool_call(call, value)));
         }
     }
+    if let Some(fc) = choice
+        .pointer("/delta/function_call")
+        .filter(|v| v.is_object())
+    {
+        return Ok(Some(decode_tool_call(fc, value)));
+    }
 
     let delta = choice.get("delta");
     if let Some(text) = delta
@@ -110,6 +116,11 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
             check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
             out.extend(expand_tool_call(call, value));
         }
+    } else if let Some(fc) = choice
+        .pointer("/delta/function_call")
+        .filter(|v| v.is_object())
+    {
+        out.extend(expand_tool_call(fc, value));
     }
 
     let delta = choice.get("delta");
