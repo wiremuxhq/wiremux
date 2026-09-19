@@ -931,6 +931,89 @@ fn dest_chat_complete_annotations_url_citation_remap_dest_responses_stream() {
     }
 }
 
+fn dest_chat_complete_url_citation_body() -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "See https://example.com for more.",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url_citation": {
+                        "start_index": 4,
+                        "end_index": 23,
+                        "title": "Example Domain",
+                        "url": "https://example.com"
+                    }
+                }]
+            },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json")
+}
+
+#[test]
+fn dest_chat_complete_annotations_url_citation_remap_dest_messages_stream() {
+    let events = decode_response(
+        Wire::ChatCompletions,
+        &dest_chat_complete_url_citation_body(),
+        &chat_profile(),
+    )
+    .expect("decode dest Chat complete annotations");
+    let frames = encode_all(Wire::Messages, &events);
+    assert!(
+        frames.iter().any(|frame| {
+            frame.event.as_deref() == Some("content_block_delta")
+                && frame.data.contains("citations_delta")
+                && frame.data.contains("web_search_result_location")
+                && frame.data.contains("https://example.com")
+        }),
+        "dest Chat complete url_citation remapped dest Messages STREAM must emit citations_delta web_search_result_location, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_annotations_url_citation_remap_dest_gemini_stream() {
+    let events = decode_response(
+        Wire::ChatCompletions,
+        &dest_chat_complete_url_citation_body(),
+        &chat_profile(),
+    )
+    .expect("decode dest Chat complete annotations");
+    let frames = encode_all(Wire::Gemini, &events);
+    assert!(
+        frames.iter().any(|frame| {
+            frame.data.contains("groundingMetadata")
+                && frame.data.contains("groundingChunks")
+                && frame.data.contains("https://example.com")
+        }),
+        "dest Chat complete url_citation remapped dest Gemini STREAM must emit groundingMetadata.groundingChunks, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_annotations_url_citation_remap_dest_converse_stream() {
+    let events = decode_response(
+        Wire::ChatCompletions,
+        &dest_chat_complete_url_citation_body(),
+        &chat_profile(),
+    )
+    .expect("decode dest Chat complete annotations");
+    let frames = encode_all(Wire::Converse, &events);
+    assert!(
+        frames.iter().any(|frame| {
+            let Ok(body) = serde_json::from_str::<Value>(&frame.data) else {
+                return false;
+            };
+            body.pointer("/contentBlockDelta/delta/citation/location/web/url")
+                .and_then(Value::as_str)
+                == Some("https://example.com")
+        }),
+        "dest Chat complete url_citation remapped dest Converse STREAM must emit contentBlockDelta.delta.citation.location.web.url, got {frames:?}"
+    );
+}
+
 #[test]
 fn dest_chat_complete_message_audio_remap_dest_responses_stream() {
     let body = serde_json::to_vec(&json!({

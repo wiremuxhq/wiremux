@@ -195,6 +195,20 @@ pub(super) fn encode_finish(reason: &str) -> &str {
     }
 }
 
+pub(super) fn annotation_url(ann: &Value) -> Option<&str> {
+    ann.pointer("/url_citation/url")
+        .or_else(|| ann.get("url"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+}
+
+pub(super) fn annotation_title(ann: &Value) -> Option<&str> {
+    ann.pointer("/url_citation/title")
+        .or_else(|| ann.get("title"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+}
+
 pub(super) fn annotation_from_chat(ann: &Value) -> Value {
     if ann.get("type").and_then(Value::as_str) != Some("url_citation") {
         return ann.clone();
