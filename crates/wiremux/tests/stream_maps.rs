@@ -1284,6 +1284,51 @@ fn dest_chat_complete_custom_tool_call_remap_dest_responses_stream() {
 }
 
 #[test]
+fn dest_chat_complete_function_call_remaps_dest_messages_and_gemini() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "function_call": {
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Paris\"}"
+                }
+            },
+            "finish_reason": "function_call"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete function_call");
+    let messages = encode_all(Wire::Messages, &events);
+    let messages_bodies = sse_json_frames(&messages);
+    assert_eq!(
+        messages_bodies.iter().find_map(|body| {
+            body.pointer("/content_block/name")
+                .or_else(|| body.pointer("/delta/name"))
+                .and_then(Value::as_str)
+        }),
+        Some("get_weather"),
+        "dest Chat complete function_call remapped dest Messages STREAM must emit tool_use name, got {messages:?}"
+    );
+    assert!(
+        messages.iter().any(|frame| frame.data.contains("Paris")),
+        "dest Chat complete function_call remapped dest Messages STREAM must keep arguments, got {messages:?}"
+    );
+    let gemini = encode_all(Wire::Gemini, &events);
+    let gemini_bodies = sse_json_frames(&gemini);
+    assert_eq!(
+        gemini_bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/content/parts/0/functionCall/name")
+                .and_then(Value::as_str)
+        }),
+        Some("get_weather"),
+        "dest Chat complete function_call remapped dest Gemini STREAM must emit functionCall name, got {gemini:?}"
+    );
+}
+
+#[test]
 fn dest_responses_stream_decode_annotation_added_is_same_ir_as_chat_complete() {
     let chat_body = serde_json::to_vec(&json!({
         "choices": [{
