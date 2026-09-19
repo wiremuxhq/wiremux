@@ -1181,6 +1181,58 @@ fn dest_chat_complete_audio_transcript_remap_dest_messages_stream() {
 }
 
 #[test]
+fn dest_chat_stream_audio_remaps_dest_gemini_and_responses() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "choices": [{
+                "delta": {
+                    "audio": {
+                        "id": "audio_1",
+                        "data": "SUQz",
+                        "transcript": "hello there"
+                    }
+                }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM audio");
+    let gemini = encode_all(Wire::Gemini, &events);
+    assert!(
+        gemini.iter().any(|frame| {
+            frame.data.contains("inlineData")
+                && frame.data.contains("SUQz")
+                && frame.data.contains("audio/mpeg")
+        }),
+        "dest Chat STREAM delta.audio.data remapped dest Gemini STREAM must emit inlineData, got {gemini:?}"
+    );
+    let messages = encode_all(Wire::Messages, &events);
+    assert!(
+        messages
+            .iter()
+            .any(|frame| frame.data.contains("hello there")),
+        "dest Chat STREAM delta.audio.transcript remapped dest Messages STREAM must emit text, got {messages:?}"
+    );
+    let responses = encode_all(Wire::Responses, &events);
+    assert!(
+        responses.iter().any(|frame| {
+            frame.event.as_deref() == Some("response.audio.delta")
+                && frame.data.contains(r#""delta":"SUQz""#)
+        }),
+        "dest Chat STREAM delta.audio.data remapped dest Responses STREAM must emit response.audio.delta, got {responses:?}"
+    );
+    assert!(
+        responses.iter().any(|frame| {
+            frame.event.as_deref() == Some("response.audio.transcript.delta")
+                && frame.data.contains(r#""delta":"hello there""#)
+        }),
+        "dest Chat STREAM delta.audio.transcript remapped dest Responses STREAM must emit response.audio.transcript.delta, got {responses:?}"
+    );
+}
+
+#[test]
 fn dest_chat_complete_audio_data_remap_dest_gemini_stream() {
     let events = decode_response(
         Wire::ChatCompletions,
