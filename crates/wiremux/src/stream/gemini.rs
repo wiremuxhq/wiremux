@@ -140,6 +140,17 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         }
     }
 
+    if let Some(attrs) = candidate
+        .get("groundingAttributions")
+        .and_then(Value::as_array)
+    {
+        for attr in attrs {
+            if let Some(annotation) = annotation_from_grounding_chunk(attr) {
+                return Ok(Some(IrStreamEvent::AnnotationAdded { annotation }));
+            }
+        }
+    }
+
     if let Some(content) = candidate
         .get("logprobsResult")
         .and_then(logprobs_from_result)
