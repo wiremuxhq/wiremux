@@ -450,6 +450,10 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "logprobs": { "content": content }
             }]
         }),
+        IrStreamEvent::Created { unix } => json!({
+            "created": unix,
+            "choices": []
+        }),
         IrStreamEvent::Usage {
             prompt_tokens,
             completion_tokens,

@@ -45,6 +45,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut audio_transcript = String::new();
     let mut tool_calls = Vec::new();
     let mut logprobs_content = Vec::new();
+    let mut created = None;
     let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
         match ev {
@@ -62,6 +63,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::Logprobs { content } => {
                 extend_logprobs_content(&mut logprobs_content, content);
             }
+            IrStreamEvent::Created { unix } => created = Some(*unix),
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(super::chat::encode_finish(reason).to_string());
             }
@@ -166,6 +168,9 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     });
     if !model.is_empty() {
         out["model"] = json!(model);
+    }
+    if let Some(unix) = created {
+        out["created"] = json!(unix);
     }
     if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens)) = usage {
         let encoded = super::usage::encode_chat(
@@ -453,6 +458,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut usage = None;
     let mut annotations = Vec::new();
     let mut logprobs_content = Vec::new();
+    let mut created = None;
     let mut tool_calls = Vec::new();
     let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
@@ -469,6 +475,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::Logprobs { content } => {
                 extend_logprobs_content(&mut logprobs_content, content);
             }
+            IrStreamEvent::Created { unix } => created = Some(*unix),
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(reason.clone());
             }
@@ -573,6 +580,9 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     if !model.is_empty() {
         out["model"] = json!(model);
+    }
+    if let Some(unix) = created {
+        out["created_at"] = json!(unix);
     }
     if !text.is_empty() {
         out["output_text"] = json!(text);
@@ -728,6 +738,9 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
         out.push(from_chat(usage));
     }
+    if let Some(unix) = value.get("created").and_then(Value::as_i64) {
+        out.push(IrStreamEvent::Created { unix });
+    }
     Ok(out)
 }
 
@@ -880,6 +893,13 @@ fn decode_responses_complete(
         })
         .unwrap_or(events.len());
     events.splice(insert_at..insert_at, extra);
+    if let Some(unix) = value
+        .get("created_at")
+        .or_else(|| value.pointer("/response/created_at"))
+        .and_then(Value::as_i64)
+    {
+        events.push(IrStreamEvent::Created { unix });
+    }
     Ok(events)
 }
 

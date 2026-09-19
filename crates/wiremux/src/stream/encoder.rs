@@ -288,6 +288,7 @@ impl StreamEncoder {
             }
             IrStreamEvent::AudioDelta { .. } => {}
             IrStreamEvent::Logprobs { .. } => {}
+            IrStreamEvent::Created { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.extend(self.ensure_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -943,6 +944,7 @@ impl StreamEncoder {
             }
             IrStreamEvent::AudioDelta { .. } => {}
             IrStreamEvent::Logprobs { .. } => {}
+            IrStreamEvent::Created { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.extend(self.ensure_converse_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);

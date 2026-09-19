@@ -396,6 +396,13 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 }),
             )
         }
+        IrStreamEvent::Created { unix } => (
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": { "created_at": unix, "status": "in_progress" }
+            }),
+        ),
         IrStreamEvent::Done => (
             "response.completed",
             json!({
