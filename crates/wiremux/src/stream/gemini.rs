@@ -129,6 +129,13 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         }
     }
 
+    if let Some(content) = candidate
+        .get("logprobsResult")
+        .and_then(logprobs_from_result)
+    {
+        return Ok(Some(IrStreamEvent::Logprobs { content }));
+    }
+
     if let Some(reason) = candidate
         .get("finishReason")
         .and_then(Value::as_str)
@@ -247,6 +254,9 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 }
             }]
         }),
+        IrStreamEvent::Logprobs { content } => json!({
+            "candidates": [{ "logprobsResult": logprobs_to_result(content) }]
+        }),
         IrStreamEvent::ToolCallArgDelta { delta, .. }
         | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
             let args: Value = serde_json::from_str(delta).unwrap_or_else(|_| json!({}));
@@ -293,6 +303,71 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         event: None,
         data: data.to_string(),
     })
+}
+
+pub(super) fn logprobs_from_result(result: &Value) -> Option<Value> {
+    let chosen = result.get("chosenCandidates").and_then(Value::as_array)?;
+    if chosen.is_empty() {
+        return None;
+    }
+    let tops = result.get("topCandidates").and_then(Value::as_array);
+    let mut content = Vec::with_capacity(chosen.len());
+    for (i, cand) in chosen.iter().enumerate() {
+        let mut item = chat_token_from_gemini(cand);
+        if let Some(top) = tops.and_then(|t| t.get(i)) {
+            let alts = top
+                .get("candidates")
+                .and_then(Value::as_array)
+                .map(|arr| Value::Array(arr.iter().map(chat_token_from_gemini).collect()))
+                .unwrap_or_else(|| json!([]));
+            item["top_logprobs"] = alts;
+        }
+        content.push(item);
+    }
+    Some(Value::Array(content))
+}
+
+pub(super) fn logprobs_to_result(content: &Value) -> Value {
+    let mut chosen = Vec::new();
+    let mut tops = Vec::new();
+    if let Some(arr) = content.as_array() {
+        for item in arr {
+            chosen.push(gemini_token_from_chat(item));
+            let candidates = item
+                .get("top_logprobs")
+                .and_then(Value::as_array)
+                .map(|alts| alts.iter().map(gemini_token_from_chat).collect::<Vec<_>>())
+                .unwrap_or_default();
+            tops.push(json!({ "candidates": candidates }));
+        }
+    }
+    json!({
+        "chosenCandidates": chosen,
+        "topCandidates": tops,
+    })
+}
+
+fn chat_token_from_gemini(cand: &Value) -> Value {
+    let token = cand.get("token").and_then(Value::as_str).unwrap_or("");
+    let mut item = json!({
+        "token": token,
+        "bytes": token.as_bytes(),
+    });
+    if let Some(lp) = cand.get("logProbability") {
+        item["logprob"] = lp.clone();
+    }
+    item
+}
+
+fn gemini_token_from_chat(item: &Value) -> Value {
+    let mut cand = json!({});
+    if let Some(token) = item.get("token") {
+        cand["token"] = token.clone();
+    }
+    if let Some(lp) = item.get("logprob") {
+        cand["logProbability"] = lp.clone();
+    }
+    cand
 }
 
 pub(super) fn annotation_from_grounding_chunk(chunk: &Value) -> Option<Value> {

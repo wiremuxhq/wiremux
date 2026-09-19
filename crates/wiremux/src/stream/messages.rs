@@ -200,7 +200,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "delta": { "type": "citations_delta", "citation": citation_from_annotation(annotation) }
             }),
         ),
-        IrStreamEvent::AudioDelta { .. } => (
+        IrStreamEvent::AudioDelta { .. } | IrStreamEvent::Logprobs { .. } => (
             "content_block_delta",
             json!({
                 "type": "content_block_delta",

@@ -44,6 +44,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut audio_data = String::new();
     let mut audio_transcript = String::new();
     let mut tool_calls = Vec::new();
+    let mut logprobs_content = Vec::new();
     let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
         match ev {
@@ -58,6 +59,9 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::AudioDelta { data } => audio_data.push_str(data),
             IrStreamEvent::AudioTranscriptDelta { text } => audio_transcript.push_str(text),
+            IrStreamEvent::Logprobs { content } => {
+                extend_logprobs_content(&mut logprobs_content, content);
+            }
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(super::chat::encode_finish(reason).to_string());
             }
@@ -148,6 +152,9 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
         "index": 0,
         "message": message,
     });
+    if !logprobs_content.is_empty() {
+        choice["logprobs"] = json!({ "content": logprobs_content });
+    }
     if let Some(reason) = finish {
         choice["finish_reason"] = json!(reason);
     }
@@ -173,6 +180,14 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
         }
     }
     out
+}
+
+fn extend_logprobs_content(dst: &mut Vec<Value>, content: &Value) {
+    match content {
+        Value::Array(arr) => dst.extend(arr.iter().cloned()),
+        other if !other.is_null() => dst.push(other.clone()),
+        _ => {}
+    }
 }
 
 fn chat_tool_call_value(id: &str, name: &str, args: &str, custom: bool) -> Value {
@@ -312,6 +327,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut tool_calls = Vec::new();
     let mut grounding_chunks = Vec::new();
     let mut audio_parts = Vec::new();
+    let mut logprobs_content = Vec::new();
     let mut current: Option<(String, String, String)> = None;
     for ev in events {
         match ev {
@@ -324,6 +340,9 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 audio_parts.push(json!({
                     "inlineData": { "mimeType": "audio/mpeg", "data": data }
                 }));
+            }
+            IrStreamEvent::Logprobs { content } => {
+                extend_logprobs_content(&mut logprobs_content, content);
             }
             IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
             IrStreamEvent::ReasoningSignature { signature } => {
@@ -394,6 +413,10 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     if !grounding_chunks.is_empty() {
         candidate["groundingMetadata"] = json!({ "groundingChunks": grounding_chunks });
+    }
+    if !logprobs_content.is_empty() {
+        candidate["logprobsResult"] =
+            super::gemini::logprobs_to_result(&Value::Array(logprobs_content));
     }
 
     let mut out = json!({
@@ -675,6 +698,9 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
                     out.extend(complete_chat_tool_call(call));
                 }
             }
+        }
+        if let Some(content) = super::chat::logprobs_content(choice) {
+            out.push(IrStreamEvent::Logprobs { content });
         }
         if let Some(reason) = choice
             .get("finish_reason")

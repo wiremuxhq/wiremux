@@ -420,6 +420,12 @@ pub enum IrStreamEvent {
         delta: String,
         index: u32,
     },
+    /// Dest Chat STREAM `choices[].logprobs.content` and dest Responses
+    /// `response.output_text.delta.logprobs`. Dest Gemini
+    /// `candidates[].logprobsResult`.
+    Logprobs {
+        content: serde_json::Value,
+    },
     /// Exclusive buckets: prompt excludes cache
     /// read, completion excludes reasoning. Encoders re-inflate inclusive
     /// wire totals for Chat and Responses.
