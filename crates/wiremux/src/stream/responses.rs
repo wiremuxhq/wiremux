@@ -112,7 +112,7 @@ pub(super) fn decode_all(name: &str, value: &Value) -> Result<Vec<IrStreamEvent>
     Ok(out)
 }
 
-fn logprobs_array(value: &Value) -> Option<Value> {
+pub(super) fn logprobs_array(value: &Value) -> Option<Value> {
     value
         .get("logprobs")
         .and_then(Value::as_array)

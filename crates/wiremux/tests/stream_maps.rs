@@ -2015,6 +2015,77 @@ fn dest_chat_complete_logprobs_remaps_dest_gemini_and_responses() {
         Some(-0.1),
         "dest Chat complete logprobs remapped dest Responses STREAM must write logprobs logprob, got {responses_stream:?}"
     );
+    let responses_complete =
+        encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    assert_eq!(
+        responses_complete
+            .pointer("/output/0/content/0/logprobs/0/token")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Chat complete logprobs remapped dest Responses complete must write output_text logprobs token, got {responses_complete}"
+    );
+    assert_eq!(
+        responses_complete
+            .pointer("/output/0/content/0/logprobs/0/logprob")
+            .and_then(Value::as_f64),
+        Some(-0.1),
+        "dest Chat complete logprobs remapped dest Responses complete must write output_text logprobs logprob, got {responses_complete}"
+    );
+    assert_eq!(
+        responses_complete
+            .pointer("/output/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Chat complete content remapped dest Responses complete must still carry text Hi, got {responses_complete}"
+    );
+}
+
+#[test]
+fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": "Hi",
+                "logprobs": [{
+                    "token": "Hi",
+                    "logprob": -0.1,
+                    "bytes": [72, 105],
+                    "top_logprobs": [{
+                        "token": "Hi",
+                        "logprob": -0.1,
+                        "bytes": [72, 105]
+                    }]
+                }]
+            }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete output_text logprobs");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/logprobs/content/0/token")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Responses complete output_text logprobs remapped dest Chat complete must write logprobs.content token, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/logprobs/content/0/logprob")
+            .and_then(Value::as_f64),
+        Some(-0.1),
+        "dest Responses complete output_text logprobs remapped dest Chat complete must write logprobs.content logprob, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Responses complete output_text remapped dest Chat complete must still carry text Hi, got {chat}"
+    );
 }
 
 #[test]
