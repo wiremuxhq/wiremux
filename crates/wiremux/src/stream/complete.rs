@@ -656,6 +656,9 @@ pub fn decode_response(
 
 fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     let mut out = Vec::new();
+    if let Some(unix) = value.get("created").and_then(Value::as_i64) {
+        out.push(IrStreamEvent::Created { unix });
+    }
     if let Some(choice) = value
         .get("choices")
         .and_then(Value::as_array)
@@ -737,9 +740,6 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     }
     if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
         out.push(from_chat(usage));
-    }
-    if let Some(unix) = value.get("created").and_then(Value::as_i64) {
-        out.push(IrStreamEvent::Created { unix });
     }
     Ok(out)
 }

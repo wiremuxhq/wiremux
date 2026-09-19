@@ -1916,6 +1916,46 @@ fn dest_chat_stream_logprobs_remaps_dest_gemini_logprobs_result() {
 }
 
 #[test]
+fn dest_chat_stream_created_remaps_dest_responses_created_at() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "id": "chatcmpl-r58",
+            "object": "chat.completion.chunk",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "delta": { "role": "assistant", "content": "Hi" }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM created");
+    let frames = encode_all(Wire::Responses, &events);
+    let created: Vec<Value> = frames
+        .iter()
+        .filter(|frame| frame.event.as_deref() == Some("response.created"))
+        .filter_map(|frame| serde_json::from_str(&frame.data).ok())
+        .collect();
+    assert_eq!(
+        created
+            .iter()
+            .find_map(|body| body.pointer("/response/created_at").and_then(Value::as_i64)),
+        Some(1_700_000_000),
+        "dest Chat STREAM created remapped dest Responses STREAM must write response.created created_at, got {frames:?}"
+    );
+    assert!(
+        frames.iter().any(|frame| {
+            frame.event.as_deref() == Some("response.output_text.delta")
+                && frame.data.contains("Hi")
+        }),
+        "dest Chat STREAM content remapped dest Responses STREAM must still carry text Hi, got {frames:?}"
+    );
+}
+
+#[test]
 fn dest_chat_stream_logprobs_remaps_dest_responses_output_text_logprobs() {
     let raw = RawSse {
         event: None,

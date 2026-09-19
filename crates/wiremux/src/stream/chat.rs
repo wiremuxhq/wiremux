@@ -108,6 +108,9 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     };
 
     let mut out = Vec::new();
+    if let Some(unix) = value.get("created").and_then(Value::as_i64) {
+        out.push(IrStreamEvent::Created { unix });
+    }
     if let Some(calls) = choice
         .pointer("/delta/tool_calls")
         .and_then(Value::as_array)
