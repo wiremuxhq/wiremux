@@ -17,6 +17,7 @@ enum BlockKind {
     Text,
     Thinking,
     Tool,
+    CustomTool,
 }
 
 /// Accumulates IR events into dialect-correct SSE frames.
@@ -36,6 +37,7 @@ pub struct StreamEncoder {
     last_tool: HashMap<u32, u32>,
     tool_items: HashMap<u32, (String, String, String)>,
     text_items: HashMap<u32, String>,
+    text_annotations: HashMap<u32, Vec<Value>>,
     refusal_items: HashMap<u32, String>,
     reasoning_items: HashMap<u32, String>,
 }
@@ -60,6 +62,7 @@ impl StreamEncoder {
             last_tool: HashMap::new(),
             tool_items: HashMap::new(),
             text_items: HashMap::new(),
+            text_annotations: HashMap::new(),
             refusal_items: HashMap::new(),
             reasoning_items: HashMap::new(),
         }
@@ -311,7 +314,9 @@ impl StreamEncoder {
         let content_block = match kind {
             BlockKind::Text => json!({ "type": "text", "text": "" }),
             BlockKind::Thinking => json!({ "type": "thinking", "thinking": "" }),
-            BlockKind::Tool => json!({ "type": "tool_use", "id": "", "name": "", "input": {} }),
+            BlockKind::Tool | BlockKind::CustomTool => {
+                json!({ "type": "tool_use", "id": "", "name": "", "input": {} })
+            }
         };
         out.push(named(
             "content_block_start",
@@ -448,6 +453,83 @@ impl StreamEncoder {
                     .insert(enc, (id.clone(), name.clone(), String::new()));
                 self.open = Some((enc, BlockKind::Tool));
             }
+            IrStreamEvent::AnnotationAdded { annotation } => {
+                out.extend(self.ensure_item(BlockKind::Text));
+                let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                let annotations = self.text_annotations.entry(index).or_default();
+                annotations.push(annotation.clone());
+                let annotation_index =
+                    u32::try_from(annotations.len().saturating_sub(1)).unwrap_or(0);
+                out.push(named(
+                    "response.output_text.annotation.added",
+                    json!({
+                        "type": "response.output_text.annotation.added",
+                        "output_index": index,
+                        "content_index": 0,
+                        "annotation_index": annotation_index,
+                        "annotation": annotation
+                    }),
+                ));
+            }
+            IrStreamEvent::AudioDelta { data } => {
+                out.push(named(
+                    "response.audio.delta",
+                    json!({
+                        "type": "response.audio.delta",
+                        "delta": data
+                    }),
+                ));
+            }
+            IrStreamEvent::AudioTranscriptDelta { text } => {
+                out.push(named(
+                    "response.audio.transcript.delta",
+                    json!({
+                        "type": "response.audio.transcript.delta",
+                        "delta": text
+                    }),
+                ));
+            }
+            IrStreamEvent::CustomToolCallStart { id, name, index } => {
+                let enc = self.alloc_tool(index);
+                out.extend(self.close_item());
+                out.push(named(
+                    "response.output_item.added",
+                    json!({
+                        "type": "response.output_item.added",
+                        "output_index": enc,
+                        "item": {
+                            "type": "custom_tool_call",
+                            "id": id,
+                            "call_id": id,
+                            "name": name,
+                            "input": ""
+                        }
+                    }),
+                ));
+                self.tool_items
+                    .insert(enc, (id.clone(), name.clone(), String::new()));
+                self.open = Some((enc, BlockKind::CustomTool));
+            }
+            IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
+                let enc = self.tool_enc(index);
+                if let Some((_, _, args)) = self.tool_items.get_mut(&enc) {
+                    args.push_str(&delta);
+                }
+                let item_id = self
+                    .tool_items
+                    .get(&enc)
+                    .map(|(id, _, _)| id.clone())
+                    .unwrap_or_default();
+                out.push(named(
+                    "response.custom_tool_call_input.delta",
+                    json!({
+                        "type": "response.custom_tool_call_input.delta",
+                        "output_index": enc,
+                        "item_id": item_id,
+                        "delta": delta
+                    }),
+                ));
+            }
             IrStreamEvent::ToolCallArgDelta { delta, index } => {
                 let enc = self.tool_enc(index);
                 if let Some((_, _, args)) = self.tool_items.get_mut(&enc) {
@@ -499,6 +581,7 @@ impl StreamEncoder {
             BlockKind::Text => json!({ "type": "message", "role": "assistant", "content": [] }),
             BlockKind::Thinking => json!({ "type": "reasoning" }),
             BlockKind::Tool => json!({ "type": "function_call" }),
+            BlockKind::CustomTool => json!({ "type": "custom_tool_call" }),
         };
         out.push(named(
             "response.output_item.added",
@@ -520,9 +603,14 @@ impl StreamEncoder {
             BlockKind::Text => {
                 let text = self.text_items.remove(&index).unwrap_or_default();
                 let refusal = self.refusal_items.remove(&index).unwrap_or_default();
+                let annotations = self.text_annotations.remove(&index).unwrap_or_default();
                 let mut content = Vec::new();
-                if !text.is_empty() {
-                    content.push(json!({ "type": "output_text", "text": text }));
+                if !text.is_empty() || !annotations.is_empty() {
+                    let mut part = json!({ "type": "output_text", "text": text });
+                    if !annotations.is_empty() {
+                        part["annotations"] = json!(annotations);
+                    }
+                    content.push(part);
                 }
                 if !refusal.is_empty() {
                     content.push(json!({ "type": "refusal", "refusal": refusal }));
@@ -552,6 +640,16 @@ impl StreamEncoder {
                     "arguments": arguments
                 }),
                 None => json!({ "type": "function_call" }),
+            },
+            BlockKind::CustomTool => match self.tool_items.remove(&index) {
+                Some((id, name, input)) => json!({
+                    "type": "custom_tool_call",
+                    "id": id,
+                    "call_id": id,
+                    "name": name,
+                    "input": input
+                }),
+                None => json!({ "type": "custom_tool_call" }),
             },
         };
         vec![named(
@@ -1005,6 +1103,107 @@ mod tests {
         assert!(
             !item_done.data.contains(r#""type":"output_text""#),
             "dest Responses output_item.done must not overwrite dest Chat refusal as output_text, got {item_done:?}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_encoder_annotation_added_is_annotation_event() {
+        let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4o");
+        enc.push(IrStreamEvent::TextDelta {
+            text: "See https://example.com".into(),
+        })
+        .expect("push text");
+        let frames = enc
+            .push(IrStreamEvent::AnnotationAdded {
+                annotation: json!({
+                    "type": "url_citation",
+                    "start_index": 4,
+                    "end_index": 23,
+                    "title": "Example Domain",
+                    "url": "https://example.com"
+                }),
+            })
+            .expect("push dest Responses annotation");
+        assert!(
+            frames.iter().any(|frame| {
+                frame.event.as_deref() == Some("response.output_text.annotation.added")
+                    && frame.data.contains("https://example.com")
+            }),
+            "dest Responses stream encode must emit response.output_text.annotation.added, got {frames:?}"
+        );
+        let done = enc.finish().expect("finish dest Responses annotation");
+        let item_done = done
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.output_item.done"))
+            .expect("response.output_item.done");
+        assert!(
+            item_done.data.contains("annotations")
+                && item_done.data.contains("https://example.com"),
+            "dest Responses output_item.done output_text must keep annotations, got {}",
+            item_done.data
+        );
+    }
+
+    #[test]
+    fn dest_responses_encoder_audio_delta_is_audio_event() {
+        let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4o");
+        let frames = enc
+            .push(IrStreamEvent::AudioDelta {
+                data: "SUQz".into(),
+            })
+            .expect("push dest Responses audio");
+        assert!(
+            frames.iter().any(|frame| {
+                frame.event.as_deref() == Some("response.audio.delta")
+                    && frame.data.contains(r#""delta":"SUQz""#)
+            }),
+            "dest Responses stream encode must emit response.audio.delta, got {frames:?}"
+        );
+        let more = enc
+            .push(IrStreamEvent::AudioTranscriptDelta {
+                text: "hello there".into(),
+            })
+            .expect("push dest Responses audio transcript");
+        assert!(
+            more.iter().any(|frame| {
+                frame.event.as_deref() == Some("response.audio.transcript.delta")
+                    && frame.data.contains(r#""delta":"hello there""#)
+            }),
+            "dest Responses stream encode must emit response.audio.transcript.delta, got {more:?}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_encoder_custom_tool_call_is_custom_events() {
+        let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4o");
+        enc.push(IrStreamEvent::CustomToolCallStart {
+            id: "call_custom".into(),
+            name: "code_exec".into(),
+            index: 0,
+        })
+        .expect("start custom");
+        let frames = enc
+            .push(IrStreamEvent::CustomToolCallInputDelta {
+                delta: "print(1)".into(),
+                index: 0,
+            })
+            .expect("custom input");
+        assert!(
+            frames.iter().any(|frame| {
+                frame.event.as_deref() == Some("response.custom_tool_call_input.delta")
+                    && frame.data.contains(r#""delta":"print(1)""#)
+            }),
+            "dest Responses stream encode must emit response.custom_tool_call_input.delta, got {frames:?}"
+        );
+        let done = enc.finish().expect("finish custom");
+        assert!(
+            done.iter().any(|frame| {
+                frame.event.as_deref() == Some("response.output_item.done")
+                    && frame.data.contains("\"type\":\"custom_tool_call\"")
+                    && frame.data.contains("\"name\":\"code_exec\"")
+                    && frame.data.contains(r#""input":"print(1)""#)
+            }),
+            "dest Responses output_item.done must keep custom_tool_call, got {done:?}"
         );
     }
 

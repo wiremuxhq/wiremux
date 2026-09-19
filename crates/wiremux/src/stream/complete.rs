@@ -40,8 +40,11 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut reasoning_signature = None;
     let mut finish = None;
     let mut usage = None;
+    let mut annotations = Vec::new();
+    let mut audio_data = None;
+    let mut audio_transcript = None;
     let mut tool_calls = Vec::new();
-    let mut current: Option<(String, String, String)> = None;
+    let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
@@ -49,6 +52,13 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
             IrStreamEvent::ReasoningSignature { signature } => {
                 reasoning_signature = Some(signature.clone());
+            }
+            IrStreamEvent::AnnotationAdded { annotation } => {
+                annotations.push(super::chat::annotation_to_chat(annotation));
+            }
+            IrStreamEvent::AudioDelta { data } => audio_data = Some(data.clone()),
+            IrStreamEvent::AudioTranscriptDelta { text } => {
+                audio_transcript = Some(text.clone());
             }
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(super::chat::encode_finish(reason).to_string());
@@ -69,26 +79,33 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 ));
             }
             IrStreamEvent::ToolCallStart { id, name, .. } => {
-                if let Some((id, name, args)) = current.take() {
-                    tool_calls.push(chat_tool_call_value(&id, &name, &args));
+                if let Some((id, name, args, custom)) = current.take() {
+                    tool_calls.push(chat_tool_call_value(&id, &name, &args, custom));
                 }
-                current = Some((id.clone(), name.clone(), String::new()));
+                current = Some((id.clone(), name.clone(), String::new(), false));
             }
-            IrStreamEvent::ToolCallArgDelta { delta, .. } => {
-                if let Some((_, _, args)) = current.as_mut() {
+            IrStreamEvent::CustomToolCallStart { id, name, .. } => {
+                if let Some((id, name, args, custom)) = current.take() {
+                    tool_calls.push(chat_tool_call_value(&id, &name, &args, custom));
+                }
+                current = Some((id.clone(), name.clone(), String::new(), true));
+            }
+            IrStreamEvent::ToolCallArgDelta { delta, .. }
+            | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
+                if let Some((_, _, args, _)) = current.as_mut() {
                     args.push_str(delta);
                 }
             }
             IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args)) = current.take() {
-                    tool_calls.push(chat_tool_call_value(&id, &name, &args));
+                if let Some((id, name, args, custom)) = current.take() {
+                    tool_calls.push(chat_tool_call_value(&id, &name, &args, custom));
                 }
             }
             _ => {}
         }
     }
-    if let Some((id, name, args)) = current.take() {
-        tool_calls.push(chat_tool_call_value(&id, &name, &args));
+    if let Some((id, name, args, custom)) = current.take() {
+        tool_calls.push(chat_tool_call_value(&id, &name, &args, custom));
     }
 
     let mut message = json!({ "role": "assistant" });
@@ -114,6 +131,19 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     if let Some(signature) = reasoning_signature {
         message["reasoning_signature"] = json!(signature);
+    }
+    if !annotations.is_empty() {
+        message["annotations"] = Value::Array(annotations);
+    }
+    if audio_data.is_some() || audio_transcript.is_some() {
+        let mut audio = serde_json::Map::new();
+        if let Some(data) = audio_data {
+            audio.insert("data".into(), json!(data));
+        }
+        if let Some(transcript) = audio_transcript {
+            audio.insert("transcript".into(), json!(transcript));
+        }
+        message["audio"] = Value::Object(audio);
     }
 
     let mut choice = json!({
@@ -147,12 +177,20 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     out
 }
 
-fn chat_tool_call_value(id: &str, name: &str, args: &str) -> Value {
-    json!({
-        "id": id,
-        "type": "function",
-        "function": { "name": name, "arguments": args },
-    })
+fn chat_tool_call_value(id: &str, name: &str, args: &str, custom: bool) -> Value {
+    if custom {
+        json!({
+            "id": id,
+            "type": "custom",
+            "custom": { "name": name, "input": args },
+        })
+    } else {
+        json!({
+            "id": id,
+            "type": "function",
+            "function": { "name": name, "arguments": args },
+        })
+    }
 }
 
 fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
@@ -368,8 +406,9 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut reasoning_signature = None;
     let mut finish = None;
     let mut usage = None;
+    let mut annotations = Vec::new();
     let mut tool_calls = Vec::new();
-    let mut current: Option<(String, String, String)> = None;
+    let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
@@ -377,6 +416,9 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
             IrStreamEvent::ReasoningSignature { signature } => {
                 reasoning_signature = Some(signature.clone());
+            }
+            IrStreamEvent::AnnotationAdded { annotation } => {
+                annotations.push(annotation.clone());
             }
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(reason.clone());
@@ -397,26 +439,33 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 ));
             }
             IrStreamEvent::ToolCallStart { id, name, .. } => {
-                if let Some((id, name, args)) = current.take() {
-                    tool_calls.push(responses_function_call_value(&id, &name, &args));
+                if let Some((id, name, args, custom)) = current.take() {
+                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom));
                 }
-                current = Some((id.clone(), name.clone(), String::new()));
+                current = Some((id.clone(), name.clone(), String::new(), false));
             }
-            IrStreamEvent::ToolCallArgDelta { delta, .. } => {
-                if let Some((_, _, args)) = current.as_mut() {
+            IrStreamEvent::CustomToolCallStart { id, name, .. } => {
+                if let Some((id, name, args, custom)) = current.take() {
+                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom));
+                }
+                current = Some((id.clone(), name.clone(), String::new(), true));
+            }
+            IrStreamEvent::ToolCallArgDelta { delta, .. }
+            | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
+                if let Some((_, _, args, _)) = current.as_mut() {
                     args.push_str(delta);
                 }
             }
             IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args)) = current.take() {
-                    tool_calls.push(responses_function_call_value(&id, &name, &args));
+                if let Some((id, name, args, custom)) = current.take() {
+                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom));
                 }
             }
             _ => {}
         }
     }
-    if let Some((id, name, args)) = current.take() {
-        tool_calls.push(responses_function_call_value(&id, &name, &args));
+    if let Some((id, name, args, custom)) = current.take() {
+        tool_calls.push(responses_tool_call_value(&id, &name, &args, custom));
     }
 
     let mut output = Vec::new();
@@ -430,10 +479,14 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
         }
         output.push(item);
     }
-    if !text.is_empty() || !refusal.is_empty() {
+    if !text.is_empty() || !refusal.is_empty() || !annotations.is_empty() {
         let mut content = Vec::new();
-        if !text.is_empty() {
-            content.push(json!({ "type": "output_text", "text": text }));
+        if !text.is_empty() || !annotations.is_empty() {
+            let mut part = json!({ "type": "output_text", "text": text });
+            if !annotations.is_empty() {
+                part["annotations"] = json!(annotations);
+            }
+            content.push(part);
         }
         if !refusal.is_empty() {
             content.push(json!({ "type": "refusal", "refusal": refusal }));
@@ -492,14 +545,24 @@ fn responses_complete_status(reason: &str) -> &str {
     }
 }
 
-fn responses_function_call_value(id: &str, name: &str, args: &str) -> Value {
-    json!({
-        "type": "function_call",
-        "id": id,
-        "call_id": id,
-        "name": name,
-        "arguments": args,
-    })
+fn responses_tool_call_value(id: &str, name: &str, args: &str, custom: bool) -> Value {
+    if custom {
+        json!({
+            "type": "custom_tool_call",
+            "id": id,
+            "call_id": id,
+            "name": name,
+            "input": args,
+        })
+    } else {
+        json!({
+            "type": "function_call",
+            "id": id,
+            "call_id": id,
+            "name": name,
+            "arguments": args,
+        })
+    }
 }
 
 /// Decode a complete (non-SSE) vendor body into IR stream events.
@@ -567,6 +630,23 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
                     text: text.to_string(),
                 });
             }
+            if let Some(anns) = message.get("annotations").and_then(Value::as_array) {
+                for ann in anns {
+                    if ann.is_object() {
+                        out.push(IrStreamEvent::AnnotationAdded {
+                            annotation: super::chat::annotation_from_chat(ann),
+                        });
+                    }
+                }
+            }
+            if let Some(audio) = message.get("audio").filter(|v| v.is_object()) {
+                if let Some(data) = str_field(audio, "data").filter(|s| !s.is_empty()) {
+                    out.push(IrStreamEvent::AudioDelta { data });
+                }
+                if let Some(text) = str_field(audio, "transcript").filter(|s| !s.is_empty()) {
+                    out.push(IrStreamEvent::AudioTranscriptDelta { text });
+                }
+            }
             if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
                     check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
@@ -591,6 +671,21 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
 }
 
 fn complete_chat_tool_call(call: &Value) -> Vec<IrStreamEvent> {
+    if let Some(ty) = call.get("type").and_then(Value::as_str)
+        && ty == "custom"
+    {
+        let custom = call.get("custom").unwrap_or(call);
+        let id = str_field(call, "id").unwrap_or_default();
+        let name = str_field(custom, "name").unwrap_or_default();
+        let input = str_field(custom, "input");
+        let index = super::chat::tool_call_index(call);
+        let mut out = vec![IrStreamEvent::CustomToolCallStart { id, name, index }];
+        if let Some(delta) = input {
+            out.push(IrStreamEvent::CustomToolCallInputDelta { delta, index });
+        }
+        out.push(IrStreamEvent::ToolCallEnd);
+        return out;
+    }
     if let Some(ty) = call.get("type").and_then(Value::as_str)
         && ty != "function"
     {
@@ -740,6 +835,15 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                             if let Some(text) = str_field(part, "text").filter(|s| !s.is_empty()) {
                                 out.push(IrStreamEvent::TextDelta { text });
                             }
+                            if let Some(anns) = part.get("annotations").and_then(Value::as_array) {
+                                for ann in anns {
+                                    if ann.is_object() {
+                                        out.push(IrStreamEvent::AnnotationAdded {
+                                            annotation: ann.clone(),
+                                        });
+                                    }
+                                }
+                            }
                         }
                         Some("refusal") => {
                             if let Some(text) = str_field(part, "refusal")
@@ -764,6 +868,19 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                 });
                 if let Some(delta) = str_field(item, "arguments").filter(|s| !s.is_empty()) {
                     out.push(IrStreamEvent::ToolCallArgDelta { delta, index: 0 });
+                }
+                out.push(IrStreamEvent::ToolCallEnd);
+            }
+            Some("custom_tool_call") => {
+                out.push(IrStreamEvent::CustomToolCallStart {
+                    id: str_field(item, "call_id")
+                        .or_else(|| str_field(item, "id"))
+                        .unwrap_or_default(),
+                    name: str_field(item, "name").unwrap_or_default(),
+                    index: 0,
+                });
+                if let Some(delta) = str_field(item, "input").filter(|s| !s.is_empty()) {
+                    out.push(IrStreamEvent::CustomToolCallInputDelta { delta, index: 0 });
                 }
                 out.push(IrStreamEvent::ToolCallEnd);
             }

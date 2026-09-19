@@ -206,7 +206,26 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 }]
             })
         }
-        IrStreamEvent::ToolCallArgDelta { delta, .. } => {
+        IrStreamEvent::CustomToolCallStart { id, name, .. } => {
+            let n = if name.is_empty() { id } else { name };
+            json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{ "functionCall": { "name": n, "args": {} } }]
+                    }
+                }]
+            })
+        }
+        IrStreamEvent::AnnotationAdded { .. }
+        | IrStreamEvent::AudioDelta { .. }
+        | IrStreamEvent::AudioTranscriptDelta { .. } => json!({
+            "candidates": [{
+                "content": { "role": "model", "parts": [{ "text": "" }] }
+            }]
+        }),
+        IrStreamEvent::ToolCallArgDelta { delta, .. }
+        | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
             let args: Value = serde_json::from_str(delta).unwrap_or_else(|_| json!({}));
             json!({
                 "candidates": [{

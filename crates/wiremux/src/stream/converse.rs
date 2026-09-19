@@ -99,7 +99,18 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
                 "start": { "toolUse": { "toolUseId": id, "name": name } }
             }
         })),
-        IrStreamEvent::ToolCallArgDelta { delta, .. } => Ok(json!({
+        IrStreamEvent::CustomToolCallStart { id, name, .. } => Ok(json!({
+            "contentBlockStart": {
+                "start": { "toolUse": { "toolUseId": id, "name": name } }
+            }
+        })),
+        IrStreamEvent::AnnotationAdded { .. }
+        | IrStreamEvent::AudioDelta { .. }
+        | IrStreamEvent::AudioTranscriptDelta { .. } => Ok(json!({
+            "contentBlockDelta": { "delta": { "text": "" } }
+        })),
+        IrStreamEvent::ToolCallArgDelta { delta, .. }
+        | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => Ok(json!({
             "contentBlockDelta": { "delta": { "toolUse": { "input": delta } } }
         })),
         IrStreamEvent::ToolCallEnd => Ok(json!({ "contentBlockStop": {} })),
