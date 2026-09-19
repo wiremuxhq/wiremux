@@ -1171,6 +1171,13 @@ fn dest_chat_complete_audio_transcript_remap_dest_messages_stream() {
         }),
         "dest Chat audio.transcript remapped dest Messages STREAM must emit text_delta, got {frames:?}"
     );
+    assert!(
+        frames.iter().all(|frame| {
+            frame.event.as_deref() != Some("content_block_delta")
+                || !frame.data.contains(r#""text":"""#)
+        }),
+        "dest Messages STREAM must not emit empty text_delta for dest Chat audio bytes, got {frames:?}"
+    );
 }
 
 #[test]
