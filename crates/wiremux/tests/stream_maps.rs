@@ -1288,6 +1288,50 @@ fn dest_chat_stream_annotations_url_citation_remap_dest_messages_and_gemini() {
 }
 
 #[test]
+fn dest_chat_stream_annotation_span_remaps_dest_gemini_grounding_supports() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "choices": [{
+                "delta": {
+                    "content": "see this",
+                    "annotations": [{
+                        "type": "url_citation",
+                        "url_citation": {
+                            "url": "https://example.com/s",
+                            "title": "S",
+                            "start_index": 4,
+                            "end_index": 8
+                        }
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM annotation span");
+    let frames = encode_all(Wire::Gemini, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/groundingMetadata/groundingSupports/0/segment/startIndex")
+                .and_then(Value::as_u64)
+        }),
+        Some(4),
+        "dest Chat STREAM url_citation start_index remapped dest Gemini STREAM must emit groundingSupports.segment.startIndex 4, got {frames:?}"
+    );
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/groundingMetadata/groundingSupports/0/segment/endIndex")
+                .and_then(Value::as_u64)
+        }),
+        Some(8),
+        "dest Chat STREAM url_citation end_index remapped dest Gemini STREAM must emit groundingSupports.segment.endIndex 8, got {frames:?}"
+    );
+}
+
+#[test]
 fn dest_chat_complete_annotations_url_citation_remap_dest_messages_stream() {
     let events = decode_response(
         Wire::ChatCompletions,

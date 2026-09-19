@@ -286,7 +286,8 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         IrStreamEvent::AnnotationAdded { annotation } => json!({
             "candidates": [{
                 "groundingMetadata": {
-                    "groundingChunks": [grounding_chunk_from_annotation(annotation)]
+                    "groundingChunks": [grounding_chunk_from_annotation(annotation)],
+                    "groundingSupports": [grounding_support_from_annotation(annotation, 0)]
                 }
             }]
         }),
@@ -486,6 +487,16 @@ pub(super) fn annotation_from_grounding_chunk(chunk: &Value) -> Option<Value> {
         out["title"] = json!(title);
     }
     Some(out)
+}
+
+pub(super) fn grounding_support_from_annotation(annotation: &Value, chunk_index: usize) -> Value {
+    json!({
+        "segment": {
+            "startIndex": annotation.get("start_index").cloned().unwrap_or(json!(0)),
+            "endIndex": annotation.get("end_index").cloned().unwrap_or(json!(0))
+        },
+        "groundingChunkIndices": [chunk_index]
+    })
 }
 
 pub(super) fn grounding_chunk_from_annotation(annotation: &Value) -> Value {
