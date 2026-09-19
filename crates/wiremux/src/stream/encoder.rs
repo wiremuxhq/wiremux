@@ -285,6 +285,7 @@ impl StreamEncoder {
                 self.finish = Some(reason);
             }
             IrStreamEvent::AudioDelta { .. } => {}
+            IrStreamEvent::Logprobs { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.extend(self.ensure_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -505,6 +506,19 @@ impl StreamEncoder {
                     json!({
                         "type": "response.audio.delta",
                         "delta": data
+                    }),
+                ));
+            }
+            IrStreamEvent::Logprobs { content } => {
+                out.extend(self.ensure_item(BlockKind::Text));
+                let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                out.push(named(
+                    "response.output_text.delta",
+                    json!({
+                        "type": "response.output_text.delta",
+                        "output_index": index,
+                        "delta": "",
+                        "logprobs": content
                     }),
                 ));
             }
@@ -890,6 +904,7 @@ impl StreamEncoder {
                 self.finish = Some(reason);
             }
             IrStreamEvent::AudioDelta { .. } => {}
+            IrStreamEvent::Logprobs { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.extend(self.ensure_converse_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -1215,6 +1230,28 @@ mod tests {
                     && frame.data.contains(r#""delta":"hello there""#)
             }),
             "dest Responses stream encode must emit response.audio.transcript.delta, got {more:?}"
+        );
+    }
+
+    #[test]
+    fn dest_messages_encoder_logprobs_skips_empty_text() {
+        let mut enc = StreamEncoder::new(Wire::Messages);
+        let frames = enc
+            .push(IrStreamEvent::Logprobs {
+                content: json!([{
+                    "token": "Hi",
+                    "logprob": -0.1,
+                    "bytes": [72, 105],
+                    "top_logprobs": [{ "token": "Hi", "logprob": -0.1, "bytes": [72, 105] }]
+                }]),
+            })
+            .expect("push dest Messages logprobs");
+        assert!(
+            frames.iter().all(|frame| {
+                frame.event.as_deref() != Some("content_block_delta")
+                    || !frame.data.contains(r#""text":"""#)
+            }),
+            "dest Messages STREAM must not emit empty text_delta solely from Logprobs, got {frames:?}"
         );
     }
 

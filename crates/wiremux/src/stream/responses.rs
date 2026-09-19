@@ -12,7 +12,13 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
     check_responses_indexes(value)?;
     match name {
         "response.output_text.delta" => {
-            nonempty_delta(value, |text| IrStreamEvent::TextDelta { text })
+            if let Some(text) = str_field(value, "delta").filter(|s| !s.is_empty()) {
+                return Ok(Some(IrStreamEvent::TextDelta { text }));
+            }
+            if let Some(content) = logprobs_array(value) {
+                return Ok(Some(IrStreamEvent::Logprobs { content }));
+            }
+            Ok(None)
         }
         "response.reasoning_summary_text.delta" | "response.reasoning.delta" => {
             nonempty_delta(value, |text| IrStreamEvent::ReasoningDelta { text })
@@ -88,6 +94,30 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
         })),
         other => Ok(Some(protocol(other, value))),
     }
+}
+
+/// Text and logprobs on one `response.output_text.delta` frame.
+pub(super) fn decode_all(name: &str, value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
+    check_responses_indexes(value)?;
+    if name != "response.output_text.delta" {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    if let Some(text) = str_field(value, "delta").filter(|s| !s.is_empty()) {
+        out.push(IrStreamEvent::TextDelta { text });
+    }
+    if let Some(content) = logprobs_array(value) {
+        out.push(IrStreamEvent::Logprobs { content });
+    }
+    Ok(out)
+}
+
+fn logprobs_array(value: &Value) -> Option<Value> {
+    value
+        .get("logprobs")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+        .map(|a| Value::Array(a.clone()))
 }
 
 /// Fan-out for `response.completed` / `response.incomplete`.
@@ -216,6 +246,15 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "type": "response.output_text.delta",
                 "output_index": 0,
                 "delta": text
+            }),
+        ),
+        IrStreamEvent::Logprobs { content } => (
+            "response.output_text.delta",
+            json!({
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "delta": "",
+                "logprobs": content
             }),
         ),
         IrStreamEvent::RefusalDelta { text } => (

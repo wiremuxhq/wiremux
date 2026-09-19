@@ -114,7 +114,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
         IrStreamEvent::AnnotationAdded { annotation } => Ok(json!({
             "contentBlockDelta": { "delta": { "citation": citation_from_annotation(annotation) } }
         })),
-        IrStreamEvent::AudioDelta { .. } => Ok(json!({
+        IrStreamEvent::AudioDelta { .. } | IrStreamEvent::Logprobs { .. } => Ok(json!({
             "contentBlockDelta": { "delta": { "text": "" } }
         })),
         IrStreamEvent::ToolCallArgDelta { delta, .. }

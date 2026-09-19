@@ -1593,6 +1593,237 @@ fn dest_chat_stream_refusal_remaps_dest_responses_refusal_delta() {
     );
 }
 
+fn dest_chat_stream_logprobs_body() -> Value {
+    json!({
+        "choices": [{
+            "index": 0,
+            "delta": { "content": "Hi" },
+            "logprobs": {
+                "content": [{
+                    "token": "Hi",
+                    "logprob": -0.1,
+                    "bytes": [72, 105],
+                    "top_logprobs": [{
+                        "token": "Hi",
+                        "logprob": -0.1,
+                        "bytes": [72, 105]
+                    }]
+                }]
+            }
+        }]
+    })
+}
+
+fn dest_chat_complete_logprobs_body() -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "Hi"
+            },
+            "logprobs": {
+                "content": [{
+                    "token": "Hi",
+                    "logprob": -0.1,
+                    "bytes": [72, 105],
+                    "top_logprobs": [{
+                        "token": "Hi",
+                        "logprob": -0.1,
+                        "bytes": [72, 105]
+                    }]
+                }]
+            },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json")
+}
+
+fn dest_gemini_stream_logprobs_body() -> Value {
+    json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "Hi" }]
+            },
+            "logprobsResult": {
+                "chosenCandidates": [{ "token": "Hi", "logProbability": -0.1 }],
+                "topCandidates": [{
+                    "candidates": [{ "token": "Hi", "logProbability": -0.1 }]
+                }]
+            }
+        }]
+    })
+}
+
+fn sse_json_frames(frames: &[RawSse]) -> Vec<Value> {
+    frames
+        .iter()
+        .filter_map(|frame| serde_json::from_str(&frame.data).ok())
+        .collect()
+}
+
+#[test]
+fn dest_chat_stream_logprobs_remaps_dest_gemini_logprobs_result() {
+    let raw = RawSse {
+        event: None,
+        data: dest_chat_stream_logprobs_body().to_string(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM logprobs");
+    let frames = encode_all(Wire::Gemini, &events);
+    let bodies = sse_json_frames(&frames);
+    let token = bodies.iter().find_map(|body| {
+        body.pointer("/candidates/0/logprobsResult/chosenCandidates/0/token")
+            .and_then(Value::as_str)
+    });
+    let logp = bodies.iter().find_map(|body| {
+        body.pointer("/candidates/0/logprobsResult/chosenCandidates/0/logProbability")
+            .and_then(Value::as_f64)
+    });
+    assert_eq!(
+        token,
+        Some("Hi"),
+        "dest Chat STREAM logprobs remapped dest Gemini must write logprobsResult.chosenCandidates token, got {frames:?}"
+    );
+    assert_eq!(
+        logp,
+        Some(-0.1),
+        "dest Chat STREAM logprobs remapped dest Gemini must write logprobsResult.chosenCandidates logProbability, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_chat_stream_logprobs_remaps_dest_responses_output_text_logprobs() {
+    let raw = RawSse {
+        event: None,
+        data: dest_chat_stream_logprobs_body().to_string(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM logprobs");
+    let frames = encode_all(Wire::Responses, &events);
+    let deltas: Vec<Value> = frames
+        .iter()
+        .filter(|frame| frame.event.as_deref() == Some("response.output_text.delta"))
+        .filter_map(|frame| serde_json::from_str(&frame.data).ok())
+        .collect();
+    let token = deltas
+        .iter()
+        .find_map(|body| body.pointer("/logprobs/0/token").and_then(Value::as_str));
+    let logp = deltas
+        .iter()
+        .find_map(|body| body.pointer("/logprobs/0/logprob").and_then(Value::as_f64));
+    assert_eq!(
+        token,
+        Some("Hi"),
+        "dest Chat STREAM logprobs remapped dest Responses must write output_text.delta logprobs token, got {frames:?}"
+    );
+    assert_eq!(
+        logp,
+        Some(-0.1),
+        "dest Chat STREAM logprobs remapped dest Responses must write output_text.delta logprobs logprob, got {frames:?}"
+    );
+    assert!(
+        deltas
+            .iter()
+            .any(|body| body.get("delta").and_then(Value::as_str) == Some("Hi")),
+        "dest Chat STREAM content remapped dest Responses must still carry text Hi, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_logprobs_remaps_dest_gemini_and_responses() {
+    let events = decode_response(
+        Wire::ChatCompletions,
+        &dest_chat_complete_logprobs_body(),
+        &chat_profile(),
+    )
+    .expect("decode dest Chat complete logprobs");
+    let gemini_stream = encode_all(Wire::Gemini, &events);
+    let gemini_stream_bodies = sse_json_frames(&gemini_stream);
+    assert_eq!(
+        gemini_stream_bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/logprobsResult/chosenCandidates/0/token")
+                .and_then(Value::as_str)
+        }),
+        Some("Hi"),
+        "dest Chat complete logprobs remapped dest Gemini STREAM must write logprobsResult token, got {gemini_stream:?}"
+    );
+    assert_eq!(
+        gemini_stream_bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/logprobsResult/chosenCandidates/0/logProbability")
+                .and_then(Value::as_f64)
+        }),
+        Some(-0.1),
+        "dest Chat complete logprobs remapped dest Gemini STREAM must write logprobsResult logProbability, got {gemini_stream:?}"
+    );
+    let gemini_complete =
+        encode_response(Wire::Gemini, &events).expect("encode dest Gemini complete");
+    assert_eq!(
+        gemini_complete
+            .pointer("/candidates/0/logprobsResult/chosenCandidates/0/token")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Chat complete logprobs remapped dest Gemini complete must write logprobsResult token, got {gemini_complete}"
+    );
+    assert_eq!(
+        gemini_complete
+            .pointer("/candidates/0/logprobsResult/chosenCandidates/0/logProbability")
+            .and_then(Value::as_f64),
+        Some(-0.1),
+        "dest Chat complete logprobs remapped dest Gemini complete must write logprobsResult logProbability, got {gemini_complete}"
+    );
+    let responses_stream = encode_all(Wire::Responses, &events);
+    let responses_deltas: Vec<Value> = responses_stream
+        .iter()
+        .filter(|frame| frame.event.as_deref() == Some("response.output_text.delta"))
+        .filter_map(|frame| serde_json::from_str(&frame.data).ok())
+        .collect();
+    assert_eq!(
+        responses_deltas
+            .iter()
+            .find_map(|body| body.pointer("/logprobs/0/token").and_then(Value::as_str)),
+        Some("Hi"),
+        "dest Chat complete logprobs remapped dest Responses STREAM must write logprobs token, got {responses_stream:?}"
+    );
+    assert_eq!(
+        responses_deltas
+            .iter()
+            .find_map(|body| body.pointer("/logprobs/0/logprob").and_then(Value::as_f64)),
+        Some(-0.1),
+        "dest Chat complete logprobs remapped dest Responses STREAM must write logprobs logprob, got {responses_stream:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_stream_logprobs_result_remaps_dest_chat() {
+    let raw = RawSse {
+        event: None,
+        data: dest_gemini_stream_logprobs_body().to_string(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode dest Gemini STREAM logprobsResult");
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/choices/0/logprobs/content/0/token")
+                .and_then(Value::as_str)
+        }),
+        Some("Hi"),
+        "dest Gemini STREAM logprobsResult remapped dest Chat must write choices.logprobs.content token, got {frames:?}"
+    );
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/choices/0/logprobs/content/0/logprob")
+                .and_then(Value::as_f64)
+        }),
+        Some(-0.1),
+        "dest Gemini STREAM logprobsResult remapped dest Chat must write choices.logprobs.content logprob, got {frames:?}"
+    );
+}
+
 #[test]
 fn chat_eos_finish_reason_is_stop() {
     let raw = RawSse {

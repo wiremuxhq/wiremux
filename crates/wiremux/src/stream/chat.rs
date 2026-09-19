@@ -50,6 +50,9 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             text: text.to_string(),
         }));
     }
+    if let Some(content) = logprobs_content(choice) {
+        return Ok(Some(IrStreamEvent::Logprobs { content }));
+    }
     if let Some(text) = delta
         .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
         .and_then(Value::as_str)
@@ -143,6 +146,9 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
             text: text.to_string(),
         });
     }
+    if let Some(content) = logprobs_content(choice) {
+        out.push(IrStreamEvent::Logprobs { content });
+    }
     if let Some(reason) = choice
         .get("finish_reason")
         .and_then(Value::as_str)
@@ -156,6 +162,14 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
         out.push(usage::from_chat(usage));
     }
     Ok(out)
+}
+
+pub(super) fn logprobs_content(choice: &Value) -> Option<Value> {
+    choice
+        .pointer("/logprobs/content")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+        .map(|a| Value::Array(a.clone()))
 }
 
 pub(super) fn flatten_content(content: &Value) -> Option<String> {
@@ -393,6 +407,13 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                         "custom": { "input": delta }
                     }]
                 }
+            }]
+        }),
+        IrStreamEvent::Logprobs { content } => json!({
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "logprobs": { "content": content }
             }]
         }),
         IrStreamEvent::Usage {

@@ -161,10 +161,15 @@ pub fn decode_stream_events(
     }
     if matches!(wire, Wire::Responses)
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
-        && let Some(events) =
-            responses::decode_terminal_events(&frame_event_name(wire, raw), &value)
     {
-        return Ok(events);
+        let name = frame_event_name(wire, raw);
+        if let Some(events) = responses::decode_terminal_events(&name, &value) {
+            return Ok(events);
+        }
+        let events = responses::decode_all(&name, &value)?;
+        if !events.is_empty() {
+            return Ok(events);
+        }
     }
     let Some(first) = first else {
         return Ok(Vec::new());
@@ -207,6 +212,12 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
     let mut call_seq = 0usize;
     for part in parts {
         out.extend(gemini_part_events(part, &mut call_seq));
+    }
+    if let Some(content) = value
+        .pointer("/candidates/0/logprobsResult")
+        .and_then(gemini::logprobs_from_result)
+    {
+        out.push(IrStreamEvent::Logprobs { content });
     }
     if let Some(reason) = value
         .pointer("/candidates/0/finishReason")
