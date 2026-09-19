@@ -331,6 +331,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut usage = None;
     let mut tool_calls = Vec::new();
     let mut grounding_chunks = Vec::new();
+    let mut grounding_supports = Vec::new();
     let mut audio_parts = Vec::new();
     let mut logprobs_content = Vec::new();
     let mut current: Option<(String, String, String)> = None;
@@ -339,7 +340,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::TextDelta { text: delta }
             | IrStreamEvent::AudioTranscriptDelta { text: delta } => text.push_str(delta),
             IrStreamEvent::AnnotationAdded { annotation } => {
+                let idx = grounding_chunks.len();
                 grounding_chunks.push(super::gemini::grounding_chunk_from_annotation(annotation));
+                grounding_supports.push(super::gemini::grounding_support_from_annotation(
+                    annotation, idx,
+                ));
             }
             IrStreamEvent::AudioDelta { data } => {
                 audio_parts.push(json!({
@@ -417,7 +422,10 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
         candidate["finishReason"] = json!(reason);
     }
     if !grounding_chunks.is_empty() {
-        candidate["groundingMetadata"] = json!({ "groundingChunks": grounding_chunks });
+        candidate["groundingMetadata"] = json!({
+            "groundingChunks": grounding_chunks,
+            "groundingSupports": grounding_supports,
+        });
     }
     if !logprobs_content.is_empty() {
         candidate["logprobsResult"] =

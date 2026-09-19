@@ -122,8 +122,14 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         .pointer("/groundingMetadata/groundingChunks")
         .and_then(Value::as_array)
     {
-        for chunk in chunks {
-            if let Some(annotation) = annotation_from_grounding_chunk(chunk) {
+        let supports = candidate
+            .pointer("/groundingMetadata/groundingSupports")
+            .and_then(Value::as_array);
+        for (idx, chunk) in chunks.iter().enumerate() {
+            if let Some(mut annotation) = annotation_from_grounding_chunk(chunk) {
+                if let Some(supports) = supports {
+                    apply_grounding_support(&mut annotation, idx, supports);
+                }
                 return Ok(Some(IrStreamEvent::AnnotationAdded { annotation }));
             }
         }
@@ -280,7 +286,8 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         IrStreamEvent::AnnotationAdded { annotation } => json!({
             "candidates": [{
                 "groundingMetadata": {
-                    "groundingChunks": [grounding_chunk_from_annotation(annotation)]
+                    "groundingChunks": [grounding_chunk_from_annotation(annotation)],
+                    "groundingSupports": [grounding_support_from_annotation(annotation, 0)]
                 }
             }]
         }),
@@ -425,7 +432,44 @@ pub(super) fn annotation_from_citation(cite: &Value) -> Option<Value> {
     {
         out["title"] = json!(title);
     }
+    apply_citation_span(&mut out, cite.get("startIndex"), cite.get("endIndex"));
     Some(out)
+}
+
+fn apply_citation_span(out: &mut Value, start: Option<&Value>, end: Option<&Value>) {
+    if let Some(start) = start.filter(|v| v.is_number()) {
+        out["start_index"] = start.clone();
+    }
+    if let Some(end) = end.filter(|v| v.is_number()) {
+        out["end_index"] = end.clone();
+    }
+}
+
+pub(super) fn apply_grounding_support(
+    annotation: &mut Value,
+    chunk_index: usize,
+    supports: &[Value],
+) {
+    let idx = u64::try_from(chunk_index).ok();
+    for support in supports {
+        let matches = support
+            .get("groundingChunkIndices")
+            .and_then(Value::as_array)
+            .is_some_and(|indices| {
+                indices
+                    .iter()
+                    .any(|v| idx.is_some_and(|i| v.as_u64() == Some(i)))
+            });
+        if !matches {
+            continue;
+        }
+        apply_citation_span(
+            annotation,
+            support.pointer("/segment/startIndex"),
+            support.pointer("/segment/endIndex"),
+        );
+        break;
+    }
 }
 
 pub(super) fn annotation_from_grounding_chunk(chunk: &Value) -> Option<Value> {
@@ -443,6 +487,16 @@ pub(super) fn annotation_from_grounding_chunk(chunk: &Value) -> Option<Value> {
         out["title"] = json!(title);
     }
     Some(out)
+}
+
+pub(super) fn grounding_support_from_annotation(annotation: &Value, chunk_index: usize) -> Value {
+    json!({
+        "segment": {
+            "startIndex": annotation.get("start_index").cloned().unwrap_or(json!(0)),
+            "endIndex": annotation.get("end_index").cloned().unwrap_or(json!(0))
+        },
+        "groundingChunkIndices": [chunk_index]
+    })
 }
 
 pub(super) fn grounding_chunk_from_annotation(annotation: &Value) -> Value {
