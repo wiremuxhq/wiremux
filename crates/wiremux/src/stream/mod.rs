@@ -217,8 +217,14 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
         .pointer("/candidates/0/groundingMetadata/groundingChunks")
         .and_then(Value::as_array)
     {
-        for chunk in chunks {
-            if let Some(annotation) = gemini::annotation_from_grounding_chunk(chunk) {
+        let supports = value
+            .pointer("/candidates/0/groundingMetadata/groundingSupports")
+            .and_then(Value::as_array);
+        for (idx, chunk) in chunks.iter().enumerate() {
+            if let Some(mut annotation) = gemini::annotation_from_grounding_chunk(chunk) {
+                if let Some(supports) = supports {
+                    gemini::apply_grounding_support(&mut annotation, idx, supports);
+                }
                 out.push(IrStreamEvent::AnnotationAdded { annotation });
             }
         }
