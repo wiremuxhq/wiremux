@@ -1076,6 +1076,51 @@ fn dest_chat_complete_url_citation_body() -> Vec<u8> {
 }
 
 #[test]
+fn dest_chat_stream_annotations_url_citation_remap_dest_messages_and_gemini() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "choices": [{
+                "delta": {
+                    "content": "see",
+                    "annotations": [{
+                        "type": "url_citation",
+                        "url_citation": {
+                            "url": "https://example.com/a",
+                            "title": "A",
+                            "start_index": 0,
+                            "end_index": 3
+                        }
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM annotations");
+    let messages = encode_all(Wire::Messages, &events);
+    let messages_bodies = sse_json_frames(&messages);
+    assert_eq!(
+        messages_bodies
+            .iter()
+            .find_map(|body| { body.pointer("/delta/citation/url").and_then(Value::as_str) }),
+        Some("https://example.com/a"),
+        "dest Chat STREAM annotations remapped dest Messages STREAM must emit citations_delta url, got {messages:?}"
+    );
+    let gemini = encode_all(Wire::Gemini, &events);
+    let gemini_bodies = sse_json_frames(&gemini);
+    assert_eq!(
+        gemini_bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/groundingMetadata/groundingChunks/0/web/uri")
+                .and_then(Value::as_str)
+        }),
+        Some("https://example.com/a"),
+        "dest Chat STREAM annotations remapped dest Gemini STREAM must emit groundingChunks web uri, got {gemini:?}"
+    );
+}
+
+#[test]
 fn dest_chat_complete_annotations_url_citation_remap_dest_messages_stream() {
     let events = decode_response(
         Wire::ChatCompletions,

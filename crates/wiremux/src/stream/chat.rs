@@ -148,6 +148,18 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     {
         out.push(IrStreamEvent::TextDelta { text });
     }
+    if let Some(anns) = delta
+        .and_then(|d| d.get("annotations"))
+        .and_then(Value::as_array)
+    {
+        for ann in anns {
+            if ann.is_object() {
+                out.push(IrStreamEvent::AnnotationAdded {
+                    annotation: annotation_from_chat(ann),
+                });
+            }
+        }
+    }
     if let Some(text) = delta
         .and_then(|d| d.get("refusal"))
         .and_then(Value::as_str)
