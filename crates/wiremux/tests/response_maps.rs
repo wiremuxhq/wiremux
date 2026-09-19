@@ -2,8 +2,8 @@
 
 use serde_json::json;
 use wiremux::{
-    IrStreamEvent, RawSse, ResolvedProfile, Wire, decode_response, decode_stream_events,
-    encode_response, parse_profile_str,
+    IrStreamEvent, RawSse, ResolvedProfile, StreamEncoder, Wire, decode_response,
+    decode_stream_events, encode_response, parse_profile_str,
 };
 
 fn chat_profile() -> ResolvedProfile {
@@ -230,6 +230,275 @@ fn dest_chat_complete_decode_message_refusal_is_refusal_delta() {
             .iter()
             .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "nope")),
         "dest Chat refusal must not become dest Chat content TextDelta, got {events:?}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_decode_annotations_url_citation_remaps_dest_responses_stream() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "See https://example.com for more.",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url_citation": {
+                        "start_index": 4,
+                        "end_index": 23,
+                        "title": "Example Domain",
+                        "url": "https://example.com"
+                    }
+                }]
+            },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete annotations");
+    let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4o");
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push dest Responses"));
+    }
+    frames.extend(enc.finish().expect("finish dest Responses"));
+    assert!(
+        frames.iter().any(|frame| {
+            frame.event.as_deref() == Some("response.output_text.annotation.added")
+                && frame.data.contains("https://example.com")
+        }),
+        "dest Chat complete url_citation remapped dest Responses STREAM must emit response.output_text.annotation.added, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_decode_message_audio_remaps_dest_responses_stream() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "audio": {
+                    "id": "audio_1",
+                    "data": "SUQz",
+                    "transcript": "hello there"
+                }
+            },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete audio");
+    let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4o");
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push dest Responses"));
+    }
+    frames.extend(enc.finish().expect("finish dest Responses"));
+    assert!(
+        frames.iter().any(|frame| {
+            frame.event.as_deref() == Some("response.audio.delta")
+                && frame.data.contains(r#""delta":"SUQz""#)
+        }),
+        "dest Chat complete message.audio remapped dest Responses STREAM must emit response.audio.delta, got {frames:?}"
+    );
+    assert!(
+        frames.iter().any(|frame| {
+            frame.event.as_deref() == Some("response.audio.transcript.delta")
+                && frame.data.contains(r#""delta":"hello there""#)
+        }),
+        "dest Chat complete message.audio remapped dest Responses STREAM must emit response.audio.transcript.delta, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_decode_custom_tool_call_remaps_dest_responses_stream() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_custom",
+                    "type": "custom",
+                    "custom": {
+                        "name": "code_exec",
+                        "input": "print(1)"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete custom tool");
+    assert!(
+        !events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, .. } if item_type == "chunk"
+        )),
+        "dest Chat complete type=custom must not become Protocol chunk, got {events:?}"
+    );
+    let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4o");
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push dest Responses"));
+    }
+    frames.extend(enc.finish().expect("finish dest Responses"));
+    assert!(
+        frames.iter().any(|frame| {
+            frame.event.as_deref() == Some("response.custom_tool_call_input.delta")
+                && frame.data.contains(r#""delta":"print(1)""#)
+        }),
+        "dest Chat complete custom tool remapped dest Responses STREAM must emit response.custom_tool_call_input.delta, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_encode_annotations_audio_and_custom_round_trip() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "See https://example.com for more.",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url_citation": {
+                        "start_index": 4,
+                        "end_index": 23,
+                        "title": "Example Domain",
+                        "url": "https://example.com"
+                    }
+                }],
+                "audio": {
+                    "data": "SUQz",
+                    "transcript": "hello there"
+                },
+                "tool_calls": [{
+                    "id": "call_custom",
+                    "type": "custom",
+                    "custom": {
+                        "name": "code_exec",
+                        "input": "print(1)"
+                    }
+                }]
+            }
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete leftovers");
+    let mapped = encode_response(Wire::ChatCompletions, &events)
+        .expect("encode dest Chat complete leftovers");
+    assert!(
+        mapped
+            .pointer("/choices/0/message/annotations")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|anns| anns.iter().any(|ann| {
+                ann.pointer("/url_citation/url")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("https://example.com")
+                    || ann.get("url").and_then(serde_json::Value::as_str)
+                        == Some("https://example.com")
+            })),
+        "dest Chat complete encode must write message.annotations, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/choices/0/message/audio/data")
+            .and_then(serde_json::Value::as_str),
+        Some("SUQz"),
+        "dest Chat complete encode must write message.audio.data, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/choices/0/message/audio/transcript")
+            .and_then(serde_json::Value::as_str),
+        Some("hello there"),
+        "dest Chat complete encode must write message.audio.transcript, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/choices/0/message/tool_calls/0/type")
+            .and_then(serde_json::Value::as_str),
+        Some("custom"),
+        "dest Chat complete encode must write custom tool_calls, got {mapped}"
+    );
+}
+
+#[test]
+fn dest_responses_complete_encode_annotations_and_custom_tool_call() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "See https://example.com for more.",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url_citation": {
+                        "start_index": 4,
+                        "end_index": 23,
+                        "title": "Example Domain",
+                        "url": "https://example.com"
+                    }
+                }],
+                "tool_calls": [{
+                    "id": "call_custom",
+                    "type": "custom",
+                    "custom": {
+                        "name": "code_exec",
+                        "input": "print(1)"
+                    }
+                }]
+            }
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete leftovers");
+    let mapped = encode_response(Wire::Responses, &events)
+        .expect("encode dest Responses complete leftovers");
+    let text_part = mapped
+        .get("output")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| {
+            items.iter().find_map(|item| {
+                item.get("content")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|parts| {
+                        parts.iter().find(|part| {
+                            part.get("type").and_then(serde_json::Value::as_str)
+                                == Some("output_text")
+                        })
+                    })
+            })
+        });
+    assert!(
+        text_part.is_some_and(|part| part
+            .get("annotations")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|anns| anns.iter().any(|ann| ann
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                == Some("https://example.com")
+                || ann
+                    .pointer("/url_citation/url")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("https://example.com")))),
+        "dest Responses complete output_text must keep annotations, got {mapped}"
+    );
+    assert!(
+        mapped
+            .get("output")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("custom_tool_call")
+                    && item.get("name").and_then(serde_json::Value::as_str) == Some("code_exec")
+                    && item.get("input").and_then(serde_json::Value::as_str) == Some("print(1)")
+            })),
+        "dest Responses complete must emit custom_tool_call output, got {mapped}"
     );
 }
 
@@ -660,9 +929,9 @@ fn chat_complete_non_function_tool_call_is_protocol() {
             "message": {
                 "role": "assistant",
                 "tool_calls": [{
-                    "id": "call_custom",
-                    "type": "custom",
-                    "custom": { "name": "browser", "input": "{}" }
+                    "id": "call_hosted",
+                    "type": "mcp",
+                    "mcp": { "name": "browser" }
                 }]
             }
         }]
@@ -674,13 +943,19 @@ fn chat_complete_non_function_tool_call_is_protocol() {
         events
             .iter()
             .any(|ev| matches!(ev, IrStreamEvent::Protocol { .. })),
-        "complete tool_calls type != function must be Protocol, got {events:?}"
+        "complete tool_calls type other than function/custom must be Protocol, got {events:?}"
     );
     assert!(
         !events
             .iter()
             .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. })),
         "must not invent a function ToolCallStart: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::CustomToolCallStart { .. })),
+        "unknown tool type must not invent CustomToolCallStart: {events:?}"
     );
 }
 

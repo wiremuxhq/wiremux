@@ -195,6 +195,39 @@ pub(super) fn encode_finish(reason: &str) -> &str {
     }
 }
 
+pub(super) fn annotation_from_chat(ann: &Value) -> Value {
+    if ann.get("type").and_then(Value::as_str) != Some("url_citation") {
+        return ann.clone();
+    }
+    let Some(cit) = ann.get("url_citation") else {
+        return ann.clone();
+    };
+    let mut out = json!({ "type": "url_citation" });
+    for key in ["start_index", "end_index", "title", "url"] {
+        if let Some(value) = cit.get(key) {
+            out[key] = value.clone();
+        }
+    }
+    out
+}
+
+pub(super) fn annotation_to_chat(ann: &Value) -> Value {
+    if ann.get("type").and_then(Value::as_str) != Some("url_citation")
+        || ann.get("url_citation").is_some()
+    {
+        return ann.clone();
+    }
+    json!({
+        "type": "url_citation",
+        "url_citation": {
+            "start_index": ann.get("start_index").cloned().unwrap_or(json!(0)),
+            "end_index": ann.get("end_index").cloned().unwrap_or(json!(0)),
+            "title": ann.get("title").cloned().unwrap_or(json!("")),
+            "url": ann.get("url").cloned().unwrap_or(json!("")),
+        }
+    })
+}
+
 pub(super) fn tool_call_index(call: &Value) -> u32 {
     call.get("index")
         .and_then(Value::as_u64)
@@ -310,6 +343,43 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         }),
         IrStreamEvent::ToolCallEnd => json!({
             "choices": [{ "index": 0, "delta": {} }]
+        }),
+        IrStreamEvent::AnnotationAdded { annotation } => json!({
+            "choices": [{
+                "index": 0,
+                "delta": { "annotations": [annotation_to_chat(annotation)] }
+            }]
+        }),
+        IrStreamEvent::AudioDelta { data } => json!({
+            "choices": [{ "index": 0, "delta": { "audio": { "data": data } } }]
+        }),
+        IrStreamEvent::AudioTranscriptDelta { text } => json!({
+            "choices": [{ "index": 0, "delta": { "audio": { "transcript": text } } }]
+        }),
+        IrStreamEvent::CustomToolCallStart { id, name, index } => json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": index,
+                        "id": id,
+                        "type": "custom",
+                        "custom": { "name": name, "input": "" }
+                    }]
+                }
+            }]
+        }),
+        IrStreamEvent::CustomToolCallInputDelta { delta, index } => json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": index,
+                        "type": "custom",
+                        "custom": { "input": delta }
+                    }]
+                }
+            }]
         }),
         IrStreamEvent::Usage {
             prompt_tokens,

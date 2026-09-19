@@ -393,6 +393,33 @@ pub enum IrStreamEvent {
         index: u32,
     },
     ToolCallEnd,
+    /// Dest Chat `message.annotations` url_citation and dest Responses
+    /// `response.output_text.annotation.added`.
+    AnnotationAdded {
+        annotation: serde_json::Value,
+    },
+    /// Dest Chat `message.audio.data` and dest Responses `response.audio.delta`.
+    AudioDelta {
+        data: String,
+    },
+    /// Dest Chat `message.audio.transcript` and dest Responses
+    /// `response.audio.transcript.delta`.
+    AudioTranscriptDelta {
+        text: String,
+    },
+    /// Dest Chat `tool_calls[].type=custom` and dest Responses
+    /// `custom_tool_call` output item.
+    CustomToolCallStart {
+        id: String,
+        name: String,
+        index: u32,
+    },
+    /// Dest Chat custom tool `custom.input` and dest Responses
+    /// `response.custom_tool_call_input.delta`.
+    CustomToolCallInputDelta {
+        delta: String,
+        index: u32,
+    },
     /// Exclusive buckets: prompt excludes cache
     /// read, completion excludes reasoning. Encoders re-inflate inclusive
     /// wire totals for Chat and Responses.

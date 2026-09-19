@@ -24,6 +24,24 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             delta: str_field(value, "delta").unwrap_or_default(),
             index: output_index(value),
         })),
+        "response.output_text.annotation.added" => match value.get("annotation") {
+            Some(annotation) if annotation.is_object() => {
+                Ok(Some(IrStreamEvent::AnnotationAdded {
+                    annotation: annotation.clone(),
+                }))
+            }
+            _ => Ok(Some(protocol(name, value))),
+        },
+        "response.audio.delta" => nonempty_delta(value, |data| IrStreamEvent::AudioDelta { data }),
+        "response.audio.transcript.delta" => {
+            nonempty_delta(value, |text| IrStreamEvent::AudioTranscriptDelta { text })
+        }
+        "response.custom_tool_call_input.delta" => {
+            Ok(Some(IrStreamEvent::CustomToolCallInputDelta {
+                delta: str_field(value, "delta").unwrap_or_default(),
+                index: output_index(value),
+            }))
+        }
         "response.output_item.added" => match item_type(value) {
             Some("function_call") => {
                 let item = value.get("item").unwrap_or(value);
@@ -36,11 +54,23 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                     index: output_index(value),
                 }))
             }
+            Some("custom_tool_call") => {
+                let item = value.get("item").unwrap_or(value);
+                Ok(Some(IrStreamEvent::CustomToolCallStart {
+                    id: str_field(item, "call_id")
+                        .or_else(|| str_field(item, "id"))
+                        .unwrap_or_default(),
+                    name: str_field(item, "name").unwrap_or_default(),
+                    index: output_index(value),
+                }))
+            }
             Some("reasoning") => Ok(Some(decode_reasoning_item(name, value))),
             _ => Ok(Some(protocol(name, value))),
         },
         "response.output_item.done" => match item_type(value) {
-            Some("function_call") => Ok(Some(IrStreamEvent::ToolCallEnd)),
+            Some("function_call") | Some("custom_tool_call") => {
+                Ok(Some(IrStreamEvent::ToolCallEnd))
+            }
             _ => Ok(Some(protocol(name, value))),
         },
         "response.completed" => {
@@ -226,6 +256,52 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                     "name": name,
                     "arguments": ""
                 }
+            }),
+        ),
+        IrStreamEvent::AnnotationAdded { annotation } => (
+            "response.output_text.annotation.added",
+            json!({
+                "type": "response.output_text.annotation.added",
+                "output_index": 0,
+                "content_index": 0,
+                "annotation_index": 0,
+                "annotation": annotation
+            }),
+        ),
+        IrStreamEvent::AudioDelta { data } => (
+            "response.audio.delta",
+            json!({
+                "type": "response.audio.delta",
+                "delta": data
+            }),
+        ),
+        IrStreamEvent::AudioTranscriptDelta { text } => (
+            "response.audio.transcript.delta",
+            json!({
+                "type": "response.audio.transcript.delta",
+                "delta": text
+            }),
+        ),
+        IrStreamEvent::CustomToolCallStart { id, name, index } => (
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "output_index": index,
+                "item": {
+                    "type": "custom_tool_call",
+                    "id": id,
+                    "call_id": id,
+                    "name": name,
+                    "input": ""
+                }
+            }),
+        ),
+        IrStreamEvent::CustomToolCallInputDelta { delta, index } => (
+            "response.custom_tool_call_input.delta",
+            json!({
+                "type": "response.custom_tool_call_input.delta",
+                "output_index": index,
+                "delta": delta
             }),
         ),
         IrStreamEvent::ToolCallArgDelta { delta, index } => (

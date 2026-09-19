@@ -131,12 +131,33 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "content_block": { "type": "tool_use", "id": id, "name": name, "input": {} }
             }),
         ),
-        IrStreamEvent::ToolCallArgDelta { delta, index } => (
+        IrStreamEvent::CustomToolCallStart {
+            id, name, index, ..
+        } => (
+            "content_block_start",
+            json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": { "type": "tool_use", "id": id, "name": name, "input": {} }
+            }),
+        ),
+        IrStreamEvent::ToolCallArgDelta { delta, index }
+        | IrStreamEvent::CustomToolCallInputDelta { delta, index } => (
             "content_block_delta",
             json!({
                 "type": "content_block_delta",
                 "index": index,
                 "delta": { "type": "input_json_delta", "partial_json": delta }
+            }),
+        ),
+        IrStreamEvent::AnnotationAdded { .. }
+        | IrStreamEvent::AudioDelta { .. }
+        | IrStreamEvent::AudioTranscriptDelta { .. } => (
+            "content_block_delta",
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "text_delta", "text": "" }
             }),
         ),
         IrStreamEvent::ToolCallEnd => (
