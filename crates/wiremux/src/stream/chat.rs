@@ -251,7 +251,7 @@ pub(crate) fn map_finish(reason: &str) -> &str {
 pub(super) fn encode_finish(reason: &str) -> &str {
     match reason {
         "max_tokens" => "length",
-        "failed" => "stop",
+        "failed" | "cancelled" | "canceled" | "end_turn" => "stop",
         other => other,
     }
 }

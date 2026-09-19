@@ -7,6 +7,8 @@ mod messages;
 mod responses;
 mod tools;
 
+pub(crate) use converse::converse_service_tier;
+
 use std::collections::BTreeMap;
 
 use serde_json::Value;

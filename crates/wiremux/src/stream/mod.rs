@@ -171,6 +171,14 @@ pub fn decode_stream_events(
             return Ok(events);
         }
     }
+    if matches!(wire, Wire::Converse)
+        && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
+    {
+        let events = converse::decode_metadata_events(&value);
+        if events.len() >= 2 {
+            return Ok(events);
+        }
+    }
     let Some(first) = first else {
         return Ok(Vec::new());
     };

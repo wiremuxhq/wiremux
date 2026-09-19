@@ -869,7 +869,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
 }
 
-fn converse_service_tier(tier: &str) -> Option<(String, Option<&'static str>)> {
+pub(crate) fn converse_service_tier(tier: &str) -> Option<(String, Option<&'static str>)> {
     let trimmed = tier.trim();
     if trimmed.is_empty() {
         return None;
