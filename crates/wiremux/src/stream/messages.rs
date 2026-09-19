@@ -202,7 +202,8 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         ),
         IrStreamEvent::AudioDelta { .. }
         | IrStreamEvent::Logprobs { .. }
-        | IrStreamEvent::Created { .. } => (
+        | IrStreamEvent::Created { .. }
+        | IrStreamEvent::ServiceTier { .. } => (
             "content_block_delta",
             json!({
                 "type": "content_block_delta",

@@ -430,6 +430,10 @@ pub enum IrStreamEvent {
     Created {
         unix: i64,
     },
+    /// Dest Chat `service_tier` and dest Responses `service_tier`.
+    ServiceTier {
+        tier: String,
+    },
     /// Exclusive buckets: prompt excludes cache
     /// read, completion excludes reasoning. Encoders re-inflate inclusive
     /// wire totals for Chat and Responses.

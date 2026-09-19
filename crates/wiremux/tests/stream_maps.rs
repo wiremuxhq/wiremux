@@ -2376,6 +2376,70 @@ fn dest_chat_complete_created_remaps_dest_responses_created_at() {
 }
 
 #[test]
+fn dest_chat_complete_service_tier_remaps_dest_responses_service_tier() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r63",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "service_tier": "priority",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "Hi" },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete service_tier");
+    let responses =
+        encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    assert_eq!(
+        responses.get("service_tier").and_then(Value::as_str),
+        Some("priority"),
+        "dest Chat complete service_tier remapped dest Responses complete must write service_tier, got {responses}"
+    );
+    assert_eq!(
+        responses
+            .pointer("/output/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Chat complete content remapped dest Responses complete must still carry text Hi, got {responses}"
+    );
+}
+
+#[test]
+fn dest_chat_stream_service_tier_remaps_dest_responses_stream_service_tier() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "id": "chatcmpl-r63s",
+            "object": "chat.completion.chunk",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "service_tier": "priority",
+            "choices": [{
+                "index": 0,
+                "delta": { "role": "assistant", "content": "Hi" }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM service_tier");
+    let frames = encode_all(Wire::Responses, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/response/service_tier")
+                .and_then(Value::as_str)
+        }),
+        Some("priority"),
+        "dest Chat STREAM service_tier remapped dest Responses STREAM must write response.created.service_tier, got {frames:?}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",

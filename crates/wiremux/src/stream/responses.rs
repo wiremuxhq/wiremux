@@ -403,6 +403,13 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "response": { "created_at": unix, "status": "in_progress" }
             }),
         ),
+        IrStreamEvent::ServiceTier { tier } => (
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": { "service_tier": tier, "status": "in_progress" }
+            }),
+        ),
         IrStreamEvent::Done => (
             "response.completed",
             json!({
