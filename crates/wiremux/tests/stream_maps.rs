@@ -795,8 +795,107 @@ fn responses_reasoning_and_refusal_deltas_are_known() {
         .expect("decode refusal")
         .expect("event");
     assert!(
-        matches!(ev, IrStreamEvent::TextDelta { ref text } if text == "no"),
-        "got {ev:?}"
+        matches!(ev, IrStreamEvent::RefusalDelta { ref text } if text == "no"),
+        "dest Responses refusal.delta must be RefusalDelta, got {ev:?}"
+    );
+}
+
+#[test]
+fn dest_chat_stream_decode_delta_refusal_is_refusal_delta() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"refusal":"nope"}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat delta.refusal")
+        .expect("event");
+    assert!(
+        matches!(ev, IrStreamEvent::RefusalDelta { ref text } if text == "nope"),
+        "dest Chat delta.refusal must be RefusalDelta, got {ev:?}"
+    );
+    let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode_all dest Chat delta.refusal");
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::RefusalDelta { text } if text == "nope")),
+        "decode_all must keep dest Chat delta.refusal, got {all:?}"
+    );
+}
+
+#[test]
+fn dest_chat_stream_encode_refusal_delta_is_delta_refusal() {
+    let raw = encode_stream_event(
+        Wire::ChatCompletions,
+        &IrStreamEvent::RefusalDelta {
+            text: "nope".into(),
+        },
+    )
+    .expect("encode dest Chat refusal");
+    let body: Value = serde_json::from_str(&raw.data).expect("json");
+    assert_eq!(
+        body.pointer("/choices/0/delta/refusal")
+            .and_then(Value::as_str),
+        Some("nope"),
+        "dest Chat stream encode must write delta.refusal, got {}",
+        raw.data
+    );
+    assert!(
+        body.pointer("/choices/0/delta/content").is_none()
+            || body
+                .pointer("/choices/0/delta/content")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty),
+        "dest Chat stream refusal must not write dest Chat content, got {}",
+        raw.data
+    );
+}
+
+#[test]
+fn dest_responses_stream_encode_refusal_delta_is_refusal_event() {
+    let raw = encode_stream_event(
+        Wire::Responses,
+        &IrStreamEvent::RefusalDelta {
+            text: "nope".into(),
+        },
+    )
+    .expect("encode dest Responses refusal");
+    assert_eq!(
+        raw.event.as_deref(),
+        Some("response.refusal.delta"),
+        "dest Responses stream encode must use response.refusal.delta, got {raw:?}"
+    );
+    let body: Value = serde_json::from_str(&raw.data).expect("json");
+    assert_eq!(
+        body.get("type").and_then(Value::as_str),
+        Some("response.refusal.delta")
+    );
+    assert_eq!(body.get("delta").and_then(Value::as_str), Some("nope"));
+    assert!(
+        body.get("output_index").is_some(),
+        "dest Responses refusal.delta must follow TextDelta shape with output_index, got {}",
+        raw.data
+    );
+}
+
+#[test]
+fn dest_chat_stream_refusal_remaps_dest_responses_refusal_delta() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"refusal":"nope"}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat refusal")
+        .expect("event");
+    let mapped = encode_stream_event(Wire::Responses, &ev).expect("encode dest Responses");
+    assert_eq!(
+        mapped.event.as_deref(),
+        Some("response.refusal.delta"),
+        "dest Chat stream refusal remapped dest Responses must emit response.refusal.delta, got {mapped:?}"
+    );
+    assert!(
+        mapped.data.contains(r#""delta":"nope""#),
+        "dest Responses refusal.delta must carry dest Chat refusal text, got {}",
+        mapped.data
     );
 }
 

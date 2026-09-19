@@ -42,6 +42,15 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         return Ok(Some(IrStreamEvent::TextDelta { text }));
     }
     if let Some(text) = delta
+        .and_then(|d| d.get("refusal"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(Some(IrStreamEvent::RefusalDelta {
+            text: text.to_string(),
+        }));
+    }
+    if let Some(text) = delta
         .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
@@ -124,6 +133,15 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
         .and_then(flatten_content)
     {
         out.push(IrStreamEvent::TextDelta { text });
+    }
+    if let Some(text) = delta
+        .and_then(|d| d.get("refusal"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::RefusalDelta {
+            text: text.to_string(),
+        });
     }
     if let Some(reason) = choice
         .get("finish_reason")
@@ -254,6 +272,9 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     let data = match ev {
         IrStreamEvent::TextDelta { text } => json!({
             "choices": [{ "index": 0, "delta": { "content": text } }]
+        }),
+        IrStreamEvent::RefusalDelta { text } => json!({
+            "choices": [{ "index": 0, "delta": { "refusal": text } }]
         }),
         IrStreamEvent::ReasoningDelta { text } => json!({
             "choices": [{ "index": 0, "delta": { "reasoning_content": text } }]

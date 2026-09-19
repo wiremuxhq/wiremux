@@ -382,6 +382,18 @@ impl StreamEncoder {
                     }),
                 ));
             }
+            IrStreamEvent::RefusalDelta { text } => {
+                out.extend(self.ensure_item(BlockKind::Text));
+                let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                out.push(named(
+                    "response.refusal.delta",
+                    json!({
+                        "type": "response.refusal.delta",
+                        "output_index": index,
+                        "delta": text
+                    }),
+                ));
+            }
             IrStreamEvent::ReasoningDelta { text } => {
                 out.extend(self.ensure_item(BlockKind::Thinking));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -943,6 +955,39 @@ mod tests {
                 .iter()
                 .any(|frame| frame.data.contains("\"model\":\"claude-haiku-4-5\"")),
             "dest Chat stream must include dest model, got {frames:?}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_encoder_refusal_delta_is_refusal_event() {
+        let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4o");
+        let frames = enc
+            .push(IrStreamEvent::RefusalDelta {
+                text: "nope".into(),
+            })
+            .expect("push dest Responses refusal");
+        assert!(
+            frames.iter().any(|frame| {
+                frame.event.as_deref() == Some("response.refusal.delta")
+                    && frame.data.contains(r#""delta":"nope""#)
+            }),
+            "dest Responses stream encode must emit response.refusal.delta, got {frames:?}"
+        );
+    }
+
+    #[test]
+    fn dest_chat_encoder_refusal_delta_is_delta_refusal() {
+        let mut enc = StreamEncoder::new(Wire::ChatCompletions).with_model("gpt-4o");
+        let frames = enc
+            .push(IrStreamEvent::RefusalDelta {
+                text: "nope".into(),
+            })
+            .expect("push dest Chat refusal");
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.data.contains(r#""refusal":"nope""#)),
+            "dest Chat stream encode must write delta.refusal, got {frames:?}"
         );
     }
 

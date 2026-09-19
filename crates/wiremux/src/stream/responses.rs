@@ -17,7 +17,9 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
         "response.reasoning_summary_text.delta" | "response.reasoning.delta" => {
             nonempty_delta(value, |text| IrStreamEvent::ReasoningDelta { text })
         }
-        "response.refusal.delta" => nonempty_delta(value, |text| IrStreamEvent::TextDelta { text }),
+        "response.refusal.delta" => {
+            nonempty_delta(value, |text| IrStreamEvent::RefusalDelta { text })
+        }
         "response.function_call_arguments.delta" => Ok(Some(IrStreamEvent::ToolCallArgDelta {
             delta: str_field(value, "delta").unwrap_or_default(),
             index: output_index(value),
@@ -161,6 +163,14 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             "response.output_text.delta",
             json!({
                 "type": "response.output_text.delta",
+                "output_index": 0,
+                "delta": text
+            }),
+        ),
+        IrStreamEvent::RefusalDelta { text } => (
+            "response.refusal.delta",
+            json!({
+                "type": "response.refusal.delta",
                 "output_index": 0,
                 "delta": text
             }),
