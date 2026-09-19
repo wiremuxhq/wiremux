@@ -2073,6 +2073,44 @@ fn dest_chat_complete_logprobs_remaps_dest_gemini_and_responses() {
 }
 
 #[test]
+fn dest_chat_complete_created_remaps_dest_responses_created_at() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r57",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "Hi" },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete created");
+    let responses =
+        encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    assert_eq!(
+        responses.get("created_at").and_then(Value::as_i64),
+        Some(1_700_000_000),
+        "dest Chat complete created remapped dest Responses complete must write created_at, got {responses}"
+    );
+    assert_eq!(
+        responses
+            .pointer("/output/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Chat complete content remapped dest Responses complete must still carry text Hi, got {responses}"
+    );
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.get("created").and_then(Value::as_i64),
+        Some(1_700_000_000),
+        "dest Chat complete created remapped dest Chat complete must keep created, got {chat}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",

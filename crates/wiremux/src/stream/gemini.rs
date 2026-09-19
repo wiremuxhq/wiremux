@@ -286,6 +286,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         IrStreamEvent::Logprobs { content } => json!({
             "candidates": [{ "logprobsResult": logprobs_to_result(content) }]
         }),
+        IrStreamEvent::Created { .. } => json!({ "candidates": [] }),
         IrStreamEvent::ToolCallArgDelta { delta, .. }
         | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
             let args: Value = serde_json::from_str(delta).unwrap_or_else(|_| json!({}));

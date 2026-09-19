@@ -426,6 +426,10 @@ pub enum IrStreamEvent {
     Logprobs {
         content: serde_json::Value,
     },
+    /// Dest Chat `created` and dest Responses `created_at` (unix seconds).
+    Created {
+        unix: i64,
+    },
     /// Exclusive buckets: prompt excludes cache
     /// read, completion excludes reasoning. Encoders re-inflate inclusive
     /// wire totals for Chat and Responses.
