@@ -576,6 +576,33 @@ fn responses_complete_length_is_incomplete() {
         Some("incomplete"),
         "Chat length must encode as Responses incomplete, got {mapped}"
     );
+    assert_eq!(
+        mapped
+            .pointer("/incomplete_details/reason")
+            .and_then(|v| v.as_str()),
+        Some("max_output_tokens"),
+        "Chat length must encode dest Responses incomplete_details.reason, got {mapped}"
+    );
+}
+
+#[test]
+fn dest_responses_complete_content_filter_is_incomplete() {
+    let events = [IrStreamEvent::FinishReason {
+        reason: "content_filter".into(),
+    }];
+    let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses");
+    assert_eq!(
+        mapped.get("status").and_then(|v| v.as_str()),
+        Some("incomplete"),
+        "IR content_filter must dest-encode dest Responses status incomplete, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/incomplete_details/reason")
+            .and_then(|v| v.as_str()),
+        Some("content_filter"),
+        "IR content_filter must dest-encode incomplete_details.reason, got {mapped}"
+    );
 }
 
 #[test]

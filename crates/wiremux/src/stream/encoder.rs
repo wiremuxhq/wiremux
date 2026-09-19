@@ -555,15 +555,20 @@ impl StreamEncoder {
         let reason = self.finish.as_deref().unwrap_or("stop");
         let (event, status) = match reason {
             "failed" => ("response.failed", "failed"),
-            "incomplete" | "length" | "max_tokens" => ("response.incomplete", "incomplete"),
+            "incomplete" | "length" | "max_tokens" | "content_filter" => {
+                ("response.incomplete", "incomplete")
+            }
             _ => ("response.completed", "completed"),
         };
         let mut response = json!({ "status": status });
+        if let Some(detail) = super::responses::incomplete_details_reason(reason) {
+            response["incomplete_details"] = json!({ "reason": detail });
+        }
         if !self.model.is_empty() {
             response["model"] = json!(self.model);
         }
-        if let Some((p, c, cr, _cw, r)) = self.usage {
-            let encoded = usage::encode_responses(p, c, cr, r);
+        if let Some((p, c, cr, cw, r)) = self.usage {
+            let encoded = usage::encode_responses(p, c, cr, cw, r);
             if let Some(u) = encoded.pointer("/response/usage") {
                 response["usage"] = u.clone();
             }
@@ -972,6 +977,95 @@ mod tests {
                     && frame.data.contains(r#""delta":"nope""#)
             }),
             "dest Responses stream encode must emit response.refusal.delta, got {frames:?}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_encoder_finish_maps_content_filter() {
+        let mut enc = StreamEncoder::new(Wire::Responses);
+        enc.push(IrStreamEvent::FinishReason {
+            reason: "content_filter".into(),
+        })
+        .expect("push content_filter");
+        let frames = enc.finish().expect("finish content_filter");
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.event.as_deref() != Some("response.completed")),
+            "IR content_filter must not dest-encode as response.completed, got {frames:?}"
+        );
+        let incomplete = frames
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.incomplete"))
+            .expect("response.incomplete");
+        let json: Value = serde_json::from_str(&incomplete.data).expect("json");
+        assert_eq!(
+            json.pointer("/response/status").and_then(Value::as_str),
+            Some("incomplete"),
+            "IR content_filter must dest-encode status incomplete, got {json}"
+        );
+        assert_eq!(
+            json.pointer("/response/incomplete_details/reason")
+                .and_then(Value::as_str),
+            Some("content_filter"),
+            "IR content_filter must dest-encode incomplete_details.reason, got {json}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_encoder_finish_maps_length() {
+        let mut enc = StreamEncoder::new(Wire::Responses);
+        enc.push(IrStreamEvent::FinishReason {
+            reason: "length".into(),
+        })
+        .expect("push length");
+        let frames = enc.finish().expect("finish length");
+        let incomplete = frames
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.incomplete"))
+            .expect("response.incomplete");
+        let json: Value = serde_json::from_str(&incomplete.data).expect("json");
+        assert_eq!(
+            json.pointer("/response/status").and_then(Value::as_str),
+            Some("incomplete"),
+            "IR length must dest-encode status incomplete, got {json}"
+        );
+        assert_eq!(
+            json.pointer("/response/incomplete_details/reason")
+                .and_then(Value::as_str),
+            Some("max_output_tokens"),
+            "IR length must dest-encode incomplete_details.reason=max_output_tokens, got {json}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_encoder_usage_maps_cache_write_and_total() {
+        let mut enc = StreamEncoder::new(Wire::Responses);
+        enc.push(IrStreamEvent::Usage {
+            prompt_tokens: 80,
+            completion_tokens: 12,
+            cache_read_tokens: 25,
+            cache_write_tokens: 9,
+            reasoning_tokens: 3,
+        })
+        .expect("push dest Chat leftover usage");
+        let frames = enc.finish().expect("finish usage");
+        let completed = frames
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.completed"))
+            .expect("response.completed");
+        let json: Value = serde_json::from_str(&completed.data).expect("json");
+        assert_eq!(
+            json.pointer("/response/usage/input_tokens_details/cache_write_tokens")
+                .and_then(Value::as_u64),
+            Some(9),
+            "dest Chat cache_write_tokens must dest-encode dest Responses, got {json}"
+        );
+        assert_eq!(
+            json.pointer("/response/usage/total_tokens")
+                .and_then(Value::as_u64),
+            Some(120),
+            "dest Responses usage must include total_tokens, got {json}"
         );
     }
 

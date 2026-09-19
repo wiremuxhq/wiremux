@@ -54,7 +54,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             reason: "failed".into(),
         })),
         "response.incomplete" => Ok(Some(IrStreamEvent::FinishReason {
-            reason: "incomplete".into(),
+            reason: decode_incomplete_reason(value, "incomplete"),
         })),
         other => Ok(Some(protocol(other, value))),
     }
@@ -101,10 +101,12 @@ pub(super) fn decode_terminal_events(name: &str, value: &Value) -> Option<Vec<Ir
 fn terminal_finish_reason(name: &str, value: &Value) -> Option<String> {
     match value.pointer("/response/status").and_then(Value::as_str) {
         Some("completed") => Some("stop".into()),
-        Some("incomplete") => Some("length".into()),
+        Some("incomplete") => Some(decode_incomplete_reason(value, "length")),
         Some("failed") => Some("failed".into()),
         Some(other) if !other.is_empty() => Some(other.to_string()),
-        None if name == "response.incomplete" => Some("incomplete".into()),
+        None if name == "response.incomplete" => {
+            Some(decode_incomplete_reason(value, "incomplete"))
+        }
         None if name == "response.completed"
             && value
                 .pointer("/response/usage")
@@ -113,6 +115,25 @@ fn terminal_finish_reason(name: &str, value: &Value) -> Option<String> {
             Some("stop".into())
         }
         _ => None,
+    }
+}
+
+pub(super) fn incomplete_details_reason(ir_reason: &str) -> Option<&'static str> {
+    match ir_reason {
+        "content_filter" => Some("content_filter"),
+        "length" | "max_tokens" => Some("max_output_tokens"),
+        _ => None,
+    }
+}
+
+fn decode_incomplete_reason(value: &Value, fallback: &str) -> String {
+    match value
+        .pointer("/response/incomplete_details/reason")
+        .and_then(Value::as_str)
+    {
+        Some("content_filter") => "content_filter".into(),
+        Some("max_output_tokens") => "length".into(),
+        _ => fallback.into(),
     }
 }
 
@@ -227,29 +248,36 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             prompt_tokens,
             completion_tokens,
             cache_read_tokens,
+            cache_write_tokens,
             reasoning_tokens,
-            ..
         } => (
             "response.completed",
             usage::encode_responses(
                 *prompt_tokens,
                 *completion_tokens,
                 *cache_read_tokens,
+                *cache_write_tokens,
                 *reasoning_tokens,
             ),
         ),
         IrStreamEvent::FinishReason { reason } => {
             let (event, status) = match reason.as_str() {
                 "failed" => ("response.failed", "failed"),
-                "incomplete" | "length" | "max_tokens" => ("response.incomplete", "incomplete"),
+                "incomplete" | "length" | "max_tokens" | "content_filter" => {
+                    ("response.incomplete", "incomplete")
+                }
                 "stop" => ("response.completed", "completed"),
                 other => ("response.completed", other),
             };
+            let mut response = json!({ "status": status });
+            if let Some(detail) = incomplete_details_reason(reason) {
+                response["incomplete_details"] = json!({ "reason": detail });
+            }
             (
                 event,
                 json!({
                     "type": event,
-                    "response": { "status": status }
+                    "response": response
                 }),
             )
         }

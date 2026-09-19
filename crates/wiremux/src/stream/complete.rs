@@ -379,19 +379,20 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 reasoning_signature = Some(signature.clone());
             }
             IrStreamEvent::FinishReason { reason } => {
-                finish = Some(responses_complete_status(reason).to_string());
+                finish = Some(reason.clone());
             }
             IrStreamEvent::Usage {
                 prompt_tokens,
                 completion_tokens,
                 cache_read_tokens,
+                cache_write_tokens,
                 reasoning_tokens,
-                ..
             } => {
                 usage = Some((
                     *prompt_tokens,
                     *completion_tokens,
                     *cache_read_tokens,
+                    *cache_write_tokens,
                     *reasoning_tokens,
                 ));
             }
@@ -445,22 +446,36 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     output.extend(tool_calls);
 
-    let status = finish.unwrap_or_else(|| "completed".into());
+    let status = finish
+        .as_deref()
+        .map(responses_complete_status)
+        .unwrap_or("completed");
     let mut out = json!({
         "id": "resp_wiremux",
         "object": "response",
         "status": status,
         "output": output,
     });
+    if let Some(detail) = finish
+        .as_deref()
+        .and_then(super::responses::incomplete_details_reason)
+    {
+        out["incomplete_details"] = json!({ "reason": detail });
+    }
     if !model.is_empty() {
         out["model"] = json!(model);
     }
     if !text.is_empty() {
         out["output_text"] = json!(text);
     }
-    if let Some((prompt, completion, cache_read, reasoning_tokens)) = usage {
-        let encoded =
-            super::usage::encode_responses(prompt, completion, cache_read, reasoning_tokens);
+    if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens)) = usage {
+        let encoded = super::usage::encode_responses(
+            prompt,
+            completion,
+            cache_read,
+            cache_write,
+            reasoning_tokens,
+        );
         if let Some(u) = encoded.pointer("/response/usage") {
             out["usage"] = u.clone();
         }
@@ -471,7 +486,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
 fn responses_complete_status(reason: &str) -> &str {
     match reason {
         "failed" => "failed",
-        "incomplete" | "length" | "max_tokens" => "incomplete",
+        "incomplete" | "length" | "max_tokens" | "content_filter" => "incomplete",
         // Chat `tool_calls` is a completed Responses turn with function_call output.
         _ => "completed",
     }
@@ -843,6 +858,32 @@ mod tests {
                 .and_then(Value::as_str),
             Some("nope"),
             "dest Responses complete encode must emit refusal text, got {mapped}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_complete_usage_maps_cache_write_and_total() {
+        let events = [IrStreamEvent::Usage {
+            prompt_tokens: 80,
+            completion_tokens: 12,
+            cache_read_tokens: 25,
+            cache_write_tokens: 9,
+            reasoning_tokens: 3,
+        }];
+        let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses");
+        assert_eq!(
+            mapped
+                .pointer("/usage/input_tokens_details/cache_write_tokens")
+                .and_then(Value::as_u64),
+            Some(9),
+            "dest Responses complete usage must emit cache_write_tokens, got {mapped}"
+        );
+        assert_eq!(
+            mapped
+                .pointer("/usage/total_tokens")
+                .and_then(Value::as_u64),
+            Some(120),
+            "dest Responses complete usage must emit total_tokens, got {mapped}"
         );
     }
 }

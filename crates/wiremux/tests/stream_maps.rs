@@ -405,8 +405,16 @@ fn usage_cache_token_fields_are_accurate() {
         Some(&Value::from(25))
     );
     assert_eq!(
+        resp_json.pointer("/response/usage/input_tokens_details/cache_write_tokens"),
+        Some(&Value::from(9))
+    );
+    assert_eq!(
         resp_json.pointer("/response/usage/output_tokens_details/reasoning_tokens"),
         Some(&Value::from(3))
+    );
+    assert_eq!(
+        resp_json.pointer("/response/usage/total_tokens"),
+        Some(&Value::from(120))
     );
 }
 
@@ -1770,6 +1778,12 @@ fn responses_length_encodes_incomplete() {
         Some("incomplete"),
         "IR length must encode status incomplete, got {json}"
     );
+    assert_eq!(
+        json.pointer("/response/incomplete_details/reason")
+            .and_then(Value::as_str),
+        Some("max_output_tokens"),
+        "IR length must encode incomplete_details.reason=max_output_tokens, got {json}"
+    );
 }
 
 #[test]
@@ -1792,6 +1806,12 @@ fn responses_max_tokens_encodes_incomplete() {
         Some("incomplete"),
         "IR max_tokens must encode status incomplete, got {json}"
     );
+    assert_eq!(
+        json.pointer("/response/incomplete_details/reason")
+            .and_then(Value::as_str),
+        Some("max_output_tokens"),
+        "IR max_tokens must encode incomplete_details.reason=max_output_tokens, got {json}"
+    );
 }
 
 #[test]
@@ -1810,6 +1830,50 @@ fn responses_incomplete_round_trips_status() {
         Some("incomplete"),
         "decode then encode must keep status incomplete, got event={ev:?} json={json}"
     );
+}
+
+#[test]
+fn dest_responses_stream_incomplete_content_filter_stays_ir() {
+    let raw = RawSse {
+        event: Some("response.incomplete".into()),
+        data: r#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"content_filter"}}}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Responses, &raw, &responses_profile())
+        .expect("decode dest Responses incomplete")
+        .expect("event");
+    assert!(
+        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "content_filter"),
+        "dest Responses incomplete_details.reason=content_filter must stay IR content_filter, got {ev:?}"
+    );
+    let all = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("events");
+    assert!(
+        all.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "content_filter")
+        ),
+        "dest Responses stream decode must keep IR content_filter, got {all:?}"
+    );
+}
+
+#[test]
+fn dest_responses_usage_lifts_cache_write_tokens() {
+    let raw = RawSse {
+        event: Some("response.completed".into()),
+        data: r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":105,"output_tokens":15,"input_tokens_details":{"cached_tokens":25,"cache_write_tokens":9},"output_tokens_details":{"reasoning_tokens":3}}}}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Responses, &raw, &responses_profile())
+        .expect("decode dest Responses usage")
+        .expect("event");
+    match ev {
+        IrStreamEvent::Usage {
+            cache_write_tokens, ..
+        } => {
+            assert_eq!(
+                cache_write_tokens, 9,
+                "dest Responses input_tokens_details.cache_write_tokens must lift, got {ev:?}"
+            );
+        }
+        other => panic!("expected Usage, got {other:?}"),
+    }
 }
 
 #[test]
