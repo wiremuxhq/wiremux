@@ -284,6 +284,19 @@ impl StreamEncoder {
             IrStreamEvent::FinishReason { reason } => {
                 self.finish = Some(reason);
             }
+            IrStreamEvent::AudioDelta { .. } => {}
+            IrStreamEvent::AudioTranscriptDelta { text } => {
+                out.extend(self.ensure_block(BlockKind::Text));
+                let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                out.push(named(
+                    "content_block_delta",
+                    json!({
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": { "type": "text_delta", "text": text }
+                    }),
+                ));
+            }
             IrStreamEvent::AnnotationAdded { annotation } => {
                 out.extend(self.ensure_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -875,6 +888,15 @@ impl StreamEncoder {
             }
             IrStreamEvent::FinishReason { reason } => {
                 self.finish = Some(reason);
+            }
+            IrStreamEvent::AudioDelta { .. } => {}
+            IrStreamEvent::AudioTranscriptDelta { text } => {
+                out.extend(self.ensure_converse_block(BlockKind::Text));
+                let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                out.push(converse_frame_with_index(
+                    super::converse::encode(&IrStreamEvent::AudioTranscriptDelta { text })?,
+                    index,
+                ));
             }
             IrStreamEvent::AnnotationAdded { annotation } => {
                 out.extend(self.ensure_converse_block(BlockKind::Text));
