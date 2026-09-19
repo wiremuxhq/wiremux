@@ -233,6 +233,16 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
             }
         }
     }
+    if let Some(attrs) = value
+        .pointer("/candidates/0/groundingAttributions")
+        .and_then(Value::as_array)
+    {
+        for attr in attrs {
+            if let Some(annotation) = gemini::annotation_from_grounding_chunk(attr) {
+                out.push(IrStreamEvent::AnnotationAdded { annotation });
+            }
+        }
+    }
     if let Some(content) = value
         .pointer("/candidates/0/logprobsResult")
         .and_then(gemini::logprobs_from_result)
