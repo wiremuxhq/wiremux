@@ -1951,6 +1951,38 @@ fn dest_chat_stream_logprobs_remaps_dest_responses_output_text_logprobs() {
             .any(|body| body.get("delta").and_then(Value::as_str) == Some("Hi")),
         "dest Chat STREAM content remapped dest Responses must still carry text Hi, got {frames:?}"
     );
+    let dones: Vec<Value> = frames
+        .iter()
+        .filter(|frame| frame.event.as_deref() == Some("response.output_text.done"))
+        .filter_map(|frame| serde_json::from_str(&frame.data).ok())
+        .collect();
+    assert_eq!(
+        dones
+            .iter()
+            .find_map(|body| body.pointer("/logprobs/0/token").and_then(Value::as_str)),
+        Some("Hi"),
+        "dest Chat STREAM logprobs remapped dest Responses must write output_text.done logprobs token, got {frames:?}"
+    );
+    assert_eq!(
+        dones
+            .iter()
+            .find_map(|body| body.get("text").and_then(Value::as_str)),
+        Some("Hi"),
+        "dest Chat STREAM content remapped dest Responses must write output_text.done text Hi, got {frames:?}"
+    );
+    let items: Vec<Value> = frames
+        .iter()
+        .filter(|frame| frame.event.as_deref() == Some("response.output_item.done"))
+        .filter_map(|frame| serde_json::from_str(&frame.data).ok())
+        .collect();
+    assert_eq!(
+        items.iter().find_map(|body| {
+            body.pointer("/item/content/0/logprobs/0/token")
+                .and_then(Value::as_str)
+        }),
+        Some("Hi"),
+        "dest Chat STREAM logprobs remapped dest Responses must write output_item.done output_text logprobs token, got {frames:?}"
+    );
 }
 
 #[test]

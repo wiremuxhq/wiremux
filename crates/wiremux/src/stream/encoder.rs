@@ -38,6 +38,7 @@ pub struct StreamEncoder {
     tool_items: HashMap<u32, (String, String, String)>,
     text_items: HashMap<u32, String>,
     text_annotations: HashMap<u32, Vec<Value>>,
+    text_logprobs: HashMap<u32, Vec<Value>>,
     refusal_items: HashMap<u32, String>,
     reasoning_items: HashMap<u32, String>,
 }
@@ -63,6 +64,7 @@ impl StreamEncoder {
             tool_items: HashMap::new(),
             text_items: HashMap::new(),
             text_annotations: HashMap::new(),
+            text_logprobs: HashMap::new(),
             refusal_items: HashMap::new(),
             reasoning_items: HashMap::new(),
         }
@@ -512,6 +514,21 @@ impl StreamEncoder {
             IrStreamEvent::Logprobs { content } => {
                 out.extend(self.ensure_item(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                match &content {
+                    Value::Array(arr) => {
+                        self.text_logprobs
+                            .entry(index)
+                            .or_default()
+                            .extend(arr.iter().cloned());
+                    }
+                    other if !other.is_null() => {
+                        self.text_logprobs
+                            .entry(index)
+                            .or_default()
+                            .push(other.clone());
+                    }
+                    _ => {}
+                }
                 out.push(named(
                     "response.output_text.delta",
                     json!({
@@ -641,16 +658,21 @@ impl StreamEncoder {
         let Some((index, kind)) = self.open.take() else {
             return Vec::new();
         };
+        let mut text_done: Option<Value> = None;
         let item = match kind {
             BlockKind::Text => {
                 let text = self.text_items.remove(&index).unwrap_or_default();
                 let refusal = self.refusal_items.remove(&index).unwrap_or_default();
                 let annotations = self.text_annotations.remove(&index).unwrap_or_default();
+                let logprobs = self.text_logprobs.remove(&index).unwrap_or_default();
                 let mut content = Vec::new();
-                if !text.is_empty() || !annotations.is_empty() {
+                if !text.is_empty() || !annotations.is_empty() || !logprobs.is_empty() {
                     let mut part = json!({ "type": "output_text", "text": text });
                     if !annotations.is_empty() {
                         part["annotations"] = json!(annotations);
+                    }
+                    if !logprobs.is_empty() {
+                        part["logprobs"] = json!(logprobs);
                     }
                     content.push(part);
                 }
@@ -659,6 +681,17 @@ impl StreamEncoder {
                 }
                 if content.is_empty() {
                     content.push(json!({ "type": "output_text", "text": "" }));
+                }
+                if !text.is_empty() || !logprobs.is_empty() {
+                    let mut done = json!({
+                        "type": "response.output_text.done",
+                        "output_index": index,
+                        "text": text,
+                    });
+                    if !logprobs.is_empty() {
+                        done["logprobs"] = json!(logprobs);
+                    }
+                    text_done = Some(done);
                 }
                 json!({
                     "type": "message",
@@ -694,14 +727,19 @@ impl StreamEncoder {
                 None => json!({ "type": "custom_tool_call" }),
             },
         };
-        vec![named(
+        let mut out = Vec::new();
+        if let Some(done) = text_done {
+            out.push(named("response.output_text.done", done));
+        }
+        out.push(named(
             "response.output_item.done",
             json!({
                 "type": "response.output_item.done",
                 "output_index": index,
                 "item": item
             }),
-        )]
+        ));
+        out
     }
 
     fn finish_responses(&mut self) -> Vec<RawSse> {
