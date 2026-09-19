@@ -476,11 +476,17 @@ pub(super) fn annotation_from_grounding_chunk(chunk: &Value) -> Option<Value> {
     let url = chunk
         .pointer("/web/uri")
         .or_else(|| chunk.pointer("/web/url"))
+        .or_else(|| chunk.pointer("/image/sourceUri"))
+        .or_else(|| chunk.pointer("/retrievedContext/uri"))
+        .or_else(|| chunk.pointer("/maps/uri"))
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())?;
     let mut out = json!({ "type": "url_citation", "url": url });
     if let Some(title) = chunk
         .pointer("/web/title")
+        .or_else(|| chunk.pointer("/image/title"))
+        .or_else(|| chunk.pointer("/retrievedContext/title"))
+        .or_else(|| chunk.pointer("/maps/title"))
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
     {

@@ -998,6 +998,57 @@ fn dest_gemini_stream_grounding_chunks_remap_dest_chat_annotations() {
 }
 
 #[test]
+fn dest_gemini_stream_grounding_chunks_non_web_remap_dest_chat_annotations() {
+    let cases = [
+        (
+            "image",
+            json!({ "image": { "sourceUri": "https://example.com/img", "title": "Img" } }),
+            "https://example.com/img",
+        ),
+        (
+            "retrievedContext",
+            json!({ "retrievedContext": { "uri": "https://example.com/doc", "title": "Doc" } }),
+            "https://example.com/doc",
+        ),
+        (
+            "maps",
+            json!({ "maps": { "uri": "https://maps.google.com/?cid=1", "title": "Place" } }),
+            "https://maps.google.com/?cid=1",
+        ),
+    ];
+    for (kind, chunk, url) in cases {
+        let raw = RawSse {
+            event: None,
+            data: json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{ "text": "see" }]
+                    },
+                    "groundingMetadata": { "groundingChunks": [chunk] }
+                }]
+            })
+            .to_string(),
+        };
+        let events =
+            decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).unwrap_or_else(|err| {
+                panic!("decode dest Gemini STREAM groundingChunks.{kind}: {err}")
+            });
+        let frames = encode_all(Wire::ChatCompletions, &events);
+        let bodies = sse_json_frames(&frames);
+        assert_eq!(
+            bodies.iter().find_map(|body| {
+                body.pointer("/choices/0/delta/annotations/0/url_citation/url")
+                    .or_else(|| body.pointer("/choices/0/delta/annotations/0/url"))
+                    .and_then(Value::as_str)
+            }),
+            Some(url),
+            "dest Gemini STREAM groundingChunks.{kind} remapped dest Chat STREAM must emit url_citation, got {frames:?}"
+        );
+    }
+}
+
+#[test]
 fn dest_gemini_stream_grounding_supports_remap_dest_chat_start_index() {
     let raw = RawSse {
         event: None,
