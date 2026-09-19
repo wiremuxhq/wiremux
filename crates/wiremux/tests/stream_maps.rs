@@ -1136,6 +1136,62 @@ fn dest_chat_complete_annotations_url_citation_remap_dest_converse_stream() {
     );
 }
 
+fn dest_chat_complete_audio_body() -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "audio": {
+                    "id": "audio_1",
+                    "data": "SUQz",
+                    "transcript": "hello there"
+                }
+            },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json")
+}
+
+#[test]
+fn dest_chat_complete_audio_transcript_remap_dest_messages_stream() {
+    let events = decode_response(
+        Wire::ChatCompletions,
+        &dest_chat_complete_audio_body(),
+        &chat_profile(),
+    )
+    .expect("decode dest Chat complete audio");
+    let frames = encode_all(Wire::Messages, &events);
+    assert!(
+        frames.iter().any(|frame| {
+            frame.event.as_deref() == Some("content_block_delta")
+                && frame.data.contains("text_delta")
+                && frame.data.contains("hello there")
+        }),
+        "dest Chat audio.transcript remapped dest Messages STREAM must emit text_delta, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_audio_data_remap_dest_gemini_stream() {
+    let events = decode_response(
+        Wire::ChatCompletions,
+        &dest_chat_complete_audio_body(),
+        &chat_profile(),
+    )
+    .expect("decode dest Chat complete audio");
+    let frames = encode_all(Wire::Gemini, &events);
+    assert!(
+        frames.iter().any(|frame| {
+            frame.data.contains("inlineData")
+                && frame.data.contains("SUQz")
+                && frame.data.contains("audio/mpeg")
+        }),
+        "dest Chat audio.data remapped dest Gemini STREAM must emit inlineData, got {frames:?}"
+    );
+}
+
 #[test]
 fn dest_chat_complete_message_audio_remap_dest_responses_stream() {
     let body = serde_json::to_vec(&json!({
