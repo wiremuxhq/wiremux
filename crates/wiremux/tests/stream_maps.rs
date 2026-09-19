@@ -858,6 +858,43 @@ fn dest_messages_stream_citations_delta_remaps_dest_chat_annotations() {
 }
 
 #[test]
+fn dest_gemini_stream_citation_metadata_remap_dest_chat_annotations() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{ "text": "see" }]
+                },
+                "citationMetadata": {
+                    "citations": [{
+                        "uri": "https://example.com/b",
+                        "title": "B",
+                        "startIndex": 0,
+                        "endIndex": 3
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode dest Gemini STREAM citationMetadata");
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/choices/0/delta/annotations/0/url_citation/url")
+                .or_else(|| body.pointer("/choices/0/delta/annotations/0/url"))
+                .and_then(Value::as_str)
+        }),
+        Some("https://example.com/b"),
+        "dest Gemini STREAM citationMetadata remapped dest Chat STREAM must emit url_citation, got {frames:?}"
+    );
+}
+
+#[test]
 fn dest_gemini_stream_grounding_chunks_remap_dest_chat_annotations() {
     let raw = RawSse {
         event: None,

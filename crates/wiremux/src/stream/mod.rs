@@ -213,6 +213,26 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
     for part in parts {
         out.extend(gemini_part_events(part, &mut call_seq));
     }
+    if let Some(chunks) = value
+        .pointer("/candidates/0/groundingMetadata/groundingChunks")
+        .and_then(Value::as_array)
+    {
+        for chunk in chunks {
+            if let Some(annotation) = gemini::annotation_from_grounding_chunk(chunk) {
+                out.push(IrStreamEvent::AnnotationAdded { annotation });
+            }
+        }
+    }
+    if let Some(cites) = value
+        .pointer("/candidates/0/citationMetadata/citations")
+        .and_then(Value::as_array)
+    {
+        for cite in cites {
+            if let Some(annotation) = gemini::annotation_from_citation(cite) {
+                out.push(IrStreamEvent::AnnotationAdded { annotation });
+            }
+        }
+    }
     if let Some(content) = value
         .pointer("/candidates/0/logprobsResult")
         .and_then(gemini::logprobs_from_result)

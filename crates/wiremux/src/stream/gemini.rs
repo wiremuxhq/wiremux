@@ -129,6 +129,17 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         }
     }
 
+    if let Some(cites) = candidate
+        .pointer("/citationMetadata/citations")
+        .and_then(Value::as_array)
+    {
+        for cite in cites {
+            if let Some(annotation) = annotation_from_citation(cite) {
+                return Ok(Some(IrStreamEvent::AnnotationAdded { annotation }));
+            }
+        }
+    }
+
     if let Some(content) = candidate
         .get("logprobsResult")
         .and_then(logprobs_from_result)
@@ -368,6 +379,23 @@ fn gemini_token_from_chat(item: &Value) -> Value {
         cand["logProbability"] = lp.clone();
     }
     cand
+}
+
+pub(super) fn annotation_from_citation(cite: &Value) -> Option<Value> {
+    let url = cite
+        .get("uri")
+        .or_else(|| cite.get("url"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    let mut out = json!({ "type": "url_citation", "url": url });
+    if let Some(title) = cite
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out["title"] = json!(title);
+    }
+    Some(out)
 }
 
 pub(super) fn annotation_from_grounding_chunk(chunk: &Value) -> Option<Value> {
