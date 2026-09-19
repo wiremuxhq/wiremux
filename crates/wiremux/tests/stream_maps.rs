@@ -2440,6 +2440,29 @@ fn dest_chat_stream_service_tier_remaps_dest_responses_stream_service_tier() {
 }
 
 #[test]
+fn dest_responses_complete_failed_remaps_dest_chat_finish_reason_stop() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "created_at": 1700000000,
+        "status": "failed",
+        "error": { "code": "server_error", "message": "upstream failed" },
+        "model": "gpt-4o",
+        "output": []
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete failed");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/finish_reason")
+            .and_then(Value::as_str),
+        Some("stop"),
+        "dest Responses complete status failed remapped dest Chat complete must write dest Chat finish_reason stop, got {chat}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",
