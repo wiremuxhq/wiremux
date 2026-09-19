@@ -157,6 +157,14 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
             text: text.to_string(),
         });
     }
+    if let Some(audio) = delta.and_then(|d| d.get("audio")).filter(|v| v.is_object()) {
+        if let Some(data) = str_field(audio, "data").filter(|s| !s.is_empty()) {
+            out.push(IrStreamEvent::AudioDelta { data });
+        }
+        if let Some(text) = str_field(audio, "transcript").filter(|s| !s.is_empty()) {
+            out.push(IrStreamEvent::AudioTranscriptDelta { text });
+        }
+    }
     if let Some(content) = logprobs_content(choice) {
         out.push(IrStreamEvent::Logprobs { content });
     }
