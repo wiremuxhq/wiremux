@@ -832,6 +832,68 @@ fn dest_chat_stream_decode_delta_refusal_is_refusal_delta() {
 }
 
 #[test]
+fn dest_messages_stream_citations_delta_remaps_dest_chat_annotations() {
+    let raw = RawSse {
+        event: Some("content_block_delta".into()),
+        data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://example.com","title":"Example Domain","encrypted_index":"idx","cited_text":"example.com"}}}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Messages, &raw, &messages_profile())
+        .expect("decode dest Messages citations_delta")
+        .expect("event");
+    let IrStreamEvent::AnnotationAdded { ref annotation } = ev else {
+        panic!("dest Messages citations_delta must be AnnotationAdded, got {ev:?}");
+    };
+    assert_eq!(
+        annotation.get("url").and_then(Value::as_str),
+        Some("https://example.com"),
+        "dest Messages web_search_result_location must lift url, got {annotation}"
+    );
+    let frames = encode_all(Wire::ChatCompletions, std::slice::from_ref(&ev));
+    assert!(
+        frames.iter().any(|frame| {
+            frame.data.contains("url_citation") && frame.data.contains("https://example.com")
+        }),
+        "dest Messages STREAM citations_delta remapped dest Chat must emit url_citation, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_messages_complete_text_citations_remap_dest_chat_annotations() {
+    let body = serde_json::to_vec(&json!({
+        "content": [{
+            "type": "text",
+            "text": "See https://example.com for more.",
+            "citations": [{
+                "type": "web_search_result_location",
+                "url": "https://example.com",
+                "title": "Example Domain",
+                "encrypted_index": "idx",
+                "cited_text": "example.com"
+            }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile())
+        .expect("decode dest Messages complete citations");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::AnnotationAdded { annotation }
+                if annotation.get("url").and_then(Value::as_str) == Some("https://example.com")
+        )),
+        "dest Messages complete text.citations must be AnnotationAdded, got {events:?}"
+    );
+    let mapped = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat");
+    assert_eq!(
+        mapped
+            .pointer("/choices/0/message/annotations/0/url_citation/url")
+            .and_then(Value::as_str),
+        Some("https://example.com"),
+        "dest Messages complete citations remapped dest Chat must write message.annotations url_citation, got {mapped}"
+    );
+}
+
+#[test]
 fn dest_chat_stream_encode_refusal_delta_is_delta_refusal() {
     let raw = encode_stream_event(
         Wire::ChatCompletions,

@@ -57,6 +57,13 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                     delta: str_field(delta, "partial_json").unwrap_or_default(),
                     index: block_index(value),
                 })),
+                Some("citations_delta") => {
+                    let citation = delta.get("citation").unwrap_or(delta);
+                    match annotation_from_messages_citation(citation) {
+                        Some(annotation) => Ok(Some(IrStreamEvent::AnnotationAdded { annotation })),
+                        None => Ok(None),
+                    }
+                }
                 _ => Ok(Some(protocol(name, value))),
             }
         }
@@ -78,6 +85,25 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
         }
         other => Ok(Some(protocol(other, value))),
     }
+}
+
+pub(super) fn annotation_from_messages_citation(citation: &Value) -> Option<Value> {
+    let ty = citation.get("type").and_then(Value::as_str).unwrap_or("");
+    let url = match ty {
+        "web_search_result_location" => citation.get("url").and_then(Value::as_str),
+        "search_result_location" => citation.get("source").and_then(Value::as_str),
+        _ => None,
+    }
+    .filter(|s| !s.is_empty())?;
+    let mut out = json!({ "type": "url_citation", "url": url });
+    if let Some(title) = citation
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out["title"] = json!(title);
+    }
+    Some(out)
 }
 
 pub(super) fn citation_from_annotation(annotation: &Value) -> Value {

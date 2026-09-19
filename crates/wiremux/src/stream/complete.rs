@@ -734,6 +734,15 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
                     if let Some(text) = str_field(block, "text").filter(|s| !s.is_empty()) {
                         out.push(IrStreamEvent::TextDelta { text });
                     }
+                    if let Some(citations) = block.get("citations").and_then(Value::as_array) {
+                        for citation in citations {
+                            if let Some(annotation) =
+                                super::messages::annotation_from_messages_citation(citation)
+                            {
+                                out.push(IrStreamEvent::AnnotationAdded { annotation });
+                            }
+                        }
+                    }
                 }
                 Some("thinking") => {
                     if let Some(text) = str_field(block, "thinking").filter(|s| !s.is_empty()) {
