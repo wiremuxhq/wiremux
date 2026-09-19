@@ -452,6 +452,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut finish = None;
     let mut usage = None;
     let mut annotations = Vec::new();
+    let mut logprobs_content = Vec::new();
     let mut tool_calls = Vec::new();
     let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
@@ -464,6 +465,9 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::AnnotationAdded { annotation } => {
                 annotations.push(annotation.clone());
+            }
+            IrStreamEvent::Logprobs { content } => {
+                extend_logprobs_content(&mut logprobs_content, content);
             }
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(reason.clone());
@@ -524,12 +528,19 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
         }
         output.push(item);
     }
-    if !text.is_empty() || !refusal.is_empty() || !annotations.is_empty() {
+    if !text.is_empty()
+        || !refusal.is_empty()
+        || !annotations.is_empty()
+        || !logprobs_content.is_empty()
+    {
         let mut content = Vec::new();
-        if !text.is_empty() || !annotations.is_empty() {
+        if !text.is_empty() || !annotations.is_empty() || !logprobs_content.is_empty() {
             let mut part = json!({ "type": "output_text", "text": text });
             if !annotations.is_empty() {
                 part["annotations"] = json!(annotations);
+            }
+            if !logprobs_content.is_empty() {
+                part["logprobs"] = json!(logprobs_content);
             }
             content.push(part);
         }
@@ -902,6 +913,9 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                                         });
                                     }
                                 }
+                            }
+                            if let Some(content) = super::responses::logprobs_array(part) {
+                                out.push(IrStreamEvent::Logprobs { content });
                             }
                         }
                         Some("refusal") => {
