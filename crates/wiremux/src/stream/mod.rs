@@ -248,8 +248,8 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
             reason: gemini::map_finish(reason, gemini_value_has_function_call(value)).to_string(),
         });
     }
-    if let Some(usage) = value.get("usageMetadata").filter(|v| v.is_object()) {
-        out.push(usage::from_gemini(usage));
+    if let Some(ev) = gemini::usage_from_chunk(value) {
+        out.push(ev);
     }
     if out.len() < 2 {
         return None;

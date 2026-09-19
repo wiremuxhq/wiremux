@@ -24,7 +24,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         }));
     }
 
-    if let Some(usage) = value.get("usageMetadata").filter(|v| v.is_object())
+    if let Some(ev) = usage_from_chunk(value)
         && value
             .pointer("/candidates/0/content/parts")
             .and_then(Value::as_array)
@@ -34,7 +34,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             .and_then(Value::as_str)
             .is_none()
     {
-        return Ok(Some(usage::from_gemini(usage)));
+        return Ok(Some(ev));
     }
 
     let Some(candidate) = value
@@ -54,8 +54,8 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                 detail,
             });
         }
-        if let Some(usage) = value.get("usageMetadata").filter(|v| v.is_object()) {
-            return Ok(Some(usage::from_gemini(usage)));
+        if let Some(ev) = usage_from_chunk(value) {
+            return Ok(Some(ev));
         }
         return Ok(None);
     };
@@ -157,10 +157,28 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         }));
     }
 
-    if let Some(usage) = value.get("usageMetadata").filter(|v| v.is_object()) {
-        return Ok(Some(usage::from_gemini(usage)));
+    if let Some(ev) = usage_from_chunk(value) {
+        return Ok(Some(ev));
     }
     Ok(None)
+}
+
+pub(super) fn usage_from_chunk(value: &Value) -> Option<IrStreamEvent> {
+    if let Some(usage) = value.get("usageMetadata").filter(|v| v.is_object()) {
+        return Some(usage::from_gemini(usage));
+    }
+    let n = value
+        .pointer("/candidates/0/tokenCount")
+        .and_then(Value::as_u64)
+        .filter(|&n| n > 0)?;
+    let completion = u32::try_from(n).unwrap_or(u32::MAX);
+    Some(IrStreamEvent::Usage {
+        prompt_tokens: 0,
+        completion_tokens: completion,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+    })
 }
 
 fn candidate_has_function_call(candidate: &Value) -> bool {
