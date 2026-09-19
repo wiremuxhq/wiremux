@@ -41,8 +41,8 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut finish = None;
     let mut usage = None;
     let mut annotations = Vec::new();
-    let mut audio_data = None;
-    let mut audio_transcript = None;
+    let mut audio_data = String::new();
+    let mut audio_transcript = String::new();
     let mut tool_calls = Vec::new();
     let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
@@ -56,10 +56,8 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::AnnotationAdded { annotation } => {
                 annotations.push(super::chat::annotation_to_chat(annotation));
             }
-            IrStreamEvent::AudioDelta { data } => audio_data = Some(data.clone()),
-            IrStreamEvent::AudioTranscriptDelta { text } => {
-                audio_transcript = Some(text.clone());
-            }
+            IrStreamEvent::AudioDelta { data } => audio_data.push_str(data),
+            IrStreamEvent::AudioTranscriptDelta { text } => audio_transcript.push_str(text),
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(super::chat::encode_finish(reason).to_string());
             }
@@ -135,13 +133,13 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     if !annotations.is_empty() {
         message["annotations"] = Value::Array(annotations);
     }
-    if audio_data.is_some() || audio_transcript.is_some() {
+    if !audio_data.is_empty() || !audio_transcript.is_empty() {
         let mut audio = serde_json::Map::new();
-        if let Some(data) = audio_data {
-            audio.insert("data".into(), json!(data));
+        if !audio_data.is_empty() {
+            audio.insert("data".into(), json!(audio_data));
         }
-        if let Some(transcript) = audio_transcript {
-            audio.insert("transcript".into(), json!(transcript));
+        if !audio_transcript.is_empty() {
+            audio.insert("transcript".into(), json!(audio_transcript));
         }
         message["audio"] = Value::Object(audio);
     }
@@ -954,6 +952,35 @@ mod tests {
                 || content.and_then(Value::as_str).is_none_or(str::is_empty)
                 || content.is_some_and(Value::is_null),
             "dest Chat complete refusal must keep content empty or null, got {mapped}"
+        );
+    }
+
+    #[test]
+    fn dest_chat_complete_audio_deltas_concatenate() {
+        let events = [
+            IrStreamEvent::AudioDelta {
+                data: "YQ==".into(),
+            },
+            IrStreamEvent::AudioDelta {
+                data: "Yg==".into(),
+            },
+            IrStreamEvent::AudioTranscriptDelta { text: "hel".into() },
+            IrStreamEvent::AudioTranscriptDelta { text: "lo".into() },
+        ];
+        let mapped = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat");
+        assert_eq!(
+            mapped
+                .pointer("/choices/0/message/audio/data")
+                .and_then(Value::as_str),
+            Some("YQ==Yg=="),
+            "dest Chat complete encode must concatenate audio data deltas, got {mapped}"
+        );
+        assert_eq!(
+            mapped
+                .pointer("/choices/0/message/audio/transcript")
+                .and_then(Value::as_str),
+            Some("hello"),
+            "dest Chat complete encode must concatenate audio transcript deltas, got {mapped}"
         );
     }
 
