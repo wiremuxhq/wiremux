@@ -118,6 +118,17 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         }
     }
 
+    if let Some(chunks) = candidate
+        .pointer("/groundingMetadata/groundingChunks")
+        .and_then(Value::as_array)
+    {
+        for chunk in chunks {
+            if let Some(annotation) = annotation_from_grounding_chunk(chunk) {
+                return Ok(Some(IrStreamEvent::AnnotationAdded { annotation }));
+            }
+        }
+    }
+
     if let Some(reason) = candidate
         .get("finishReason")
         .and_then(Value::as_str)
@@ -275,6 +286,23 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         event: None,
         data: data.to_string(),
     })
+}
+
+pub(super) fn annotation_from_grounding_chunk(chunk: &Value) -> Option<Value> {
+    let url = chunk
+        .pointer("/web/uri")
+        .or_else(|| chunk.pointer("/web/url"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    let mut out = json!({ "type": "url_citation", "url": url });
+    if let Some(title) = chunk
+        .pointer("/web/title")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out["title"] = json!(title);
+    }
+    Some(out)
 }
 
 pub(super) fn grounding_chunk_from_annotation(annotation: &Value) -> Value {

@@ -858,6 +858,66 @@ fn dest_messages_stream_citations_delta_remaps_dest_chat_annotations() {
 }
 
 #[test]
+fn dest_gemini_stream_grounding_chunks_remap_dest_chat_annotations() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"groundingMetadata":{"groundingChunks":[{"web":{"uri":"https://example.com","title":"Example Domain"}}]}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode dest Gemini groundingMetadata")
+        .expect("event");
+    let IrStreamEvent::AnnotationAdded { ref annotation } = ev else {
+        panic!("dest Gemini groundingChunks.web must be AnnotationAdded, got {ev:?}");
+    };
+    assert_eq!(
+        annotation.get("url").and_then(Value::as_str),
+        Some("https://example.com"),
+        "dest Gemini groundingChunks.web.uri must lift url, got {annotation}"
+    );
+    let frames = encode_all(Wire::ChatCompletions, std::slice::from_ref(&ev));
+    assert!(
+        frames.iter().any(|frame| {
+            frame.data.contains("url_citation") && frame.data.contains("https://example.com")
+        }),
+        "dest Gemini STREAM groundingMetadata remapped dest Chat must emit url_citation, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_converse_stream_citation_remap_dest_chat_annotations() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"contentBlockDelta":{"contentBlockIndex":0,"delta":{"citation":{"title":"Example Domain","source":"https://example.com","location":{"web":{"url":"https://example.com"}}}}}}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Converse, &raw, &{
+        profile(
+            r#"
+schema_version = 1
+id = "test-converse"
+wire = "converse"
+"#,
+        )
+    })
+    .expect("decode dest Converse citation")
+    .expect("event");
+    let IrStreamEvent::AnnotationAdded { ref annotation } = ev else {
+        panic!("dest Converse citation must be AnnotationAdded, got {ev:?}");
+    };
+    assert_eq!(
+        annotation.get("url").and_then(Value::as_str),
+        Some("https://example.com"),
+        "dest Converse citation location.web.url must lift url, got {annotation}"
+    );
+    let frames = encode_all(Wire::ChatCompletions, std::slice::from_ref(&ev));
+    assert!(
+        frames.iter().any(|frame| {
+            frame.data.contains("url_citation") && frame.data.contains("https://example.com")
+        }),
+        "dest Converse STREAM citation remapped dest Chat must emit url_citation, got {frames:?}"
+    );
+}
+
+#[test]
 fn dest_messages_complete_text_citations_remap_dest_chat_annotations() {
     let body = serde_json::to_vec(&json!({
         "content": [{

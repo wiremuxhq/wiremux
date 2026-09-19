@@ -26,6 +26,11 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                 index: 0,
             }));
         }
+        if let Some(citation) = delta.get("citation")
+            && let Some(annotation) = annotation_from_converse_citation(citation)
+        {
+            return Ok(Some(IrStreamEvent::AnnotationAdded { annotation }));
+        }
     }
     if let Some(start) = value.get("contentBlockStart")
         && let Some(tool) = start.pointer("/start/toolUse")
@@ -229,6 +234,16 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
                 text: text.to_string(),
             });
         }
+        if let Some(citations) = block
+            .pointer("/citationsContent/citations")
+            .and_then(Value::as_array)
+        {
+            for citation in citations {
+                if let Some(annotation) = annotation_from_converse_citation(citation) {
+                    out.push(IrStreamEvent::AnnotationAdded { annotation });
+                }
+            }
+        }
         if let Some(tool) = block.get("toolUse") {
             let id = tool
                 .get("toolUseId")
@@ -279,6 +294,23 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
     }
     out.push(IrStreamEvent::Done);
     Ok(out)
+}
+
+pub(super) fn annotation_from_converse_citation(citation: &Value) -> Option<Value> {
+    let url = citation
+        .pointer("/location/web/url")
+        .or_else(|| citation.get("source"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    let mut out = json!({ "type": "url_citation", "url": url });
+    if let Some(title) = citation
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out["title"] = json!(title);
+    }
+    Some(out)
 }
 
 pub(super) fn citation_from_annotation(annotation: &Value) -> Value {
