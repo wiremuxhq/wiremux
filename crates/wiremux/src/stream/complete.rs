@@ -697,6 +697,8 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
                     check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
                     out.extend(complete_chat_tool_call(call));
                 }
+            } else if let Some(fc) = message.get("function_call").filter(|v| v.is_object()) {
+                out.extend(complete_chat_tool_call(fc));
             }
         }
         if let Some(content) = super::chat::logprobs_content(choice) {
