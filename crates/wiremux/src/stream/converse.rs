@@ -104,11 +104,14 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
                 "start": { "toolUse": { "toolUseId": id, "name": name } }
             }
         })),
-        IrStreamEvent::AnnotationAdded { .. }
-        | IrStreamEvent::AudioDelta { .. }
-        | IrStreamEvent::AudioTranscriptDelta { .. } => Ok(json!({
-            "contentBlockDelta": { "delta": { "text": "" } }
+        IrStreamEvent::AnnotationAdded { annotation } => Ok(json!({
+            "contentBlockDelta": { "delta": { "citation": citation_from_annotation(annotation) } }
         })),
+        IrStreamEvent::AudioDelta { .. } | IrStreamEvent::AudioTranscriptDelta { .. } => {
+            Ok(json!({
+                "contentBlockDelta": { "delta": { "text": "" } }
+            }))
+        }
         IrStreamEvent::ToolCallArgDelta { delta, .. }
         | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => Ok(json!({
             "contentBlockDelta": { "delta": { "toolUse": { "input": delta } } }
@@ -140,11 +143,15 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
     let mut text = String::new();
     let mut content = Vec::new();
     let mut current_tool: Option<(String, String, String)> = None;
+    let mut citations = Vec::new();
     let mut stop = "end_turn";
     let mut usage = None;
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::AnnotationAdded { annotation } => {
+                citations.push(citation_from_annotation(annotation));
+            }
             IrStreamEvent::ToolCallStart { id, name, .. } => {
                 flush_text(&mut text, &mut content);
                 if let Some((id, name, args)) = current_tool.take() {
@@ -173,6 +180,19 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
             }
             _ => {}
         }
+    }
+    if !citations.is_empty() {
+        let mut generated = Vec::new();
+        if !text.is_empty() {
+            generated.push(json!({ "text": text.as_str() }));
+            text.clear();
+        }
+        content.push(json!({
+            "citationsContent": {
+                "content": generated,
+                "citations": citations
+            }
+        }));
     }
     flush_text(&mut text, &mut content);
     if let Some((id, name, args)) = current_tool.take() {
@@ -259,6 +279,18 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
     }
     out.push(IrStreamEvent::Done);
     Ok(out)
+}
+
+pub(super) fn citation_from_annotation(annotation: &Value) -> Value {
+    let url = super::chat::annotation_url(annotation).unwrap_or("");
+    let mut citation = json!({
+        "source": url,
+        "location": { "web": { "url": url } }
+    });
+    if let Some(title) = super::chat::annotation_title(annotation) {
+        citation["title"] = json!(title);
+    }
+    citation
 }
 
 fn flush_text(text: &mut String, content: &mut Vec<Value>) {

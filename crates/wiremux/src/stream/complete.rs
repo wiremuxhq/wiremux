@@ -198,10 +198,14 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut finish = None;
     let mut usage = None;
     let mut tool_calls = Vec::new();
+    let mut citations = Vec::new();
     let mut current: Option<(String, String, String)> = None;
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::AnnotationAdded { annotation } => {
+                citations.push(super::messages::citation_from_annotation(annotation));
+            }
             IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
             IrStreamEvent::ReasoningSignature { signature } => {
                 reasoning_signature = Some(signature.clone());
@@ -255,8 +259,12 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
         }
         content.push(block);
     }
-    if !text.is_empty() {
-        content.push(json!({ "type": "text", "text": text }));
+    if !text.is_empty() || !citations.is_empty() {
+        let mut block = json!({ "type": "text", "text": text });
+        if !citations.is_empty() {
+            block["citations"] = json!(citations);
+        }
+        content.push(block);
     }
     content.extend(tool_calls);
 
@@ -301,10 +309,14 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut finish = None;
     let mut usage = None;
     let mut tool_calls = Vec::new();
+    let mut grounding_chunks = Vec::new();
     let mut current: Option<(String, String, String)> = None;
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::AnnotationAdded { annotation } => {
+                grounding_chunks.push(super::gemini::grounding_chunk_from_annotation(annotation));
+            }
             IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
             IrStreamEvent::ReasoningSignature { signature } => {
                 reasoning_signature = Some(signature.clone());
@@ -370,6 +382,9 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     });
     if let Some(reason) = finish {
         candidate["finishReason"] = json!(reason);
+    }
+    if !grounding_chunks.is_empty() {
+        candidate["groundingMetadata"] = json!({ "groundingChunks": grounding_chunks });
     }
 
     let mut out = json!({
@@ -930,6 +945,82 @@ mod tests {
             mapped.get("model").and_then(Value::as_str),
             Some("claude-haiku-4-5"),
             "dest Chat complete must keep dest model, got {mapped}"
+        );
+    }
+
+    #[test]
+    fn dest_chat_complete_url_citation_reaches_messages_citations() {
+        let events = [
+            IrStreamEvent::TextDelta {
+                text: "See https://example.com for more.".into(),
+            },
+            IrStreamEvent::AnnotationAdded {
+                annotation: json!({
+                    "type": "url_citation",
+                    "url_citation": {
+                        "title": "Example Domain",
+                        "url": "https://example.com"
+                    }
+                }),
+            },
+        ];
+        let mapped = encode_response(Wire::Messages, &events).expect("encode dest Messages");
+        assert_eq!(
+            mapped
+                .pointer("/content/0/citations/0/url")
+                .and_then(Value::as_str),
+            Some("https://example.com"),
+            "dest Messages complete encode must write text citations url, got {mapped}"
+        );
+        assert_eq!(
+            mapped
+                .pointer("/content/0/citations/0/type")
+                .and_then(Value::as_str),
+            Some("web_search_result_location"),
+            "dest Messages complete citations must be web_search_result_location, got {mapped}"
+        );
+    }
+
+    #[test]
+    fn dest_chat_complete_url_citation_reaches_converse_citations_content() {
+        let events = [
+            IrStreamEvent::TextDelta {
+                text: "See https://example.com for more.".into(),
+            },
+            IrStreamEvent::AnnotationAdded {
+                annotation: json!({
+                    "type": "url_citation",
+                    "url": "https://example.com",
+                    "title": "Example Domain"
+                }),
+            },
+        ];
+        let mapped = encode_response(Wire::Converse, &events).expect("encode dest Converse");
+        assert_eq!(
+            mapped
+                .pointer("/output/message/content/0/citationsContent/citations/0/location/web/url")
+                .and_then(Value::as_str),
+            Some("https://example.com"),
+            "dest Converse complete encode must write citationsContent.citations location.web.url, got {mapped}"
+        );
+    }
+
+    #[test]
+    fn dest_chat_complete_url_citation_reaches_gemini_grounding() {
+        let events = [IrStreamEvent::AnnotationAdded {
+            annotation: json!({
+                "type": "url_citation",
+                "url": "https://example.com",
+                "title": "Example Domain"
+            }),
+        }];
+        let mapped = encode_response(Wire::Gemini, &events).expect("encode dest Gemini");
+        assert_eq!(
+            mapped
+                .pointer("/candidates/0/groundingMetadata/groundingChunks/0/web/uri")
+                .and_then(Value::as_str),
+            Some("https://example.com"),
+            "dest Gemini complete encode must write groundingChunks.web.uri, got {mapped}"
         );
     }
 

@@ -217,9 +217,14 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 }]
             })
         }
-        IrStreamEvent::AnnotationAdded { .. }
-        | IrStreamEvent::AudioDelta { .. }
-        | IrStreamEvent::AudioTranscriptDelta { .. } => json!({
+        IrStreamEvent::AnnotationAdded { annotation } => json!({
+            "candidates": [{
+                "groundingMetadata": {
+                    "groundingChunks": [grounding_chunk_from_annotation(annotation)]
+                }
+            }]
+        }),
+        IrStreamEvent::AudioDelta { .. } | IrStreamEvent::AudioTranscriptDelta { .. } => json!({
             "candidates": [{
                 "content": { "role": "model", "parts": [{ "text": "" }] }
             }]
@@ -270,6 +275,15 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         event: None,
         data: data.to_string(),
     })
+}
+
+pub(super) fn grounding_chunk_from_annotation(annotation: &Value) -> Value {
+    let url = super::chat::annotation_url(annotation).unwrap_or("");
+    let mut web = json!({ "uri": url });
+    if let Some(title) = super::chat::annotation_title(annotation) {
+        web["title"] = json!(title);
+    }
+    json!({ "web": web })
 }
 
 pub(super) fn encode_finish(reason: &str) -> &'static str {

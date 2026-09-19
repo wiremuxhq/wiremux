@@ -80,6 +80,20 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
     }
 }
 
+pub(super) fn citation_from_annotation(annotation: &Value) -> Value {
+    let url = super::chat::annotation_url(annotation).unwrap_or("");
+    let mut citation = json!({
+        "type": "web_search_result_location",
+        "url": url,
+        "encrypted_index": "",
+        "cited_text": "",
+    });
+    if let Some(title) = super::chat::annotation_title(annotation) {
+        citation["title"] = json!(title);
+    }
+    citation
+}
+
 fn block_index(value: &Value) -> u32 {
     value
         .get("index")
@@ -150,9 +164,15 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "delta": { "type": "input_json_delta", "partial_json": delta }
             }),
         ),
-        IrStreamEvent::AnnotationAdded { .. }
-        | IrStreamEvent::AudioDelta { .. }
-        | IrStreamEvent::AudioTranscriptDelta { .. } => (
+        IrStreamEvent::AnnotationAdded { annotation } => (
+            "content_block_delta",
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "citations_delta", "citation": citation_from_annotation(annotation) }
+            }),
+        ),
+        IrStreamEvent::AudioDelta { .. } | IrStreamEvent::AudioTranscriptDelta { .. } => (
             "content_block_delta",
             json!({
                 "type": "content_block_delta",
