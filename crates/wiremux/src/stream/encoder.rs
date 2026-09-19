@@ -41,6 +41,7 @@ pub struct StreamEncoder {
     text_logprobs: HashMap<u32, Vec<Value>>,
     refusal_items: HashMap<u32, String>,
     reasoning_items: HashMap<u32, String>,
+    created_at: Option<i64>,
 }
 
 impl StreamEncoder {
@@ -67,6 +68,7 @@ impl StreamEncoder {
             text_logprobs: HashMap::new(),
             refusal_items: HashMap::new(),
             reasoning_items: HashMap::new(),
+            created_at: None,
         }
     }
 
@@ -393,11 +395,17 @@ impl StreamEncoder {
 
     fn push_responses(&mut self, ev: IrStreamEvent) -> Result<Vec<RawSse>, MapError> {
         let mut out = Vec::new();
+        if let IrStreamEvent::Created { unix } = ev {
+            self.created_at = Some(unix);
+        }
         if !self.started {
             self.started = true;
             let mut created = json!({ "id": "resp_wiremux", "status": "in_progress" });
             if !self.model.is_empty() {
                 created["model"] = json!(self.model);
+            }
+            if let Some(unix) = self.created_at {
+                created["created_at"] = json!(unix);
             }
             out.push(named(
                 "response.created",
@@ -408,6 +416,7 @@ impl StreamEncoder {
             ));
         }
         match ev {
+            IrStreamEvent::Created { .. } => {}
             IrStreamEvent::TextDelta { text } => {
                 out.extend(self.ensure_item(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
