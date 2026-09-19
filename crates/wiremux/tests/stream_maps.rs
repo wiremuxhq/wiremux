@@ -2195,6 +2195,40 @@ fn dest_gemini_stream_logprobs_result_remaps_dest_chat() {
 }
 
 #[test]
+fn dest_gemini_stream_token_count_remaps_dest_chat_usage() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "Hi"}]},
+                "tokenCount": 7,
+                "finishReason": "STOP"
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode dest Gemini STREAM tokenCount");
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| body
+            .pointer("/usage/completion_tokens")
+            .and_then(Value::as_u64)),
+        Some(7),
+        "dest Gemini STREAM tokenCount remapped dest Chat must write usage.completion_tokens, got {frames:?}"
+    );
+    assert!(
+        bodies.iter().any(|body| {
+            body.pointer("/choices/0/delta/content")
+                .and_then(Value::as_str)
+                == Some("Hi")
+        }),
+        "dest Gemini STREAM text remapped dest Chat must still carry Hi, got {frames:?}"
+    );
+}
+
+#[test]
 fn chat_eos_finish_reason_is_stop() {
     let raw = RawSse {
         event: None,
