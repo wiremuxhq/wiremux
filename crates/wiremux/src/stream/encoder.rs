@@ -36,6 +36,7 @@ pub struct StreamEncoder {
     last_tool: HashMap<u32, u32>,
     tool_items: HashMap<u32, (String, String, String)>,
     text_items: HashMap<u32, String>,
+    refusal_items: HashMap<u32, String>,
     reasoning_items: HashMap<u32, String>,
 }
 
@@ -59,6 +60,7 @@ impl StreamEncoder {
             last_tool: HashMap::new(),
             tool_items: HashMap::new(),
             text_items: HashMap::new(),
+            refusal_items: HashMap::new(),
             reasoning_items: HashMap::new(),
         }
     }
@@ -382,6 +384,19 @@ impl StreamEncoder {
                     }),
                 ));
             }
+            IrStreamEvent::RefusalDelta { text } => {
+                out.extend(self.ensure_item(BlockKind::Text));
+                let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                self.refusal_items.entry(index).or_default().push_str(&text);
+                out.push(named(
+                    "response.refusal.delta",
+                    json!({
+                        "type": "response.refusal.delta",
+                        "output_index": index,
+                        "delta": text
+                    }),
+                ));
+            }
             IrStreamEvent::ReasoningDelta { text } => {
                 out.extend(self.ensure_item(BlockKind::Thinking));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -504,10 +519,21 @@ impl StreamEncoder {
         let item = match kind {
             BlockKind::Text => {
                 let text = self.text_items.remove(&index).unwrap_or_default();
+                let refusal = self.refusal_items.remove(&index).unwrap_or_default();
+                let mut content = Vec::new();
+                if !text.is_empty() {
+                    content.push(json!({ "type": "output_text", "text": text }));
+                }
+                if !refusal.is_empty() {
+                    content.push(json!({ "type": "refusal", "refusal": refusal }));
+                }
+                if content.is_empty() {
+                    content.push(json!({ "type": "output_text", "text": "" }));
+                }
                 json!({
                     "type": "message",
                     "role": "assistant",
-                    "content": [{ "type": "output_text", "text": text }]
+                    "content": content
                 })
             }
             BlockKind::Thinking => {
@@ -543,15 +569,20 @@ impl StreamEncoder {
         let reason = self.finish.as_deref().unwrap_or("stop");
         let (event, status) = match reason {
             "failed" => ("response.failed", "failed"),
-            "incomplete" | "length" | "max_tokens" => ("response.incomplete", "incomplete"),
+            "incomplete" | "length" | "max_tokens" | "content_filter" => {
+                ("response.incomplete", "incomplete")
+            }
             _ => ("response.completed", "completed"),
         };
         let mut response = json!({ "status": status });
+        if let Some(detail) = super::responses::incomplete_details_reason(reason) {
+            response["incomplete_details"] = json!({ "reason": detail });
+        }
         if !self.model.is_empty() {
             response["model"] = json!(self.model);
         }
-        if let Some((p, c, cr, _cw, r)) = self.usage {
-            let encoded = usage::encode_responses(p, c, cr, r);
+        if let Some((p, c, cr, cw, r)) = self.usage {
+            let encoded = usage::encode_responses(p, c, cr, cw, r);
             if let Some(u) = encoded.pointer("/response/usage") {
                 response["usage"] = u.clone();
             }
@@ -943,6 +974,142 @@ mod tests {
                 .iter()
                 .any(|frame| frame.data.contains("\"model\":\"claude-haiku-4-5\"")),
             "dest Chat stream must include dest model, got {frames:?}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_encoder_refusal_delta_is_refusal_event() {
+        let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4o");
+        let frames = enc
+            .push(IrStreamEvent::RefusalDelta {
+                text: "nope".into(),
+            })
+            .expect("push dest Responses refusal");
+        assert!(
+            frames.iter().any(|frame| {
+                frame.event.as_deref() == Some("response.refusal.delta")
+                    && frame.data.contains(r#""delta":"nope""#)
+            }),
+            "dest Responses stream encode must emit response.refusal.delta, got {frames:?}"
+        );
+        let done = enc.finish().expect("finish dest Responses refusal");
+        let item_done = done
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.output_item.done"))
+            .expect("response.output_item.done");
+        assert!(
+            item_done.data.contains(r#""type":"refusal""#)
+                && item_done.data.contains(r#""refusal":"nope""#),
+            "dest Responses output_item.done must keep dest Chat refusal, got {item_done:?}"
+        );
+        assert!(
+            !item_done.data.contains(r#""type":"output_text""#),
+            "dest Responses output_item.done must not overwrite dest Chat refusal as output_text, got {item_done:?}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_encoder_finish_maps_content_filter() {
+        let mut enc = StreamEncoder::new(Wire::Responses);
+        enc.push(IrStreamEvent::FinishReason {
+            reason: "content_filter".into(),
+        })
+        .expect("push content_filter");
+        let frames = enc.finish().expect("finish content_filter");
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.event.as_deref() != Some("response.completed")),
+            "IR content_filter must not dest-encode as response.completed, got {frames:?}"
+        );
+        let incomplete = frames
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.incomplete"))
+            .expect("response.incomplete");
+        let json: Value = serde_json::from_str(&incomplete.data).expect("json");
+        assert_eq!(
+            json.pointer("/response/status").and_then(Value::as_str),
+            Some("incomplete"),
+            "IR content_filter must dest-encode status incomplete, got {json}"
+        );
+        assert_eq!(
+            json.pointer("/response/incomplete_details/reason")
+                .and_then(Value::as_str),
+            Some("content_filter"),
+            "IR content_filter must dest-encode incomplete_details.reason, got {json}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_encoder_finish_maps_length() {
+        let mut enc = StreamEncoder::new(Wire::Responses);
+        enc.push(IrStreamEvent::FinishReason {
+            reason: "length".into(),
+        })
+        .expect("push length");
+        let frames = enc.finish().expect("finish length");
+        let incomplete = frames
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.incomplete"))
+            .expect("response.incomplete");
+        let json: Value = serde_json::from_str(&incomplete.data).expect("json");
+        assert_eq!(
+            json.pointer("/response/status").and_then(Value::as_str),
+            Some("incomplete"),
+            "IR length must dest-encode status incomplete, got {json}"
+        );
+        assert_eq!(
+            json.pointer("/response/incomplete_details/reason")
+                .and_then(Value::as_str),
+            Some("max_output_tokens"),
+            "IR length must dest-encode incomplete_details.reason=max_output_tokens, got {json}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_encoder_usage_maps_cache_write_and_total() {
+        let mut enc = StreamEncoder::new(Wire::Responses);
+        enc.push(IrStreamEvent::Usage {
+            prompt_tokens: 80,
+            completion_tokens: 12,
+            cache_read_tokens: 25,
+            cache_write_tokens: 9,
+            reasoning_tokens: 3,
+        })
+        .expect("push dest Chat leftover usage");
+        let frames = enc.finish().expect("finish usage");
+        let completed = frames
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.completed"))
+            .expect("response.completed");
+        let json: Value = serde_json::from_str(&completed.data).expect("json");
+        assert_eq!(
+            json.pointer("/response/usage/input_tokens_details/cache_write_tokens")
+                .and_then(Value::as_u64),
+            Some(9),
+            "dest Chat cache_write_tokens must dest-encode dest Responses, got {json}"
+        );
+        assert_eq!(
+            json.pointer("/response/usage/total_tokens")
+                .and_then(Value::as_u64),
+            Some(120),
+            "dest Responses usage must include total_tokens, got {json}"
+        );
+    }
+
+    #[test]
+    fn dest_chat_encoder_refusal_delta_is_delta_refusal() {
+        let mut enc = StreamEncoder::new(Wire::ChatCompletions).with_model("gpt-4o");
+        let frames = enc
+            .push(IrStreamEvent::RefusalDelta {
+                text: "nope".into(),
+            })
+            .expect("push dest Chat refusal");
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.data.contains(r#""refusal":"nope""#)),
+            "dest Chat stream encode must write delta.refusal, got {frames:?}"
         );
     }
 

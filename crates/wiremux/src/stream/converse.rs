@@ -85,7 +85,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
 
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
     match ev {
-        IrStreamEvent::TextDelta { text } => Ok(json!({
+        IrStreamEvent::TextDelta { text } | IrStreamEvent::RefusalDelta { text } => Ok(json!({
             "contentBlockDelta": { "delta": { "text": text } }
         })),
         IrStreamEvent::ReasoningDelta { text } => Ok(json!({

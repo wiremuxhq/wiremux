@@ -35,6 +35,7 @@ pub fn encode_response_with_model(
 
 fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut text = String::new();
+    let mut refusal = String::new();
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
     let mut finish = None;
@@ -44,6 +45,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::RefusalDelta { text: delta } => refusal.push_str(delta),
             IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
             IrStreamEvent::ReasoningSignature { signature } => {
                 reasoning_signature = Some(signature.clone());
@@ -91,7 +93,11 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
 
     let mut message = json!({ "role": "assistant" });
     if tool_calls.is_empty() {
-        message["content"] = json!(text);
+        message["content"] = if text.is_empty() && !refusal.is_empty() {
+            Value::Null
+        } else {
+            json!(text)
+        };
     } else {
         message["content"] = if text.is_empty() {
             Value::Null
@@ -99,6 +105,9 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
             json!(text)
         };
         message["tool_calls"] = Value::Array(tool_calls);
+    }
+    if !refusal.is_empty() {
+        message["refusal"] = json!(refusal);
     }
     if !reasoning.is_empty() {
         message["reasoning_content"] = json!(reasoning);
@@ -354,6 +363,7 @@ fn gemini_function_call_value(id: &str, name: &str, args: &str) -> Value {
 
 fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut text = String::new();
+    let mut refusal = String::new();
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
     let mut finish = None;
@@ -363,24 +373,26 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::RefusalDelta { text: delta } => refusal.push_str(delta),
             IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
             IrStreamEvent::ReasoningSignature { signature } => {
                 reasoning_signature = Some(signature.clone());
             }
             IrStreamEvent::FinishReason { reason } => {
-                finish = Some(responses_complete_status(reason).to_string());
+                finish = Some(reason.clone());
             }
             IrStreamEvent::Usage {
                 prompt_tokens,
                 completion_tokens,
                 cache_read_tokens,
+                cache_write_tokens,
                 reasoning_tokens,
-                ..
             } => {
                 usage = Some((
                     *prompt_tokens,
                     *completion_tokens,
                     *cache_read_tokens,
+                    *cache_write_tokens,
                     *reasoning_tokens,
                 ));
             }
@@ -418,31 +430,52 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
         }
         output.push(item);
     }
-    if !text.is_empty() {
+    if !text.is_empty() || !refusal.is_empty() {
+        let mut content = Vec::new();
+        if !text.is_empty() {
+            content.push(json!({ "type": "output_text", "text": text }));
+        }
+        if !refusal.is_empty() {
+            content.push(json!({ "type": "refusal", "refusal": refusal }));
+        }
         output.push(json!({
             "type": "message",
             "role": "assistant",
-            "content": [{ "type": "output_text", "text": text }],
+            "content": content,
         }));
     }
     output.extend(tool_calls);
 
-    let status = finish.unwrap_or_else(|| "completed".into());
+    let status = finish
+        .as_deref()
+        .map(responses_complete_status)
+        .unwrap_or("completed");
     let mut out = json!({
         "id": "resp_wiremux",
         "object": "response",
         "status": status,
         "output": output,
     });
+    if let Some(detail) = finish
+        .as_deref()
+        .and_then(super::responses::incomplete_details_reason)
+    {
+        out["incomplete_details"] = json!({ "reason": detail });
+    }
     if !model.is_empty() {
         out["model"] = json!(model);
     }
     if !text.is_empty() {
         out["output_text"] = json!(text);
     }
-    if let Some((prompt, completion, cache_read, reasoning_tokens)) = usage {
-        let encoded =
-            super::usage::encode_responses(prompt, completion, cache_read, reasoning_tokens);
+    if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens)) = usage {
+        let encoded = super::usage::encode_responses(
+            prompt,
+            completion,
+            cache_read,
+            cache_write,
+            reasoning_tokens,
+        );
         if let Some(u) = encoded.pointer("/response/usage") {
             out["usage"] = u.clone();
         }
@@ -453,7 +486,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
 fn responses_complete_status(reason: &str) -> &str {
     match reason {
         "failed" => "failed",
-        "incomplete" | "length" | "max_tokens" => "incomplete",
+        "incomplete" | "length" | "max_tokens" | "content_filter" => "incomplete",
         // Chat `tool_calls` is a completed Responses turn with function_call output.
         _ => "completed",
     }
@@ -524,6 +557,15 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
                 .and_then(super::chat::flatten_content)
             {
                 out.push(IrStreamEvent::TextDelta { text });
+            }
+            if let Some(text) = message
+                .get("refusal")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                out.push(IrStreamEvent::RefusalDelta {
+                    text: text.to_string(),
+                });
             }
             if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
@@ -704,7 +746,7 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                                 .or_else(|| str_field(part, "text"))
                                 .filter(|s| !s.is_empty())
                             {
-                                out.push(IrStreamEvent::TextDelta { text });
+                                out.push(IrStreamEvent::RefusalDelta { text });
                             }
                         }
                         _ => {}
@@ -773,6 +815,75 @@ mod tests {
             mapped.get("model").and_then(Value::as_str),
             Some("claude-haiku-4-5"),
             "dest Chat complete must keep dest model, got {mapped}"
+        );
+    }
+
+    #[test]
+    fn dest_chat_complete_refusal_stays_message_refusal() {
+        let events = [IrStreamEvent::RefusalDelta {
+            text: "nope".into(),
+        }];
+        let mapped = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat");
+        assert_eq!(
+            mapped
+                .pointer("/choices/0/message/refusal")
+                .and_then(Value::as_str),
+            Some("nope"),
+            "dest Chat complete encode must write message.refusal, got {mapped}"
+        );
+        let content = mapped.pointer("/choices/0/message/content");
+        assert!(
+            content.is_none()
+                || content.and_then(Value::as_str).is_none_or(str::is_empty)
+                || content.is_some_and(Value::is_null),
+            "dest Chat complete refusal must keep content empty or null, got {mapped}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_complete_refusal_is_refusal_part() {
+        let events = [IrStreamEvent::RefusalDelta {
+            text: "nope".into(),
+        }];
+        let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses");
+        let refusal = mapped.pointer("/output/0/content/0");
+        assert_eq!(
+            refusal.and_then(|p| p.get("type")).and_then(Value::as_str),
+            Some("refusal"),
+            "dest Responses complete encode must emit type refusal, got {mapped}"
+        );
+        assert_eq!(
+            refusal
+                .and_then(|p| p.get("refusal"))
+                .and_then(Value::as_str),
+            Some("nope"),
+            "dest Responses complete encode must emit refusal text, got {mapped}"
+        );
+    }
+
+    #[test]
+    fn dest_responses_complete_usage_maps_cache_write_and_total() {
+        let events = [IrStreamEvent::Usage {
+            prompt_tokens: 80,
+            completion_tokens: 12,
+            cache_read_tokens: 25,
+            cache_write_tokens: 9,
+            reasoning_tokens: 3,
+        }];
+        let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses");
+        assert_eq!(
+            mapped
+                .pointer("/usage/input_tokens_details/cache_write_tokens")
+                .and_then(Value::as_u64),
+            Some(9),
+            "dest Responses complete usage must emit cache_write_tokens, got {mapped}"
+        );
+        assert_eq!(
+            mapped
+                .pointer("/usage/total_tokens")
+                .and_then(Value::as_u64),
+            Some(120),
+            "dest Responses complete usage must emit total_tokens, got {mapped}"
         );
     }
 }

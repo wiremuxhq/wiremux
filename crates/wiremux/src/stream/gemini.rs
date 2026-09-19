@@ -171,7 +171,7 @@ fn map_block(reason: &str) -> &'static str {
 
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     let data = match ev {
-        IrStreamEvent::TextDelta { text } => json!({
+        IrStreamEvent::TextDelta { text } | IrStreamEvent::RefusalDelta { text } => json!({
             "candidates": [{
                 "content": { "role": "model", "parts": [{ "text": text }] }
             }]

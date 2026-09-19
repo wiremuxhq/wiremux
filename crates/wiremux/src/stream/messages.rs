@@ -97,7 +97,7 @@ fn nonempty_text(
 
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     let (event, data) = match ev {
-        IrStreamEvent::TextDelta { text } => (
+        IrStreamEvent::TextDelta { text } | IrStreamEvent::RefusalDelta { text } => (
             "content_block_delta",
             json!({
                 "type": "content_block_delta",

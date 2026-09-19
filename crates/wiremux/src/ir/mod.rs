@@ -367,6 +367,11 @@ pub enum IrStreamEvent {
     TextDelta {
         text: String,
     },
+    /// Dest Chat `delta.refusal` / `message.refusal` and dest Responses
+    /// `response.refusal.delta` / output content `{ "type": "refusal" }`.
+    RefusalDelta {
+        text: String,
+    },
     ReasoningDelta {
         text: String,
     },

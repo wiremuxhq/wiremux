@@ -185,7 +185,7 @@ fn responses_complete_output_text_is_text_delta() {
 }
 
 #[test]
-fn responses_complete_refusal_is_text_delta() {
+fn responses_complete_refusal_is_refusal_delta() {
     let body = serde_json::to_vec(&json!({
         "status": "completed",
         "output": [{
@@ -199,8 +199,107 @@ fn responses_complete_refusal_is_text_delta() {
     assert!(
         events
             .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::RefusalDelta { text } if text == "nope")),
+        "complete dest Responses refusal must be RefusalDelta, got {events:?}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_decode_message_refusal_is_refusal_delta() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "refusal": "nope"
+            },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("dest Chat message.refusal must decode");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::RefusalDelta { text } if text == "nope")),
+        "dest Chat message.refusal must be RefusalDelta, got {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
             .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "nope")),
-        "complete refusal must be TextDelta, got {events:?}"
+        "dest Chat refusal must not become dest Chat content TextDelta, got {events:?}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_encode_refusal_delta_is_message_refusal() {
+    let mapped = encode_response(
+        Wire::ChatCompletions,
+        &[IrStreamEvent::RefusalDelta {
+            text: "nope".into(),
+        }],
+    )
+    .expect("encode dest Chat complete refusal");
+    assert_eq!(
+        mapped
+            .pointer("/choices/0/message/refusal")
+            .and_then(serde_json::Value::as_str),
+        Some("nope"),
+        "dest Chat complete encode must write message.refusal, got {mapped}"
+    );
+    let content = mapped.pointer("/choices/0/message/content");
+    assert!(
+        content.is_none()
+            || content
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(str::is_empty)
+            || content.is_some_and(serde_json::Value::is_null),
+        "dest Chat complete refusal must keep content empty or null, got {mapped}"
+    );
+    assert_ne!(
+        content.and_then(serde_json::Value::as_str),
+        Some("nope"),
+        "dest Chat complete refusal must not write dest Chat content, got {mapped}"
+    );
+}
+
+#[test]
+fn dest_responses_complete_encode_refusal_delta_is_refusal_part() {
+    let mapped = encode_response(
+        Wire::Responses,
+        &[IrStreamEvent::RefusalDelta {
+            text: "nope".into(),
+        }],
+    )
+    .expect("encode dest Responses complete refusal");
+    let part = mapped
+        .get("output")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| {
+            items.iter().find_map(|item| {
+                item.get("content")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|parts| {
+                        parts.iter().find(|part| {
+                            part.get("type").and_then(serde_json::Value::as_str) == Some("refusal")
+                        })
+                    })
+            })
+        });
+    assert_eq!(
+        part.and_then(|p| p.get("refusal"))
+            .and_then(serde_json::Value::as_str),
+        Some("nope"),
+        "dest Responses complete encode must emit refusal content part, got {mapped}"
+    );
+    assert_ne!(
+        mapped
+            .get("output_text")
+            .and_then(serde_json::Value::as_str),
+        Some("nope"),
+        "dest Responses complete refusal must not become output_text, got {mapped}"
     );
 }
 
@@ -476,6 +575,33 @@ fn responses_complete_length_is_incomplete() {
         mapped.get("status").and_then(|v| v.as_str()),
         Some("incomplete"),
         "Chat length must encode as Responses incomplete, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/incomplete_details/reason")
+            .and_then(|v| v.as_str()),
+        Some("max_output_tokens"),
+        "Chat length must encode dest Responses incomplete_details.reason, got {mapped}"
+    );
+}
+
+#[test]
+fn dest_responses_complete_content_filter_is_incomplete() {
+    let events = [IrStreamEvent::FinishReason {
+        reason: "content_filter".into(),
+    }];
+    let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses");
+    assert_eq!(
+        mapped.get("status").and_then(|v| v.as_str()),
+        Some("incomplete"),
+        "IR content_filter must dest-encode dest Responses status incomplete, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/incomplete_details/reason")
+            .and_then(|v| v.as_str()),
+        Some("content_filter"),
+        "IR content_filter must dest-encode incomplete_details.reason, got {mapped}"
     );
 }
 
