@@ -1797,6 +1797,52 @@ fn dest_chat_complete_logprobs_remaps_dest_gemini_and_responses() {
 }
 
 #[test]
+fn dest_chat_stream_logprobs_refusal_remaps_dest_gemini_logprobs_result() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "choices": [{
+                "index": 0,
+                "delta": { "refusal": "nope" },
+                "logprobs": {
+                    "refusal": [{
+                        "token": "nope",
+                        "logprob": -0.2,
+                        "bytes": [110, 111, 112, 101],
+                        "top_logprobs": [{
+                            "token": "nope",
+                            "logprob": -0.2,
+                            "bytes": [110, 111, 112, 101]
+                        }]
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM logprobs.refusal");
+    let frames = encode_all(Wire::Gemini, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/logprobsResult/chosenCandidates/0/token")
+                .and_then(Value::as_str)
+        }),
+        Some("nope"),
+        "dest Chat STREAM logprobs.refusal remapped dest Gemini must write logprobsResult token, got {frames:?}"
+    );
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/logprobsResult/chosenCandidates/0/logProbability")
+                .and_then(Value::as_f64)
+        }),
+        Some(-0.2),
+        "dest Chat STREAM logprobs.refusal remapped dest Gemini must write logprobsResult logProbability, got {frames:?}"
+    );
+}
+
+#[test]
 fn dest_gemini_stream_logprobs_result_remaps_dest_chat() {
     let raw = RawSse {
         event: None,

@@ -165,11 +165,14 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
 }
 
 pub(super) fn logprobs_content(choice: &Value) -> Option<Value> {
-    choice
-        .pointer("/logprobs/content")
-        .and_then(Value::as_array)
-        .filter(|a| !a.is_empty())
-        .map(|a| Value::Array(a.clone()))
+    let logprobs = choice.get("logprobs")?;
+    let mut out = Vec::new();
+    for key in ["content", "refusal"] {
+        if let Some(arr) = logprobs.get(key).and_then(Value::as_array) {
+            out.extend(arr.iter().cloned());
+        }
+    }
+    (!out.is_empty()).then_some(Value::Array(out))
 }
 
 pub(super) fn flatten_content(content: &Value) -> Option<String> {
