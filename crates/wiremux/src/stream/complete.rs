@@ -46,6 +46,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut tool_calls = Vec::new();
     let mut logprobs_content = Vec::new();
     let mut created = None;
+    let mut service_tier = None;
     let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
         match ev {
@@ -64,6 +65,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 extend_logprobs_content(&mut logprobs_content, content);
             }
             IrStreamEvent::Created { unix } => created = Some(*unix),
+            IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(super::chat::encode_finish(reason).to_string());
             }
@@ -171,6 +173,9 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     if let Some(unix) = created {
         out["created"] = json!(unix);
+    }
+    if let Some(tier) = service_tier {
+        out["service_tier"] = json!(tier);
     }
     if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens)) = usage {
         let encoded = super::usage::encode_chat(
@@ -467,6 +472,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut annotations = Vec::new();
     let mut logprobs_content = Vec::new();
     let mut created = None;
+    let mut service_tier = None;
     let mut tool_calls = Vec::new();
     let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
@@ -484,6 +490,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 extend_logprobs_content(&mut logprobs_content, content);
             }
             IrStreamEvent::Created { unix } => created = Some(*unix),
+            IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(reason.clone());
             }
@@ -592,6 +599,9 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     if let Some(unix) = created {
         out["created_at"] = json!(unix);
     }
+    if let Some(tier) = service_tier {
+        out["service_tier"] = json!(tier);
+    }
     if !text.is_empty() {
         out["output_text"] = json!(text);
     }
@@ -664,6 +674,15 @@ pub fn decode_response(
 
 fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     let mut out = Vec::new();
+    if let Some(tier) = value
+        .get("service_tier")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::ServiceTier {
+            tier: tier.to_string(),
+        });
+    }
     if let Some(unix) = value.get("created").and_then(Value::as_i64) {
         out.push(IrStreamEvent::Created { unix });
     }
@@ -907,6 +926,16 @@ fn decode_responses_complete(
         .and_then(Value::as_i64)
     {
         events.push(IrStreamEvent::Created { unix });
+    }
+    if let Some(tier) = value
+        .get("service_tier")
+        .or_else(|| value.pointer("/response/service_tier"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        events.push(IrStreamEvent::ServiceTier {
+            tier: tier.to_string(),
+        });
     }
     Ok(events)
 }

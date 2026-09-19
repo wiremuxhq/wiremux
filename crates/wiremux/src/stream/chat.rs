@@ -108,6 +108,15 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     };
 
     let mut out = Vec::new();
+    if let Some(tier) = value
+        .get("service_tier")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::ServiceTier {
+            tier: tier.to_string(),
+        });
+    }
     if let Some(unix) = value.get("created").and_then(Value::as_i64) {
         out.push(IrStreamEvent::Created { unix });
     }
@@ -455,6 +464,10 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         }),
         IrStreamEvent::Created { unix } => json!({
             "created": unix,
+            "choices": []
+        }),
+        IrStreamEvent::ServiceTier { tier } => json!({
+            "service_tier": tier,
             "choices": []
         }),
         IrStreamEvent::Usage {

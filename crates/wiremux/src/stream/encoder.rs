@@ -42,6 +42,7 @@ pub struct StreamEncoder {
     refusal_items: HashMap<u32, String>,
     reasoning_items: HashMap<u32, String>,
     created_at: Option<i64>,
+    service_tier: Option<String>,
 }
 
 impl StreamEncoder {
@@ -69,6 +70,7 @@ impl StreamEncoder {
             refusal_items: HashMap::new(),
             reasoning_items: HashMap::new(),
             created_at: None,
+            service_tier: None,
         }
     }
 
@@ -290,7 +292,7 @@ impl StreamEncoder {
             }
             IrStreamEvent::AudioDelta { .. } => {}
             IrStreamEvent::Logprobs { .. } => {}
-            IrStreamEvent::Created { .. } => {}
+            IrStreamEvent::Created { .. } | IrStreamEvent::ServiceTier { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.extend(self.ensure_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -398,7 +400,10 @@ impl StreamEncoder {
         if let IrStreamEvent::Created { unix } = ev {
             self.created_at = Some(unix);
         }
-        if !self.started {
+        if let IrStreamEvent::ServiceTier { ref tier } = ev {
+            self.service_tier = Some(tier.clone());
+        }
+        if !self.started && !matches!(ev, IrStreamEvent::ServiceTier { .. }) {
             self.started = true;
             let mut created = json!({ "id": "resp_wiremux", "status": "in_progress" });
             if !self.model.is_empty() {
@@ -406,6 +411,9 @@ impl StreamEncoder {
             }
             if let Some(unix) = self.created_at {
                 created["created_at"] = json!(unix);
+            }
+            if let Some(ref tier) = self.service_tier {
+                created["service_tier"] = json!(tier);
             }
             out.push(named(
                 "response.created",
@@ -416,7 +424,7 @@ impl StreamEncoder {
             ));
         }
         match ev {
-            IrStreamEvent::Created { .. } => {}
+            IrStreamEvent::Created { .. } | IrStreamEvent::ServiceTier { .. } => {}
             IrStreamEvent::TextDelta { text } => {
                 out.extend(self.ensure_item(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -953,7 +961,7 @@ impl StreamEncoder {
             }
             IrStreamEvent::AudioDelta { .. } => {}
             IrStreamEvent::Logprobs { .. } => {}
-            IrStreamEvent::Created { .. } => {}
+            IrStreamEvent::Created { .. } | IrStreamEvent::ServiceTier { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.extend(self.ensure_converse_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
