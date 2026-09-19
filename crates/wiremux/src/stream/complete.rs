@@ -202,7 +202,8 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut current: Option<(String, String, String)> = None;
     for ev in events {
         match ev {
-            IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::TextDelta { text: delta }
+            | IrStreamEvent::AudioTranscriptDelta { text: delta } => text.push_str(delta),
             IrStreamEvent::AnnotationAdded { annotation } => {
                 citations.push(super::messages::citation_from_annotation(annotation));
             }
@@ -310,12 +311,19 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut usage = None;
     let mut tool_calls = Vec::new();
     let mut grounding_chunks = Vec::new();
+    let mut audio_parts = Vec::new();
     let mut current: Option<(String, String, String)> = None;
     for ev in events {
         match ev {
-            IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::TextDelta { text: delta }
+            | IrStreamEvent::AudioTranscriptDelta { text: delta } => text.push_str(delta),
             IrStreamEvent::AnnotationAdded { annotation } => {
                 grounding_chunks.push(super::gemini::grounding_chunk_from_annotation(annotation));
+            }
+            IrStreamEvent::AudioDelta { data } => {
+                audio_parts.push(json!({
+                    "inlineData": { "mimeType": "audio/mpeg", "data": data }
+                }));
             }
             IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
             IrStreamEvent::ReasoningSignature { signature } => {
@@ -372,6 +380,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     if !text.is_empty() {
         parts.push(json!({ "text": text }));
     }
+    parts.extend(audio_parts);
     parts.extend(tool_calls);
 
     let mut candidate = json!({

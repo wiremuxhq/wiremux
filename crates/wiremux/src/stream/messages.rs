@@ -137,7 +137,9 @@ fn nonempty_text(
 
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     let (event, data) = match ev {
-        IrStreamEvent::TextDelta { text } | IrStreamEvent::RefusalDelta { text } => (
+        IrStreamEvent::TextDelta { text }
+        | IrStreamEvent::RefusalDelta { text }
+        | IrStreamEvent::AudioTranscriptDelta { text } => (
             "content_block_delta",
             json!({
                 "type": "content_block_delta",
@@ -198,7 +200,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "delta": { "type": "citations_delta", "citation": citation_from_annotation(annotation) }
             }),
         ),
-        IrStreamEvent::AudioDelta { .. } | IrStreamEvent::AudioTranscriptDelta { .. } => (
+        IrStreamEvent::AudioDelta { .. } => (
             "content_block_delta",
             json!({
                 "type": "content_block_delta",

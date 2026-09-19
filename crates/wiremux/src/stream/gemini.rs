@@ -182,7 +182,9 @@ fn map_block(reason: &str) -> &'static str {
 
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     let data = match ev {
-        IrStreamEvent::TextDelta { text } | IrStreamEvent::RefusalDelta { text } => json!({
+        IrStreamEvent::TextDelta { text }
+        | IrStreamEvent::RefusalDelta { text }
+        | IrStreamEvent::AudioTranscriptDelta { text } => json!({
             "candidates": [{
                 "content": { "role": "model", "parts": [{ "text": text }] }
             }]
@@ -235,9 +237,14 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 }
             }]
         }),
-        IrStreamEvent::AudioDelta { .. } | IrStreamEvent::AudioTranscriptDelta { .. } => json!({
+        IrStreamEvent::AudioDelta { data } => json!({
             "candidates": [{
-                "content": { "role": "model", "parts": [{ "text": "" }] }
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "inlineData": { "mimeType": "audio/mpeg", "data": data }
+                    }]
+                }
             }]
         }),
         IrStreamEvent::ToolCallArgDelta { delta, .. }

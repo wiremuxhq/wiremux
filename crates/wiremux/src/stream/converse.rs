@@ -90,7 +90,9 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
 
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
     match ev {
-        IrStreamEvent::TextDelta { text } | IrStreamEvent::RefusalDelta { text } => Ok(json!({
+        IrStreamEvent::TextDelta { text }
+        | IrStreamEvent::RefusalDelta { text }
+        | IrStreamEvent::AudioTranscriptDelta { text } => Ok(json!({
             "contentBlockDelta": { "delta": { "text": text } }
         })),
         IrStreamEvent::ReasoningDelta { text } => Ok(json!({
@@ -112,11 +114,9 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
         IrStreamEvent::AnnotationAdded { annotation } => Ok(json!({
             "contentBlockDelta": { "delta": { "citation": citation_from_annotation(annotation) } }
         })),
-        IrStreamEvent::AudioDelta { .. } | IrStreamEvent::AudioTranscriptDelta { .. } => {
-            Ok(json!({
-                "contentBlockDelta": { "delta": { "text": "" } }
-            }))
-        }
+        IrStreamEvent::AudioDelta { .. } => Ok(json!({
+            "contentBlockDelta": { "delta": { "text": "" } }
+        })),
         IrStreamEvent::ToolCallArgDelta { delta, .. }
         | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => Ok(json!({
             "contentBlockDelta": { "delta": { "toolUse": { "input": delta } } }
@@ -153,7 +153,8 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
     let mut usage = None;
     for ev in events {
         match ev {
-            IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::TextDelta { text: delta }
+            | IrStreamEvent::AudioTranscriptDelta { text: delta } => text.push_str(delta),
             IrStreamEvent::AnnotationAdded { annotation } => {
                 citations.push(citation_from_annotation(annotation));
             }
