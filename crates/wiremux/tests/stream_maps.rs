@@ -2832,6 +2832,38 @@ fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
 }
 
 #[test]
+fn dest_responses_complete_metadata_remaps_dest_chat_complete_metadata() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "created_at": 1700000000,
+        "status": "completed",
+        "model": "gpt-4o",
+        "metadata": { "user": "alice" },
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "Hi" }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete metadata");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/metadata/user").and_then(Value::as_str),
+        Some("alice"),
+        "dest Responses complete metadata remapped dest Chat complete must write metadata.user, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Responses complete text remapped dest Chat complete must still carry text Hi, got {chat}"
+    );
+}
+
+#[test]
 fn dest_chat_stream_logprobs_refusal_remaps_dest_gemini_logprobs_result() {
     let raw = RawSse {
         event: None,

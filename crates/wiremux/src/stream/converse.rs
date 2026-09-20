@@ -107,7 +107,8 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
         })),
         IrStreamEvent::AudioDelta { .. }
         | IrStreamEvent::Logprobs { .. }
-        | IrStreamEvent::Created { .. } => Ok(json!({
+        | IrStreamEvent::Created { .. }
+        | IrStreamEvent::Metadata { .. } => Ok(json!({
             "contentBlockDelta": { "delta": { "text": "" } }
         })),
         IrStreamEvent::ServiceTier { tier } => {
