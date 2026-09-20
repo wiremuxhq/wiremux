@@ -223,6 +223,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             cache_read_tokens,
             cache_write_tokens,
             reasoning_tokens,
+            ..
         } => (
             "message_delta",
             usage::encode_anthropic(

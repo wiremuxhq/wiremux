@@ -242,6 +242,7 @@ fn usage_does_not_invent_cache_tokens() {
                 cache_read_tokens,
                 cache_write_tokens,
                 reasoning_tokens,
+                ..
             } => Some((
                 *prompt_tokens,
                 *completion_tokens,
@@ -260,6 +261,7 @@ fn usage_does_not_invent_cache_tokens() {
         cache_read_tokens: 0,
         cache_write_tokens: 0,
         reasoning_tokens: 0,
+        audio_tokens: 0,
     };
     for wire in [Wire::ChatCompletions, Wire::Messages, Wire::Responses] {
         let raw = encode_stream_event(wire, &ev).expect("encode usage");
@@ -277,6 +279,10 @@ fn usage_does_not_invent_cache_tokens() {
             !dump.contains("cache_creation_input_tokens"),
             "{wire:?} invented cache_creation_input_tokens: {dump}"
         );
+        assert!(
+            !dump.contains("audio_tokens"),
+            "{wire:?} invented audio_tokens: {dump}"
+        );
     }
 }
 
@@ -290,6 +296,7 @@ fn usage_tuple(events: &[IrStreamEvent]) -> (u32, u32, u32, u32, u32) {
                 cache_read_tokens,
                 cache_write_tokens,
                 reasoning_tokens,
+                ..
             } => Some((
                 *prompt_tokens,
                 *completion_tokens,
@@ -339,6 +346,7 @@ fn usage_cache_token_fields_are_accurate() {
         cache_read_tokens: 25,
         cache_write_tokens: 9,
         reasoning_tokens: 3,
+        audio_tokens: 0,
     };
 
     let chat_json: Value = serde_json::from_str(
@@ -445,6 +453,7 @@ fn chat_usage_matches_bline_exclusive_buckets() {
             cache_read_tokens,
             cache_write_tokens,
             reasoning_tokens,
+            ..
         } => {
             assert_eq!(prompt_tokens, 700);
             assert_eq!(completion_tokens, 600);
@@ -573,6 +582,7 @@ wire = "gemini"
             cache_read_tokens: 40,
             cache_write_tokens: 0,
             reasoning_tokens: 5,
+            audio_tokens: 0,
         },
     )
     .expect("encode usage");
@@ -2645,6 +2655,88 @@ fn dest_gemini_complete_usage_service_tier_remaps_dest_chat_service_tier() {
 }
 
 #[test]
+fn dest_gemini_complete_prompt_tokens_details_audio_remaps_dest_chat_audio_tokens() {
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "Hi" }]
+            },
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 50,
+            "candidatesTokenCount": 2,
+            "promptTokensDetails": [
+                { "modality": "TEXT", "tokenCount": 10 },
+                { "modality": "AUDIO", "tokenCount": 40 },
+                { "modality": "IMAGE", "tokenCount": 8 }
+            ]
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("decode dest Gemini complete promptTokensDetails AUDIO");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/usage/prompt_tokens_details/audio_tokens")
+            .and_then(Value::as_u64),
+        Some(40),
+        "dest Gemini complete promptTokensDetails AUDIO remapped dest Chat complete must write prompt_tokens_details.audio_tokens, got {chat}"
+    );
+    assert!(
+        chat.pointer("/usage/prompt_tokens_details/image_tokens")
+            .is_none(),
+        "dest Gemini IMAGE promptTokensDetails dest Chat has no image_tokens (official Drop), got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Gemini complete text remapped dest Chat complete must still carry text Hi, got {chat}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_audio_tokens_remaps_dest_gemini_prompt_tokens_details() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-audio",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o-audio-preview",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "Hi" },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 50,
+            "completion_tokens": 2,
+            "total_tokens": 52,
+            "prompt_tokens_details": { "audio_tokens": 40 }
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete prompt_tokens_details.audio_tokens");
+    let gemini = encode_response(Wire::Gemini, &events).expect("encode dest Gemini complete");
+    assert_eq!(
+        gemini
+            .pointer("/usageMetadata/promptTokensDetails/0/modality")
+            .and_then(Value::as_str),
+        Some("AUDIO"),
+        "dest Chat complete audio_tokens remapped dest Gemini complete must write promptTokensDetails AUDIO, got {gemini}"
+    );
+    assert_eq!(
+        gemini
+            .pointer("/usageMetadata/promptTokensDetails/0/tokenCount")
+            .and_then(Value::as_u64),
+        Some(40),
+        "dest Chat complete audio_tokens remapped dest Gemini complete must write promptTokensDetails tokenCount, got {gemini}"
+    );
+}
+
+#[test]
 fn dest_messages_complete_usage_service_tier_remaps_dest_chat_service_tier() {
     let body = serde_json::to_vec(&json!({
         "id": "msg_1",
@@ -4168,6 +4260,7 @@ fn stream_encoder_chat_to_messages_emits_grammar() {
                 cache_read_tokens: 0,
                 cache_write_tokens: 0,
                 reasoning_tokens: 0,
+                audio_tokens: 0,
             },
             IrStreamEvent::Done,
         ],
@@ -4234,6 +4327,7 @@ fn stream_encoder_chat_to_responses_one_created_one_completed() {
                 cache_read_tokens: 0,
                 cache_write_tokens: 0,
                 reasoning_tokens: 0,
+                audio_tokens: 0,
             },
             IrStreamEvent::Done,
         ],
