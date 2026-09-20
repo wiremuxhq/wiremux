@@ -237,7 +237,9 @@ on either xAI OAuth profile.
 - No public Claude-Pro-in-Codex, Cline, or OpenCode preset.
   Fingerprint pack is data; do not ship the spoof.
 - No third published crate.
-- No launch pitch. README remains `Not ready.`
+
+Product README and architecture live at the repository root and in
+`docs/ARCHITECTURE.md`. This page stays the host attach contract.
 
 ## Pin
 

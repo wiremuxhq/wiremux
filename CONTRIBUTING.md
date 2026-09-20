@@ -32,7 +32,9 @@ bot commits and merge commits.
 ## Pull requests
 
 Use the pull request template. Commits on `main` squash through the
-required checks (Lint, Test, DCO, Stealth, CodeQL).
+required checks (Lint, Test, DCO, Stealth, CodeQL). The Stealth
+check runs `scripts/assert-public.sh` (product README and crate
+descriptions, not the old stub).
 
 PR titles must be a conventional type (`feat`, `fix`, `docs`, `ci`,
 `chore`, `test`, `refactor`, `perf`, `build`, `style`, `revert`).

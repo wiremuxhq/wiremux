@@ -1,46 +1,55 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img">
-  <title>wiremux</title>
+  <title>Wiremux: map five LLM wires in-process</title>
   <defs>
     <radialGradient id="field" cx="640" cy="300" r="720" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#161A20"/>
       <stop offset="1" stop-color="#09090B"/>
     </radialGradient>
-    <linearGradient id="bus" x1="80" y1="320" x2="1180" y2="320" gradientUnits="userSpaceOnUse">
+    <linearGradient id="bus" x1="16" y1="64" x2="112" y2="64" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#F4F7FB"/>
       <stop offset="0.62" stop-color="#C9D7E4"/>
       <stop offset="1" stop-color="#3BE6A0"/>
     </linearGradient>
-    <linearGradient id="tap" x1="280" y1="40" x2="1040" y2="600" gradientUnits="userSpaceOnUse">
+    <linearGradient id="tap" x1="42" y1="16" x2="102" y2="112" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#8EC4E4"/>
       <stop offset="1" stop-color="#3A6F96"/>
     </linearGradient>
-    <radialGradient id="out" cx="1160" cy="320" r="90" gradientUnits="userSpaceOnUse">
+    <radialGradient id="out" cx="110" cy="64" r="16" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#C8FFE6"/>
       <stop offset="0.45" stop-color="#2EE59D"/>
       <stop offset="1" stop-color="#0E7A52"/>
     </radialGradient>
   </defs>
   <rect width="1280" height="640" fill="url(#field)"/>
-  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
-    <g stroke="url(#tap)" stroke-width="36">
-      <path d="M360 48 V200"/>
-      <path d="M360 592 V440"/>
-      <path d="M820 270 L1020 90"/>
-      <path d="M820 370 L1020 550"/>
+  <g transform="translate(72 160) scale(2.5)">
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <g stroke="url(#tap)" stroke-width="8">
+        <path d="M42 18 V42"/>
+        <path d="M42 110 V86"/>
+        <path d="M80 54 L98 28"/>
+        <path d="M80 74 L98 100"/>
+      </g>
+      <g stroke="url(#bus)" stroke-width="11">
+        <path d="M20 42 H44 L58 54 H82"/>
+        <path d="M16 64 H98"/>
+        <path d="M20 86 H44 L58 74 H82"/>
+      </g>
     </g>
-    <g stroke="url(#bus)" stroke-width="52">
-      <path d="M90 200 H360 L520 270 H820"/>
-      <path d="M70 320 H1100"/>
-      <path d="M90 440 H360 L520 370 H820"/>
-    </g>
+    <circle cx="42" cy="18" r="8" fill="url(#tap)"/>
+    <circle cx="42" cy="110" r="8" fill="url(#tap)"/>
+    <circle cx="98" cy="28" r="8" fill="url(#tap)"/>
+    <circle cx="98" cy="100" r="8" fill="url(#tap)"/>
+    <circle cx="20" cy="42" r="10" fill="#F4F7FB"/>
+    <circle cx="16" cy="64" r="10" fill="#F4F7FB"/>
+    <circle cx="20" cy="86" r="10" fill="#F4F7FB"/>
+    <circle cx="110" cy="64" r="13" fill="url(#out)"/>
   </g>
-  <circle cx="360" cy="48" r="36" fill="url(#tap)"/>
-  <circle cx="360" cy="592" r="36" fill="url(#tap)"/>
-  <circle cx="1020" cy="90" r="36" fill="url(#tap)"/>
-  <circle cx="1020" cy="550" r="36" fill="url(#tap)"/>
-  <circle cx="90" cy="200" r="48" fill="#F4F7FB"/>
-  <circle cx="70" cy="320" r="48" fill="#F4F7FB"/>
-  <circle cx="90" cy="440" r="48" fill="#F4F7FB"/>
-  <circle cx="1160" cy="320" r="64" fill="url(#out)"/>
+  <g fill="#F4F7FB" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+    <text x="430" y="248" font-size="84" font-weight="700" letter-spacing="-1.5">Wiremux</text>
+    <text x="430" y="318" font-size="28" font-weight="500" fill="#E8EEF4">Map five LLM wires in-process.</text>
+    <text x="430" y="358" font-size="28" font-weight="500" fill="#E8EEF4">The host keeps the agent loop.</text>
+    <text x="430" y="430" font-size="24" font-weight="400" fill="#C9D7E4">Pasteable vendor profiles. TokenProvider included.</text>
+    <text x="430" y="510" font-size="18" font-weight="600" fill="#3BE6A0">Chat · Messages · Responses · Gemini · Converse</text>
+  </g>
 </svg>

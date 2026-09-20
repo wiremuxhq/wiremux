@@ -13,7 +13,11 @@ use wiremux::ingest::{
 };
 
 #[derive(Parser)]
-#[command(name = "wiremux", version, about = "Reserved.")]
+#[command(
+    name = "wiremux",
+    version,
+    about = "Map LLM dialect requests and refresh tokens from vendor profiles."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

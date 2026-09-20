@@ -5,15 +5,21 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Reserved."
+description = "Wiremux maps Chat Completions, Messages, Responses, Gemini, and Converse through one IR."
 publish = true
-keywords = []
-categories = []
+documentation = "https://docs.rs/wiremux"
+readme = "../../README.md"
+keywords = ["llm", "openai", "anthropic", "proxy"]
+categories = ["network-programming", "api-bindings"]
 
 [[bin]]
 name = "wiremux"
 path = "src/bin/wiremux.rs"
 required-features = ["cli"]
+
+[[example]]
+name = "remap"
+required-features = []
 
 [features]
 # Maps + re-exported profile types. Set default-features = false.

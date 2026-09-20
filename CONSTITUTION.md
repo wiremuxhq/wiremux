@@ -9,4 +9,4 @@ Immutable until a human-labeled PR amends this file.
 5. Do not ship a public Claude-Pro-in-Codex, Cline, or OpenCode preset.
 6. Profiles are data only. Refuse functions, `!command`, and URL-as-script.
 7. Do not fold this crate into canact. The probe suite stays in canact.
-8. Stealth-public until a human says launch: empty About, no topics, README is "Not ready."
+8. Public project. README, GitHub About, topics, and crate descriptions describe the product. Do not restore stealth-public stubs (`Not ready.`, `Reserved.`).
