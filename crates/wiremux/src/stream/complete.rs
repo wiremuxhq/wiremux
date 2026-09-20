@@ -872,6 +872,9 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
         });
     }
     if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
+        if let Some(tier) = super::messages::service_tier_from_usage(usage) {
+            out.push(IrStreamEvent::ServiceTier { tier });
+        }
         out.push(from_anthropic(usage));
     }
     Ok(out)

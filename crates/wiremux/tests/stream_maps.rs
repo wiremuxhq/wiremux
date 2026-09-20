@@ -2540,6 +2540,38 @@ fn dest_gemini_complete_usage_service_tier_remaps_dest_chat_service_tier() {
 }
 
 #[test]
+fn dest_messages_complete_usage_service_tier_remaps_dest_chat_service_tier() {
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4",
+        "content": [{ "type": "text", "text": "Hi" }],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "service_tier": "priority"
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile())
+        .expect("decode dest Messages complete usage.service_tier");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.get("service_tier").and_then(Value::as_str),
+        Some("priority"),
+        "dest Messages complete usage.service_tier remapped dest Chat complete must write service_tier, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Messages complete text remapped dest Chat complete must still carry text Hi, got {chat}"
+    );
+}
+
+#[test]
 fn dest_converse_complete_cache_read_remaps_dest_chat_cached_tokens() {
     let body = serde_json::to_vec(&json!({
         "output": {
@@ -2615,6 +2647,34 @@ fn dest_converse_complete_end_turn_remaps_dest_chat_finish_reason_stop() {
             .and_then(Value::as_str),
         Some("stop"),
         "dest Converse complete stopReason end_turn remapped dest Chat complete must write dest Chat finish_reason stop, got {chat}"
+    );
+}
+
+#[test]
+fn dest_messages_complete_stop_sequence_remaps_dest_chat_finish_reason_stop() {
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4",
+        "content": [{ "type": "text", "text": "Hi" }],
+        "stop_reason": "stop_sequence"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile())
+        .expect("decode dest Messages complete stop_sequence");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/finish_reason")
+            .and_then(Value::as_str),
+        Some("stop"),
+        "dest Messages complete stop_reason stop_sequence remapped dest Chat complete must write dest Chat finish_reason stop, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Messages complete text remapped dest Chat complete must still carry text Hi, got {chat}"
     );
 }
 

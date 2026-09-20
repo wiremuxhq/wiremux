@@ -250,8 +250,8 @@ pub(crate) fn map_finish(reason: &str) -> &str {
 
 pub(super) fn encode_finish(reason: &str) -> &str {
     match reason {
-        "max_tokens" => "length",
-        "failed" | "cancelled" | "canceled" | "end_turn" => "stop",
+        "max_tokens" | "model_context_window_exceeded" => "length",
+        "failed" | "cancelled" | "canceled" | "end_turn" | "stop_sequence" | "pause_turn" => "stop",
         other => other,
     }
 }

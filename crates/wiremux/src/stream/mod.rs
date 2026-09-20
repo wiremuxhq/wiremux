@@ -191,16 +191,31 @@ pub fn decode_stream_events(
     if let Some(expanded) = expand_complete_tool_call(wire, &first, raw) {
         return Ok(expanded);
     }
-    let mut out = vec![first];
     if matches!(wire, Wire::Messages)
-        && frame_event_name(wire, raw) == "message_delta"
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
-        && matches!(out[0], IrStreamEvent::FinishReason { .. })
-        && let Some(usage) = value.get("usage").filter(|v| v.is_object())
     {
-        out.push(usage::from_anthropic(usage));
+        let name = frame_event_name(wire, raw);
+        let usage = match name.as_str() {
+            "message_start" => value.pointer("/message/usage"),
+            "message_delta" => value.get("usage"),
+            _ => None,
+        }
+        .filter(|v| v.is_object());
+        let mut out = Vec::new();
+        if let Some(usage) = usage
+            && let Some(tier) = messages::service_tier_from_usage(usage)
+        {
+            out.push(IrStreamEvent::ServiceTier { tier });
+        }
+        let add_delta_usage =
+            name == "message_delta" && matches!(first, IrStreamEvent::FinishReason { .. });
+        out.push(first);
+        if add_delta_usage && let Some(usage) = usage {
+            out.push(usage::from_anthropic(usage));
+        }
+        return Ok(out);
     }
-    Ok(out)
+    Ok(vec![first])
 }
 
 /// Walk every Gemini part. First-part-wins in `decode` would drop a later

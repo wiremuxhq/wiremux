@@ -261,6 +261,17 @@ pub(super) fn map_stop_reason(reason: &str) -> &str {
     }
 }
 
+pub(super) fn service_tier_from_usage(usage: &Value) -> Option<String> {
+    let raw = usage.get("service_tier").and_then(Value::as_str)?.trim();
+    if raw.eq_ignore_ascii_case("priority") {
+        Some("priority".into())
+    } else if raw.eq_ignore_ascii_case("standard") {
+        Some("default".into())
+    } else {
+        None
+    }
+}
+
 pub(super) fn encode_stop_reason(reason: &str) -> &str {
     match reason {
         "stop" | "end_turn" => "end_turn",
