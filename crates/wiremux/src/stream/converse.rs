@@ -247,12 +247,17 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
         .cloned()
         .unwrap_or_default();
     for block in &blocks {
-        if let Some(text) = block.get("text").and_then(Value::as_str)
-            && !text.is_empty()
-        {
-            out.push(IrStreamEvent::TextDelta {
-                text: text.to_string(),
-            });
+        let sibling = block.get("text").and_then(Value::as_str).unwrap_or("");
+        let generated = citations_content_text(block);
+        let text = if sibling.is_empty() {
+            generated
+        } else if generated.is_empty() || sibling == generated {
+            sibling.to_string()
+        } else {
+            format!("{sibling}{generated}")
+        };
+        if !text.is_empty() {
+            out.push(IrStreamEvent::TextDelta { text });
         }
         if let Some(citations) = block
             .pointer("/citationsContent/citations")
@@ -384,7 +389,32 @@ fn encode_converse_usage(
     if cache_write_tokens > 0 {
         usage["cacheWriteInputTokens"] = json!(cache_write_tokens);
     }
+    let input_tokens = usage
+        .get("inputTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = usage
+        .get("outputTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    usage["totalTokens"] = json!(input_tokens.saturating_add(output_tokens));
     usage
+}
+
+fn citations_content_text(block: &Value) -> String {
+    let Some(parts) = block
+        .pointer("/citationsContent/content")
+        .and_then(Value::as_array)
+    else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for part in parts {
+        if let Some(text) = part.get("text").and_then(Value::as_str) {
+            out.push_str(text);
+        }
+    }
+    out
 }
 
 fn usage_u32(usage: &Value, key: &str) -> u32 {
