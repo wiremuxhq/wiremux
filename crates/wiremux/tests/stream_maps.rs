@@ -2386,6 +2386,111 @@ fn dest_chat_complete_created_remaps_dest_responses_created_at() {
 }
 
 #[test]
+fn dest_chat_complete_remaps_dest_gemini_complete_response_id() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r99",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "Hi" },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete");
+    let gemini = encode_response(Wire::Gemini, &events).expect("encode dest Gemini complete");
+    assert_eq!(
+        gemini.get("responseId").and_then(Value::as_str),
+        Some("gemini-wiremux"),
+        "dest Chat complete remapped dest Gemini complete must write dest Gemini dest identity responseId, got {gemini}"
+    );
+    assert_ne!(
+        gemini.get("responseId").and_then(Value::as_str),
+        Some("chatcmpl-r99"),
+        "dest Gemini complete responseId must be dest Gemini dest identity, not dest Chat id copy, got {gemini}"
+    );
+    assert_eq!(
+        gemini
+            .pointer("/candidates/0/content/parts/0/text")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Chat complete content remapped dest Gemini complete must still carry text Hi, got {gemini}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_usage_remaps_dest_gemini_total_token_count() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r101",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "Hi" },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "prompt_tokens_details": { "cached_tokens": 40 },
+            "completion_tokens_details": { "reasoning_tokens": 5 }
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete usage");
+    let gemini = encode_response(Wire::Gemini, &events).expect("encode dest Gemini complete");
+    assert_eq!(
+        gemini
+            .pointer("/usageMetadata/promptTokenCount")
+            .and_then(Value::as_u64),
+        Some(100),
+        "dest Chat complete usage remapped dest Gemini complete must write promptTokenCount, got {gemini}"
+    );
+    assert_eq!(
+        gemini
+            .pointer("/usageMetadata/candidatesTokenCount")
+            .and_then(Value::as_u64),
+        Some(15),
+        "dest Chat complete usage remapped dest Gemini complete must write candidatesTokenCount exclusive of thoughts, got {gemini}"
+    );
+    assert_eq!(
+        gemini
+            .pointer("/usageMetadata/thoughtsTokenCount")
+            .and_then(Value::as_u64),
+        Some(5),
+        "dest Chat complete usage remapped dest Gemini complete must write thoughtsTokenCount, got {gemini}"
+    );
+    assert_eq!(
+        gemini
+            .pointer("/usageMetadata/totalTokenCount")
+            .and_then(Value::as_u64),
+        Some(120),
+        "dest Chat complete usage remapped dest Gemini complete must write totalTokenCount as prompt plus candidates plus thoughts, got {gemini}"
+    );
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        gemini
+            .pointer("/usageMetadata/totalTokenCount")
+            .and_then(Value::as_u64),
+        chat.pointer("/usage/total_tokens").and_then(Value::as_u64),
+        "dest Gemini totalTokenCount must equal dest Chat inclusive total_tokens, gemini {gemini} chat {chat}"
+    );
+    assert_eq!(
+        gemini
+            .pointer("/candidates/0/content/parts/0/text")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Chat complete content remapped dest Gemini complete must still carry text Hi, got {gemini}"
+    );
+}
+
+#[test]
 fn dest_chat_complete_service_tier_remaps_dest_responses_service_tier() {
     let body = serde_json::to_vec(&json!({
         "id": "chatcmpl-r63",

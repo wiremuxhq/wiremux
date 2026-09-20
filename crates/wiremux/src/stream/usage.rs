@@ -175,9 +175,13 @@ pub(super) fn encode_gemini(
     cache_read_tokens: u32,
     reasoning_tokens: u32,
 ) -> Value {
+    let prompt_wire = prompt_tokens.saturating_add(cache_read_tokens);
     let mut usage = json!({
-        "promptTokenCount": prompt_tokens.saturating_add(cache_read_tokens),
+        "promptTokenCount": prompt_wire,
         "candidatesTokenCount": completion_tokens,
+        "totalTokenCount": prompt_wire
+            .saturating_add(completion_tokens)
+            .saturating_add(reasoning_tokens),
     });
     if cache_read_tokens > 0 {
         usage["cachedContentTokenCount"] = json!(cache_read_tokens);

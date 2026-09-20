@@ -439,6 +439,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
 
     let mut out = json!({
         "candidates": [candidate],
+        "responseId": "gemini-wiremux",
     });
     if !model.is_empty() {
         out["modelVersion"] = json!(model);
