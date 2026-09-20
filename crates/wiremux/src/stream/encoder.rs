@@ -29,7 +29,7 @@ pub struct StreamEncoder {
     next_block: u32,
     open: Option<(u32, BlockKind)>,
     finish: Option<String>,
-    usage: Option<(u32, u32, u32, u32, u32, u32)>,
+    usage: Option<(u32, u32, u32, u32, u32, u32, u32)>,
     used_tool: HashSet<u32>,
     next_tool: u32,
     tool_slots: HashMap<u32, VecDeque<u32>>,
@@ -332,6 +332,7 @@ impl StreamEncoder {
                 cache_write_tokens,
                 reasoning_tokens,
                 audio_tokens,
+                completion_audio_tokens,
             } => {
                 self.usage = Some((
                     prompt_tokens,
@@ -340,6 +341,7 @@ impl StreamEncoder {
                     cache_write_tokens,
                     reasoning_tokens,
                     audio_tokens,
+                    completion_audio_tokens,
                 ));
             }
             other => out.push(encode_stream_event(Wire::Messages, &other)?),
@@ -391,7 +393,7 @@ impl StreamEncoder {
             "type": "message_delta",
             "delta": { "stop_reason": stop, "stop_sequence": null }
         });
-        if let Some((p, c, cr, cw, r, _)) = self.usage {
+        if let Some((p, c, cr, cw, r, _, _)) = self.usage {
             let usage = usage::encode_anthropic(p, c, cr, cw, r);
             if let Some(u) = usage.get("usage") {
                 data["usage"] = u.clone();
@@ -657,6 +659,7 @@ impl StreamEncoder {
                 cache_write_tokens,
                 reasoning_tokens,
                 audio_tokens,
+                completion_audio_tokens,
             } => {
                 self.usage = Some((
                     prompt_tokens,
@@ -665,6 +668,7 @@ impl StreamEncoder {
                     cache_write_tokens,
                     reasoning_tokens,
                     audio_tokens,
+                    completion_audio_tokens,
                 ));
             }
             other => out.push(encode_stream_event(Wire::Responses, &other)?),
@@ -802,7 +806,7 @@ impl StreamEncoder {
         if !self.model.is_empty() {
             response["model"] = json!(self.model);
         }
-        if let Some((p, c, cr, cw, r, _)) = self.usage {
+        if let Some((p, c, cr, cw, r, _, _)) = self.usage {
             let encoded = usage::encode_responses(p, c, cr, cw, r);
             if let Some(u) = encoded.pointer("/response/usage") {
                 response["usage"] = u.clone();
@@ -881,6 +885,7 @@ impl StreamEncoder {
                 cache_write_tokens,
                 reasoning_tokens,
                 audio_tokens,
+                completion_audio_tokens,
             } => {
                 self.usage = Some((
                     prompt_tokens,
@@ -889,6 +894,7 @@ impl StreamEncoder {
                     cache_write_tokens,
                     reasoning_tokens,
                     audio_tokens,
+                    completion_audio_tokens,
                 ));
             }
             IrStreamEvent::ToolCallEnd => {}
@@ -912,10 +918,10 @@ impl StreamEncoder {
                 .to_string(),
             });
         }
-        if let Some((p, c, cr, cw, r, audio)) = self.usage.take() {
+        if let Some((p, c, cr, cw, r, audio, completion_audio)) = self.usage.take() {
             out.push(RawSse {
                 event: None,
-                data: usage::encode_chat(p, c, cr, cw, r, audio).to_string(),
+                data: usage::encode_chat(p, c, cr, cw, r, audio, completion_audio).to_string(),
             });
         }
         out.push(RawSse {
@@ -1444,6 +1450,7 @@ mod tests {
             cache_write_tokens: 9,
             reasoning_tokens: 3,
             audio_tokens: 0,
+            completion_audio_tokens: 0,
         })
         .expect("push dest Chat leftover usage");
         let frames = enc.finish().expect("finish usage");
