@@ -395,6 +395,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut grounding_supports = Vec::new();
     let mut audio_parts = Vec::new();
     let mut logprobs_content = Vec::new();
+    let mut service_tier = None;
     let mut current: Option<(String, String, String)> = None;
     for ev in events {
         match ev {
@@ -454,6 +455,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::ToolCallEnd => {
                 if let Some((id, name, args)) = current.take() {
                     tool_calls.push(gemini_function_call_value(&id, &name, &args));
+                }
+            }
+            IrStreamEvent::ServiceTier { tier } => {
+                if let Some((mapped, _)) = crate::map::gemini_service_tier(tier) {
+                    service_tier = Some(mapped);
                 }
             }
             _ => {}
@@ -525,17 +531,29 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             out["usageMetadata"] = meta.clone();
         }
     }
+    if let Some(tier) = service_tier {
+        match out.get_mut("usageMetadata") {
+            Some(Value::Object(meta)) => {
+                meta.insert("serviceTier".into(), json!(tier));
+            }
+            _ => {
+                out["usageMetadata"] = json!({ "serviceTier": tier });
+            }
+        }
+    }
     out
 }
 
 fn gemini_function_call_value(id: &str, name: &str, args: &str) -> Value {
     let n = if name.is_empty() { id } else { name };
-    json!({
-        "functionCall": {
-            "name": n,
-            "args": serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({})),
-        }
-    })
+    let mut function_call = json!({
+        "name": n,
+        "args": serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({})),
+    });
+    if !id.is_empty() {
+        function_call["id"] = json!(id);
+    }
+    json!({ "functionCall": function_call })
 }
 
 fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {

@@ -2933,6 +2933,149 @@ fn dest_gemini_complete_usage_service_tier_remaps_dest_chat_service_tier() {
 }
 
 #[test]
+fn dest_chat_complete_service_tier_remaps_dest_gemini_usage_service_tier() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r68",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "service_tier": "priority",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "Hi" },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete service_tier");
+    let gemini = encode_response(Wire::Gemini, &events).expect("encode dest Gemini complete");
+    assert_eq!(
+        gemini
+            .pointer("/usageMetadata/serviceTier")
+            .and_then(Value::as_str),
+        Some("priority"),
+        "dest Chat complete service_tier remapped dest Gemini complete must write usageMetadata.serviceTier, got {gemini}"
+    );
+    assert_eq!(
+        gemini
+            .pointer("/candidates/0/content/parts/0/text")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Chat complete content remapped dest Gemini complete must still carry text Hi, got {gemini}"
+    );
+}
+
+#[test]
+fn dest_chat_stream_service_tier_remaps_dest_gemini_usage_service_tier() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "id": "chatcmpl-r68s",
+            "object": "chat.completion.chunk",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "service_tier": "priority",
+            "choices": [{
+                "index": 0,
+                "delta": { "role": "assistant", "content": "Hi" }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM service_tier");
+    let frames = encode_all(Wire::Gemini, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/usageMetadata/serviceTier")
+                .and_then(Value::as_str)
+        }),
+        Some("priority"),
+        "dest Chat STREAM service_tier remapped dest Gemini STREAM must write usageMetadata.serviceTier, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_complete_inline_data_audio_remaps_dest_chat_message_audio() {
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{
+                    "inlineData": { "mimeType": "audio/mpeg", "data": "SUQz" }
+                }]
+            },
+            "finishReason": "STOP"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("decode dest Gemini complete inlineData audio");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/message/audio/data")
+            .and_then(Value::as_str),
+        Some("SUQz"),
+        "dest Gemini complete inlineData audio remapped dest Chat complete must write message.audio.data, got {chat}"
+    );
+    assert!(
+        chat.pointer("/choices/0/message/audio/id").is_none(),
+        "dest Gemini complete inlineData audio remapped dest Chat complete must not invent audio.id, got {chat}"
+    );
+    assert!(
+        chat.pointer("/choices/0/message/audio/expires_at")
+            .is_none(),
+        "dest Gemini complete inlineData audio remapped dest Chat complete must not invent audio.expires_at, got {chat}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_tool_call_id_remaps_dest_gemini_function_call_id() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r69",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": "{\"city\":\"Paris\"}"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete tool_calls id");
+    let gemini = encode_response(Wire::Gemini, &events).expect("encode dest Gemini complete");
+    assert_eq!(
+        gemini
+            .pointer("/candidates/0/content/parts/0/functionCall/id")
+            .and_then(Value::as_str),
+        Some("call_1"),
+        "dest Chat complete tool_calls[].id remapped dest Gemini complete must write functionCall.id, got {gemini}"
+    );
+    assert_eq!(
+        gemini
+            .pointer("/candidates/0/content/parts/0/functionCall/name")
+            .and_then(Value::as_str),
+        Some("get_weather"),
+        "dest Chat complete tool_calls remapped dest Gemini complete must still write functionCall.name, got {gemini}"
+    );
+}
+
+#[test]
 fn dest_gemini_complete_prompt_tokens_details_audio_remaps_dest_chat_audio_tokens() {
     let body = serde_json::to_vec(&json!({
         "candidates": [{

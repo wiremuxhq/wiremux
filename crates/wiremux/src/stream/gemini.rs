@@ -106,6 +106,9 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                     index: 0,
                 }));
             }
+            if let Some(ev) = audio_delta_from_inline_data(part) {
+                return Ok(Some(ev));
+            }
             if let Some(text) = part
                 .get("text")
                 .and_then(Value::as_str)
@@ -212,6 +215,16 @@ fn candidate_has_function_call(candidate: &Value) -> bool {
         .is_some_and(|parts| parts.iter().any(|p| p.get("functionCall").is_some()))
 }
 
+pub(super) fn audio_delta_from_inline_data(part: &Value) -> Option<IrStreamEvent> {
+    let inline = part.get("inlineData")?;
+    let mime = str_field(inline, "mimeType").unwrap_or_default();
+    if !mime.to_ascii_lowercase().starts_with("audio/") {
+        return None;
+    }
+    let data = str_field(inline, "data").filter(|s| !s.is_empty())?;
+    Some(IrStreamEvent::AudioDelta { data })
+}
+
 pub(crate) fn gemini_call_id(fc: &Value, name: &str, seq: usize) -> String {
     fc.get("id")
         .and_then(Value::as_str)
@@ -266,7 +279,11 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             ..
         } => {
             let n = if name.is_empty() { id } else { name };
-            let mut part = json!({ "functionCall": { "name": n, "args": {} } });
+            let mut function_call = json!({ "name": n, "args": {} });
+            if !id.is_empty() {
+                function_call["id"] = json!(id);
+            }
+            let mut part = json!({ "functionCall": function_call });
             if let Some(sig) = thought_signature.as_deref().filter(|s| !s.is_empty()) {
                 part["thoughtSignature"] = json!(sig);
             }
@@ -311,8 +328,11 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         IrStreamEvent::Logprobs { content } => json!({
             "candidates": [{ "logprobsResult": logprobs_to_result(content) }]
         }),
+        IrStreamEvent::ServiceTier { tier } => match crate::map::gemini_service_tier(tier) {
+            Some((mapped, _)) => json!({ "usageMetadata": { "serviceTier": mapped } }),
+            None => json!({ "candidates": [] }),
+        },
         IrStreamEvent::Created { .. }
-        | IrStreamEvent::ServiceTier { .. }
         | IrStreamEvent::Metadata { .. }
         | IrStreamEvent::Moderation { .. } => {
             json!({ "candidates": [] })
