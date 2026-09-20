@@ -855,6 +855,57 @@ fn dest_chat_stream_decode_delta_refusal_is_refusal_delta() {
 }
 
 #[test]
+fn dest_messages_stream_decode_stop_details_explanation_is_refusal_delta() {
+    let only = RawSse {
+        event: Some("message_delta".into()),
+        data: json!({
+            "type": "message_delta",
+            "delta": {
+                "stop_details": {
+                    "type": "refusal",
+                    "explanation": "nope"
+                }
+            }
+        })
+        .to_string(),
+    };
+    let ev = decode_stream_event(Wire::Messages, &only, &messages_profile())
+        .expect("decode dest Messages STREAM stop_details.explanation")
+        .expect("event");
+    assert!(
+        matches!(ev, IrStreamEvent::RefusalDelta { ref text } if text == "nope"),
+        "dest Messages STREAM delta.stop_details.explanation must be RefusalDelta, got {ev:?}"
+    );
+    let both = RawSse {
+        event: Some("message_delta".into()),
+        data: json!({
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": "refusal",
+                "stop_sequence": null,
+                "stop_details": {
+                    "type": "refusal",
+                    "explanation": "nope"
+                }
+            }
+        })
+        .to_string(),
+    };
+    let all = decode_stream_events(Wire::Messages, &both, &messages_profile())
+        .expect("decode_all dest Messages STREAM stop_details.explanation");
+    assert!(
+        all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::RefusalDelta { text } if text == "nope")),
+        "decode_all must keep dest Messages STREAM delta.stop_details.explanation, got {all:?}"
+    );
+    assert!(
+        !all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "nope")),
+        "dest Messages STREAM stop_details.explanation must not fold into text, got {all:?}"
+    );
+}
+
+#[test]
 fn dest_messages_stream_citations_delta_remaps_dest_chat_annotations() {
     let raw = RawSse {
         event: Some("content_block_delta".into()),
@@ -1218,6 +1269,43 @@ fn dest_chat_stream_encode_refusal_delta_is_delta_refusal() {
                 .and_then(Value::as_str)
                 .is_none_or(str::is_empty),
         "dest Chat stream refusal must not write dest Chat content, got {}",
+        raw.data
+    );
+}
+
+#[test]
+fn dest_messages_stream_encode_refusal_delta_is_stop_details() {
+    let raw = encode_stream_event(
+        Wire::Messages,
+        &IrStreamEvent::RefusalDelta {
+            text: "nope".into(),
+        },
+    )
+    .expect("encode dest Messages STREAM refusal");
+    assert_eq!(
+        raw.event.as_deref(),
+        Some("message_delta"),
+        "dest Messages STREAM encode must use message_delta for stop_details, got {raw:?}"
+    );
+    let body: Value = serde_json::from_str(&raw.data).expect("json");
+    assert_eq!(
+        body.pointer("/delta/stop_details/explanation")
+            .and_then(Value::as_str),
+        Some("nope"),
+        "dest Messages STREAM encode must write delta.stop_details.explanation, got {}",
+        raw.data
+    );
+    assert_eq!(
+        body.pointer("/delta/stop_details/type")
+            .and_then(Value::as_str),
+        Some("refusal"),
+        "dest Messages STREAM encode must write delta.stop_details.type refusal, got {}",
+        raw.data
+    );
+    assert_ne!(
+        body.pointer("/delta/type").and_then(Value::as_str),
+        Some("text_delta"),
+        "dest Messages STREAM refusal must not fold into text_delta, got {}",
         raw.data
     );
 }
@@ -3275,6 +3363,79 @@ fn dest_chat_complete_refusal_remaps_dest_messages_stop_details_explanation() {
             .and_then(Value::as_str),
         Some("refusal"),
         "dest Chat complete message.refusal remapped dest Messages complete must write stop_details.type refusal, got {messages}"
+    );
+}
+
+#[test]
+fn dest_messages_stream_stop_details_explanation_remaps_dest_chat_refusal() {
+    let raw = RawSse {
+        event: Some("message_delta".into()),
+        data: json!({
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": "refusal",
+                "stop_sequence": null,
+                "stop_details": {
+                    "type": "refusal",
+                    "explanation": "nope"
+                }
+            }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Messages, &raw, &messages_profile())
+        .expect("decode dest Messages STREAM stop_details.explanation");
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/choices/0/delta/refusal")
+                .and_then(Value::as_str)
+        }),
+        Some("nope"),
+        "dest Messages STREAM stop_details.explanation remapped dest Chat STREAM must write delta.refusal, got {frames:?}"
+    );
+    assert!(
+        bodies.iter().all(|body| {
+            body.pointer("/choices/0/delta/content")
+                .and_then(Value::as_str)
+                != Some("nope")
+        }),
+        "dest Messages STREAM stop_details.explanation remapped dest Chat STREAM must not fold refusal into content, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_chat_stream_refusal_remaps_dest_messages_stop_details_explanation() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"refusal":"nope"}}]}"#.into(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM delta.refusal");
+    let frames = encode_all(Wire::Messages, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/delta/stop_details/explanation")
+                .and_then(Value::as_str)
+        }),
+        Some("nope"),
+        "dest Chat STREAM delta.refusal remapped dest Messages STREAM must write delta.stop_details.explanation, got {frames:?}"
+    );
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/delta/stop_details/type")
+                .and_then(Value::as_str)
+        }),
+        Some("refusal"),
+        "dest Chat STREAM delta.refusal remapped dest Messages STREAM must write delta.stop_details.type refusal, got {frames:?}"
+    );
+    assert!(
+        bodies
+            .iter()
+            .all(|body| { body.pointer("/delta/text").and_then(Value::as_str) != Some("nope") }),
+        "dest Chat STREAM delta.refusal remapped dest Messages STREAM must not fold refusal into text_delta, got {frames:?}"
     );
 }
 

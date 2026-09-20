@@ -72,11 +72,13 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             Ok(Some(protocol(name, value)))
         }
         "message_delta" => {
-            // stop_reason only appears here; usage already arrived on message_start.
+            // stop_reason first-wins; decode_stream_events also lifts delta.stop_details.
             if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str) {
                 Ok(Some(IrStreamEvent::FinishReason {
                     reason: map_stop_reason(reason).to_string(),
                 }))
+            } else if let Some(text) = stop_details_explanation(value) {
+                Ok(Some(IrStreamEvent::RefusalDelta { text }))
             } else if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
                 Ok(Some(usage::from_anthropic(usage)))
             } else {
@@ -128,6 +130,14 @@ fn block_index(value: &Value) -> u32 {
         .unwrap_or(0)
 }
 
+pub(super) fn stop_details_explanation(value: &Value) -> Option<String> {
+    value
+        .pointer("/delta/stop_details/explanation")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 fn nonempty_text(
     text: Option<String>,
     wrap: impl FnOnce(String) -> IrStreamEvent,
@@ -137,14 +147,24 @@ fn nonempty_text(
 
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     let (event, data) = match ev {
-        IrStreamEvent::TextDelta { text }
-        | IrStreamEvent::RefusalDelta { text }
-        | IrStreamEvent::AudioTranscriptDelta { text } => (
+        IrStreamEvent::TextDelta { text } | IrStreamEvent::AudioTranscriptDelta { text } => (
             "content_block_delta",
             json!({
                 "type": "content_block_delta",
                 "index": 0,
                 "delta": { "type": "text_delta", "text": text }
+            }),
+        ),
+        IrStreamEvent::RefusalDelta { text } => (
+            "message_delta",
+            json!({
+                "type": "message_delta",
+                "delta": {
+                    "stop_details": {
+                        "type": "refusal",
+                        "explanation": text
+                    }
+                }
             }),
         ),
         IrStreamEvent::ReasoningDelta { text } => (
