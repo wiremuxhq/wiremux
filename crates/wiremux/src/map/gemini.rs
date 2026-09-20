@@ -389,7 +389,7 @@ fn thinking_config_obj(value: &Value) -> &Value {
         .unwrap_or(&Value::Null)
 }
 
-fn gemini_decode_service_tier(value: &Value) -> Option<String> {
+pub(crate) fn gemini_decode_service_tier(value: &Value) -> Option<String> {
     str_field(value, "serviceTier")
         .or_else(|| str_field(value, "service_tier"))
         .map(|s| s.trim().to_string())

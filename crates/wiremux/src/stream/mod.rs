@@ -213,13 +213,15 @@ fn gemini_value_has_function_call(value: &Value) -> bool {
 }
 
 fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
-    let parts = value
-        .pointer("/candidates/0/content/parts")
-        .and_then(Value::as_array)?;
     let mut out = Vec::new();
     let mut call_seq = 0usize;
-    for part in parts {
-        out.extend(gemini_part_events(part, &mut call_seq));
+    if let Some(parts) = value
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array)
+    {
+        for part in parts {
+            out.extend(gemini_part_events(part, &mut call_seq));
+        }
     }
     if let Some(chunks) = value
         .pointer("/candidates/0/groundingMetadata/groundingChunks")
@@ -271,6 +273,9 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
         out.push(IrStreamEvent::FinishReason {
             reason: gemini::map_finish(reason, gemini_value_has_function_call(value)).to_string(),
         });
+    }
+    if let Some(ev) = gemini::service_tier_from_chunk(value) {
+        out.push(ev);
     }
     if let Some(ev) = gemini::usage_from_chunk(value) {
         out.push(ev);
