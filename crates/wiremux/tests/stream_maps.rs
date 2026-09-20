@@ -1210,6 +1210,30 @@ wire = "converse"
 }
 
 #[test]
+fn dest_converse_stream_reasoning_signature_remaps_dest_chat() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"contentBlockDelta":{"delta":{"reasoningContent":{"signature":"sig-1"}}}}"#
+            .into(),
+    };
+    let ev = decode_stream_event(Wire::Converse, &raw, &converse_profile())
+        .expect("decode dest Converse STREAM reasoningContent.signature")
+        .expect("event");
+    assert!(
+        matches!(ev, IrStreamEvent::ReasoningSignature { ref signature } if signature == "sig-1"),
+        "dest Converse STREAM reasoningContent.signature must be ReasoningSignature, got {ev:?}"
+    );
+    let encoded = encode_stream_event(Wire::ChatCompletions, &ev).expect("encode dest Chat STREAM");
+    let chat: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(
+        chat.pointer("/choices/0/delta/reasoning_signature")
+            .and_then(Value::as_str),
+        Some("sig-1"),
+        "dest Converse STREAM reasoningContent.signature remapped dest Chat STREAM must write delta.reasoning_signature, got {chat}"
+    );
+}
+
+#[test]
 fn dest_messages_complete_text_citations_remap_dest_chat_annotations() {
     let body = serde_json::to_vec(&json!({
         "content": [{
@@ -3606,6 +3630,221 @@ fn dest_converse_complete_citations_content_does_not_duplicate_sibling_text() {
             .and_then(Value::as_str),
         Some("See https://example.com for more."),
         "dest Converse complete sibling text equal to citationsContent.content must not duplicate dest Chat message.content, got {chat}"
+    );
+}
+
+#[test]
+fn dest_converse_complete_reasoning_content_remaps_dest_chat_reasoning_content() {
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "reasoningContent": {
+                            "reasoningText": {
+                                "text": "plan",
+                                "signature": "sig-1"
+                            }
+                        }
+                    },
+                    { "text": "Hi" }
+                ]
+            }
+        },
+        "stopReason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile())
+        .expect("decode dest Converse complete reasoningContent");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/message/reasoning_content")
+            .and_then(Value::as_str),
+        Some("plan"),
+        "dest Converse complete reasoningContent.reasoningText.text remapped dest Chat complete must write reasoning_content, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/reasoning_signature")
+            .and_then(Value::as_str),
+        Some("sig-1"),
+        "dest Converse complete reasoningContent.reasoningText.signature remapped dest Chat complete must write reasoning_signature, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Converse complete sibling text remapped dest Chat complete must still carry text Hi, got {chat}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_reasoning_content_remaps_dest_converse_reasoning_content() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r103",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "Hi",
+                "reasoning_content": "plan",
+                "reasoning_signature": "sig-1"
+            },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete reasoning_content");
+    let converse = encode_response(Wire::Converse, &events).expect("encode dest Converse complete");
+    assert_eq!(
+        converse
+            .pointer("/output/message/content/0/reasoningContent/reasoningText/text")
+            .and_then(Value::as_str),
+        Some("plan"),
+        "dest Chat complete reasoning_content remapped dest Converse complete must write reasoningText.text, got {converse}"
+    );
+    assert_eq!(
+        converse
+            .pointer("/output/message/content/0/reasoningContent/reasoningText/signature")
+            .and_then(Value::as_str),
+        Some("sig-1"),
+        "dest Chat complete reasoning_signature remapped dest Converse complete must write reasoningText.signature, got {converse}"
+    );
+    assert_eq!(
+        converse
+            .pointer("/output/message/content/1/text")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Chat complete content remapped dest Converse complete must still carry text Hi, got {converse}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_reasoning_and_tool_calls_remaps_dest_converse_reasoning_before_tool_use() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r104",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "reasoning_content": "plan",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": "{\"city\":\"Paris\"}"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete reasoning_content plus tool_calls");
+    let converse = encode_response(Wire::Converse, &events).expect("encode dest Converse complete");
+    assert_eq!(
+        converse
+            .pointer("/output/message/content/0/reasoningContent/reasoningText/text")
+            .and_then(Value::as_str),
+        Some("plan"),
+        "dest Chat complete reasoning_content plus tool_calls remapped dest Converse complete must write reasoningContent before toolUse, got {converse}"
+    );
+    assert_eq!(
+        converse
+            .pointer("/output/message/content/1/toolUse/name")
+            .and_then(Value::as_str),
+        Some("get_weather"),
+        "dest Chat complete tool_calls remapped dest Converse complete must write toolUse after reasoningContent, got {converse}"
+    );
+}
+
+#[test]
+fn dest_converse_complete_audio_bytes_remaps_dest_chat_message_audio() {
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "audio": {
+                        "format": "mp3",
+                        "source": { "bytes": "SUQz" }
+                    }
+                }]
+            }
+        },
+        "stopReason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile())
+        .expect("decode dest Converse complete audio.source.bytes");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/message/audio/data")
+            .and_then(Value::as_str),
+        Some("SUQz"),
+        "dest Converse complete audio.source.bytes remapped dest Chat complete must write message.audio.data, got {chat}"
+    );
+    assert!(
+        chat.pointer("/choices/0/message/audio/id").is_none(),
+        "dest Converse complete audio remapped dest Chat complete must not invent audio.id, got {chat}"
+    );
+    assert!(
+        chat.pointer("/choices/0/message/audio/expires_at")
+            .is_none(),
+        "dest Converse complete audio remapped dest Chat complete must not invent audio.expires_at, got {chat}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_message_audio_remaps_dest_converse_audio_bytes() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r104",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "audio": { "data": "SUQz" }
+            },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete message.audio.data");
+    let converse = encode_response(Wire::Converse, &events).expect("encode dest Converse complete");
+    assert_eq!(
+        converse
+            .pointer("/output/message/content/0/audio/source/bytes")
+            .and_then(Value::as_str),
+        Some("SUQz"),
+        "dest Chat complete message.audio.data remapped dest Converse complete must write audio.source.bytes, got {converse}"
+    );
+    assert_eq!(
+        converse
+            .pointer("/output/message/content/0/audio/format")
+            .and_then(Value::as_str),
+        Some("mp3"),
+        "dest Chat complete message.audio.data remapped dest Converse complete must write audio.format mp3, got {converse}"
+    );
+    assert!(
+        converse
+            .pointer("/output/message/content/0/audio/source/s3Location")
+            .is_none(),
+        "dest Chat complete message.audio remapped dest Converse complete must not invent audio.source.s3Location, got {converse}"
     );
 }
 
