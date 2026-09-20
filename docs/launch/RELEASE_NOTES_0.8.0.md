@@ -32,4 +32,4 @@ wiremux = { version = "0.8.0", default-features = false }
 ```
 
 Maps-only is `default-features = false`. Host attach:
-https://github.com/wiremuxhq/wiremux/blob/v0.8.0/docs/CONSUME.md
+https://github.com/wiremuxhq/wiremux/blob/main/docs/CONSUME.md
