@@ -309,7 +309,9 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         IrStreamEvent::Logprobs { content } => json!({
             "candidates": [{ "logprobsResult": logprobs_to_result(content) }]
         }),
-        IrStreamEvent::Created { .. } | IrStreamEvent::ServiceTier { .. } => {
+        IrStreamEvent::Created { .. }
+        | IrStreamEvent::ServiceTier { .. }
+        | IrStreamEvent::Metadata { .. } => {
             json!({ "candidates": [] })
         }
         IrStreamEvent::ToolCallArgDelta { delta, .. }

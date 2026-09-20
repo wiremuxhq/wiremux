@@ -434,6 +434,10 @@ pub enum IrStreamEvent {
     ServiceTier {
         tier: String,
     },
+    /// Dest Chat `metadata` and dest Responses `metadata` string map.
+    Metadata {
+        metadata: BTreeMap<String, String>,
+    },
     /// Exclusive buckets: prompt excludes cache
     /// read, completion excludes reasoning. Encoders re-inflate inclusive
     /// wire totals for Chat and Responses.

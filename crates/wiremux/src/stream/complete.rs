@@ -1,5 +1,7 @@
 //! Complete JSON bodies (non-SSE). Chat stream maps stay delta-only.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 use wiremux_auth::{ResolvedProfile, Wire};
 
@@ -47,6 +49,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut logprobs_content = Vec::new();
     let mut created = None;
     let mut service_tier = None;
+    let mut metadata = None;
     let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
         match ev {
@@ -66,6 +69,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::Created { unix } => created = Some(*unix),
             IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
+            IrStreamEvent::Metadata { metadata: meta } => metadata = Some(meta.clone()),
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(super::chat::encode_finish(reason).to_string());
             }
@@ -176,6 +180,9 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     if let Some(tier) = service_tier {
         out["service_tier"] = json!(tier);
+    }
+    if let Some(meta) = metadata.filter(|m| !m.is_empty()) {
+        out["metadata"] = json!(meta);
     }
     if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens)) = usage {
         let encoded = super::usage::encode_chat(
@@ -474,6 +481,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut logprobs_content = Vec::new();
     let mut created = None;
     let mut service_tier = None;
+    let mut metadata = None;
     let mut tool_calls = Vec::new();
     let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
@@ -492,6 +500,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::Created { unix } => created = Some(*unix),
             IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
+            IrStreamEvent::Metadata { metadata: meta } => metadata = Some(meta.clone()),
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(reason.clone());
             }
@@ -603,6 +612,9 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     if let Some(tier) = service_tier {
         out["service_tier"] = json!(tier);
     }
+    if let Some(meta) = metadata.filter(|m| !m.is_empty()) {
+        out["metadata"] = json!(meta);
+    }
     if !text.is_empty() {
         out["output_text"] = json!(text);
     }
@@ -686,6 +698,9 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     }
     if let Some(unix) = value.get("created").and_then(Value::as_i64) {
         out.push(IrStreamEvent::Created { unix });
+    }
+    if let Some(metadata) = string_metadata(value.get("metadata")) {
+        out.push(IrStreamEvent::Metadata { metadata });
     }
     if let Some(choice) = value
         .get("choices")
@@ -941,7 +956,23 @@ fn decode_responses_complete(
             tier: tier.to_string(),
         });
     }
+    if let Some(metadata) = string_metadata(
+        value
+            .get("metadata")
+            .or_else(|| value.pointer("/response/metadata")),
+    ) {
+        events.push(IrStreamEvent::Metadata { metadata });
+    }
     Ok(events)
+}
+
+fn string_metadata(value: Option<&Value>) -> Option<BTreeMap<String, String>> {
+    let obj = value.and_then(Value::as_object)?;
+    let map: BTreeMap<String, String> = obj
+        .iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+        .collect();
+    if map.is_empty() { None } else { Some(map) }
 }
 
 fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {

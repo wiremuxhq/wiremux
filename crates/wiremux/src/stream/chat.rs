@@ -120,6 +120,15 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     if let Some(unix) = value.get("created").and_then(Value::as_i64) {
         out.push(IrStreamEvent::Created { unix });
     }
+    if let Some(obj) = value.get("metadata").and_then(Value::as_object) {
+        let metadata: std::collections::BTreeMap<String, String> = obj
+            .iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+            .collect();
+        if !metadata.is_empty() {
+            out.push(IrStreamEvent::Metadata { metadata });
+        }
+    }
     if let Some(calls) = choice
         .pointer("/delta/tool_calls")
         .and_then(Value::as_array)
@@ -469,6 +478,10 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         }),
         IrStreamEvent::ServiceTier { tier } => json!({
             "service_tier": tier,
+            "choices": []
+        }),
+        IrStreamEvent::Metadata { metadata } => json!({
+            "metadata": metadata,
             "choices": []
         }),
         IrStreamEvent::Usage {

@@ -417,6 +417,13 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "response": { "service_tier": tier, "status": "in_progress" }
             }),
         ),
+        IrStreamEvent::Metadata { metadata } => (
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": { "metadata": metadata, "status": "in_progress" }
+            }),
+        ),
         IrStreamEvent::Done => (
             "response.completed",
             json!({
