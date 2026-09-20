@@ -564,6 +564,8 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut finish = None;
     let mut usage = None;
     let mut annotations = Vec::new();
+    let mut audio_data = String::new();
+    let mut audio_transcript = String::new();
     let mut logprobs_content = Vec::new();
     let mut created = None;
     let mut service_tier = None;
@@ -582,6 +584,8 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::AnnotationAdded { annotation } => {
                 annotations.push(annotation.clone());
             }
+            IrStreamEvent::AudioDelta { data } => audio_data.push_str(data),
+            IrStreamEvent::AudioTranscriptDelta { text } => audio_transcript.push_str(text),
             IrStreamEvent::Logprobs { content } => {
                 extend_logprobs_content(&mut logprobs_content, content);
             }
@@ -677,6 +681,17 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             "role": "assistant",
             "content": content,
         }));
+    }
+    if !audio_data.is_empty() || !audio_transcript.is_empty() {
+        let mut item = serde_json::Map::new();
+        item.insert("type".into(), json!("output_audio"));
+        if !audio_data.is_empty() {
+            item.insert("data".into(), json!(audio_data));
+        }
+        if !audio_transcript.is_empty() {
+            item.insert("transcript".into(), json!(audio_transcript));
+        }
+        output.push(Value::Object(item));
     }
     output.extend(tool_calls);
 
@@ -1254,9 +1269,15 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                                 out.push(IrStreamEvent::RefusalDelta { text });
                             }
                         }
+                        Some("output_audio") | Some("audio") => {
+                            push_output_audio_events(&mut out, part);
+                        }
                         _ => {}
                     }
                 }
+            }
+            Some("output_audio") => {
+                push_output_audio_events(&mut out, item);
             }
             Some("function_call") => {
                 out.push(IrStreamEvent::ToolCallStart {
@@ -1301,6 +1322,15 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
         }
     }
     out
+}
+
+fn push_output_audio_events(out: &mut Vec<IrStreamEvent>, value: &Value) {
+    if let Some(data) = str_field(value, "data").filter(|s| !s.is_empty()) {
+        out.push(IrStreamEvent::AudioDelta { data });
+    }
+    if let Some(text) = str_field(value, "transcript").filter(|s| !s.is_empty()) {
+        out.push(IrStreamEvent::AudioTranscriptDelta { text });
+    }
 }
 
 fn decode_gemini_complete(
