@@ -3001,6 +3001,203 @@ fn dest_messages_complete_usage_service_tier_remaps_dest_chat_service_tier() {
 }
 
 #[test]
+fn dest_chat_complete_service_tier_remaps_dest_messages_usage_service_tier() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r67",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "service_tier": "priority",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "Hi" },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete service_tier");
+    let messages = encode_response(Wire::Messages, &events).expect("encode dest Messages complete");
+    assert_eq!(
+        messages
+            .pointer("/usage/service_tier")
+            .and_then(Value::as_str),
+        Some("priority"),
+        "dest Chat complete service_tier remapped dest Messages complete must write usage.service_tier, got {messages}"
+    );
+    assert_eq!(
+        messages.pointer("/content/0/text").and_then(Value::as_str),
+        Some("Hi"),
+        "dest Chat complete content remapped dest Messages complete must still carry text Hi, got {messages}"
+    );
+}
+
+#[test]
+fn dest_messages_stream_usage_service_tier_remaps_dest_chat_stream_service_tier() {
+    let raw = RawSse {
+        event: Some("message_start".into()),
+        data: json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": "claude-sonnet-4",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 0,
+                    "service_tier": "priority"
+                }
+            }
+        })
+        .to_string(),
+    };
+    let mut events = decode_stream_events(Wire::Messages, &raw, &messages_profile())
+        .expect("decode dest Messages STREAM message.usage.service_tier");
+    let delta = RawSse {
+        event: Some("content_block_delta".into()),
+        data: json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": { "type": "text_delta", "text": "Hi" }
+        })
+        .to_string(),
+    };
+    events.extend(
+        decode_stream_events(Wire::Messages, &delta, &messages_profile())
+            .expect("decode dest Messages STREAM text delta"),
+    );
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies
+            .iter()
+            .find_map(|body| body.get("service_tier").and_then(Value::as_str)),
+        Some("priority"),
+        "dest Messages STREAM message.usage.service_tier remapped dest Chat STREAM must write service_tier, got {frames:?}"
+    );
+    assert!(
+        bodies.iter().any(|body| {
+            body.pointer("/choices/0/delta/content")
+                .and_then(Value::as_str)
+                == Some("Hi")
+        }),
+        "dest Messages STREAM text remapped dest Chat STREAM must still carry text Hi, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_chat_stream_service_tier_remaps_dest_messages_stream_usage_service_tier() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "id": "chatcmpl-r67s",
+            "object": "chat.completion.chunk",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "service_tier": "priority",
+            "choices": [{
+                "index": 0,
+                "delta": { "role": "assistant", "content": "Hi" }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM service_tier");
+    let frames = encode_all(Wire::Messages, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/message/usage/service_tier")
+                .or_else(|| body.pointer("/usage/service_tier"))
+                .and_then(Value::as_str)
+        }),
+        Some("priority"),
+        "dest Chat STREAM service_tier remapped dest Messages STREAM must write message_start or message_delta usage.service_tier, got {frames:?}"
+    );
+    assert!(
+        frames.iter().any(|frame| {
+            matches!(
+                frame.event.as_deref(),
+                Some("message_start") | Some("message_delta")
+            ) && frame.data.contains("\"service_tier\":\"priority\"")
+        }),
+        "dest Chat STREAM service_tier remapped dest Messages STREAM must not be empty text_delta, got {frames:?}"
+    );
+    assert!(
+        bodies
+            .iter()
+            .any(|body| { body.pointer("/delta/text").and_then(Value::as_str) == Some("Hi") }),
+        "dest Chat STREAM text remapped dest Messages STREAM must still carry text Hi, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_messages_complete_stop_details_explanation_remaps_dest_chat_refusal() {
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4",
+        "content": [],
+        "stop_reason": "refusal",
+        "stop_details": {
+            "type": "refusal",
+            "explanation": "nope"
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile())
+        .expect("decode dest Messages complete stop_details.explanation");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/message/refusal")
+            .and_then(Value::as_str),
+        Some("nope"),
+        "dest Messages complete stop_details.explanation remapped dest Chat complete must write message.refusal, got {chat}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_refusal_remaps_dest_messages_stop_details_explanation() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r68",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "refusal": "nope"
+            },
+            "finish_reason": "content_filter"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete message.refusal");
+    let messages = encode_response(Wire::Messages, &events).expect("encode dest Messages complete");
+    assert_eq!(
+        messages
+            .pointer("/stop_details/explanation")
+            .and_then(Value::as_str),
+        Some("nope"),
+        "dest Chat complete message.refusal remapped dest Messages complete must write stop_details.explanation, got {messages}"
+    );
+    assert_eq!(
+        messages
+            .pointer("/stop_details/type")
+            .and_then(Value::as_str),
+        Some("refusal"),
+        "dest Chat complete message.refusal remapped dest Messages complete must write stop_details.type refusal, got {messages}"
+    );
+}
+
+#[test]
 fn dest_converse_complete_cache_read_remaps_dest_chat_cached_tokens() {
     let body = serde_json::to_vec(&json!({
         "output": {

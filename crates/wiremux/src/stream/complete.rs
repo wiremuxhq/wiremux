@@ -249,10 +249,12 @@ fn chat_tool_call_value(id: &str, name: &str, args: &str, custom: bool) -> Value
 
 fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut text = String::new();
+    let mut refusal = String::new();
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
     let mut finish = None;
     let mut usage = None;
+    let mut service_tier = None;
     let mut tool_calls = Vec::new();
     let mut citations = Vec::new();
     let mut current: Option<(String, String, String)> = None;
@@ -260,6 +262,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
         match ev {
             IrStreamEvent::TextDelta { text: delta }
             | IrStreamEvent::AudioTranscriptDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::RefusalDelta { text: delta } => refusal.push_str(delta),
             IrStreamEvent::AnnotationAdded { annotation } => {
                 citations.push(super::messages::citation_from_annotation(annotation));
             }
@@ -267,6 +270,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::ReasoningSignature { signature } => {
                 reasoning_signature = Some(signature.clone());
             }
+            IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(super::messages::encode_stop_reason(reason).to_string());
             }
@@ -335,8 +339,17 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
         "model": model,
         "content": content,
     });
-    if let Some(reason) = finish {
+    if let Some(ref reason) = finish {
         out["stop_reason"] = json!(reason);
+    }
+    if !refusal.is_empty() {
+        out["stop_details"] = json!({
+            "type": "refusal",
+            "explanation": refusal,
+        });
+        if finish.as_deref().is_none_or(|r| r == "content_filter") {
+            out["stop_reason"] = json!("refusal");
+        }
     }
     if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens, _)) = usage {
         let encoded = super::usage::encode_anthropic(
@@ -349,6 +362,15 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
         if let Some(u) = encoded.get("usage") {
             out["usage"] = u.clone();
         }
+    }
+    if let Some(mapped) = service_tier
+        .as_deref()
+        .and_then(super::messages::usage_service_tier_to_messages)
+    {
+        if !out.get("usage").is_some_and(Value::is_object) {
+            out["usage"] = json!({ "input_tokens": 0, "output_tokens": 0 });
+        }
+        out["usage"]["service_tier"] = json!(mapped);
     }
     out
 }
@@ -942,6 +964,15 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
                 None => {}
             }
         }
+    }
+    if let Some(text) = value
+        .pointer("/stop_details/explanation")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::RefusalDelta {
+            text: text.to_string(),
+        });
     }
     if let Some(reason) = value.get("stop_reason").and_then(Value::as_str) {
         out.push(IrStreamEvent::FinishReason {

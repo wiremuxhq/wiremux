@@ -367,8 +367,9 @@ pub enum IrStreamEvent {
     TextDelta {
         text: String,
     },
-    /// Dest Chat `delta.refusal` / `message.refusal` and dest Responses
-    /// `response.refusal.delta` / output content `{ "type": "refusal" }`.
+    /// Dest Chat `delta.refusal` / `message.refusal`, dest Responses
+    /// `response.refusal.delta` / output content `{ "type": "refusal" }`,
+    /// and dest Messages complete `stop_details.explanation`.
     RefusalDelta {
         text: String,
     },
@@ -430,7 +431,8 @@ pub enum IrStreamEvent {
     Created {
         unix: i64,
     },
-    /// Dest Chat `service_tier` and dest Responses `service_tier`.
+    /// Dest Chat `service_tier`, dest Responses `service_tier`, and dest
+    /// Messages `usage.service_tier`.
     ServiceTier {
         tier: String,
     },

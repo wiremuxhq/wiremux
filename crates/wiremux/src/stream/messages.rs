@@ -200,10 +200,32 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "delta": { "type": "citations_delta", "citation": citation_from_annotation(annotation) }
             }),
         ),
+        IrStreamEvent::ServiceTier { tier } => match usage_service_tier_to_messages(tier) {
+            Some(mapped) => (
+                "message_start",
+                json!({
+                    "type": "message_start",
+                    "message": {
+                        "usage": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "service_tier": mapped
+                        }
+                    }
+                }),
+            ),
+            None => (
+                "content_block_delta",
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "text_delta", "text": "" }
+                }),
+            ),
+        },
         IrStreamEvent::AudioDelta { .. }
         | IrStreamEvent::Logprobs { .. }
         | IrStreamEvent::Created { .. }
-        | IrStreamEvent::ServiceTier { .. }
         | IrStreamEvent::Metadata { .. }
         | IrStreamEvent::Moderation { .. } => (
             "content_block_delta",
@@ -272,6 +294,16 @@ pub(super) fn service_tier_from_usage(usage: &Value) -> Option<String> {
         Some("default".into())
     } else {
         None
+    }
+}
+
+/// Dest Messages Usage `service_tier` is `standard` | `priority` | `batch`.
+/// Dest Chat `priority` is 1:1; dest Chat `default` maps to `standard`.
+pub(super) fn usage_service_tier_to_messages(tier: &str) -> Option<String> {
+    match tier.trim().to_ascii_lowercase().as_str() {
+        "priority" => Some("priority".into()),
+        "default" | "standard" => Some("standard".into()),
+        _ => None,
     }
 }
 

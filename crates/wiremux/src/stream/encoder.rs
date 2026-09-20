@@ -198,25 +198,16 @@ impl StreamEncoder {
     }
 
     fn push_messages(&mut self, ev: IrStreamEvent) -> Result<Vec<RawSse>, MapError> {
+        if let IrStreamEvent::ServiceTier { ref tier } = ev {
+            self.service_tier = Some(tier.clone());
+        }
         let mut out = Vec::new();
         if !self.started {
+            if matches!(ev, IrStreamEvent::ServiceTier { .. }) {
+                return Ok(out);
+            }
             self.started = true;
-            out.push(named(
-                "message_start",
-                json!({
-                    "type": "message_start",
-                    "message": {
-                        "id": "msg_wiremux",
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [],
-                        "model": self.model,
-                        "stop_reason": null,
-                        "stop_sequence": null,
-                        "usage": { "input_tokens": 0, "output_tokens": 0 }
-                    }
-                }),
-            ));
+            out.push(self.messages_start_frame());
         }
         match ev {
             IrStreamEvent::TextDelta { text } => {
@@ -294,8 +285,23 @@ impl StreamEncoder {
             }
             IrStreamEvent::AudioDelta { .. } => {}
             IrStreamEvent::Logprobs { .. } => {}
+            IrStreamEvent::ServiceTier { .. } => {
+                if let Some(mapped) = self
+                    .service_tier
+                    .as_deref()
+                    .and_then(super::messages::usage_service_tier_to_messages)
+                {
+                    out.push(named(
+                        "message_delta",
+                        json!({
+                            "type": "message_delta",
+                            "delta": {},
+                            "usage": { "service_tier": mapped }
+                        }),
+                    ));
+                }
+            }
             IrStreamEvent::Created { .. }
-            | IrStreamEvent::ServiceTier { .. }
             | IrStreamEvent::Metadata { .. }
             | IrStreamEvent::Moderation { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
@@ -385,8 +391,40 @@ impl StreamEncoder {
         )]
     }
 
+    fn messages_start_frame(&self) -> RawSse {
+        let mut usage = json!({ "input_tokens": 0, "output_tokens": 0 });
+        if let Some(mapped) = self
+            .service_tier
+            .as_deref()
+            .and_then(super::messages::usage_service_tier_to_messages)
+        {
+            usage["service_tier"] = json!(mapped);
+        }
+        named(
+            "message_start",
+            json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_wiremux",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": self.model,
+                    "stop_reason": null,
+                    "stop_sequence": null,
+                    "usage": usage
+                }
+            }),
+        )
+    }
+
     fn finish_messages(&mut self) -> Vec<RawSse> {
-        let mut out = self.close_open();
+        let mut out = Vec::new();
+        if !self.started {
+            self.started = true;
+            out.push(self.messages_start_frame());
+        }
+        out.extend(self.close_open());
         let reason = self.finish.as_deref().unwrap_or("stop");
         let stop = encode_stop_reason(reason);
         let mut data = json!({
