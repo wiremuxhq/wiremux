@@ -20,6 +20,14 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                 text: text.to_string(),
             }));
         }
+        if let Some(signature) = delta
+            .pointer("/reasoningContent/signature")
+            .and_then(Value::as_str)
+        {
+            return Ok(Some(IrStreamEvent::ReasoningSignature {
+                signature: signature.to_string(),
+            }));
+        }
         if let Some(input) = delta.pointer("/toolUse/input").and_then(Value::as_str) {
             return Ok(Some(IrStreamEvent::ToolCallArgDelta {
                 delta: input.to_string(),
@@ -155,6 +163,9 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
     let mut content = Vec::new();
     let mut current_tool: Option<(String, String, String)> = None;
     let mut citations = Vec::new();
+    let mut reasoning = String::new();
+    let mut reasoning_signature = None;
+    let mut audio_data = String::new();
     let mut stop = "end_turn";
     let mut usage = None;
     let mut service_tier = None;
@@ -162,6 +173,11 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
         match ev {
             IrStreamEvent::TextDelta { text: delta }
             | IrStreamEvent::AudioTranscriptDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
+            IrStreamEvent::ReasoningSignature { signature } => {
+                reasoning_signature = Some(signature.clone());
+            }
+            IrStreamEvent::AudioDelta { data } => audio_data.push_str(data),
             IrStreamEvent::AnnotationAdded { annotation } => {
                 citations.push(citation_from_annotation(annotation));
             }
@@ -205,6 +221,27 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
             }
             _ => {}
         }
+    }
+    if !reasoning.is_empty()
+        || reasoning_signature
+            .as_deref()
+            .is_some_and(|s| !s.is_empty())
+    {
+        let mut reasoning_text = json!({ "text": reasoning });
+        if let Some(signature) = reasoning_signature.as_deref().filter(|s| !s.is_empty()) {
+            reasoning_text["signature"] = json!(signature);
+        }
+        content.push(json!({
+            "reasoningContent": { "reasoningText": reasoning_text }
+        }));
+    }
+    if !audio_data.is_empty() {
+        content.push(json!({
+            "audio": {
+                "format": "mp3",
+                "source": { "bytes": audio_data }
+            }
+        }));
     }
     if !citations.is_empty() {
         let mut generated = Vec::new();
@@ -258,6 +295,33 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
         };
         if !text.is_empty() {
             out.push(IrStreamEvent::TextDelta { text });
+        }
+        if let Some(text) = block
+            .pointer("/reasoningContent/reasoningText/text")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            out.push(IrStreamEvent::ReasoningDelta {
+                text: text.to_string(),
+            });
+        }
+        if let Some(signature) = block
+            .pointer("/reasoningContent/reasoningText/signature")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            out.push(IrStreamEvent::ReasoningSignature {
+                signature: signature.to_string(),
+            });
+        }
+        if let Some(data) = block
+            .pointer("/audio/source/bytes")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            out.push(IrStreamEvent::AudioDelta {
+                data: data.to_string(),
+            });
         }
         if let Some(citations) = block
             .pointer("/citationsContent/citations")
@@ -520,6 +584,22 @@ mod tests {
                 .and_then(Value::as_str),
             Some("sig-1"),
             "dest Converse must emit reasoningContent.signature, got {value}"
+        );
+    }
+
+    #[test]
+    fn converse_decode_reasoning_signature() {
+        let value = json!({
+            "contentBlockDelta": {
+                "delta": { "reasoningContent": { "signature": "sig-1" } }
+            }
+        });
+        let ev = decode(&value)
+            .expect("decode dest Converse STREAM reasoningContent.signature")
+            .expect("event");
+        assert!(
+            matches!(ev, IrStreamEvent::ReasoningSignature { ref signature } if signature == "sig-1"),
+            "dest Converse STREAM reasoningContent.signature must decode ReasoningSignature, got {ev:?}"
         );
     }
 }
