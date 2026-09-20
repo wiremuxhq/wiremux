@@ -3724,6 +3724,51 @@ fn dest_chat_complete_reasoning_content_remaps_dest_converse_reasoning_content()
 }
 
 #[test]
+fn dest_chat_complete_reasoning_and_tool_calls_remaps_dest_converse_reasoning_before_tool_use() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r104",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "reasoning_content": "plan",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": "{\"city\":\"Paris\"}"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete reasoning_content plus tool_calls");
+    let converse = encode_response(Wire::Converse, &events).expect("encode dest Converse complete");
+    assert_eq!(
+        converse
+            .pointer("/output/message/content/0/reasoningContent/reasoningText/text")
+            .and_then(Value::as_str),
+        Some("plan"),
+        "dest Chat complete reasoning_content plus tool_calls remapped dest Converse complete must write reasoningContent before toolUse, got {converse}"
+    );
+    assert_eq!(
+        converse
+            .pointer("/output/message/content/1/toolUse/name")
+            .and_then(Value::as_str),
+        Some("get_weather"),
+        "dest Chat complete tool_calls remapped dest Converse complete must write toolUse after reasoningContent, got {converse}"
+    );
+}
+
+#[test]
 fn dest_converse_complete_audio_bytes_remaps_dest_chat_message_audio() {
     let body = serde_json::to_vec(&json!({
         "output": {

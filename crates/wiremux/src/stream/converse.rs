@@ -222,6 +222,7 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
             _ => {}
         }
     }
+    let mut prefix = Vec::new();
     if !reasoning.is_empty()
         || reasoning_signature
             .as_deref()
@@ -231,18 +232,20 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
         if let Some(signature) = reasoning_signature.as_deref().filter(|s| !s.is_empty()) {
             reasoning_text["signature"] = json!(signature);
         }
-        content.push(json!({
+        prefix.push(json!({
             "reasoningContent": { "reasoningText": reasoning_text }
         }));
     }
     if !audio_data.is_empty() {
-        content.push(json!({
+        prefix.push(json!({
             "audio": {
                 "format": "mp3",
                 "source": { "bytes": audio_data }
             }
         }));
     }
+    prefix.append(&mut content);
+    content = prefix;
     if !citations.is_empty() {
         let mut generated = Vec::new();
         if !text.is_empty() {
