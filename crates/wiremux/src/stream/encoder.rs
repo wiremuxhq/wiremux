@@ -44,6 +44,7 @@ pub struct StreamEncoder {
     created_at: Option<i64>,
     service_tier: Option<String>,
     metadata: Option<BTreeMap<String, String>>,
+    moderation: Option<(Option<Value>, Option<Value>)>,
     refusal: String,
 }
 
@@ -74,6 +75,7 @@ impl StreamEncoder {
             created_at: None,
             service_tier: None,
             metadata: None,
+            moderation: None,
             refusal: String::new(),
         }
     }
@@ -454,6 +456,13 @@ impl StreamEncoder {
         }
         if let IrStreamEvent::Metadata { ref metadata } = ev {
             self.metadata = Some(metadata.clone());
+        }
+        if let IrStreamEvent::Moderation {
+            ref input,
+            ref output,
+        } = ev
+        {
+            self.moderation = Some((input.clone(), output.clone()));
         }
         if !self.started
             && !matches!(
@@ -851,6 +860,11 @@ impl StreamEncoder {
             if let Some(u) = encoded.pointer("/response/usage") {
                 response["usage"] = u.clone();
             }
+        }
+        if let Some((ref input, ref output)) = self.moderation
+            && let Some(value) = super::complete::responses_moderation_value(input, output)
+        {
+            response["moderation"] = value;
         }
         out.push(named(
             event,

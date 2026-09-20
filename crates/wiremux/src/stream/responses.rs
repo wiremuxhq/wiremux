@@ -446,13 +446,19 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "response": { "metadata": metadata, "status": "in_progress" }
             }),
         ),
-        IrStreamEvent::Moderation { .. } => (
-            "response.completed",
-            json!({
-                "type": "response.completed",
-                "response": { "status": "completed" }
-            }),
-        ),
+        IrStreamEvent::Moderation { input, output } => {
+            let mut response = json!({ "status": "completed" });
+            if let Some(value) = super::complete::responses_moderation_value(input, output) {
+                response["moderation"] = value;
+            }
+            (
+                "response.completed",
+                json!({
+                    "type": "response.completed",
+                    "response": response
+                }),
+            )
+        }
         IrStreamEvent::Done => (
             "response.completed",
             json!({

@@ -1115,7 +1115,10 @@ fn chat_moderation_value(input: &Option<Value>, output: &Option<Value>) -> Optio
     moderation_object(input, output, |side| side.clone())
 }
 
-fn responses_moderation_value(input: &Option<Value>, output: &Option<Value>) -> Option<Value> {
+pub(super) fn responses_moderation_value(
+    input: &Option<Value>,
+    output: &Option<Value>,
+) -> Option<Value> {
     moderation_object(input, output, to_responses_moderation_side)
 }
 
