@@ -1176,6 +1176,150 @@ fn dest_gemini_stream_grounding_supports_remap_dest_chat_start_index() {
 }
 
 #[test]
+fn dest_gemini_complete_url_context_metadata_remaps_dest_chat_url_citation() {
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "Hi" }]
+            },
+            "urlContextMetadata": {
+                "urlMetadata": [{
+                    "retrievedUrl": "https://example.com/doc",
+                    "title": "Doc"
+                }]
+            },
+            "finishReason": "STOP"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("decode dest Gemini complete urlContextMetadata");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/message/annotations/0/url_citation/url")
+            .and_then(Value::as_str),
+        Some("https://example.com/doc"),
+        "dest Gemini complete urlContextMetadata.urlMetadata.retrievedUrl remapped dest Chat complete must write url_citation.url, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/annotations/0/url_citation/title")
+            .and_then(Value::as_str),
+        Some("Doc"),
+        "dest Gemini complete urlContextMetadata.urlMetadata.title remapped dest Chat complete must write url_citation.title, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Gemini complete text remapped dest Chat complete must still carry text Hi, got {chat}"
+    );
+}
+
+#[test]
+fn dest_gemini_complete_citation_sources_remaps_dest_chat_url_citation() {
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "Hi" }]
+            },
+            "citationMetadata": {
+                "citationSources": [{
+                    "uri": "https://example.com/src",
+                    "title": "Src"
+                }]
+            },
+            "finishReason": "STOP"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("decode dest Gemini complete citationSources");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/message/annotations/0/url_citation/url")
+            .and_then(Value::as_str),
+        Some("https://example.com/src"),
+        "dest Gemini complete citationMetadata.citationSources remapped dest Chat complete must write url_citation.url, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/annotations/0/url_citation/title")
+            .and_then(Value::as_str),
+        Some("Src"),
+        "dest Gemini complete citationMetadata.citationSources title remapped dest Chat complete must write url_citation.title, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Gemini complete text remapped dest Chat complete must still carry text Hi, got {chat}"
+    );
+}
+
+#[test]
+fn dest_gemini_stream_citation_sources_remap_dest_chat_annotations() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "candidates": [{
+                "citationMetadata": {
+                    "citationSources": [{
+                        "uri": "https://example.com/src",
+                        "title": "Src"
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode dest Gemini STREAM citationSources");
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/choices/0/delta/annotations/0/url_citation/url")
+                .or_else(|| body.pointer("/choices/0/delta/annotations/0/url"))
+                .and_then(Value::as_str)
+        }),
+        Some("https://example.com/src"),
+        "dest Gemini STREAM citationMetadata.citationSources remapped dest Chat STREAM must emit url_citation, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_stream_url_context_metadata_remap_dest_chat_annotations() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "candidates": [{
+                "urlContextMetadata": {
+                    "urlMetadata": [{
+                        "retrievedUrl": "https://example.com/doc",
+                        "title": "Doc"
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode dest Gemini STREAM urlContextMetadata");
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/choices/0/delta/annotations/0/url_citation/url")
+                .or_else(|| body.pointer("/choices/0/delta/annotations/0/url"))
+                .and_then(Value::as_str)
+        }),
+        Some("https://example.com/doc"),
+        "dest Gemini STREAM urlContextMetadata.urlMetadata remapped dest Chat STREAM must emit url_citation, got {frames:?}"
+    );
+}
+
+#[test]
 fn dest_converse_stream_citation_remap_dest_chat_annotations() {
     let raw = RawSse {
         event: None,

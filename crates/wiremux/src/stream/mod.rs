@@ -260,14 +260,13 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
             }
         }
     }
-    if let Some(cites) = value
-        .pointer("/candidates/0/citationMetadata/citations")
+    if let Some(candidate) = value
+        .get("candidates")
         .and_then(Value::as_array)
+        .and_then(|c| c.first())
     {
-        for cite in cites {
-            if let Some(annotation) = gemini::annotation_from_citation(cite) {
-                out.push(IrStreamEvent::AnnotationAdded { annotation });
-            }
+        for annotation in gemini::citation_annotations(candidate) {
+            out.push(IrStreamEvent::AnnotationAdded { annotation });
         }
     }
     if let Some(attrs) = value
