@@ -2204,6 +2204,54 @@ fn dest_chat_stream_created_remaps_dest_responses_created_at() {
 }
 
 #[test]
+fn dest_responses_stream_created_at_remaps_dest_chat_stream_created() {
+    let raw = RawSse {
+        event: Some("response.created".into()),
+        data: json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp_1",
+                "status": "in_progress",
+                "created_at": 1700000000
+            }
+        })
+        .to_string(),
+    };
+    let mut events = decode_stream_events(Wire::Responses, &raw, &responses_profile())
+        .expect("decode dest Responses STREAM created_at");
+    let delta = RawSse {
+        event: Some("response.output_text.delta".into()),
+        data: json!({
+            "type": "response.output_text.delta",
+            "output_index": 0,
+            "delta": "Hi"
+        })
+        .to_string(),
+    };
+    events.extend(
+        decode_stream_events(Wire::Responses, &delta, &responses_profile())
+            .expect("decode dest Responses STREAM text delta"),
+    );
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies
+            .iter()
+            .find_map(|body| body.get("created").and_then(Value::as_i64)),
+        Some(1_700_000_000),
+        "dest Responses STREAM response.created created_at remapped dest Chat STREAM must write created, got {frames:?}"
+    );
+    assert!(
+        bodies.iter().any(|body| {
+            body.pointer("/choices/0/delta/content")
+                .and_then(Value::as_str)
+                == Some("Hi")
+        }),
+        "dest Responses STREAM text remapped dest Chat STREAM must still carry text Hi, got {frames:?}"
+    );
+}
+
+#[test]
 fn dest_chat_stream_logprobs_remaps_dest_responses_output_text_logprobs() {
     let raw = RawSse {
         event: None,
@@ -2564,6 +2612,54 @@ fn dest_chat_stream_service_tier_remaps_dest_responses_stream_service_tier() {
         }),
         Some("priority"),
         "dest Chat STREAM service_tier remapped dest Responses STREAM must write response.created.service_tier, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_responses_stream_service_tier_remaps_dest_chat_stream_service_tier() {
+    let raw = RawSse {
+        event: Some("response.created".into()),
+        data: json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp_1",
+                "status": "in_progress",
+                "service_tier": "priority"
+            }
+        })
+        .to_string(),
+    };
+    let mut events = decode_stream_events(Wire::Responses, &raw, &responses_profile())
+        .expect("decode dest Responses STREAM service_tier");
+    let delta = RawSse {
+        event: Some("response.output_text.delta".into()),
+        data: json!({
+            "type": "response.output_text.delta",
+            "output_index": 0,
+            "delta": "Hi"
+        })
+        .to_string(),
+    };
+    events.extend(
+        decode_stream_events(Wire::Responses, &delta, &responses_profile())
+            .expect("decode dest Responses STREAM text delta"),
+    );
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies
+            .iter()
+            .find_map(|body| body.get("service_tier").and_then(Value::as_str)),
+        Some("priority"),
+        "dest Responses STREAM response.created service_tier remapped dest Chat STREAM must write service_tier, got {frames:?}"
+    );
+    assert!(
+        bodies.iter().any(|body| {
+            body.pointer("/choices/0/delta/content")
+                .and_then(Value::as_str)
+                == Some("Hi")
+        }),
+        "dest Responses STREAM text remapped dest Chat STREAM must still carry text Hi, got {frames:?}"
     );
 }
 
@@ -3161,6 +3257,80 @@ fn dest_responses_complete_moderation_remaps_dest_chat_complete_moderation() {
             .and_then(Value::as_bool),
         Some(false),
         "dest Chat complete moderation.input remapped dest Responses complete must write flagged false, got {responses}"
+    );
+}
+
+#[test]
+fn dest_responses_stream_moderation_remaps_dest_chat_stream_moderation() {
+    let raw = RawSse {
+        event: Some("response.completed".into()),
+        data: json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_1",
+                "status": "completed",
+                "moderation": {
+                    "input": {
+                        "type": "moderation_result",
+                        "model": "omni-moderation-latest",
+                        "flagged": false,
+                        "categories": { "hate": false },
+                        "category_scores": { "hate": 0.0 },
+                        "category_applied_input_types": { "hate": ["text"] }
+                    },
+                    "output": {
+                        "type": "moderation_result",
+                        "model": "omni-moderation-latest",
+                        "flagged": false,
+                        "categories": { "hate": false },
+                        "category_scores": { "hate": 0.0 },
+                        "category_applied_input_types": { "hate": ["text"] }
+                    }
+                }
+            }
+        })
+        .to_string(),
+    };
+    let mut events = decode_stream_events(Wire::Responses, &raw, &responses_profile())
+        .expect("decode dest Responses STREAM moderation");
+    let delta = RawSse {
+        event: Some("response.output_text.delta".into()),
+        data: json!({
+            "type": "response.output_text.delta",
+            "output_index": 0,
+            "delta": "Hi"
+        })
+        .to_string(),
+    };
+    events.extend(
+        decode_stream_events(Wire::Responses, &delta, &responses_profile())
+            .expect("decode dest Responses STREAM text delta"),
+    );
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/moderation/input/type")
+                .and_then(Value::as_str)
+        }),
+        Some("moderation_results"),
+        "dest Responses STREAM response.completed moderation remapped dest Chat STREAM must write moderation.input.type moderation_results, got {frames:?}"
+    );
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/moderation/input/results/0/flagged")
+                .and_then(Value::as_bool)
+        }),
+        Some(false),
+        "dest Responses STREAM response.completed moderation remapped dest Chat STREAM must write results[0].flagged false, got {frames:?}"
+    );
+    assert!(
+        bodies.iter().any(|body| {
+            body.pointer("/choices/0/delta/content")
+                .and_then(Value::as_str)
+                == Some("Hi")
+        }),
+        "dest Responses STREAM text remapped dest Chat STREAM must still carry text Hi, got {frames:?}"
     );
 }
 

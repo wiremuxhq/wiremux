@@ -104,8 +104,12 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
 }
 
 /// Text and logprobs on one `response.output_text.delta` frame.
+/// `response.created` fans out `created_at`, `service_tier`, and `moderation`.
 pub(super) fn decode_all(name: &str, value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     check_responses_indexes(value)?;
+    if name == "response.created" {
+        return Ok(response_slot_events(value));
+    }
     if name != "response.output_text.delta" {
         return Ok(Vec::new());
     }
@@ -117,6 +121,20 @@ pub(super) fn decode_all(name: &str, value: &Value) -> Result<Vec<IrStreamEvent>
         out.push(IrStreamEvent::Logprobs { content });
     }
     Ok(out)
+}
+
+fn response_slot_events(value: &Value) -> Vec<IrStreamEvent> {
+    let mut out = Vec::new();
+    if let Some(ev) = super::complete::created_event(value) {
+        out.push(ev);
+    }
+    if let Some(ev) = super::complete::service_tier_event(value) {
+        out.push(ev);
+    }
+    if let Some(ev) = super::complete::moderation_event(value) {
+        out.push(ev);
+    }
+    out
 }
 
 pub(super) fn logprobs_array(value: &Value) -> Option<Value> {
@@ -131,7 +149,7 @@ pub(super) fn logprobs_array(value: &Value) -> Option<Value> {
 ///
 /// 1:1 [`decode`] keeps Usage-or-Done / FinishReason. This walk emits
 /// Protocol (encrypted reasoning), FinishReason from `response.status`,
-/// then Usage when more than one signal is present.
+/// Usage, then `created_at` / `service_tier` / nested `moderation`.
 pub(super) fn decode_terminal_events(name: &str, value: &Value) -> Option<Vec<IrStreamEvent>> {
     if name != "response.completed" && name != "response.incomplete" {
         return None;
@@ -162,7 +180,10 @@ pub(super) fn decode_terminal_events(name: &str, value: &Value) -> Option<Vec<Ir
     if let Some(usage) = value.pointer("/response/usage").filter(|v| v.is_object()) {
         out.push(usage::from_responses(usage));
     }
-    (out.len() >= 2).then_some(out)
+    let slots = response_slot_events(value);
+    let had_slots = !slots.is_empty();
+    out.extend(slots);
+    (out.len() >= 2 || had_slots).then_some(out)
 }
 
 fn terminal_finish_reason(name: &str, value: &Value) -> Option<String> {
