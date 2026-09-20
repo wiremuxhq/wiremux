@@ -2507,6 +2507,39 @@ fn dest_chat_complete_service_tier_remaps_dest_converse_service_tier() {
 }
 
 #[test]
+fn dest_gemini_complete_usage_service_tier_remaps_dest_chat_service_tier() {
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "Hi" }]
+            },
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 2,
+            "serviceTier": "priority"
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("decode dest Gemini complete usageMetadata.serviceTier");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.get("service_tier").and_then(Value::as_str),
+        Some("priority"),
+        "dest Gemini complete usageMetadata.serviceTier remapped dest Chat complete must write service_tier, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Gemini complete text remapped dest Chat complete must still carry text Hi, got {chat}"
+    );
+}
+
+#[test]
 fn dest_converse_complete_cache_read_remaps_dest_chat_cached_tokens() {
     let body = serde_json::to_vec(&json!({
         "output": {

@@ -180,6 +180,11 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     Ok(None)
 }
 
+pub(super) fn service_tier_from_chunk(value: &Value) -> Option<IrStreamEvent> {
+    let usage = value.get("usageMetadata").filter(|v| v.is_object())?;
+    crate::map::gemini_decode_service_tier(usage).map(|tier| IrStreamEvent::ServiceTier { tier })
+}
+
 pub(super) fn usage_from_chunk(value: &Value) -> Option<IrStreamEvent> {
     if let Some(usage) = value.get("usageMetadata").filter(|v| v.is_object()) {
         return Some(usage::from_gemini(usage));

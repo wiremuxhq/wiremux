@@ -8,6 +8,7 @@ mod responses;
 mod tools;
 
 pub(crate) use converse::converse_service_tier;
+pub(crate) use gemini::gemini_decode_service_tier;
 
 use std::collections::BTreeMap;
 
