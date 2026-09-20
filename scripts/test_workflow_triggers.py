@@ -24,6 +24,12 @@ def _on_block(text: str) -> str:
 
 
 class WorkflowTriggerTests(unittest.TestCase):
+    def test_stealth_required_check_runs_assert_public(self) -> None:
+        text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("name: Stealth", text)
+        self.assertIn("scripts/assert-public.sh", text)
+        self.assertNotIn("README must be Not ready.", text)
+
     def test_ci_has_no_push_compile(self) -> None:
         on_block = _on_block((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
         self.assertIn("pull_request:", on_block)
