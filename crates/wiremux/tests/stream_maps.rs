@@ -2640,6 +2640,73 @@ fn dest_chat_complete_usage_remaps_dest_gemini_total_token_count() {
 }
 
 #[test]
+fn dest_chat_complete_usage_total_tokens_remaps_dest_converse_total_tokens() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-r102",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "Hi" },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 8,
+            "total_tokens": 38
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete usage.total_tokens");
+    let converse = encode_response(Wire::Converse, &events).expect("encode dest Converse complete");
+    assert_eq!(
+        converse
+            .pointer("/usage/inputTokens")
+            .and_then(Value::as_u64),
+        Some(30),
+        "dest Chat complete usage remapped dest Converse complete must write inputTokens, got {converse}"
+    );
+    assert_eq!(
+        converse
+            .pointer("/usage/outputTokens")
+            .and_then(Value::as_u64),
+        Some(8),
+        "dest Chat complete usage remapped dest Converse complete must write outputTokens, got {converse}"
+    );
+    let input = converse
+        .pointer("/usage/inputTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output = converse
+        .pointer("/usage/outputTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    assert_eq!(
+        converse
+            .pointer("/usage/totalTokens")
+            .and_then(Value::as_u64),
+        Some(input.saturating_add(output)),
+        "dest Chat complete usage.total_tokens remapped dest Converse complete must write required totalTokens as inputTokens plus outputTokens, got {converse}"
+    );
+    assert_eq!(
+        converse
+            .pointer("/usage/totalTokens")
+            .and_then(Value::as_u64),
+        Some(38),
+        "dest Chat complete usage.total_tokens remapped dest Converse complete must write totalTokens 38, got {converse}"
+    );
+    assert_eq!(
+        converse
+            .pointer("/output/message/content/0/text")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Chat complete content remapped dest Converse complete must still carry text Hi, got {converse}"
+    );
+}
+
+#[test]
 fn dest_chat_complete_service_tier_remaps_dest_responses_service_tier() {
     let body = serde_json::to_vec(&json!({
         "id": "chatcmpl-r63",
@@ -3470,6 +3537,75 @@ fn dest_converse_complete_cache_read_remaps_dest_chat_cached_tokens() {
             .and_then(Value::as_str),
         Some("Hi"),
         "dest Converse complete text remapped dest Chat complete must still carry text Hi, got {chat}"
+    );
+}
+
+#[test]
+fn dest_converse_complete_citations_content_text_remaps_dest_chat_content() {
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "citationsContent": {
+                        "content": [{ "text": "See https://example.com for more." }],
+                        "citations": [{
+                            "title": "Example Domain",
+                            "source": "https://example.com",
+                            "location": { "web": { "url": "https://example.com" } }
+                        }]
+                    }
+                }]
+            }
+        },
+        "stopReason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile())
+        .expect("decode dest Converse complete citationsContent.content");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some("See https://example.com for more."),
+        "dest Converse complete citationsContent.content text remapped dest Chat complete must write message.content, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/annotations/0/url_citation/url")
+            .and_then(Value::as_str),
+        Some("https://example.com"),
+        "dest Converse complete citationsContent citations remapped dest Chat complete must still write url_citation, got {chat}"
+    );
+}
+
+#[test]
+fn dest_converse_complete_citations_content_does_not_duplicate_sibling_text() {
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "text": "See https://example.com for more.",
+                    "citationsContent": {
+                        "content": [{ "text": "See https://example.com for more." }],
+                        "citations": [{
+                            "location": { "web": { "url": "https://example.com" } }
+                        }]
+                    }
+                }]
+            }
+        },
+        "stopReason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile())
+        .expect("decode dest Converse complete sibling text plus citationsContent");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some("See https://example.com for more."),
+        "dest Converse complete sibling text equal to citationsContent.content must not duplicate dest Chat message.content, got {chat}"
     );
 }
 
