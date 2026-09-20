@@ -5,10 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Reserved."
+description = "Wiremux TokenProvider, vendor profile catalog, and pasteable OAuth packs."
 publish = true
-keywords = []
-categories = []
+documentation = "https://docs.rs/wiremux-auth"
+readme = "../../README.md"
+keywords = ["oauth", "authentication", "llm", "oidc"]
+categories = ["authentication", "network-programming"]
 
 [features]
 # Profile parse/load/overlay, shipped presets, types, envsubst, IsolatedHome.

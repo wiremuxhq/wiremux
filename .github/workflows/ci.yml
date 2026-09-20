@@ -17,6 +17,8 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # Check name `Stealth` is required by main-branch-protection.
+  # The body asserts public surfaces, not the old Not ready stub.
   stealth:
     name: Stealth
     runs-on: ubuntu-latest
@@ -28,10 +30,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Assert stealth surfaces
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/assert-stealth.sh wiremuxhq/wiremux
+      - name: Public surfaces
+        run: bash scripts/assert-public.sh
 
   lint:
     name: Lint
@@ -46,6 +46,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Public surfaces
+        run: bash scripts/assert-public.sh
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: "1.95"

@@ -1,7 +1,13 @@
-//! TokenProvider and profile catalog. Not ready.
+//! TokenProvider and vendor profile catalog.
 //!
 //! Feature `net` (default) enables HTTP TokenProviders. Maps-only hosts
 //! disable default features and keep profile parse/load without reqwest.
+//!
+//! ```
+//! use wiremux_auth::shipped_profile_ids;
+//!
+//! assert!(shipped_profile_ids().iter().any(|id| *id == "openai"));
+//! ```
 
 mod error;
 mod helpers;

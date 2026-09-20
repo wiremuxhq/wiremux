@@ -1,4 +1,20 @@
-//! Dialect maps. Not ready.
+//! Dialect maps for Chat Completions, Messages, Responses, Gemini, and Converse.
+//!
+//! Decode a vendor JSON body into [`IrRequest`], then encode another wire.
+//! Maps-only hosts set `default-features = false`.
+//!
+//! ```
+//! use wiremux::{Wire, decode, parse_profile_str};
+//!
+//! let src = br#"{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}"#;
+//! let (ir, _loss) = decode(Wire::ChatCompletions, src).unwrap();
+//! assert_eq!(ir.model, "gpt-4o");
+//! let profile = parse_profile_str(
+//!     "schema_version = 1\nid = \"example\"\nwire = \"messages\"\n",
+//! )
+//! .unwrap();
+//! assert_eq!(profile.id, "example");
+//! ```
 
 #[cfg(any(feature = "proxy", feature = "client"))]
 mod aws_creds;

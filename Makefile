@@ -1,10 +1,10 @@
-.PHONY: help check stealth
+.PHONY: help check public
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
 
-check: ## fmt, clippy, test, deny, stealth, trigger lock
+check: ## fmt, clippy, test, deny, public surfaces, trigger lock
 	cargo fmt --check
 	RUSTFLAGS="-D warnings" cargo clippy --locked --workspace --all-targets -- -D warnings
 	RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --workspace
@@ -17,7 +17,7 @@ check: ## fmt, clippy, test, deny, stealth, trigger lock
 	bash scripts/check-cargo-package.sh
 	cargo deny check
 	python3 scripts/test_workflow_triggers.py
-	bash scripts/assert-stealth.sh wiremuxhq/wiremux
+	bash scripts/assert-public.sh
 
-stealth: ## Check launch surfaces stay empty
-	bash scripts/assert-stealth.sh wiremuxhq/wiremux
+public: ## Check launch surfaces in the tree
+	bash scripts/assert-public.sh
