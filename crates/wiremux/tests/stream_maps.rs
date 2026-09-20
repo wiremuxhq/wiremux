@@ -3135,6 +3135,87 @@ fn dest_chat_stream_service_tier_remaps_dest_messages_stream_usage_service_tier(
 }
 
 #[test]
+fn dest_chat_stream_two_chunks_service_tier_remaps_dest_messages_once_on_message_start() {
+    let first = RawSse {
+        event: None,
+        data: json!({
+            "id": "chatcmpl-r67s2",
+            "object": "chat.completion.chunk",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "service_tier": "priority",
+            "choices": [{
+                "index": 0,
+                "delta": { "role": "assistant", "content": "Hi" }
+            }]
+        })
+        .to_string(),
+    };
+    let mut events = decode_stream_events(Wire::ChatCompletions, &first, &chat_profile())
+        .expect("decode dest Chat STREAM first service_tier chunk");
+    let second = RawSse {
+        event: None,
+        data: json!({
+            "id": "chatcmpl-r67s2",
+            "object": "chat.completion.chunk",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "service_tier": "priority",
+            "choices": [{
+                "index": 0,
+                "delta": { "content": " there" }
+            }]
+        })
+        .to_string(),
+    };
+    events.extend(
+        decode_stream_events(Wire::ChatCompletions, &second, &chat_profile())
+            .expect("decode dest Chat STREAM second service_tier chunk"),
+    );
+    let frames = encode_all(Wire::Messages, &events);
+    let bodies = sse_json_frames(&frames);
+    let start_tiers: Vec<String> = frames
+        .iter()
+        .filter(|frame| frame.event.as_deref() == Some("message_start"))
+        .filter_map(|frame| serde_json::from_str::<Value>(&frame.data).ok())
+        .filter_map(|body| {
+            body.pointer("/message/usage/service_tier")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(
+        start_tiers.as_slice(),
+        ["priority"],
+        "dest Chat STREAM two chunks both with service_tier remapped dest Messages STREAM must write usage.service_tier once on message_start, got {frames:?}"
+    );
+    let empty_delta_tiers = frames
+        .iter()
+        .filter(|frame| {
+            frame.event.as_deref() == Some("message_delta")
+                && serde_json::from_str::<Value>(&frame.data)
+                    .ok()
+                    .is_some_and(|body| {
+                        body.get("delta") == Some(&json!({}))
+                            && body.pointer("/usage/service_tier").is_some()
+                    })
+        })
+        .count();
+    assert_eq!(
+        empty_delta_tiers, 0,
+        "dest Chat STREAM two chunks remapped dest Messages STREAM must not emit empty message_delta usage.service_tier between content_block_deltas, got {frames:?}"
+    );
+    let texts: Vec<&str> = bodies
+        .iter()
+        .filter_map(|body| body.pointer("/delta/text").and_then(Value::as_str))
+        .collect();
+    assert!(
+        texts.contains(&"Hi") && texts.contains(&" there"),
+        "dest Chat STREAM two chunks remapped dest Messages STREAM must still carry both text deltas, got {frames:?}"
+    );
+}
+
+#[test]
 fn dest_messages_complete_stop_details_explanation_remaps_dest_chat_refusal() {
     let body = serde_json::to_vec(&json!({
         "id": "msg_1",

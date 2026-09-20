@@ -285,23 +285,8 @@ impl StreamEncoder {
             }
             IrStreamEvent::AudioDelta { .. } => {}
             IrStreamEvent::Logprobs { .. } => {}
-            IrStreamEvent::ServiceTier { .. } => {
-                if let Some(mapped) = self
-                    .service_tier
-                    .as_deref()
-                    .and_then(super::messages::usage_service_tier_to_messages)
-                {
-                    out.push(named(
-                        "message_delta",
-                        json!({
-                            "type": "message_delta",
-                            "delta": {},
-                            "usage": { "service_tier": mapped }
-                        }),
-                    ));
-                }
-            }
             IrStreamEvent::Created { .. }
+            | IrStreamEvent::ServiceTier { .. }
             | IrStreamEvent::Metadata { .. }
             | IrStreamEvent::Moderation { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
