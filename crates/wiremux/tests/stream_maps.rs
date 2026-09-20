@@ -1731,6 +1731,90 @@ fn dest_chat_complete_message_audio_remap_dest_responses_stream() {
 }
 
 #[test]
+fn dest_responses_complete_output_audio_remaps_dest_chat_message_audio() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "output_audio",
+            "data": "SUQz",
+            "transcript": "hello there"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete output_audio");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/message/audio/data")
+            .and_then(Value::as_str),
+        Some("SUQz"),
+        "dest Responses complete output_audio remapped dest Chat complete must write message.audio.data, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/audio/transcript")
+            .and_then(Value::as_str),
+        Some("hello there"),
+        "dest Responses complete output_audio remapped dest Chat complete must write message.audio.transcript, got {chat}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_message_audio_remaps_dest_responses_complete_output_audio() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-audio",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o-audio-preview",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "audio": {
+                    "data": "SUQz",
+                    "transcript": "hello there"
+                }
+            },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete message.audio");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    let audio = mapped
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|item| item.get("type").and_then(Value::as_str) == Some("output_audio"));
+    assert_eq!(
+        audio
+            .and_then(|item| item.get("data"))
+            .and_then(Value::as_str),
+        Some("SUQz"),
+        "dest Chat complete message.audio remapped dest Responses complete must write output_audio data, got {mapped}"
+    );
+    assert_eq!(
+        audio
+            .and_then(|item| item.get("transcript"))
+            .and_then(Value::as_str),
+        Some("hello there"),
+        "dest Chat complete message.audio remapped dest Responses complete must write output_audio transcript, got {mapped}"
+    );
+    assert!(
+        audio.is_some_and(|item| item.get("id").is_none()),
+        "dest Chat complete message.audio remapped dest Responses complete must not invent output_audio id, got {mapped}"
+    );
+    assert!(
+        audio.is_some_and(|item| item.get("expires_at").is_none()),
+        "dest Chat complete message.audio remapped dest Responses complete must not invent output_audio expires_at, got {mapped}"
+    );
+}
+
+#[test]
 fn dest_chat_complete_custom_tool_call_remap_dest_responses_stream() {
     let body = serde_json::to_vec(&json!({
         "choices": [{
