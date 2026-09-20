@@ -19,6 +19,9 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
             return Ok(Some(usage::from_chat(usage)));
         }
+        if let Some(ev) = super::complete::moderation_event(value) {
+            return Ok(Some(ev));
+        }
         return Ok(None);
     };
 
@@ -101,10 +104,14 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     }
 
     let Some(choice) = choices.and_then(|c| c.first()) else {
+        let mut out = Vec::new();
         if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
-            return Ok(vec![usage::from_chat(usage)]);
+            out.push(usage::from_chat(usage));
         }
-        return Ok(Vec::new());
+        if let Some(ev) = super::complete::moderation_event(value) {
+            out.push(ev);
+        }
+        return Ok(out);
     };
 
     let mut out = Vec::new();
@@ -128,6 +135,9 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
         if !metadata.is_empty() {
             out.push(IrStreamEvent::Metadata { metadata });
         }
+    }
+    if let Some(ev) = super::complete::moderation_event(value) {
+        out.push(ev);
     }
     if let Some(calls) = choice
         .pointer("/delta/tool_calls")
@@ -484,6 +494,19 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             "metadata": metadata,
             "choices": []
         }),
+        IrStreamEvent::Moderation { input, output } => {
+            let mut moderation = serde_json::Map::new();
+            if let Some(input) = input {
+                moderation.insert("input".into(), input.clone());
+            }
+            if let Some(output) = output {
+                moderation.insert("output".into(), output.clone());
+            }
+            json!({
+                "moderation": moderation,
+                "choices": []
+            })
+        }
         IrStreamEvent::Usage {
             prompt_tokens,
             completion_tokens,

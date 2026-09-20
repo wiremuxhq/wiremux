@@ -2864,6 +2864,79 @@ fn dest_responses_complete_metadata_remaps_dest_chat_complete_metadata() {
 }
 
 #[test]
+fn dest_responses_complete_moderation_remaps_dest_chat_complete_moderation() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "moderation": {
+            "input": {
+                "type": "moderation_result",
+                "model": "omni-moderation-latest",
+                "flagged": false,
+                "categories": { "hate": false },
+                "category_scores": { "hate": 0.0 },
+                "category_applied_input_types": { "hate": ["text"] }
+            },
+            "output": {
+                "type": "moderation_result",
+                "model": "omni-moderation-latest",
+                "flagged": false,
+                "categories": { "hate": false },
+                "category_scores": { "hate": 0.0 },
+                "category_applied_input_types": { "hate": ["text"] }
+            }
+        },
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "Hi" }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete moderation");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/moderation/input/type")
+            .and_then(Value::as_str),
+        Some("moderation_results"),
+        "dest Responses complete moderation.input remapped dest Chat complete must write moderation.input.type moderation_results, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/moderation/input/results/0/flagged")
+            .and_then(Value::as_bool),
+        Some(false),
+        "dest Responses complete moderation.input remapped dest Chat complete must write results[0].flagged false, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some("Hi"),
+        "dest Responses complete text remapped dest Chat complete must still carry text Hi, got {chat}"
+    );
+    let chat_bytes = serde_json::to_vec(&chat).expect("chat json");
+    let from_chat = decode_response(Wire::ChatCompletions, &chat_bytes, &chat_profile())
+        .expect("decode dest Chat complete moderation");
+    let responses =
+        encode_response(Wire::Responses, &from_chat).expect("encode dest Responses complete");
+    assert_eq!(
+        responses
+            .pointer("/moderation/input/type")
+            .and_then(Value::as_str),
+        Some("moderation_result"),
+        "dest Chat complete moderation.input remapped dest Responses complete must write moderation_result, got {responses}"
+    );
+    assert_eq!(
+        responses
+            .pointer("/moderation/input/flagged")
+            .and_then(Value::as_bool),
+        Some(false),
+        "dest Chat complete moderation.input remapped dest Responses complete must write flagged false, got {responses}"
+    );
+}
+
+#[test]
 fn dest_chat_stream_logprobs_refusal_remaps_dest_gemini_logprobs_result() {
     let raw = RawSse {
         event: None,

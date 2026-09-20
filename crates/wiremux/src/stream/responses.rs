@@ -424,6 +424,13 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "response": { "metadata": metadata, "status": "in_progress" }
             }),
         ),
+        IrStreamEvent::Moderation { .. } => (
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": { "status": "completed" }
+            }),
+        ),
         IrStreamEvent::Done => (
             "response.completed",
             json!({
