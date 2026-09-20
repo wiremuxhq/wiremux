@@ -44,6 +44,7 @@ pub struct StreamEncoder {
     created_at: Option<i64>,
     service_tier: Option<String>,
     metadata: Option<BTreeMap<String, String>>,
+    refusal: String,
 }
 
 impl StreamEncoder {
@@ -73,6 +74,7 @@ impl StreamEncoder {
             created_at: None,
             service_tier: None,
             metadata: None,
+            refusal: String::new(),
         }
     }
 
@@ -283,6 +285,9 @@ impl StreamEncoder {
             IrStreamEvent::FinishReason { reason } => {
                 self.finish = Some(reason);
             }
+            IrStreamEvent::RefusalDelta { text } => {
+                self.refusal.push_str(&text);
+            }
             IrStreamEvent::AudioDelta { .. } => {}
             IrStreamEvent::Logprobs { .. } => {}
             IrStreamEvent::Created { .. }
@@ -410,11 +415,23 @@ impl StreamEncoder {
             out.push(self.messages_start_frame());
         }
         out.extend(self.close_open());
-        let reason = self.finish.as_deref().unwrap_or("stop");
-        let stop = encode_stop_reason(reason);
+        let refusal = std::mem::take(&mut self.refusal);
+        let mapped = self.finish.as_deref().map(encode_stop_reason);
+        let stop = if !refusal.is_empty() && mapped.is_none_or(|r| r == "content_filter") {
+            "refusal"
+        } else {
+            mapped.unwrap_or("end_turn")
+        };
+        let mut delta = json!({ "stop_reason": stop, "stop_sequence": null });
+        if !refusal.is_empty() {
+            delta["stop_details"] = json!({
+                "type": "refusal",
+                "explanation": refusal,
+            });
+        }
         let mut data = json!({
             "type": "message_delta",
-            "delta": { "stop_reason": stop, "stop_sequence": null }
+            "delta": delta
         });
         if let Some((p, c, cr, cw, r, _, _)) = self.usage {
             let usage = usage::encode_anthropic(p, c, cr, cw, r);
@@ -1509,6 +1526,45 @@ mod tests {
                 .iter()
                 .any(|frame| frame.data.contains(r#""refusal":"nope""#)),
             "dest Chat stream encode must write delta.refusal, got {frames:?}"
+        );
+    }
+
+    #[test]
+    fn dest_messages_encoder_refusal_delta_is_stop_details() {
+        let mut enc = StreamEncoder::new(Wire::Messages).with_model("claude-sonnet-4");
+        let frames = enc
+            .push(IrStreamEvent::RefusalDelta {
+                text: "nope".into(),
+            })
+            .expect("push dest Messages STREAM refusal");
+        let done = enc.finish().expect("finish dest Messages STREAM refusal");
+        let all: Vec<&RawSse> = frames.iter().chain(done.iter()).collect();
+        assert!(
+            all.iter().any(|frame| {
+                frame.event.as_deref() == Some("message_delta")
+                    && serde_json::from_str::<Value>(&frame.data)
+                        .ok()
+                        .is_some_and(|body| {
+                            body.pointer("/delta/stop_details/explanation")
+                                .and_then(Value::as_str)
+                                == Some("nope")
+                                && body
+                                    .pointer("/delta/stop_details/type")
+                                    .and_then(Value::as_str)
+                                    == Some("refusal")
+                        })
+            }),
+            "dest Messages STREAM encode must write message_delta stop_details.explanation, got {all:?}"
+        );
+        assert!(
+            all.iter().all(|frame| {
+                serde_json::from_str::<Value>(&frame.data)
+                    .ok()
+                    .is_none_or(|body| {
+                        body.pointer("/delta/text").and_then(Value::as_str) != Some("nope")
+                    })
+            }),
+            "dest Messages STREAM refusal must not fold into text_delta, got {all:?}"
         );
     }
 

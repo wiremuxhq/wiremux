@@ -207,6 +207,12 @@ pub fn decode_stream_events(
         {
             out.push(IrStreamEvent::ServiceTier { tier });
         }
+        if name == "message_delta"
+            && let Some(text) = messages::stop_details_explanation(&value)
+            && !matches!(first, IrStreamEvent::RefusalDelta { .. })
+        {
+            out.push(IrStreamEvent::RefusalDelta { text });
+        }
         let add_delta_usage =
             name == "message_delta" && matches!(first, IrStreamEvent::FinishReason { .. });
         out.push(first);
