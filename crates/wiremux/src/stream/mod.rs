@@ -354,6 +354,8 @@ fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> 
                 index,
             });
         }
+    } else if let Some(ev) = gemini::audio_delta_from_inline_data(part) {
+        out.push(ev);
     } else if out.is_empty()
         && let Some(text) = part
             .get("text")

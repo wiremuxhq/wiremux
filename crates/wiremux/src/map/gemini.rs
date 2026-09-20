@@ -397,7 +397,7 @@ pub(crate) fn gemini_decode_service_tier(value: &Value) -> Option<String> {
         .filter(|s| !s.eq_ignore_ascii_case("unspecified"))
 }
 
-fn gemini_service_tier(tier: &str) -> Option<(String, Option<&'static str>)> {
+pub(crate) fn gemini_service_tier(tier: &str) -> Option<(String, Option<&'static str>)> {
     let trimmed = tier.trim();
     if trimmed.is_empty() {
         return None;
