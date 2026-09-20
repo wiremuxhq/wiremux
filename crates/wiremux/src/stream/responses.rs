@@ -80,6 +80,13 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             _ => Ok(Some(protocol(name, value))),
         },
         "response.completed" => {
+            if let Some("cancelled" | "canceled") =
+                value.pointer("/response/status").and_then(Value::as_str)
+            {
+                return Ok(Some(IrStreamEvent::FinishReason {
+                    reason: "cancelled".into(),
+                }));
+            }
             if let Some(usage) = value.pointer("/response/usage") {
                 Ok(Some(usage::from_responses(usage)))
             } else {

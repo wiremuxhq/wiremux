@@ -65,19 +65,10 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         }));
     }
     if let Some(usage) = value.pointer("/metadata/usage") {
-        return Ok(Some(IrStreamEvent::Usage {
-            prompt_tokens: usage
-                .get("inputTokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as u32,
-            completion_tokens: usage
-                .get("outputTokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as u32,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
-            reasoning_tokens: 0,
-        }));
+        return Ok(Some(usage_from_converse(usage)));
+    }
+    if let Some(tier) = service_tier_from(value) {
+        return Ok(Some(IrStreamEvent::ServiceTier { tier }));
     }
     if value.get("messageStart").is_some() {
         return Ok(None);
@@ -116,10 +107,16 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
         })),
         IrStreamEvent::AudioDelta { .. }
         | IrStreamEvent::Logprobs { .. }
-        | IrStreamEvent::Created { .. }
-        | IrStreamEvent::ServiceTier { .. } => Ok(json!({
+        | IrStreamEvent::Created { .. } => Ok(json!({
             "contentBlockDelta": { "delta": { "text": "" } }
         })),
+        IrStreamEvent::ServiceTier { tier } => {
+            let mut metadata = serde_json::Map::new();
+            if let Some((mapped, _)) = crate::map::converse_service_tier(tier) {
+                metadata.insert("serviceTier".into(), json!({ "type": mapped }));
+            }
+            Ok(json!({ "metadata": metadata }))
+        }
         IrStreamEvent::ToolCallArgDelta { delta, .. }
         | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => Ok(json!({
             "contentBlockDelta": { "delta": { "toolUse": { "input": delta } } }
@@ -131,13 +128,17 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
         IrStreamEvent::Usage {
             prompt_tokens,
             completion_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
             ..
         } => Ok(json!({
             "metadata": {
-                "usage": {
-                    "inputTokens": prompt_tokens,
-                    "outputTokens": completion_tokens
-                }
+                "usage": encode_converse_usage(
+                    *prompt_tokens,
+                    *completion_tokens,
+                    *cache_read_tokens,
+                    *cache_write_tokens,
+                )
             }
         })),
         IrStreamEvent::Done => Ok(json!({ "messageStop": { "stopReason": "end_turn" } })),
@@ -154,6 +155,7 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
     let mut citations = Vec::new();
     let mut stop = "end_turn";
     let mut usage = None;
+    let mut service_tier = None;
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta }
@@ -180,12 +182,24 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
                 }
             }
             IrStreamEvent::FinishReason { reason } => stop = finish_reason(reason),
+            IrStreamEvent::ServiceTier { tier } => {
+                if let Some((mapped, _)) = crate::map::converse_service_tier(tier) {
+                    service_tier = Some(mapped);
+                }
+            }
             IrStreamEvent::Usage {
                 prompt_tokens,
                 completion_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
                 ..
             } => {
-                usage = Some((*prompt_tokens, *completion_tokens));
+                usage = Some((
+                    *prompt_tokens,
+                    *completion_tokens,
+                    *cache_read_tokens,
+                    *cache_write_tokens,
+                ));
             }
             _ => {}
         }
@@ -214,11 +228,11 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
         "output": { "message": { "role": "assistant", "content": content } },
         "stopReason": stop
     });
-    if let Some((input, output)) = usage {
-        body["usage"] = json!({
-            "inputTokens": input,
-            "outputTokens": output
-        });
+    if let Some(tier) = service_tier {
+        body["serviceTier"] = json!({ "type": tier });
+    }
+    if let Some((input, output, cache_read, cache_write)) = usage {
+        body["usage"] = encode_converse_usage(input, output, cache_read, cache_write);
     }
     body
 }
@@ -281,20 +295,11 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
             reason: reason.to_string(),
         });
     }
+    if let Some(tier) = service_tier_from(value) {
+        out.push(IrStreamEvent::ServiceTier { tier });
+    }
     if let Some(usage) = value.get("usage") {
-        out.push(IrStreamEvent::Usage {
-            prompt_tokens: usage
-                .get("inputTokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as u32,
-            completion_tokens: usage
-                .get("outputTokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as u32,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
-            reasoning_tokens: 0,
-        });
+        out.push(usage_from_converse(usage));
     }
     out.push(IrStreamEvent::Done);
     Ok(out)
@@ -327,6 +332,59 @@ pub(super) fn citation_from_annotation(annotation: &Value) -> Value {
         citation["title"] = json!(title);
     }
     citation
+}
+
+pub(super) fn decode_metadata_events(value: &Value) -> Vec<IrStreamEvent> {
+    let mut out = Vec::new();
+    if let Some(tier) = service_tier_from(value) {
+        out.push(IrStreamEvent::ServiceTier { tier });
+    }
+    if let Some(usage) = value.pointer("/metadata/usage") {
+        out.push(usage_from_converse(usage));
+    }
+    out
+}
+
+fn service_tier_from(value: &Value) -> Option<String> {
+    value
+        .pointer("/metadata/serviceTier/type")
+        .or_else(|| value.pointer("/serviceTier/type"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn usage_from_converse(usage: &Value) -> IrStreamEvent {
+    IrStreamEvent::Usage {
+        prompt_tokens: usage_u32(usage, "inputTokens"),
+        completion_tokens: usage_u32(usage, "outputTokens"),
+        cache_read_tokens: usage_u32(usage, "cacheReadInputTokens"),
+        cache_write_tokens: usage_u32(usage, "cacheWriteInputTokens"),
+        reasoning_tokens: 0,
+    }
+}
+
+fn encode_converse_usage(
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    cache_read_tokens: u32,
+    cache_write_tokens: u32,
+) -> Value {
+    let mut usage = json!({
+        "inputTokens": prompt_tokens,
+        "outputTokens": completion_tokens,
+    });
+    if cache_read_tokens > 0 {
+        usage["cacheReadInputTokens"] = json!(cache_read_tokens);
+    }
+    if cache_write_tokens > 0 {
+        usage["cacheWriteInputTokens"] = json!(cache_write_tokens);
+    }
+    usage
+}
+
+fn usage_u32(usage: &Value, key: &str) -> u32 {
+    usage.get(key).and_then(Value::as_u64).unwrap_or(0) as u32
 }
 
 fn flush_text(text: &mut String, content: &mut Vec<Value>) {
