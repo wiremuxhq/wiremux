@@ -21,6 +21,10 @@ required-features = ["cli"]
 name = "remap"
 required-features = []
 
+[[example]]
+name = "remap_gemini"
+required-features = []
+
 [features]
 # Maps + re-exported profile types. Set default-features = false.
 # That path keeps wiremux-auth default-features off (no HTTP / TLS / aws-lc).
