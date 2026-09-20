@@ -311,7 +311,8 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         }),
         IrStreamEvent::Created { .. }
         | IrStreamEvent::ServiceTier { .. }
-        | IrStreamEvent::Metadata { .. } => {
+        | IrStreamEvent::Metadata { .. }
+        | IrStreamEvent::Moderation { .. } => {
             json!({ "candidates": [] })
         }
         IrStreamEvent::ToolCallArgDelta { delta, .. }

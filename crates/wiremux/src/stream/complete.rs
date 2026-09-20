@@ -50,6 +50,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut created = None;
     let mut service_tier = None;
     let mut metadata = None;
+    let mut moderation = None;
     let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
         match ev {
@@ -70,6 +71,9 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::Created { unix } => created = Some(*unix),
             IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
             IrStreamEvent::Metadata { metadata: meta } => metadata = Some(meta.clone()),
+            IrStreamEvent::Moderation { input, output } => {
+                moderation = Some((input.clone(), output.clone()));
+            }
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(super::chat::encode_finish(reason).to_string());
             }
@@ -183,6 +187,11 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     if let Some(meta) = metadata.filter(|m| !m.is_empty()) {
         out["metadata"] = json!(meta);
+    }
+    if let Some((input, output)) = moderation
+        && let Some(value) = chat_moderation_value(&input, &output)
+    {
+        out["moderation"] = value;
     }
     if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens)) = usage {
         let encoded = super::usage::encode_chat(
@@ -482,6 +491,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut created = None;
     let mut service_tier = None;
     let mut metadata = None;
+    let mut moderation = None;
     let mut tool_calls = Vec::new();
     let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
@@ -501,6 +511,9 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::Created { unix } => created = Some(*unix),
             IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
             IrStreamEvent::Metadata { metadata: meta } => metadata = Some(meta.clone()),
+            IrStreamEvent::Moderation { input, output } => {
+                moderation = Some((input.clone(), output.clone()));
+            }
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(reason.clone());
             }
@@ -615,6 +628,11 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     if let Some(meta) = metadata.filter(|m| !m.is_empty()) {
         out["metadata"] = json!(meta);
     }
+    if let Some((input, output)) = moderation
+        && let Some(value) = responses_moderation_value(&input, &output)
+    {
+        out["moderation"] = value;
+    }
     if !text.is_empty() {
         out["output_text"] = json!(text);
     }
@@ -701,6 +719,9 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     }
     if let Some(metadata) = string_metadata(value.get("metadata")) {
         out.push(IrStreamEvent::Metadata { metadata });
+    }
+    if let Some(ev) = moderation_event(value) {
+        out.push(ev);
     }
     if let Some(choice) = value
         .get("choices")
@@ -963,6 +984,9 @@ fn decode_responses_complete(
     ) {
         events.push(IrStreamEvent::Metadata { metadata });
     }
+    if let Some(ev) = moderation_event(value) {
+        events.push(ev);
+    }
     Ok(events)
 }
 
@@ -973,6 +997,118 @@ fn string_metadata(value: Option<&Value>) -> Option<BTreeMap<String, String>> {
         .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
         .collect();
     if map.is_empty() { None } else { Some(map) }
+}
+
+pub(super) fn moderation_event(value: &Value) -> Option<IrStreamEvent> {
+    let moderation = value
+        .get("moderation")
+        .or_else(|| value.pointer("/response/moderation"))?;
+    if !moderation.is_object() {
+        return None;
+    }
+    let input = moderation.get("input").map(to_chat_moderation_side);
+    let output = moderation.get("output").map(to_chat_moderation_side);
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    Some(IrStreamEvent::Moderation { input, output })
+}
+
+fn chat_moderation_value(input: &Option<Value>, output: &Option<Value>) -> Option<Value> {
+    moderation_object(input, output, |side| side.clone())
+}
+
+fn responses_moderation_value(input: &Option<Value>, output: &Option<Value>) -> Option<Value> {
+    moderation_object(input, output, to_responses_moderation_side)
+}
+
+fn moderation_object(
+    input: &Option<Value>,
+    output: &Option<Value>,
+    map_side: impl Fn(&Value) -> Value,
+) -> Option<Value> {
+    let mut obj = serde_json::Map::new();
+    if let Some(input) = input {
+        obj.insert("input".into(), map_side(input));
+    }
+    if let Some(output) = output {
+        obj.insert("output".into(), map_side(output));
+    }
+    if obj.is_empty() {
+        None
+    } else {
+        Some(Value::Object(obj))
+    }
+}
+
+fn to_chat_moderation_side(value: &Value) -> Value {
+    match value.get("type").and_then(Value::as_str) {
+        Some("error") | Some("moderation_results") => value.clone(),
+        Some("moderation_result") => moderation_result_to_chat(value),
+        _ if value.get("results").is_some() => value.clone(),
+        _ if value.get("flagged").is_some() || value.get("categories").is_some() => {
+            moderation_result_to_chat(value)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn moderation_result_to_chat(value: &Value) -> Value {
+    let mut result = serde_json::Map::new();
+    for key in [
+        "flagged",
+        "categories",
+        "category_scores",
+        "category_applied_input_types",
+    ] {
+        if let Some(v) = value.get(key) {
+            result.insert(key.to_string(), v.clone());
+        }
+    }
+    json!({
+        "type": "moderation_results",
+        "model": value.get("model").cloned().unwrap_or(json!("")),
+        "results": [Value::Object(result)],
+    })
+}
+
+fn to_responses_moderation_side(value: &Value) -> Value {
+    match value.get("type").and_then(Value::as_str) {
+        Some("error") | Some("moderation_result") => value.clone(),
+        Some("moderation_results") => moderation_results_to_responses(value),
+        _ if value.get("results").and_then(Value::as_array).is_some() => {
+            moderation_results_to_responses(value)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn moderation_results_to_responses(value: &Value) -> Value {
+    let first = value
+        .get("results")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first());
+    let model = value
+        .get("model")
+        .cloned()
+        .or_else(|| first.and_then(|r| r.get("model").cloned()))
+        .unwrap_or(json!(""));
+    let mut obj = serde_json::Map::new();
+    obj.insert("type".into(), json!("moderation_result"));
+    obj.insert("model".into(), model);
+    if let Some(first) = first {
+        for key in [
+            "flagged",
+            "categories",
+            "category_scores",
+            "category_applied_input_types",
+        ] {
+            if let Some(v) = first.get(key) {
+                obj.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+    Value::Object(obj)
 }
 
 fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {

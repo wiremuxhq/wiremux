@@ -296,7 +296,8 @@ impl StreamEncoder {
             IrStreamEvent::Logprobs { .. } => {}
             IrStreamEvent::Created { .. }
             | IrStreamEvent::ServiceTier { .. }
-            | IrStreamEvent::Metadata { .. } => {}
+            | IrStreamEvent::Metadata { .. }
+            | IrStreamEvent::Moderation { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.extend(self.ensure_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -413,7 +414,9 @@ impl StreamEncoder {
         if !self.started
             && !matches!(
                 ev,
-                IrStreamEvent::ServiceTier { .. } | IrStreamEvent::Metadata { .. }
+                IrStreamEvent::ServiceTier { .. }
+                    | IrStreamEvent::Metadata { .. }
+                    | IrStreamEvent::Moderation { .. }
             )
         {
             self.started = true;
@@ -441,7 +444,8 @@ impl StreamEncoder {
         match ev {
             IrStreamEvent::Created { .. }
             | IrStreamEvent::ServiceTier { .. }
-            | IrStreamEvent::Metadata { .. } => {}
+            | IrStreamEvent::Metadata { .. }
+            | IrStreamEvent::Moderation { .. } => {}
             IrStreamEvent::TextDelta { text } => {
                 out.extend(self.ensure_item(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -980,7 +984,8 @@ impl StreamEncoder {
             IrStreamEvent::Logprobs { .. } => {}
             IrStreamEvent::Created { .. }
             | IrStreamEvent::ServiceTier { .. }
-            | IrStreamEvent::Metadata { .. } => {}
+            | IrStreamEvent::Metadata { .. }
+            | IrStreamEvent::Moderation { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.extend(self.ensure_converse_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);

@@ -204,7 +204,8 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         | IrStreamEvent::Logprobs { .. }
         | IrStreamEvent::Created { .. }
         | IrStreamEvent::ServiceTier { .. }
-        | IrStreamEvent::Metadata { .. } => (
+        | IrStreamEvent::Metadata { .. }
+        | IrStreamEvent::Moderation { .. } => (
             "content_block_delta",
             json!({
                 "type": "content_block_delta",

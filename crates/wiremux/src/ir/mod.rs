@@ -438,6 +438,12 @@ pub enum IrStreamEvent {
     Metadata {
         metadata: BTreeMap<String, String>,
     },
+    /// Dest Chat `moderation.input` / `moderation.output` (Chat-shaped
+    /// `moderation_results` or `error`) and dest Responses the same keys.
+    Moderation {
+        input: Option<serde_json::Value>,
+        output: Option<serde_json::Value>,
+    },
     /// Exclusive buckets: prompt excludes cache
     /// read, completion excludes reasoning. Encoders re-inflate inclusive
     /// wire totals for Chat and Responses.
