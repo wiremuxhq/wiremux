@@ -138,15 +138,8 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         }
     }
 
-    if let Some(cites) = candidate
-        .pointer("/citationMetadata/citations")
-        .and_then(Value::as_array)
-    {
-        for cite in cites {
-            if let Some(annotation) = annotation_from_citation(cite) {
-                return Ok(Some(IrStreamEvent::AnnotationAdded { annotation }));
-            }
-        }
+    if let Some(annotation) = first_citation_annotation(candidate) {
+        return Ok(Some(IrStreamEvent::AnnotationAdded { annotation }));
     }
 
     if let Some(attrs) = candidate
@@ -454,10 +447,32 @@ fn gemini_token_from_chat(item: &Value) -> Value {
     cand
 }
 
+const CITATION_LIST_POINTERS: &[&str] = &[
+    "/citationMetadata/citations",
+    "/citationMetadata/citationSources",
+    "/urlContextMetadata/urlMetadata",
+];
+
+pub(super) fn first_citation_annotation(candidate: &Value) -> Option<Value> {
+    citation_annotations(candidate).next()
+}
+
+pub(super) fn citation_annotations(candidate: &Value) -> impl Iterator<Item = Value> + '_ {
+    CITATION_LIST_POINTERS.iter().flat_map(|pointer| {
+        candidate
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(annotation_from_citation)
+    })
+}
+
 pub(super) fn annotation_from_citation(cite: &Value) -> Option<Value> {
     let url = cite
         .get("uri")
         .or_else(|| cite.get("url"))
+        .or_else(|| cite.get("retrievedUrl"))
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())?;
     let mut out = json!({ "type": "url_citation", "url": url });
