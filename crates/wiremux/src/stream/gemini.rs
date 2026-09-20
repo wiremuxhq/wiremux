@@ -200,6 +200,7 @@ pub(super) fn usage_from_chunk(value: &Value) -> Option<IrStreamEvent> {
         cache_read_tokens: 0,
         cache_write_tokens: 0,
         reasoning_tokens: 0,
+        audio_tokens: 0,
     })
 }
 
@@ -335,12 +336,14 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             completion_tokens,
             cache_read_tokens,
             reasoning_tokens,
+            audio_tokens,
             ..
         } => usage::encode_gemini(
             *prompt_tokens,
             *completion_tokens,
             *cache_read_tokens,
             *reasoning_tokens,
+            *audio_tokens,
         ),
         IrStreamEvent::FinishReason { reason } => json!({
             "candidates": [{ "finishReason": encode_finish(reason) }]

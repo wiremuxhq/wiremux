@@ -1,4 +1,4 @@
-//! Usage field mapping. Zero cache counts omit cache keys on encode.
+//! Usage field mapping. Zero cache and audio counts omit those keys on encode.
 
 use serde_json::{Value, json};
 
@@ -14,6 +14,7 @@ pub(crate) fn from_chat(usage: &Value) -> IrStreamEvent {
         .unwrap_or(0);
     let cache_write = nested_u32(usage, "prompt_tokens_details", "cache_write_tokens").unwrap_or(0);
     let reasoning = nested_u32(usage, "completion_tokens_details", "reasoning_tokens").unwrap_or(0);
+    let audio_tokens = nested_u32(usage, "prompt_tokens_details", "audio_tokens").unwrap_or(0);
     IrStreamEvent::Usage {
         prompt_tokens: u32_field(usage, "prompt_tokens")
             .unwrap_or(0)
@@ -24,6 +25,7 @@ pub(crate) fn from_chat(usage: &Value) -> IrStreamEvent {
         cache_read_tokens: cache_read,
         cache_write_tokens: cache_write,
         reasoning_tokens: reasoning,
+        audio_tokens,
     }
 }
 
@@ -37,6 +39,7 @@ pub(super) fn from_anthropic(usage: &Value) -> IrStreamEvent {
         cache_read_tokens: u32_field(usage, "cache_read_input_tokens").unwrap_or(0),
         cache_write_tokens: u32_field(usage, "cache_creation_input_tokens").unwrap_or(0),
         reasoning_tokens: reasoning,
+        audio_tokens: 0,
     }
 }
 
@@ -54,6 +57,7 @@ pub(super) fn from_responses(usage: &Value) -> IrStreamEvent {
         cache_read_tokens: cache_read,
         cache_write_tokens: cache_write,
         reasoning_tokens: reasoning,
+        audio_tokens: 0,
     }
 }
 
@@ -76,6 +80,7 @@ pub(super) fn from_gemini(usage: &Value) -> IrStreamEvent {
         cache_read_tokens: cache_read,
         cache_write_tokens: 0,
         reasoning_tokens: reasoning,
+        audio_tokens: gemini_audio_tokens(usage),
     }
 }
 
@@ -85,6 +90,7 @@ pub(super) fn encode_chat(
     cache_read_tokens: u32,
     cache_write_tokens: u32,
     reasoning_tokens: u32,
+    audio_tokens: u32,
 ) -> Value {
     let prompt_wire = prompt_tokens.saturating_add(cache_read_tokens);
     let completion_wire = completion_tokens.saturating_add(reasoning_tokens);
@@ -93,13 +99,16 @@ pub(super) fn encode_chat(
         "completion_tokens": completion_wire,
         "total_tokens": prompt_wire.saturating_add(completion_wire),
     });
-    if cache_read_tokens > 0 || cache_write_tokens > 0 {
+    if cache_read_tokens > 0 || cache_write_tokens > 0 || audio_tokens > 0 {
         let mut details = json!({});
         if cache_read_tokens > 0 {
             details["cached_tokens"] = json!(cache_read_tokens);
         }
         if cache_write_tokens > 0 {
             details["cache_write_tokens"] = json!(cache_write_tokens);
+        }
+        if audio_tokens > 0 {
+            details["audio_tokens"] = json!(audio_tokens);
         }
         usage["prompt_tokens_details"] = details;
     }
@@ -174,6 +183,7 @@ pub(super) fn encode_gemini(
     completion_tokens: u32,
     cache_read_tokens: u32,
     reasoning_tokens: u32,
+    audio_tokens: u32,
 ) -> Value {
     let prompt_wire = prompt_tokens.saturating_add(cache_read_tokens);
     let mut usage = json!({
@@ -189,7 +199,34 @@ pub(super) fn encode_gemini(
     if reasoning_tokens > 0 {
         usage["thoughtsTokenCount"] = json!(reasoning_tokens);
     }
+    if audio_tokens > 0 {
+        usage["promptTokensDetails"] = json!([{
+            "modality": "AUDIO",
+            "tokenCount": audio_tokens
+        }]);
+    }
     json!({ "usageMetadata": usage })
+}
+
+fn gemini_audio_tokens(usage: &Value) -> u32 {
+    let details = usage
+        .get("promptTokensDetails")
+        .or_else(|| usage.get("prompt_tokens_details"))
+        .and_then(Value::as_array);
+    let Some(details) = details else {
+        return 0;
+    };
+    let mut total = 0u32;
+    for item in details {
+        let modality = item.get("modality").and_then(Value::as_str).unwrap_or("");
+        if !modality.eq_ignore_ascii_case("AUDIO") {
+            continue;
+        }
+        if let Some(n) = u32_field(item, "tokenCount").or_else(|| u32_field(item, "token_count")) {
+            total = total.saturating_add(n);
+        }
+    }
+    total
 }
 
 fn nested_u32(value: &Value, object: &str, key: &str) -> Option<u32> {

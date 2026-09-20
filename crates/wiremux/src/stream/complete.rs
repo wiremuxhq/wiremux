@@ -83,6 +83,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 cache_read_tokens,
                 cache_write_tokens,
                 reasoning_tokens,
+                audio_tokens,
             } => {
                 usage = Some((
                     *prompt_tokens,
@@ -90,6 +91,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     *cache_read_tokens,
                     *cache_write_tokens,
                     *reasoning_tokens,
+                    *audio_tokens,
                 ));
             }
             IrStreamEvent::ToolCallStart { id, name, .. } => {
@@ -193,13 +195,16 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     {
         out["moderation"] = value;
     }
-    if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens)) = usage {
+    if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens, audio_tokens)) =
+        usage
+    {
         let encoded = super::usage::encode_chat(
             prompt,
             completion,
             cache_read,
             cache_write,
             reasoning_tokens,
+            audio_tokens,
         );
         if let Some(u) = encoded.get("usage") {
             out["usage"] = u.clone();
@@ -261,6 +266,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 cache_read_tokens,
                 cache_write_tokens,
                 reasoning_tokens,
+                audio_tokens,
             } => {
                 usage = Some((
                     *prompt_tokens,
@@ -268,6 +274,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     *cache_read_tokens,
                     *cache_write_tokens,
                     *reasoning_tokens,
+                    *audio_tokens,
                 ));
             }
             IrStreamEvent::ToolCallStart { id, name, .. } => {
@@ -320,7 +327,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     if let Some(reason) = finish {
         out["stop_reason"] = json!(reason);
     }
-    if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens)) = usage {
+    if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens, _)) = usage {
         let encoded = super::usage::encode_anthropic(
             prompt,
             completion,
@@ -387,6 +394,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 completion_tokens,
                 cache_read_tokens,
                 reasoning_tokens,
+                audio_tokens,
                 ..
             } => {
                 usage = Some((
@@ -394,6 +402,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     *completion_tokens,
                     *cache_read_tokens,
                     *reasoning_tokens,
+                    *audio_tokens,
                 ));
             }
             IrStreamEvent::ToolCallStart { id, name, .. } => {
@@ -460,8 +469,14 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     if !model.is_empty() {
         out["modelVersion"] = json!(model);
     }
-    if let Some((prompt, completion, cache_read, reasoning_tokens)) = usage {
-        let encoded = super::usage::encode_gemini(prompt, completion, cache_read, reasoning_tokens);
+    if let Some((prompt, completion, cache_read, reasoning_tokens, audio_tokens)) = usage {
+        let encoded = super::usage::encode_gemini(
+            prompt,
+            completion,
+            cache_read,
+            reasoning_tokens,
+            audio_tokens,
+        );
         if let Some(meta) = encoded.get("usageMetadata") {
             out["usageMetadata"] = meta.clone();
         }
@@ -523,6 +538,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 cache_read_tokens,
                 cache_write_tokens,
                 reasoning_tokens,
+                audio_tokens,
             } => {
                 usage = Some((
                     *prompt_tokens,
@@ -530,6 +546,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     *cache_read_tokens,
                     *cache_write_tokens,
                     *reasoning_tokens,
+                    *audio_tokens,
                 ));
             }
             IrStreamEvent::ToolCallStart { id, name, .. } => {
@@ -636,7 +653,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     if !text.is_empty() {
         out["output_text"] = json!(text);
     }
-    if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens)) = usage {
+    if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens, _)) = usage {
         let encoded = super::usage::encode_responses(
             prompt,
             completion,
@@ -1392,6 +1409,7 @@ mod tests {
             cache_read_tokens: 25,
             cache_write_tokens: 9,
             reasoning_tokens: 3,
+            audio_tokens: 0,
         }];
         let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses");
         assert_eq!(

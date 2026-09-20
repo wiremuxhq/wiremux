@@ -447,12 +447,17 @@ pub enum IrStreamEvent {
     /// Exclusive buckets: prompt excludes cache
     /// read, completion excludes reasoning. Encoders re-inflate inclusive
     /// wire totals for Chat and Responses.
+    /// `audio_tokens` is dest Chat `prompt_tokens_details.audio_tokens`
+    /// and dest Gemini `promptTokensDetails` modality AUDIO. It is a
+    /// subset of prompt, not subtracted from `prompt_tokens`. Dest Chat
+    /// has no `image_tokens`; Gemini IMAGE details are an official Drop.
     Usage {
         prompt_tokens: u32,
         completion_tokens: u32,
         cache_read_tokens: u32,
         cache_write_tokens: u32,
         reasoning_tokens: u32,
+        audio_tokens: u32,
     },
     FinishReason {
         reason: String,
