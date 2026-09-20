@@ -1000,22 +1000,11 @@ fn decode_responses_complete(
         })
         .unwrap_or(events.len());
     events.splice(insert_at..insert_at, extra);
-    if let Some(unix) = value
-        .get("created_at")
-        .or_else(|| value.pointer("/response/created_at"))
-        .and_then(Value::as_i64)
-    {
-        events.push(IrStreamEvent::Created { unix });
+    if let Some(ev) = created_event(value) {
+        events.push(ev);
     }
-    if let Some(tier) = value
-        .get("service_tier")
-        .or_else(|| value.pointer("/response/service_tier"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-    {
-        events.push(IrStreamEvent::ServiceTier {
-            tier: tier.to_string(),
-        });
+    if let Some(ev) = service_tier_event(value) {
+        events.push(ev);
     }
     if let Some(metadata) = string_metadata(
         value
@@ -1037,6 +1026,25 @@ fn string_metadata(value: Option<&Value>) -> Option<BTreeMap<String, String>> {
         .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
         .collect();
     if map.is_empty() { None } else { Some(map) }
+}
+
+pub(super) fn created_event(value: &Value) -> Option<IrStreamEvent> {
+    value
+        .get("created_at")
+        .or_else(|| value.pointer("/response/created_at"))
+        .and_then(Value::as_i64)
+        .map(|unix| IrStreamEvent::Created { unix })
+}
+
+pub(super) fn service_tier_event(value: &Value) -> Option<IrStreamEvent> {
+    value
+        .get("service_tier")
+        .or_else(|| value.pointer("/response/service_tier"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(|tier| IrStreamEvent::ServiceTier {
+            tier: tier.to_string(),
+        })
 }
 
 pub(super) fn moderation_event(value: &Value) -> Option<IrStreamEvent> {
