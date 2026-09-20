@@ -4292,6 +4292,68 @@ fn dest_responses_stream_moderation_remaps_dest_chat_stream_moderation() {
 }
 
 #[test]
+fn dest_chat_stream_moderation_remaps_dest_responses_stream_moderation() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "moderation": {
+                "input": {
+                    "type": "moderation_results",
+                    "model": "omni-moderation-latest",
+                    "results": [{
+                        "flagged": false,
+                        "categories": { "hate": false },
+                        "category_scores": { "hate": 0.0 },
+                        "category_applied_input_types": { "hate": ["text"] }
+                    }]
+                },
+                "output": {
+                    "type": "moderation_results",
+                    "model": "omni-moderation-latest",
+                    "results": [{
+                        "flagged": false,
+                        "categories": { "hate": false },
+                        "category_scores": { "hate": 0.0 },
+                        "category_applied_input_types": { "hate": ["text"] }
+                    }]
+                }
+            },
+            "choices": []
+        })
+        .to_string(),
+    };
+    let mut events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM moderation");
+    let delta = RawSse {
+        event: None,
+        data: json!({
+            "choices": [{ "index": 0, "delta": { "content": "Hi" } }]
+        })
+        .to_string(),
+    };
+    events.extend(
+        decode_stream_events(Wire::ChatCompletions, &delta, &chat_profile())
+            .expect("decode dest Chat STREAM text delta"),
+    );
+    let frames = encode_all(Wire::Responses, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/response/moderation/input/type")
+                .and_then(Value::as_str)
+        }),
+        Some("moderation_result"),
+        "dest Chat STREAM moderation remapped dest Responses STREAM must write response.moderation.input.type moderation_result, got {frames:?}"
+    );
+    assert!(
+        bodies
+            .iter()
+            .any(|body| { body.pointer("/delta").and_then(Value::as_str) == Some("Hi") }),
+        "dest Chat STREAM text remapped dest Responses STREAM must still carry text Hi, got {frames:?}"
+    );
+}
+
+#[test]
 fn dest_chat_stream_logprobs_refusal_remaps_dest_gemini_logprobs_result() {
     let raw = RawSse {
         event: None,
