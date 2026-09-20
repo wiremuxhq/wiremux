@@ -364,6 +364,7 @@ fn usage_from_converse(usage: &Value) -> IrStreamEvent {
         cache_write_tokens: usage_u32(usage, "cacheWriteInputTokens"),
         reasoning_tokens: 0,
         audio_tokens: 0,
+        completion_audio_tokens: 0,
     }
 }
 

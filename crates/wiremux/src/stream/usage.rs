@@ -15,6 +15,8 @@ pub(crate) fn from_chat(usage: &Value) -> IrStreamEvent {
     let cache_write = nested_u32(usage, "prompt_tokens_details", "cache_write_tokens").unwrap_or(0);
     let reasoning = nested_u32(usage, "completion_tokens_details", "reasoning_tokens").unwrap_or(0);
     let audio_tokens = nested_u32(usage, "prompt_tokens_details", "audio_tokens").unwrap_or(0);
+    let completion_audio_tokens =
+        nested_u32(usage, "completion_tokens_details", "audio_tokens").unwrap_or(0);
     IrStreamEvent::Usage {
         prompt_tokens: u32_field(usage, "prompt_tokens")
             .unwrap_or(0)
@@ -26,6 +28,7 @@ pub(crate) fn from_chat(usage: &Value) -> IrStreamEvent {
         cache_write_tokens: cache_write,
         reasoning_tokens: reasoning,
         audio_tokens,
+        completion_audio_tokens,
     }
 }
 
@@ -40,6 +43,7 @@ pub(super) fn from_anthropic(usage: &Value) -> IrStreamEvent {
         cache_write_tokens: u32_field(usage, "cache_creation_input_tokens").unwrap_or(0),
         reasoning_tokens: reasoning,
         audio_tokens: 0,
+        completion_audio_tokens: 0,
     }
 }
 
@@ -58,6 +62,7 @@ pub(super) fn from_responses(usage: &Value) -> IrStreamEvent {
         cache_write_tokens: cache_write,
         reasoning_tokens: reasoning,
         audio_tokens: 0,
+        completion_audio_tokens: 0,
     }
 }
 
@@ -80,7 +85,12 @@ pub(super) fn from_gemini(usage: &Value) -> IrStreamEvent {
         cache_read_tokens: cache_read,
         cache_write_tokens: 0,
         reasoning_tokens: reasoning,
-        audio_tokens: gemini_audio_tokens(usage),
+        audio_tokens: gemini_audio_tokens(usage, "promptTokensDetails", "prompt_tokens_details"),
+        completion_audio_tokens: gemini_audio_tokens(
+            usage,
+            "candidatesTokensDetails",
+            "candidates_tokens_details",
+        ),
     }
 }
 
@@ -91,6 +101,7 @@ pub(super) fn encode_chat(
     cache_write_tokens: u32,
     reasoning_tokens: u32,
     audio_tokens: u32,
+    completion_audio_tokens: u32,
 ) -> Value {
     let prompt_wire = prompt_tokens.saturating_add(cache_read_tokens);
     let completion_wire = completion_tokens.saturating_add(reasoning_tokens);
@@ -112,8 +123,15 @@ pub(super) fn encode_chat(
         }
         usage["prompt_tokens_details"] = details;
     }
-    if reasoning_tokens > 0 {
-        usage["completion_tokens_details"] = json!({ "reasoning_tokens": reasoning_tokens });
+    if reasoning_tokens > 0 || completion_audio_tokens > 0 {
+        let mut details = json!({});
+        if reasoning_tokens > 0 {
+            details["reasoning_tokens"] = json!(reasoning_tokens);
+        }
+        if completion_audio_tokens > 0 {
+            details["audio_tokens"] = json!(completion_audio_tokens);
+        }
+        usage["completion_tokens_details"] = details;
     }
     json!({ "choices": [], "usage": usage })
 }
@@ -184,6 +202,7 @@ pub(super) fn encode_gemini(
     cache_read_tokens: u32,
     reasoning_tokens: u32,
     audio_tokens: u32,
+    completion_audio_tokens: u32,
 ) -> Value {
     let prompt_wire = prompt_tokens.saturating_add(cache_read_tokens);
     let mut usage = json!({
@@ -205,13 +224,19 @@ pub(super) fn encode_gemini(
             "tokenCount": audio_tokens
         }]);
     }
+    if completion_audio_tokens > 0 {
+        usage["candidatesTokensDetails"] = json!([{
+            "modality": "AUDIO",
+            "tokenCount": completion_audio_tokens
+        }]);
+    }
     json!({ "usageMetadata": usage })
 }
 
-fn gemini_audio_tokens(usage: &Value) -> u32 {
+fn gemini_audio_tokens(usage: &Value, camel: &str, snake: &str) -> u32 {
     let details = usage
-        .get("promptTokensDetails")
-        .or_else(|| usage.get("prompt_tokens_details"))
+        .get(camel)
+        .or_else(|| usage.get(snake))
         .and_then(Value::as_array);
     let Some(details) = details else {
         return 0;

@@ -451,6 +451,10 @@ pub enum IrStreamEvent {
     /// and dest Gemini `promptTokensDetails` modality AUDIO. It is a
     /// subset of prompt, not subtracted from `prompt_tokens`. Dest Chat
     /// has no `image_tokens`; Gemini IMAGE details are an official Drop.
+    /// `completion_audio_tokens` is dest Chat
+    /// `completion_tokens_details.audio_tokens` and dest Gemini
+    /// `candidatesTokensDetails` modality AUDIO. It is a subset of
+    /// completion, not subtracted from `completion_tokens`.
     Usage {
         prompt_tokens: u32,
         completion_tokens: u32,
@@ -458,6 +462,7 @@ pub enum IrStreamEvent {
         cache_write_tokens: u32,
         reasoning_tokens: u32,
         audio_tokens: u32,
+        completion_audio_tokens: u32,
     },
     FinishReason {
         reason: String,
