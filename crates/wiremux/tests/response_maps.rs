@@ -3,7 +3,7 @@
 use serde_json::json;
 use wiremux::{
     IrStreamEvent, RawSse, ResolvedProfile, StreamEncoder, Wire, decode_response,
-    decode_stream_events, encode_response, parse_profile_str,
+    decode_stream_events, encode_response, encode_response_with_model, parse_profile_str,
 };
 
 fn chat_profile() -> ResolvedProfile {
@@ -48,6 +48,54 @@ wire = "gemini"
 "#,
     )
     .expect("test profile parses")
+}
+
+#[test]
+fn crate_root_encode_response_omits_empty_dest_model() {
+    let events = [IrStreamEvent::TextDelta { text: "Hi".into() }];
+    let mapped = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat");
+    assert!(
+        mapped.get("model").is_none(),
+        "empty dest model must omit dest Chat model, got {mapped}"
+    );
+    assert_eq!(
+        mapped.get("id").and_then(serde_json::Value::as_str),
+        Some("chatcmpl-wiremux"),
+        "dest identity stays chatcmpl-wiremux, got {mapped}"
+    );
+}
+
+#[test]
+fn crate_root_encode_response_with_model_stamps_dest_chat() {
+    let events = [IrStreamEvent::TextDelta { text: "Hi".into() }];
+    let mapped = encode_response_with_model(Wire::ChatCompletions, &events, "gpt-4o")
+        .expect("encode dest Chat");
+    assert_eq!(
+        mapped.get("model").and_then(serde_json::Value::as_str),
+        Some("gpt-4o"),
+        "crate-root encode_response_with_model must stamp dest Chat model, got {mapped}"
+    );
+}
+
+#[test]
+fn crate_root_stream_encoder_with_model_stamps_dest_chat() {
+    let mut enc = StreamEncoder::new(Wire::ChatCompletions).with_model("gpt-4o");
+    let frames = enc
+        .push(IrStreamEvent::TextDelta { text: "Hi".into() })
+        .expect("push dest Chat");
+    assert!(
+        frames.iter().any(|frame| {
+            serde_json::from_str::<serde_json::Value>(&frame.data)
+                .ok()
+                .and_then(|v| {
+                    v.get("model")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                == Some("gpt-4o".to_string())
+        }),
+        "StreamEncoder::with_model must stamp dest Chat STREAM model, got {frames:?}"
+    );
 }
 
 #[test]

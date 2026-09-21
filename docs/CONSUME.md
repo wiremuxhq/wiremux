@@ -106,6 +106,12 @@ Map requests at the host adapter boundary only:
 | Host request type | Unchanged. Adapter maps only |
 | Host IR is function tools only | Still host IR. Loss and namespace policy live in wiremux; the adapter reports `LossReport` |
 
+Maps-only hosts that need dest Chat `model` on complete JSON call
+`encode_response_with_model`. Crate-root `encode_response` is the
+empty-model wrapper and omits the key. STREAM uses
+`StreamEncoder::with_model`. `encode_stream_event` encodes one IR
+event and has no dest-model argument.
+
 Do not `pub use` `IrRequest` as the host request type. The host
 factory continues to construct adapters and still owns router and
 failover. Wiremux does not become the router.
@@ -124,8 +130,10 @@ Host thinking slots and `LossReport`:
 | `include_thoughts` | `thinking.type` | `includeThoughts` | `reasoning.summary=auto` | Drop |
 | `reasoning_effort` | Budget defaults only | `thinkingLevel` | `reasoning.effort` | `reasoning_effort` |
 
-Chat Completions and Responses emit `store`. OpenRouter
-`forbidden_body_fields` still strips it. Messages and Gemini have no slot.
+Chat Completions and Responses emit `store`. OpenRouter Responses
+`openrouter-codex` refuses `store` (`forbidden_field_policy =
+hard-error`). Chat Completions `openrouter` does not refuse
+`store`. Messages and Gemini have no slot.
 
 Diagnose should print `LossReport` for `part.thinking` and
 `sampling.max_reasoning_tokens`.
@@ -180,9 +188,11 @@ without clap or the `proxy` stack enable feature `client` on crate
 
 `ClientError::Transient` carries `TransientKind` (`Connect`,
 `Timeout`, `Reset`, `Http`). Hosts call `is_connect()` /
-`is_timeout()` instead of scraping Display
-([#216](https://github.com/wiremuxhq/wiremux/issues/216)). Display
-text is unchanged from 0.7.0.
+`is_timeout()` / `is_reset()` instead of scraping Display
+([#216](https://github.com/wiremuxhq/wiremux/issues/216)).
+`is_connect()` is suite-abort (never reached the host).
+`is_timeout()` and `is_reset()` are after connect; do not abort a
+probe suite. Display text is unchanged from 0.7.0.
 
 `WireClient::from_profile` loads a catalog id (shipped `base_url`,
 `chat_path`, `auth_scheme`, `[headers]`, `[betas]`) and
@@ -211,12 +221,19 @@ Shipped catalog ids:
 | claude, no key | `anthropic-oauth` |
 | openai | `openai` |
 | openai Responses API key | `openai-codex` |
+| openai Codex OAuth (login disabled) | `openai-codex-oauth` |
 | openrouter Chat Completions | `openrouter` |
+| openrouter Responses API key | `openrouter-codex` |
 | gemini | `gemini` |
 | lmstudio | `lmstudio` |
 | vllm | `vllm` |
 
-Also shipped: `grok-ollama`, `openai-codex`, `openai-codex-oauth`, `openrouter-codex`,
+Shipped `openai-codex-oauth` is catalog-present with `login = none`
+and empty `client_id`. `wiremux auth login` exits not-ready. Hosts
+that need Codex use `openai-codex` (API key). Do not fill a product
+client id.
+
+Also shipped: `grok-ollama`,
 `xai-oauth` (`https://api.x.ai`), `xai-grok-build` (Grok Build CLI
 proxy `https://cli-chat-proxy.grok.com`, Chat Completions, same
 empty-client `oidc-auth-json` pack as `xai-oauth`, plus
