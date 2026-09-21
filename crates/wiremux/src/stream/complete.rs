@@ -1070,12 +1070,8 @@ fn decode_responses_complete(
     if let Some(ev) = service_tier_event(value) {
         events.push(ev);
     }
-    if let Some(metadata) = string_metadata(
-        value
-            .get("metadata")
-            .or_else(|| value.pointer("/response/metadata")),
-    ) {
-        events.push(IrStreamEvent::Metadata { metadata });
+    if let Some(ev) = metadata_event(value) {
+        events.push(ev);
     }
     if let Some(ev) = moderation_event(value) {
         events.push(ev);
@@ -1098,6 +1094,15 @@ pub(super) fn created_event(value: &Value) -> Option<IrStreamEvent> {
         .or_else(|| value.pointer("/response/created_at"))
         .and_then(Value::as_i64)
         .map(|unix| IrStreamEvent::Created { unix })
+}
+
+pub(super) fn metadata_event(value: &Value) -> Option<IrStreamEvent> {
+    string_metadata(
+        value
+            .get("metadata")
+            .or_else(|| value.pointer("/response/metadata")),
+    )
+    .map(|metadata| IrStreamEvent::Metadata { metadata })
 }
 
 pub(super) fn service_tier_event(value: &Value) -> Option<IrStreamEvent> {

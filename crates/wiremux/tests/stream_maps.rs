@@ -2592,6 +2592,102 @@ fn dest_responses_stream_created_at_remaps_dest_chat_stream_created() {
 }
 
 #[test]
+fn dest_chat_stream_metadata_remaps_dest_responses_stream_metadata() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "id": "chatcmpl-r58m",
+            "object": "chat.completion.chunk",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "metadata": { "user": "alice" },
+            "choices": [{
+                "index": 0,
+                "delta": { "role": "assistant", "content": "Hi" }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM metadata");
+    let frames = encode_all(Wire::Responses, &events);
+    let created: Vec<Value> = frames
+        .iter()
+        .filter(|frame| frame.event.as_deref() == Some("response.created"))
+        .filter_map(|frame| serde_json::from_str(&frame.data).ok())
+        .collect();
+    assert_eq!(
+        created.iter().find_map(|body| body
+            .pointer("/response/metadata/user")
+            .and_then(Value::as_str)),
+        Some("alice"),
+        "dest Chat STREAM metadata remapped dest Responses STREAM must write response.created.response.metadata, got {frames:?}"
+    );
+    assert_eq!(
+        created
+            .iter()
+            .find_map(|body| body.pointer("/response/created_at").and_then(Value::as_i64)),
+        Some(1_700_000_000),
+        "dest Chat STREAM created plus metadata remapped dest Responses STREAM must still write created_at, got {frames:?}"
+    );
+    assert!(
+        frames.iter().any(|frame| {
+            frame.event.as_deref() == Some("response.output_text.delta")
+                && frame.data.contains("Hi")
+        }),
+        "dest Chat STREAM content remapped dest Responses STREAM must still carry text Hi, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_responses_stream_metadata_remaps_dest_chat_stream_metadata() {
+    let raw = RawSse {
+        event: Some("response.created".into()),
+        data: json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp_1",
+                "status": "in_progress",
+                "metadata": { "user": "alice" }
+            }
+        })
+        .to_string(),
+    };
+    let mut events = decode_stream_events(Wire::Responses, &raw, &responses_profile())
+        .expect("decode dest Responses STREAM metadata");
+    let delta = RawSse {
+        event: Some("response.output_text.delta".into()),
+        data: json!({
+            "type": "response.output_text.delta",
+            "output_index": 0,
+            "delta": "Hi"
+        })
+        .to_string(),
+    };
+    events.extend(
+        decode_stream_events(Wire::Responses, &delta, &responses_profile())
+            .expect("decode dest Responses STREAM text delta"),
+    );
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies
+            .iter()
+            .find_map(|body| body.pointer("/metadata/user").and_then(Value::as_str)),
+        Some("alice"),
+        "dest Responses STREAM response.created.response.metadata remapped dest Chat STREAM must write metadata, got {frames:?}"
+    );
+    assert!(
+        bodies.iter().any(|body| {
+            body.pointer("/choices/0/delta/content")
+                .and_then(Value::as_str)
+                == Some("Hi")
+        }),
+        "dest Responses STREAM text remapped dest Chat STREAM must still carry text Hi, got {frames:?}"
+    );
+}
+
+#[test]
 fn dest_chat_stream_logprobs_remaps_dest_responses_output_text_logprobs() {
     let raw = RawSse {
         event: None,

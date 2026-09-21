@@ -467,7 +467,8 @@ impl StreamEncoder {
         if !self.started
             && !matches!(
                 ev,
-                IrStreamEvent::ServiceTier { .. }
+                IrStreamEvent::Created { .. }
+                    | IrStreamEvent::ServiceTier { .. }
                     | IrStreamEvent::Metadata { .. }
                     | IrStreamEvent::Moderation { .. }
             )
@@ -865,6 +866,9 @@ impl StreamEncoder {
             && let Some(value) = super::complete::responses_moderation_value(input, output)
         {
             response["moderation"] = value;
+        }
+        if let Some(ref meta) = self.metadata {
+            response["metadata"] = json!(meta);
         }
         out.push(named(
             event,
