@@ -163,6 +163,13 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("autorelease: pending", text)
         self.assertIn("Skip hmarr on release-please", text)
 
+    def test_auto_merge_skips_constitution_and_public_surface_scripts(self) -> None:
+        text = (WORKFLOWS / "auto-approve.yml").read_text(encoding="utf-8")
+        self.assertIn("CONSTITUTION.md", text)
+        self.assertIn("scripts/assert-stealth.sh", text)
+        self.assertIn("scripts/assert-public.sh", text)
+        self.assertIn("constitution or public-surface script in diff", text)
+
     def test_cheap_pr_status_checks_do_not_cancel(self) -> None:
         for name in ("pr-title.yml", "dco.yml"):
             text = (WORKFLOWS / name).read_text(encoding="utf-8")
