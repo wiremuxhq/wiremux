@@ -104,7 +104,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
 }
 
 /// Text and logprobs on one `response.output_text.delta` frame.
-/// `response.created` fans out `created_at`, `service_tier`, and `moderation`.
+/// `response.created` fans out `created_at`, `service_tier`, `metadata`, and `moderation`.
 pub(super) fn decode_all(name: &str, value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     check_responses_indexes(value)?;
     if name == "response.created" {
@@ -131,6 +131,9 @@ fn response_slot_events(value: &Value) -> Vec<IrStreamEvent> {
     if let Some(ev) = super::complete::service_tier_event(value) {
         out.push(ev);
     }
+    if let Some(ev) = super::complete::metadata_event(value) {
+        out.push(ev);
+    }
     if let Some(ev) = super::complete::moderation_event(value) {
         out.push(ev);
     }
@@ -149,7 +152,7 @@ pub(super) fn logprobs_array(value: &Value) -> Option<Value> {
 ///
 /// 1:1 [`decode`] keeps Usage-or-Done / FinishReason. This walk emits
 /// Protocol (encrypted reasoning), FinishReason from `response.status`,
-/// Usage, then `created_at` / `service_tier` / nested `moderation`.
+/// Usage, then `created_at` / `service_tier` / `metadata` / nested `moderation`.
 pub(super) fn decode_terminal_events(name: &str, value: &Value) -> Option<Vec<IrStreamEvent>> {
     if name != "response.completed" && name != "response.incomplete" {
         return None;
