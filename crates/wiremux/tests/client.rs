@@ -844,6 +844,7 @@ async fn http_503_is_transient() {
             assert_eq!(kind, TransientKind::Http);
             assert!(!err.is_connect());
             assert!(!err.is_timeout());
+            assert!(!err.is_reset());
         }
         other => panic!("expected Transient, got {other}"),
     }
@@ -895,6 +896,7 @@ async fn http_200_wrapped_overload_is_transient() {
             assert_eq!(kind, TransientKind::Http);
             assert!(!err.is_connect());
             assert!(!err.is_timeout());
+            assert!(!err.is_reset());
         }
         other => panic!("expected Transient, not {other}"),
     }
@@ -1910,6 +1912,7 @@ read_timeout_secs = 1
             assert_eq!(kind, TransientKind::Timeout);
             assert!(err.is_timeout());
             assert!(!err.is_connect());
+            assert!(!err.is_reset());
             let lower = message.to_ascii_lowercase();
             assert!(
                 lower.contains("timed out") || lower.contains("timeout"),
@@ -1946,6 +1949,7 @@ async fn closed_port_transient_names_connect() {
             assert_eq!(kind, TransientKind::Connect);
             assert!(err.is_connect());
             assert!(!err.is_timeout());
+            assert!(!err.is_reset());
             let lower = message.to_ascii_lowercase();
             assert!(
                 lower.contains("connect") || lower.contains("connection refused"),
@@ -1998,7 +2002,29 @@ async fn from_resolved_with_client_uses_host_timeout() {
             assert_eq!(kind, TransientKind::Timeout);
             assert!(err.is_timeout());
             assert!(!err.is_connect());
+            assert!(!err.is_reset());
         }
         other => panic!("expected Transient, got {other:?}"),
     }
+}
+
+#[test]
+fn reset_helper_is_after_connect() {
+    let err = ClientError::Transient {
+        status: None,
+        message: "connection reset by peer".into(),
+        kind: TransientKind::Reset,
+    };
+    assert!(err.is_reset());
+    assert!(!err.is_connect());
+    assert!(!err.is_timeout());
+    let display = err.to_string();
+    assert!(
+        display.starts_with("transient:"),
+        "Display must stay 0.7.0-shaped, got {display}"
+    );
+    assert!(
+        !display.to_ascii_lowercase().contains("kind"),
+        "Display must not name TransientKind, got {display}"
+    );
 }

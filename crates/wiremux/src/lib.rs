@@ -45,7 +45,7 @@ pub use stream::{
     EventStreamReader, MAX_CONTENT_BLOCK_INDEX, MAX_EVENTSTREAM_PENDING, MAX_SSE_PENDING,
     MAX_TOOL_CALL_INDEX, RawSse, SseFrameReader, StreamEncoder, ToolCallAssembler, decode_response,
     decode_stream_event, decode_stream_events, encode_eventstream_message, encode_response,
-    encode_stream_event,
+    encode_response_with_model, encode_stream_event,
 };
 pub use wiremux_auth::VERSION;
 pub use wiremux_auth::{

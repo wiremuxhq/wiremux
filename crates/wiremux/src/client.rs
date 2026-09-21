@@ -202,6 +202,18 @@ impl ClientError {
             }
         )
     }
+
+    /// Connection reset or broken pipe after the host was reached.
+    /// Not [`Self::is_connect`]: do not abort a probe suite.
+    pub fn is_reset(&self) -> bool {
+        matches!(
+            self,
+            Self::Transient {
+                kind: TransientKind::Reset,
+                ..
+            }
+        )
+    }
 }
 
 fn transient(status: Option<u16>, message: impl Into<String>, kind: TransientKind) -> ClientError {
@@ -1423,6 +1435,19 @@ wire = "messages"
         assert_eq!(
             send_transient_kind(false, false, true),
             TransientKind::Reset
+        );
+        let err = transient(None, "connection reset by peer", TransientKind::Reset);
+        assert!(err.is_reset());
+        assert!(!err.is_connect());
+        assert!(!err.is_timeout());
+        let display = err.to_string();
+        assert!(
+            display.starts_with("transient:"),
+            "Display must stay 0.7.0-shaped, got {display}"
+        );
+        assert!(
+            !display.to_ascii_lowercase().contains("kind"),
+            "Display must not name TransientKind, got {display}"
         );
     }
 }

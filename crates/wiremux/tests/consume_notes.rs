@@ -92,7 +92,9 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
             && notes.contains("`anthropic-oauth`")
             && notes.contains("`openai`")
             && notes.contains("`openai-codex`")
+            && notes.contains("`openai-codex-oauth`")
             && notes.contains("`openrouter`")
+            && notes.contains("`openrouter-codex`")
             && notes.contains("`gemini`")
             && notes.contains("`lmstudio`")
             && notes.contains("`vllm`")
@@ -129,13 +131,28 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
             && notes.contains("thinking.budget_tokens")
             && notes.contains("reasoning.summary=auto")
             && notes.contains("thinkingLevel")
-            && notes.contains("Chat Completions and Responses emit `store`"),
+            && notes.contains("Chat Completions and Responses emit `store`")
+            && notes.contains("`openrouter-codex` refuses `store`"),
         "thinking / LossReport table must exist for adapters"
+    );
+    assert!(
+        notes.contains("encode_response_with_model")
+            && notes.contains("StreamEncoder::with_model")
+            && notes.contains("encode_stream_event"),
+        "notes must name dest-model attach helpers"
+    );
+    assert!(
+        notes.contains("`login = none`")
+            && notes.contains("empty `client_id`")
+            && notes.contains("exits not-ready"),
+        "notes must say openai-codex-oauth is catalog-present and login-disabled"
     );
     assert!(
         notes.contains("WireClient")
             && notes.contains("TransientKind")
             && notes.contains("is_connect()")
+            && notes.contains("is_reset()")
+            && notes.contains("do not abort a")
             && notes.contains("from_profile")
             && notes.contains("send")
             && notes.contains("stream")
