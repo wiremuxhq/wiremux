@@ -2,8 +2,9 @@
 
 use serde_json::json;
 use wiremux::{
-    IrStreamEvent, RawSse, ResolvedProfile, StreamEncoder, Wire, decode_response,
-    decode_stream_events, encode_response, encode_response_with_model, parse_profile_str,
+    IrStreamEvent, LossAction, RawSse, ResolvedProfile, StreamEncoder, Wire, decode_response,
+    decode_response_with_loss, decode_stream_events, encode_response, encode_response_with_model,
+    parse_profile_str,
 };
 
 fn chat_profile() -> ResolvedProfile {
@@ -618,6 +619,54 @@ fn dest_responses_complete_encode_refusal_delta_is_refusal_part() {
             .and_then(serde_json::Value::as_str),
         Some("nope"),
         "dest Responses complete refusal must not become output_text, got {mapped}"
+    );
+}
+
+#[test]
+fn gemini_unknown_finish_reason_is_preserved_on_complete() {
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "finishReason": "FUTURE_REASON",
+            "content": { "role": "model", "parts": [{ "text": "x" }] }
+        }]
+    }))
+    .expect("json");
+    let (events, loss) = decode_response_with_loss(Wire::Gemini, &body, &gemini_profile())
+        .expect("unknown finish must decode");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::FinishReason { reason } if reason == "FUTURE_REASON"
+        )),
+        "complete FUTURE_REASON must not become stop, got {events:?}"
+    );
+    assert!(
+        loss.events.iter().any(|event| {
+            event.path == "candidates[0].finishReason"
+                && event.action == LossAction::Preserve
+                && event.detail == "FUTURE_REASON"
+        }),
+        "preserved finish reason must be on the loss report, got {loss:?}"
+    );
+
+    let stop = serde_json::to_vec(&json!({
+        "candidates": [{
+            "finishReason": "STOP",
+            "content": { "parts": [{ "text": "x" }] }
+        }]
+    }))
+    .expect("json");
+    let (events, loss) =
+        decode_response_with_loss(Wire::Gemini, &stop, &gemini_profile()).expect("STOP");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+        "STOP stays stop, got {events:?}"
+    );
+    assert!(
+        loss.events.is_empty(),
+        "known STOP is not a loss, got {loss:?}"
     );
 }
 

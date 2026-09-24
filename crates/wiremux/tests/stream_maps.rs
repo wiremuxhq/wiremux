@@ -629,8 +629,15 @@ fn stream_signed_function_call_keeps_nonempty_args() {
         .expect("decode")
         .expect("event");
     assert!(
-        matches!(ev, IrStreamEvent::Protocol { ref item_type, .. } if item_type == "chunk"),
-        "1:1 nonempty args stay Protocol, got {ev:?}"
+        matches!(
+            ev,
+            IrStreamEvent::ToolCallStart {
+                ref name,
+                thought_signature: Some(ref sig),
+                ..
+            } if name == "lookup" && sig == "sig_args"
+        ),
+        "1:1 nonempty args stay a tool-call start, got {ev:?}"
     );
 
     let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("fan-out");
@@ -673,6 +680,170 @@ fn stream_signed_function_call_keeps_nonempty_args() {
             .and_then(Value::as_str),
         Some("x"),
         "encoded fan-out ArgDelta must keep nonempty args, got {json}"
+    );
+}
+
+#[test]
+fn gemini_decode_stream_event_keeps_function_call_with_args() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"a.rs"}},"thoughtSignature":"sig-1"}]}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode")
+        .expect("event");
+    assert!(
+        matches!(
+            ev,
+            IrStreamEvent::ToolCallStart {
+                ref name,
+                thought_signature: Some(ref sig),
+                index: 0,
+                ..
+            } if name == "read_file" && sig == "sig-1"
+        ),
+        "singular decode must surface the function call, got {ev:?}"
+    );
+    assert!(
+        !matches!(ev, IrStreamEvent::Protocol { ref item_type, .. } if item_type == "chunk"),
+        "nonempty args must not hide the call in Protocol chunk"
+    );
+
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallStart {
+                name,
+                thought_signature: Some(sig),
+                index: 0,
+                ..
+            } if name == "read_file" && sig == "sig-1"
+        )),
+        "decode_stream_events must keep ToolCallStart, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta, index: 0 } if delta == r#"{"path":"a.rs"}"#
+        )),
+        "args belong on ToolCallArgDelta at the same index, got {all:?}"
+    );
+}
+
+#[test]
+fn gemini_empty_args_do_not_invent_an_argument_delta() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_file","args":{}}}]}}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallStart { name, index: 0, .. } if name == "read_file"
+        )),
+        "empty args still start at index 0, got {all:?}"
+    );
+    assert!(
+        !all.iter()
+            .any(|ev| matches!(ev, IrStreamEvent::ToolCallArgDelta { .. })),
+        "empty args must not emit an argument delta, got {all:?}"
+    );
+}
+
+#[test]
+fn gemini_parallel_function_calls_start_at_index_zero() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_file","args":{"path":"a.rs"}}},{"functionCall":{"name":"write_file","args":{"path":"b.rs"}}}]}}]}"#.into(),
+    };
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
+    let slots: Vec<_> = all
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart {
+                id, name, index, ..
+            } => Some((id.as_str(), name.as_str(), *index)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        slots,
+        vec![
+            ("read_file#0", "read_file", 0),
+            ("write_file#1", "write_file", 1)
+        ],
+        "id seq and index must match, got {all:?}"
+    );
+    let deltas: Vec<_> = all
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { delta, index } => Some((delta.as_str(), *index)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        deltas,
+        vec![(r#"{"path":"a.rs"}"#, 0), (r#"{"path":"b.rs"}"#, 1)],
+        "argument deltas must use the same indexes, got {all:?}"
+    );
+}
+
+#[test]
+fn gemini_unknown_finish_reason_is_preserved() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"finishReason":"FUTURE_REASON","content":{"role":"model","parts":[{"text":"x"}]}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode")
+        .expect("event");
+    match ev {
+        IrStreamEvent::TextDelta { .. } => {}
+        IrStreamEvent::FinishReason { ref reason } => {
+            assert_ne!(
+                reason, "stop",
+                "unknown finishReason must not collapse to stop"
+            );
+            assert_eq!(reason, "FUTURE_REASON");
+        }
+        other => panic!("expected text or preserved finish, got {other:?}"),
+    }
+    let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::FinishReason { reason } if reason == "FUTURE_REASON"
+        )),
+        "fan-out must preserve FUTURE_REASON, got {all:?}"
+    );
+
+    let stop = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"x"}]}}]}"#
+            .into(),
+    };
+    let stopped = decode_stream_events(Wire::Gemini, &stop, &gemini_profile()).expect("stop");
+    assert!(
+        stopped.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::FinishReason { reason } if reason == "stop"
+        )),
+        "STOP stays stop, got {stopped:?}"
+    );
+
+    let tools = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"functionCall":{"name":"read_file","args":{}}}]}}]}"#.into(),
+    };
+    let tool_stop = decode_stream_events(Wire::Gemini, &tools, &gemini_profile()).expect("tools");
+    assert!(
+        tool_stop.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::FinishReason { reason } if reason == "tool_calls"
+        )),
+        "STOP with a function call stays tool_calls, got {tool_stop:?}"
     );
 }
 

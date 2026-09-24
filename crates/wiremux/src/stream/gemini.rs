@@ -20,7 +20,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             .filter(|s| !s.is_empty())
     {
         return Ok(Some(IrStreamEvent::FinishReason {
-            reason: map_block(reason).to_string(),
+            reason: map_block(reason),
         }));
     }
 
@@ -92,13 +92,6 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
-                let args = fc.get("args");
-                if args.is_some_and(|a| !a.as_object().is_some_and(serde_json::Map::is_empty)) {
-                    return Ok(Some(IrStreamEvent::Protocol {
-                        item_type: "chunk".into(),
-                        payload: value.clone(),
-                    }));
-                }
                 return Ok(Some(IrStreamEvent::ToolCallStart {
                     id: gemini_call_id(fc, &name, 0),
                     name,
@@ -166,7 +159,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         .filter(|s| !s.is_empty())
     {
         return Ok(Some(IrStreamEvent::FinishReason {
-            reason: map_finish(reason, candidate_has_function_call(candidate)).to_string(),
+            reason: map_finish(reason, candidate_has_function_call(candidate)),
         }));
     }
 
@@ -226,7 +219,7 @@ pub(crate) fn gemini_call_id(fc: &Value, name: &str, seq: usize) -> String {
         .unwrap_or_else(|| format!("{name}#{seq}"))
 }
 
-pub(super) fn map_finish(reason: &str, has_function_call: bool) -> &'static str {
+pub(super) fn map_finish(reason: &str, has_function_call: bool) -> String {
     match reason {
         "STOP" if has_function_call => "tool_calls",
         "STOP" => "stop",
@@ -235,15 +228,18 @@ pub(super) fn map_finish(reason: &str, has_function_call: bool) -> &'static str 
         | "IMAGE_SAFETY" | "LANGUAGE" => "content_filter",
         "MALFORMED_FUNCTION_CALL" => "malformed_function_call",
         other if other.eq_ignore_ascii_case("stop") => "stop",
-        _ => "stop",
+        other => return other.to_string(),
     }
+    .to_string()
 }
 
-fn map_block(reason: &str) -> &'static str {
-    match map_finish(reason, false) {
-        "stop" if !reason.eq_ignore_ascii_case("stop") => "content_filter",
-        mapped => mapped,
+fn map_block(reason: &str) -> String {
+    let mapped = map_finish(reason, false);
+    let preserved_unknown = mapped == reason && !reason.eq_ignore_ascii_case("stop");
+    if preserved_unknown || (mapped == "stop" && !reason.eq_ignore_ascii_case("stop")) {
+        return "content_filter".to_string();
     }
+    mapped
 }
 
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
