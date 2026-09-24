@@ -784,13 +784,65 @@ pub fn decode_response(
     bytes: &[u8],
     profile: &ResolvedProfile,
 ) -> Result<Vec<IrStreamEvent>, MapError> {
+    Ok(decode_response_with_loss(wire, bytes, profile)?.0)
+}
+
+/// Same as [`decode_response`], plus a loss report.
+///
+/// An unrecognized Gemini `finishReason` is kept on the finish event and
+/// recorded as [`LossAction::Preserve`](crate::ir::LossAction::Preserve).
+pub fn decode_response_with_loss(
+    wire: Wire,
+    bytes: &[u8],
+    profile: &ResolvedProfile,
+) -> Result<(Vec<IrStreamEvent>, crate::ir::LossReport), MapError> {
     let value: Value = serde_json::from_slice(bytes)?;
+    let events = decode_response_value(wire, &value, profile)?;
+    let mut report = crate::ir::LossReport::default();
+    if wire == Wire::Gemini {
+        record_preserved_gemini_finish(&value, &events, &mut report);
+    }
+    Ok((events, report))
+}
+
+fn record_preserved_gemini_finish(
+    value: &Value,
+    events: &[IrStreamEvent],
+    report: &mut crate::ir::LossReport,
+) {
+    let Some(vendor) = value
+        .pointer("/candidates/0/finishReason")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+    if vendor.eq_ignore_ascii_case("stop") {
+        return;
+    }
+    let preserved = events
+        .iter()
+        .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == vendor));
+    if preserved {
+        report.record(
+            "candidates[0].finishReason",
+            crate::ir::LossAction::Preserve,
+            vendor,
+        );
+    }
+}
+
+fn decode_response_value(
+    wire: Wire,
+    value: &Value,
+    profile: &ResolvedProfile,
+) -> Result<Vec<IrStreamEvent>, MapError> {
     match wire {
-        Wire::ChatCompletions => decode_chat_complete(&value),
-        Wire::Messages => decode_messages_complete(&value),
-        Wire::Responses => decode_responses_complete(&value, profile),
-        Wire::Gemini => decode_gemini_complete(&value, profile),
-        Wire::Converse => super::converse::decode_complete(&value),
+        Wire::ChatCompletions => decode_chat_complete(value),
+        Wire::Messages => decode_messages_complete(value),
+        Wire::Responses => decode_responses_complete(value, profile),
+        Wire::Gemini => decode_gemini_complete(value, profile),
+        Wire::Converse => super::converse::decode_complete(value),
         _ => Err(MapError::Invalid(format!(
             "unsupported wire `{}`",
             wire.as_str()

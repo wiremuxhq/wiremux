@@ -44,7 +44,9 @@ impl RawSse {
     }
 }
 
-pub use complete::{decode_response, encode_response, encode_response_with_model};
+pub use complete::{
+    decode_response, decode_response_with_loss, encode_response, encode_response_with_model,
+};
 pub use encoder::StreamEncoder;
 #[cfg(feature = "proxy")]
 pub(crate) use eventstream::unwrap_event_payload;
@@ -291,7 +293,7 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
         .filter(|s| !s.is_empty())
     {
         out.push(IrStreamEvent::FinishReason {
-            reason: gemini::map_finish(reason, gemini_value_has_function_call(value)).to_string(),
+            reason: gemini::map_finish(reason, gemini_value_has_function_call(value)),
         });
     }
     if let Some(ev) = gemini::service_tier_from_chunk(value) {
@@ -335,9 +337,10 @@ fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> 
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
-        let id = gemini::gemini_call_id(fc, &name, *call_seq);
+        let seq = *call_seq;
         *call_seq += 1;
-        let index = u32::try_from(*call_seq).unwrap_or(0);
+        let id = gemini::gemini_call_id(fc, &name, seq);
+        let index = u32::try_from(seq).unwrap_or(0);
         out.push(IrStreamEvent::ToolCallStart {
             id,
             name,
@@ -432,7 +435,7 @@ fn expand_gemini_function_call(first: &IrStreamEvent, value: &Value) -> Option<V
     }
     Some(vec![
         IrStreamEvent::ToolCallStart {
-            id: name.clone(),
+            id: gemini::gemini_call_id(fc, &name, 0),
             name,
             thought_signature,
             index: 0,
