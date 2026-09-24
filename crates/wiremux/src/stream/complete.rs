@@ -999,6 +999,7 @@ fn complete_chat_tool_call(call: &Value) -> Vec<IrStreamEvent> {
 
 fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     let mut out = Vec::new();
+    let mut tool_index = 0u32;
     if let Some(content) = value.get("content").and_then(Value::as_array) {
         for block in content {
             match block.get("type").and_then(Value::as_str) {
@@ -1026,16 +1027,18 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
                     }
                 }
                 Some("tool_use") => {
+                    let index = tool_index;
+                    tool_index = tool_index.saturating_add(1);
                     out.push(IrStreamEvent::ToolCallStart {
                         id: str_field(block, "id").unwrap_or_default(),
                         name: str_field(block, "name").unwrap_or_default(),
                         thought_signature: None,
-                        index: 0,
+                        index,
                     });
                     if let Some(input) = block.get("input").filter(|v| !v.is_null()) {
                         out.push(IrStreamEvent::ToolCallArgDelta {
                             delta: input.to_string(),
-                            index: 0,
+                            index,
                         });
                     }
                     out.push(IrStreamEvent::ToolCallEnd);
@@ -1292,6 +1295,7 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
         return Vec::new();
     };
     let mut out = Vec::new();
+    let mut tool_index = 0u32;
     for item in items {
         match item.get("type").and_then(Value::as_str) {
             Some("message") => {
@@ -1337,29 +1341,33 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                 push_output_audio_events(&mut out, item);
             }
             Some("function_call") => {
+                let index = tool_index;
+                tool_index = tool_index.saturating_add(1);
                 out.push(IrStreamEvent::ToolCallStart {
                     id: str_field(item, "call_id")
                         .or_else(|| str_field(item, "id"))
                         .unwrap_or_default(),
                     name: str_field(item, "name").unwrap_or_default(),
                     thought_signature: None,
-                    index: 0,
+                    index,
                 });
                 if let Some(delta) = str_field(item, "arguments").filter(|s| !s.is_empty()) {
-                    out.push(IrStreamEvent::ToolCallArgDelta { delta, index: 0 });
+                    out.push(IrStreamEvent::ToolCallArgDelta { delta, index });
                 }
                 out.push(IrStreamEvent::ToolCallEnd);
             }
             Some("custom_tool_call") => {
+                let index = tool_index;
+                tool_index = tool_index.saturating_add(1);
                 out.push(IrStreamEvent::CustomToolCallStart {
                     id: str_field(item, "call_id")
                         .or_else(|| str_field(item, "id"))
                         .unwrap_or_default(),
                     name: str_field(item, "name").unwrap_or_default(),
-                    index: 0,
+                    index,
                 });
                 if let Some(delta) = str_field(item, "input").filter(|s| !s.is_empty()) {
-                    out.push(IrStreamEvent::CustomToolCallInputDelta { delta, index: 0 });
+                    out.push(IrStreamEvent::CustomToolCallInputDelta { delta, index });
                 }
                 out.push(IrStreamEvent::ToolCallEnd);
             }

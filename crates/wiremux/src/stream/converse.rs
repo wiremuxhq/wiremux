@@ -5,6 +5,8 @@ use serde_json::{Value, json};
 use crate::ir::IrStreamEvent;
 use crate::map::MapError;
 
+use super::{MAX_CONTENT_BLOCK_INDEX, check_index};
+
 pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     if let Some(delta) = value.pointer("/contentBlockDelta/delta") {
         if let Some(text) = delta.get("text").and_then(Value::as_str) {
@@ -29,9 +31,10 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             }));
         }
         if let Some(input) = delta.pointer("/toolUse/input").and_then(Value::as_str) {
+            let block = value.get("contentBlockDelta").unwrap_or(value);
             return Ok(Some(IrStreamEvent::ToolCallArgDelta {
                 delta: input.to_string(),
-                index: 0,
+                index: content_block_index(block)?,
             }));
         }
         if let Some(citation) = delta.get("citation")
@@ -57,7 +60,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             id,
             name,
             thought_signature: None,
-            index: 0,
+            index: content_block_index(start)?,
         }));
     }
     if value.get("contentBlockStop").is_some() {
@@ -286,6 +289,7 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let mut tool_index = 0u32;
     for block in &blocks {
         let sibling = block.get("text").and_then(Value::as_str).unwrap_or("");
         let generated = citations_content_text(block);
@@ -351,16 +355,15 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
                 .get("input")
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "{}".into());
+            let index = tool_index;
+            tool_index = tool_index.saturating_add(1);
             out.push(IrStreamEvent::ToolCallStart {
                 id,
                 name,
                 thought_signature: None,
-                index: 0,
+                index,
             });
-            out.push(IrStreamEvent::ToolCallArgDelta {
-                delta: args,
-                index: 0,
-            });
+            out.push(IrStreamEvent::ToolCallArgDelta { delta: args, index });
             out.push(IrStreamEvent::ToolCallEnd);
         }
     }
@@ -504,6 +507,20 @@ fn tool_use(id: &str, name: &str, args: &str) -> Value {
             "input": input
         }
     })
+}
+
+fn content_block_index(block: &Value) -> Result<u32, MapError> {
+    check_index(
+        block,
+        "contentBlockIndex",
+        MAX_CONTENT_BLOCK_INDEX,
+        "content block",
+    )?;
+    Ok(block
+        .get("contentBlockIndex")
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0))
 }
 
 fn finish_reason(reason: &str) -> &'static str {
