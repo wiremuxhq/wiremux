@@ -1073,6 +1073,51 @@ fn gemini_consecutive_function_responses_share_user_turn() {
 }
 
 #[test]
+fn gemini_same_name_function_responses_pair_in_order() {
+    let req = br#"{
+        "contents": [
+            { "role": "user", "parts": [{ "text": "hi" }] },
+            { "role": "model", "parts": [
+                { "functionCall": { "name": "read_file", "args": { "path": "a.rs" } } },
+                { "functionCall": { "name": "read_file", "args": { "path": "b.rs" } } }
+            ]},
+            { "role": "user", "parts": [
+                { "functionResponse": { "name": "read_file", "response": { "text": "aaa" } } },
+                { "functionResponse": { "name": "read_file", "response": { "text": "bbb" } } }
+            ]}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let calls: Vec<&str> = ir
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            IrItem::FunctionCall { call_id, name, .. } if name == "read_file" => {
+                Some(call_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let outs: Vec<&str> = ir
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            IrItem::FunctionOutput { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 2, "two calls, got {:?}", ir.items);
+    assert_ne!(
+        calls[0], calls[1],
+        "same-name calls need distinct ids, got {calls:?}"
+    );
+    assert_eq!(
+        outs, calls,
+        "each functionResponse must bind the next unmatched call, got outs={outs:?} calls={calls:?}"
+    );
+}
+
+#[test]
 fn gemini_function_response_uses_function_name_not_call_id() {
     let ir = wiremux::IrRequest::new(
         "gemini-2.5-flash",
