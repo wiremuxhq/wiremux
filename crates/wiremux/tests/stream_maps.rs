@@ -6221,3 +6221,58 @@ fn stream_encoder_parallel_tools_to_chat_use_distinct_indexes() {
         "parallel Chat tool calls must use distinct indexes, got {indexes:?} from {frames:?}"
     );
 }
+
+#[test]
+fn converse_stream_tool_uses_content_block_index() {
+    let start = RawSse {
+        event: None,
+        data: r#"{"contentBlockStart":{"contentBlockIndex":1,"start":{"toolUse":{"toolUseId":"t1","name":"lookup"}}}}"#.into(),
+    };
+    let delta = RawSse {
+        event: None,
+        data: r#"{"contentBlockDelta":{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{\"q\":1}"}}}}"#.into(),
+    };
+    let start_ev = decode_stream_event(Wire::Converse, &start, &converse_profile())
+        .expect("decode contentBlockStart")
+        .expect("tool start");
+    assert!(
+        matches!(start_ev, IrStreamEvent::ToolCallStart { index: 1, .. }),
+        "contentBlockStart contentBlockIndex 1 must be ToolCallStart index 1, got {start_ev:?}"
+    );
+    let delta_ev = decode_stream_event(Wire::Converse, &delta, &converse_profile())
+        .expect("decode contentBlockDelta")
+        .expect("tool delta");
+    assert!(
+        matches!(delta_ev, IrStreamEvent::ToolCallArgDelta { index: 1, .. }),
+        "contentBlockDelta contentBlockIndex 1 must be ToolCallArgDelta index 1, got {delta_ev:?}"
+    );
+}
+
+#[test]
+fn converse_stream_missing_content_block_index_is_zero() {
+    let start = RawSse {
+        event: None,
+        data: r#"{"contentBlockStart":{"start":{"toolUse":{"toolUseId":"t","name":"f"}}}}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::Converse, &start, &converse_profile())
+        .expect("decode")
+        .expect("tool start");
+    assert!(
+        matches!(ev, IrStreamEvent::ToolCallStart { index: 0, .. }),
+        "missing contentBlockIndex stays 0, got {ev:?}"
+    );
+}
+
+#[test]
+fn converse_stream_content_block_index_above_cap_is_error() {
+    let start = RawSse {
+        event: None,
+        data: r#"{"contentBlockStart":{"contentBlockIndex":129,"start":{"toolUse":{"toolUseId":"t","name":"f"}}}}"#.into(),
+    };
+    let err = decode_stream_event(Wire::Converse, &start, &converse_profile())
+        .expect_err("contentBlockIndex 129 must fail");
+    assert!(
+        matches!(err, MapError::Invalid(ref msg) if msg.contains("129") && msg.contains("128")),
+        "hostile contentBlockIndex must be an error, not index 0, got {err}"
+    );
+}

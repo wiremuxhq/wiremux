@@ -1193,3 +1193,123 @@ fn converse_complete_non_json_tool_input_stays_string() {
         "got {mapped}"
     );
 }
+
+#[test]
+fn converse_complete_parallel_tool_use_indexes() {
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [
+                    { "text": "hi" },
+                    { "toolUse": { "toolUseId": "t0", "name": "a", "input": { "q": 1 } } },
+                    { "toolUse": { "toolUseId": "t1", "name": "b", "input": { "q": 2 } } }
+                ]
+            }
+        },
+        "stopReason": "tool_use"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile()).expect("decode");
+    let starts: Vec<u32> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    let deltas: Vec<u32> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        [0, 1],
+        "toolUse blocks number 0, 1; text does not take a slot, got {events:?}"
+    );
+    assert_eq!(
+        deltas,
+        [0, 1],
+        "argument deltas share the tool index, got {events:?}"
+    );
+}
+
+#[test]
+fn responses_complete_parallel_function_call_indexes() {
+    let body = serde_json::to_vec(&json!({
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "content": [{ "type": "output_text", "text": "hi" }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "c0",
+                "name": "a",
+                "arguments": "{\"q\":1}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "c1",
+                "name": "b",
+                "arguments": "{\"q\":2}"
+            }
+        ]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile()).expect("decode");
+    let starts: Vec<u32> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    let deltas: Vec<(u32, &str)> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { index, delta } => Some((*index, delta.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        [0, 1],
+        "function_call items number 0, 1; a message does not take a slot, got {events:?}"
+    );
+    assert_eq!(
+        deltas,
+        [(0, r#"{"q":1}"#), (1, r#"{"q":2}"#)],
+        "argument deltas share the tool index, got {events:?}"
+    );
+}
+
+#[test]
+fn responses_complete_custom_tool_shares_function_call_index() {
+    let body = serde_json::to_vec(&json!({
+        "output": [
+            { "type": "message", "content": [{ "type": "output_text", "text": "hi" }] },
+            { "type": "function_call", "call_id": "c0", "name": "a", "arguments": "{}" },
+            { "type": "custom_tool_call", "call_id": "c1", "name": "b", "input": "x" }
+        ]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile()).expect("decode");
+    let slots: Vec<(&str, u32)> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart { name, index, .. } => Some((name.as_str(), *index)),
+            IrStreamEvent::CustomToolCallStart { name, index, .. } => Some((name.as_str(), *index)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        slots,
+        [("a", 0), ("b", 1)],
+        "custom_tool_call shares the tool slot counter, got {events:?}"
+    );
+}
