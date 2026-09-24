@@ -1289,6 +1289,32 @@ fn responses_complete_parallel_function_call_indexes() {
 }
 
 #[test]
+fn messages_complete_parallel_tool_use_indexes() {
+    let body = serde_json::to_vec(&json!({
+        "content": [
+            { "type": "text", "text": "hi" },
+            { "type": "tool_use", "id": "t0", "name": "a", "input": { "q": 1 } },
+            { "type": "tool_use", "id": "t1", "name": "b", "input": { "q": 2 } }
+        ],
+        "stop_reason": "tool_use"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile()).expect("decode");
+    let starts: Vec<(&str, u32)> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart { name, index, .. } => Some((name.as_str(), *index)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        [("a", 0), ("b", 1)],
+        "tool_use blocks number 0, 1; text does not take a slot, got {events:?}"
+    );
+}
+
+#[test]
 fn responses_complete_custom_tool_shares_function_call_index() {
     let body = serde_json::to_vec(&json!({
         "output": [

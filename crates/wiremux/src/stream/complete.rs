@@ -999,6 +999,7 @@ fn complete_chat_tool_call(call: &Value) -> Vec<IrStreamEvent> {
 
 fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     let mut out = Vec::new();
+    let mut tool_index = 0u32;
     if let Some(content) = value.get("content").and_then(Value::as_array) {
         for block in content {
             match block.get("type").and_then(Value::as_str) {
@@ -1026,16 +1027,18 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
                     }
                 }
                 Some("tool_use") => {
+                    let index = tool_index;
+                    tool_index = tool_index.saturating_add(1);
                     out.push(IrStreamEvent::ToolCallStart {
                         id: str_field(block, "id").unwrap_or_default(),
                         name: str_field(block, "name").unwrap_or_default(),
                         thought_signature: None,
-                        index: 0,
+                        index,
                     });
                     if let Some(input) = block.get("input").filter(|v| !v.is_null()) {
                         out.push(IrStreamEvent::ToolCallArgDelta {
                             delta: input.to_string(),
-                            index: 0,
+                            index,
                         });
                     }
                     out.push(IrStreamEvent::ToolCallEnd);
