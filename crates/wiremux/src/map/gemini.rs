@@ -44,6 +44,23 @@ fn system_text(value: Option<&Value>) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+fn unmatched_call_id(items: &[IrItem], name: &str) -> Option<String> {
+    let mut used = Vec::new();
+    for item in items {
+        if let IrItem::FunctionOutput { call_id, .. } = item {
+            used.push(call_id.as_str());
+        }
+    }
+    items.iter().find_map(|item| match item {
+        IrItem::FunctionCall {
+            call_id,
+            name: call_name,
+            ..
+        } if call_name == name && !used.iter().any(|id| *id == call_id) => Some(call_id.clone()),
+        _ => None,
+    })
+}
+
 fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
     let role = content
         .get("role")
@@ -83,16 +100,7 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
-                .or_else(|| {
-                    items.iter().rev().find_map(|item| match item {
-                        IrItem::FunctionCall {
-                            call_id,
-                            name: call_name,
-                            ..
-                        } if call_name == &name => Some(call_id.clone()),
-                        _ => None,
-                    })
-                })
+                .or_else(|| unmatched_call_id(items, &name))
                 .unwrap_or(name);
             items.push(IrItem::FunctionOutput { call_id, output });
             continue;
