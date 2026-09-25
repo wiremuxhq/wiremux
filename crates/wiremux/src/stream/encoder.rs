@@ -967,7 +967,10 @@ impl StreamEncoder {
     fn finish_chat(&mut self) -> Vec<RawSse> {
         let mut out = Vec::new();
         if let Some(reason) = self.finish.take() {
-            let reason = super::chat::encode_finish(&reason);
+            let mut reason = super::chat::encode_finish(&reason).to_string();
+            if reason == "stop" && !self.used_tool.is_empty() {
+                reason = "tool_calls".to_string();
+            }
             out.push(RawSse {
                 event: None,
                 data: json!({
@@ -1143,6 +1146,18 @@ mod tests {
                 .ok()
                 .and_then(|v| {
                     v.pointer("/messageStop/stopReason")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+        })
+    }
+
+    fn chat_finish_reason(frames: &[RawSse]) -> Option<String> {
+        frames.iter().find_map(|frame| {
+            serde_json::from_str::<Value>(&frame.data)
+                .ok()
+                .and_then(|v| {
+                    v.pointer("/choices/0/finish_reason")
                         .and_then(Value::as_str)
                         .map(str::to_string)
                 })
@@ -1605,6 +1620,64 @@ mod tests {
             !start.data.contains("\"model\":\"\""),
             "message_start must not emit empty model, got {}",
             start.data
+        );
+    }
+
+    #[test]
+    fn chat_encoder_stop_after_tool_is_tool_calls() {
+        let mut tools = StreamEncoder::new(Wire::ChatCompletions);
+        tools
+            .push(IrStreamEvent::ToolCallStart {
+                id: "call_a".into(),
+                name: "get_weather".into(),
+                thought_signature: None,
+                index: 0,
+            })
+            .expect("push tool");
+        tools
+            .push(IrStreamEvent::FinishReason {
+                reason: "stop".into(),
+            })
+            .expect("push stop");
+        let frames = tools.finish().expect("finish");
+        assert_eq!(
+            chat_finish_reason(&frames).as_deref(),
+            Some("tool_calls"),
+            "stop after a tool call must be tool_calls, got {frames:?}"
+        );
+
+        let mut plain = StreamEncoder::new(Wire::ChatCompletions);
+        plain
+            .push(IrStreamEvent::FinishReason {
+                reason: "stop".into(),
+            })
+            .expect("push stop");
+        let plain_frames = plain.finish().expect("finish plain");
+        assert_eq!(
+            chat_finish_reason(&plain_frames).as_deref(),
+            Some("stop"),
+            "stop with no tool call stays stop, got {plain_frames:?}"
+        );
+
+        let mut filtered = StreamEncoder::new(Wire::ChatCompletions);
+        filtered
+            .push(IrStreamEvent::ToolCallStart {
+                id: "call_a".into(),
+                name: "get_weather".into(),
+                thought_signature: None,
+                index: 0,
+            })
+            .expect("push tool");
+        filtered
+            .push(IrStreamEvent::FinishReason {
+                reason: "content_filter".into(),
+            })
+            .expect("push filter");
+        let filtered_frames = filtered.finish().expect("finish filter");
+        assert_eq!(
+            chat_finish_reason(&filtered_frames).as_deref(),
+            Some("content_filter"),
+            "content_filter stays even after a tool call, got {filtered_frames:?}"
         );
     }
 
