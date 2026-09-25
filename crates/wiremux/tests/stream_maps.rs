@@ -5286,7 +5286,7 @@ fn responses_reasoning_delta_is_not_output_text() {
 }
 
 #[test]
-fn chat_tool_start_with_args_keeps_bytes() {
+fn chat_tool_start_with_args_is_tool_call_start() {
     let raw = RawSse {
         event: None,
         data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]}}]}"#.into(),
@@ -5294,19 +5294,18 @@ fn chat_tool_start_with_args_keeps_bytes() {
     let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
         .expect("decode start+args")
         .expect("must not drop tool-bearing frame");
-    match ev {
-        IrStreamEvent::Protocol {
-            ref item_type,
-            ref payload,
-        } => {
-            assert_eq!(item_type, "chunk");
-            assert_eq!(
-                payload["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"],
-                r#"{"q":"#
-            );
-        }
-        other => panic!("expected Protocol keeping arg bytes, got {other:?}"),
-    }
+    assert!(
+        matches!(
+            ev,
+            IrStreamEvent::ToolCallStart { ref id, ref name, index: 0, .. }
+                if id == "call_1" && name == "lookup"
+        ),
+        "1:1 id plus arguments is a tool-call start, got {ev:?}"
+    );
+    assert!(
+        !matches!(ev, IrStreamEvent::Protocol { ref item_type, .. } if item_type == "chunk"),
+        "arguments must not hide the call in Protocol chunk"
+    );
 
     let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
         .expect("fan-out start+args");
@@ -5323,6 +5322,66 @@ fn chat_tool_start_with_args_keeps_bytes() {
             IrStreamEvent::ToolCallArgDelta { delta, .. } if delta == r#"{"q":"#
         )),
         "fan-out must emit ArgDelta, got {all:?}"
+    );
+}
+
+#[test]
+fn chat_decode_stream_event_keeps_function_call_with_args() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}},{"index":1,"id":"call_b","type":"function","function":{"name":"get_time","arguments":"{}"}}]}}]}"#.into(),
+    };
+    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode")
+        .expect("event");
+    assert!(
+        matches!(
+            ev,
+            IrStreamEvent::ToolCallStart { ref id, ref name, index: 0, .. }
+                if id == "call_a" && name == "get_weather"
+        ),
+        "singular decode must surface call_a, got {ev:?}"
+    );
+    assert!(
+        !matches!(ev, IrStreamEvent::Protocol { ref item_type, .. } if item_type == "chunk"),
+        "call_a must not hide in Protocol chunk, got {ev:?}"
+    );
+
+    let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("events");
+    let ids: Vec<&str> = all
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, ["call_a", "call_b"], "both calls stay, got {all:?}");
+    let deltas: Vec<(&str, u32)> = all
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { delta, index } => Some((delta.as_str(), *index)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        deltas,
+        [(r#"{"city":"Paris"}"#, 0), ("{}", 1)],
+        "both argument strings stay, got {all:?}"
+    );
+
+    let more = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":" more"}}]}}]}"#.into(),
+    };
+    let delta = decode_stream_event(Wire::ChatCompletions, &more, &chat_profile())
+        .expect("decode continuation")
+        .expect("arg delta");
+    assert!(
+        matches!(
+            delta,
+            IrStreamEvent::ToolCallArgDelta { ref delta, index: 0 } if delta == " more"
+        ),
+        "arguments-only chunk stays ToolCallArgDelta at index 0, got {delta:?}"
     );
 }
 

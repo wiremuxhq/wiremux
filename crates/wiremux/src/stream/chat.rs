@@ -377,10 +377,6 @@ fn decode_tool_call(call: &Value, chunk: &Value) -> IrStreamEvent {
     let name = str_field(func, "name");
     let args = str_field(func, "arguments").filter(|s| !s.is_empty());
     let index = tool_call_index(call);
-    // 1:1 API cannot emit Start and ArgDelta together; keep the whole chunk.
-    if (id.is_some() || name.is_some()) && args.is_some() {
-        return keep();
-    }
     if id.is_some() || name.is_some() {
         return IrStreamEvent::ToolCallStart {
             id: id.unwrap_or_default(),
