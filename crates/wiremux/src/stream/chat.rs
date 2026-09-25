@@ -155,15 +155,13 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     {
         for call in calls {
             check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
-            super::json_text_field(function_body(call), "arguments")?;
-            out.extend(expand_tool_call(call, value));
+            out.extend(expand_tool_call(call, value)?);
         }
     } else if let Some(fc) = choice
         .pointer("/delta/function_call")
         .filter(|v| v.is_object())
     {
-        super::json_text_field(function_body(fc), "arguments")?;
-        out.extend(expand_tool_call(fc, value));
+        out.extend(expand_tool_call(fc, value)?);
     }
 
     let delta = choice.get("delta");
@@ -358,23 +356,62 @@ pub(super) fn tool_call_index(call: &Value) -> u32 {
         .unwrap_or(0)
 }
 
+fn protocol_chunk(chunk: &Value) -> Vec<IrStreamEvent> {
+    vec![IrStreamEvent::Protocol {
+        item_type: "chunk".into(),
+        payload: chunk.clone(),
+    }]
+}
+
+/// `type: custom`, or a continuation that only carries `custom`.
+fn is_custom_tool_call(call: &Value) -> bool {
+    match call.get("type").and_then(Value::as_str) {
+        Some("custom") => true,
+        Some(_) => false,
+        None => call.get("custom").is_some() && call.get("function").is_none(),
+    }
+}
+
+fn expand_custom_tool_call(call: &Value, chunk: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
+    let custom = call.get("custom").unwrap_or(call);
+    let id = str_field(call, "id").unwrap_or_default();
+    let name = str_field(custom, "name").unwrap_or_default();
+    let input = super::json_text_field(custom, "input")?;
+    let index = tool_call_index(call);
+    let mut out = Vec::new();
+    if !id.is_empty() || !name.is_empty() {
+        out.push(IrStreamEvent::CustomToolCallStart { id, name, index });
+    }
+    if let Some(delta) = input {
+        out.push(IrStreamEvent::CustomToolCallInputDelta { delta, index });
+    }
+    if out.is_empty() {
+        Ok(protocol_chunk(chunk))
+    } else {
+        Ok(out)
+    }
+}
+
 /// Expand one Chat `tool_calls[]` entry into Start and/or ArgDelta.
-pub(super) fn expand_tool_call(call: &Value, chunk: &Value) -> Vec<IrStreamEvent> {
-    let keep = || {
-        vec![IrStreamEvent::Protocol {
-            item_type: "chunk".into(),
-            payload: chunk.clone(),
-        }]
-    };
+///
+/// Number, boolean, and null `arguments` / `custom.input` are
+/// [`MapError::Invalid`]. An unknown `type` stays `Protocol`.
+pub(super) fn expand_tool_call(
+    call: &Value,
+    chunk: &Value,
+) -> Result<Vec<IrStreamEvent>, MapError> {
+    if is_custom_tool_call(call) {
+        return expand_custom_tool_call(call, chunk);
+    }
     if let Some(ty) = call.get("type").and_then(Value::as_str)
         && ty != "function"
     {
-        return keep();
+        return Ok(protocol_chunk(chunk));
     }
     let func = function_body(call);
     let id = str_field(call, "id").unwrap_or_default();
     let name = str_field(func, "name").unwrap_or_default();
-    let args = super::json_text_field(func, "arguments").ok().flatten();
+    let args = super::json_text_field(func, "arguments")?;
     let index = tool_call_index(call);
     let mut out = Vec::new();
     if !id.is_empty() || !name.is_empty() {
@@ -388,7 +425,11 @@ pub(super) fn expand_tool_call(call: &Value, chunk: &Value) -> Vec<IrStreamEvent
     if let Some(delta) = args {
         out.push(IrStreamEvent::ToolCallArgDelta { delta, index });
     }
-    if out.is_empty() { keep() } else { out }
+    if out.is_empty() {
+        Ok(protocol_chunk(chunk))
+    } else {
+        Ok(out)
+    }
 }
 
 /// `id` or `name` together with a non-empty `arguments` string.
