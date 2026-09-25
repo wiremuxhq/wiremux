@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.1](https://github.com/wiremuxhq/wiremux/compare/v0.9.0...v0.9.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* keep Chat tool arguments that arrive as JSON ([#300](https://github.com/wiremuxhq/wiremux/issues/300)) ([e9784d3](https://github.com/wiremuxhq/wiremux/commit/e9784d35cf199529582ae220d858ba3ba59f175e)), closes [#299](https://github.com/wiremuxhq/wiremux/issues/299)
+* keep Messages tool arguments before content_block_stop ([#298](https://github.com/wiremuxhq/wiremux/issues/298)) ([b46acf4](https://github.com/wiremuxhq/wiremux/commit/b46acf43613064ee237088716141c96c9fb8c6df))
+* refuse Chat decode_stream_event that drops tool arguments ([#296](https://github.com/wiremuxhq/wiremux/issues/296)) ([1eb22c2](https://github.com/wiremuxhq/wiremux/commit/1eb22c249b1fe2da90c7a48ed2ee0aa840f929a7)), closes [#295](https://github.com/wiremuxhq/wiremux/issues/295)
+
 ## [0.9.0](https://github.com/wiremuxhq/wiremux/compare/v0.8.0...v0.9.0) (2026-09-25)
 
 
