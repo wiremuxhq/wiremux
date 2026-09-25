@@ -6325,7 +6325,7 @@ fn eventstream_frames(body: &[u8]) -> Vec<wiremux::stream::RawSse> {
     let mut reader = wiremux::stream::EventStreamReader::new();
     let (mut frames, err) = reader.feed(body).expect("eventstream feed");
     assert!(err.is_none(), "{err:?}");
-    if let Some(last) = reader.drain() {
+    if let Some(last) = reader.finish().expect("eventstream finish") {
         frames.push(last);
     }
     frames

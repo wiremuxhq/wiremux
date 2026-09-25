@@ -95,6 +95,14 @@ impl UpstreamFrames {
             Self::Event(r) => r.drain(),
         }
     }
+
+    /// EOF. SSE may emit one last frame. Event Stream fails if bytes remain.
+    pub fn finish(&mut self) -> Result<Option<RawSse>, String> {
+        match self {
+            Self::Sse(r) => Ok(r.drain()),
+            Self::Event(r) => r.finish(),
+        }
+    }
 }
 
 /// Decode one SSE frame. `None` is a recognized no-op (ping, empty delta).
@@ -734,6 +742,21 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
     value.get(key)?.as_str().map(str::to_string)
 }
 
+/// Chat-shaped SSE `data` that is only an `error` object.
+///
+/// `choices` or `delta` means a normal chunk, even if `error` is also set.
+pub(crate) fn sse_wrapped_error_message(data: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(data).ok()?;
+    if value.get("choices").is_some() || value.get("delta").is_some() {
+        return None;
+    }
+    let error = value.get("error").filter(|v| v.is_object())?;
+    match error.get("message").and_then(Value::as_str) {
+        Some(message) if !message.is_empty() => Some(message.to_string()),
+        _ => Some("upstream error".to_string()),
+    }
+}
+
 /// String, object, or array. Objects and arrays become compact JSON.
 /// Empty string is absent. Anything else is an error, not a silent drop.
 fn json_text_field(value: &Value, key: &str) -> Result<Option<String>, MapError> {
@@ -793,6 +816,27 @@ mod tests {
         assert_eq!(frames[0].data, r#"{"type":"ping"}"#);
         assert_eq!(frames[1].event, None);
         assert_eq!(frames[1].data, "[DONE]");
+    }
+
+    #[test]
+    fn sse_wrapped_error_message_extracts_error_object() {
+        let msg = sse_wrapped_error_message(
+            r#"{"error":{"message":"upstream failed","type":"server_error"}}"#,
+        );
+        assert_eq!(msg.as_deref(), Some("upstream failed"));
+    }
+
+    #[test]
+    fn sse_wrapped_error_message_ignores_error_when_choices_present() {
+        let msg = sse_wrapped_error_message(r#"{"choices":[],"error":{"message":"nope"}}"#);
+        assert!(msg.is_none(), "{msg:?}");
+    }
+
+    #[test]
+    fn sse_wrapped_error_message_ignores_normal_chat_chunk() {
+        let msg =
+            sse_wrapped_error_message(r#"{"choices":[{"delta":{"content":"hi"},"index":0}]}"#);
+        assert!(msg.is_none(), "{msg:?}");
     }
 
     #[cfg(feature = "proxy")]

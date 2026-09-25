@@ -17,7 +17,10 @@ use crate::aws_sign::{apply_aws_sigv4, bearer_token_applied};
 use crate::headers::{apply_profile_headers, apply_provider_headers};
 use crate::ir::{IrRequest, IrStreamEvent, LossReport};
 use crate::map::{MapError, encode};
-use crate::stream::{ToolCallAssembler, UpstreamFrames, decode_response, decode_stream_events};
+use crate::stream::{
+    ToolCallAssembler, UpstreamFrames, decode_response, decode_stream_events,
+    sse_wrapped_error_message,
+};
 use crate::upstream::upstream_url_for_model;
 
 const MAX_SUCCESS_BODY: usize = 16 * 1024 * 1024;
@@ -672,10 +675,19 @@ async fn pull_live(
                 return Some((Err(classify_read_err(err)), StreamPhase::Done));
             }
             None => {
-                if let Some(last) = live.reader.drain()
-                    && let Err(err) = live.push_frames(vec![last])
-                {
-                    return Some((Err(err), StreamPhase::Done));
+                match live.reader.finish() {
+                    Ok(Some(last)) => {
+                        if let Err(err) = live.push_frames(vec![last]) {
+                            return Some((Err(err), StreamPhase::Done));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        return Some((
+                            Err(classify_feed_err(err, live.http_status)),
+                            StreamPhase::Done,
+                        ));
+                    }
                 }
                 if !live.saw_frame {
                     let text = String::from_utf8_lossy(&live.leftover);
@@ -889,10 +901,8 @@ fn classify_empty_stream(status: u16, body: &str) -> ClientError {
 }
 
 fn classify_sse_wrapped_error(data: &str, status: u16) -> Option<ClientError> {
+    sse_wrapped_error_message(data)?;
     let value: Value = serde_json::from_str(data).ok()?;
-    if value.get("choices").is_some() || value.get("delta").is_some() {
-        return None;
-    }
     let error = value.get("error").filter(|v| v.is_object())?;
     let code = json_error_code(error);
     let message = error_message(data);
