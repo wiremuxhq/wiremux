@@ -7145,9 +7145,9 @@ fn converse_decode_tool_result_json_round_trips_nonempty() {
         !output.is_empty(),
         "json toolResult must not decode to empty string, got {output:?}"
     );
-    assert!(
-        output.contains("ok") && output.contains("true"),
-        "json payload must be serialized, got {output:?}"
+    assert_eq!(
+        output, r#"{"n":1,"ok":true}"#,
+        "json toolResult must keep the object, got {output:?}"
     );
     let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
