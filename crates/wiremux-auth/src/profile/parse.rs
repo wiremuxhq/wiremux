@@ -121,7 +121,18 @@ pub(crate) struct RawProfile {
     pub(crate) stream_unknown_policy: Option<StreamUnknownPolicy>,
     #[serde(default, alias = "baseUrl")]
     pub(crate) base_url: Option<String>,
-    #[serde(default, alias = "chatPath")]
+    #[serde(
+        default,
+        alias = "chatPath",
+        alias = "messages_path",
+        alias = "messagesPath",
+        alias = "responses_path",
+        alias = "responsesPath",
+        alias = "gemini_path",
+        alias = "geminiPath",
+        alias = "converse_path",
+        alias = "conversePath"
+    )]
     pub(crate) chat_path: Option<String>,
     #[serde(default, alias = "authScheme")]
     pub(crate) auth_scheme: Option<AuthScheme>,
@@ -653,6 +664,11 @@ mod tests {
             ),
             Err(ProfileError::DisallowedUrl { .. })
         ));
+        let p = parse_profile_str(
+            "schema_version = 1\nid = \"x\"\nwire = \"responses\"\nresponses_path = \"/custom/responses\"\n",
+        )
+        .expect("responses_path is the chat path");
+        assert_eq!(p.http.chat_path.as_deref(), Some("/custom/responses"));
         let p = parse_profile_str("schema_version = 1\nid = \"x\"\nchat_path = \"/v1/messages\"\n")
             .unwrap();
         assert_eq!(p.http.chat_path.as_deref(), Some("/v1/messages"));

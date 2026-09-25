@@ -1021,6 +1021,38 @@ fn responses_complete_encrypted_reasoning_is_one_protocol() {
 }
 
 #[test]
+fn responses_function_call_encodes_chat_finish_tool_calls() {
+    let body = serde_json::to_vec(&json!({
+        "status": "completed",
+        "model": "gpt",
+        "output": [{
+            "type": "function_call",
+            "call_id": "call_a",
+            "name": "read_file",
+            "arguments": "{\"path\":\"a.rs\"}"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode Responses function_call");
+    let mapped = encode_response(Wire::ChatCompletions, &events).expect("encode Chat");
+    assert_eq!(
+        mapped
+            .pointer("/choices/0/finish_reason")
+            .and_then(serde_json::Value::as_str),
+        Some("tool_calls"),
+        "a Responses function_call must be Chat finish_reason tool_calls, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/choices/0/message/tool_calls/0/id")
+            .and_then(serde_json::Value::as_str),
+        Some("call_a"),
+        "tool call id must survive, got {mapped}"
+    );
+}
+
+#[test]
 fn chat_complete_non_function_tool_call_is_protocol() {
     let body = serde_json::to_vec(&json!({
         "choices": [{
