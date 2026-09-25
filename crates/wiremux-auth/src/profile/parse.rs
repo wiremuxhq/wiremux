@@ -121,19 +121,20 @@ pub(crate) struct RawProfile {
     pub(crate) stream_unknown_policy: Option<StreamUnknownPolicy>,
     #[serde(default, alias = "baseUrl")]
     pub(crate) base_url: Option<String>,
-    #[serde(
-        default,
-        alias = "chatPath",
-        alias = "messages_path",
-        alias = "messagesPath",
-        alias = "responses_path",
-        alias = "responsesPath",
-        alias = "gemini_path",
-        alias = "geminiPath",
-        alias = "converse_path",
-        alias = "conversePath"
-    )]
+    #[serde(default, alias = "chatPath")]
     pub(crate) chat_path: Option<String>,
+    /// Honored only when `wire` is `messages` and `chat_path` is unset.
+    #[serde(default, alias = "messagesPath")]
+    pub(crate) messages_path: Option<String>,
+    /// Honored only when `wire` is `responses` and `chat_path` is unset.
+    #[serde(default, alias = "responsesPath")]
+    pub(crate) responses_path: Option<String>,
+    /// Honored only when `wire` is `gemini` and `chat_path` is unset.
+    #[serde(default, alias = "geminiPath")]
+    pub(crate) gemini_path: Option<String>,
+    /// Honored only when `wire` is `converse` and `chat_path` is unset.
+    #[serde(default, alias = "conversePath")]
+    pub(crate) converse_path: Option<String>,
     #[serde(default, alias = "authScheme")]
     pub(crate) auth_scheme: Option<AuthScheme>,
     #[serde(default)]
@@ -273,7 +274,23 @@ pub(crate) struct RawFingerprint {
     pub(crate) extra_body: Option<BTreeMap<String, Value>>,
 }
 
+/// `chat_path` wins. Otherwise the key that matches this profile's wire.
+pub(crate) fn effective_chat_path(raw: &RawProfile) -> Option<String> {
+    if let Some(path) = raw.chat_path.clone() {
+        return Some(path);
+    }
+    match raw.wire {
+        Some(Wire::Messages) => raw.messages_path.clone(),
+        Some(Wire::Responses) => raw.responses_path.clone(),
+        Some(Wire::Gemini) => raw.gemini_path.clone(),
+        Some(Wire::Converse) => raw.converse_path.clone(),
+        Some(Wire::ChatCompletions) | None => None,
+    }
+}
+
 pub(crate) fn resolve(raw: RawProfile) -> Result<ResolvedProfile, ProfileError> {
+    let chat_path =
+        effective_chat_path(&raw).or_else(|| raw.wire.map(|w| w.default_chat_path().to_string()));
     let schema_version = raw
         .schema_version
         .ok_or(ProfileError::MissingField("schema_version"))?;
@@ -346,9 +363,7 @@ pub(crate) fn resolve(raw: RawProfile) -> Result<ResolvedProfile, ProfileError> 
         },
         http: Http {
             base_url: raw.base_url,
-            chat_path: raw
-                .chat_path
-                .or_else(|| wire.map(|w| w.default_chat_path().to_string())),
+            chat_path,
             auth_scheme: raw
                 .auth_scheme
                 .or_else(|| wire.map(Wire::default_auth_scheme)),
@@ -672,6 +687,42 @@ mod tests {
         let p = parse_profile_str("schema_version = 1\nid = \"x\"\nchat_path = \"/v1/messages\"\n")
             .unwrap();
         assert_eq!(p.http.chat_path.as_deref(), Some("/v1/messages"));
+    }
+
+    #[test]
+    fn wire_path_keys_do_not_alias_across_wires() {
+        let both = parse_profile_str(
+            "schema_version = 1\nid = \"x\"\nwire = \"responses\"\nchat_path = \"/v1/chat\"\nresponses_path = \"/v1/responses\"\n",
+        )
+        .expect("chat_path plus responses_path still loads");
+        assert_eq!(both.http.chat_path.as_deref(), Some("/v1/chat"));
+
+        let two = parse_profile_str(
+            "schema_version = 1\nid = \"x\"\nwire = \"chat-completions\"\nmessages_path = \"/v1/messages\"\nresponses_path = \"/v1/responses\"\n",
+        )
+        .expect("foreign path keys are ignored");
+        assert_eq!(
+            two.http.chat_path.as_deref(),
+            Some("/v1/chat/completions"),
+            "a key for another wire must not become the endpoint"
+        );
+
+        let matched = parse_profile_str(
+            "schema_version = 1\nid = \"x\"\nwire = \"messages\"\nmessagesPath = \"/custom/messages\"\n",
+        )
+        .expect("messagesPath matches the messages wire");
+        assert_eq!(matched.http.chat_path.as_deref(), Some("/custom/messages"));
+
+        let gemini = parse_profile_str(
+            "schema_version = 1\nid = \"x\"\nwire = \"gemini\"\ngemini_path = \"/custom/gemini\"\n",
+        )
+        .expect("gemini_path");
+        assert_eq!(gemini.http.chat_path.as_deref(), Some("/custom/gemini"));
+        let converse = parse_profile_str(
+            "schema_version = 1\nid = \"x\"\nwire = \"converse\"\nconverse_path = \"/custom/converse\"\n",
+        )
+        .expect("converse_path");
+        assert_eq!(converse.http.chat_path.as_deref(), Some("/custom/converse"));
     }
 
     #[test]

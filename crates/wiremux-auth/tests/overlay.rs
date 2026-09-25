@@ -271,6 +271,134 @@ display_name = "second"
 }
 
 #[test]
+fn later_wire_change_drops_earlier_wire_specific_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_toml(
+        dir.path(),
+        "aa.toml",
+        r#"
+schema_version = 1
+id = "wire-path"
+wire = "messages"
+messages_path = "/custom/messages"
+chat_path = "/keep/chat"
+"#,
+    );
+    write_toml(
+        dir.path(),
+        "zz.toml",
+        r#"
+schema_version = 1
+id = "wire-path"
+wire = "chat-completions"
+"#,
+    );
+    let opts = LoadOptions {
+        extra_profile_dirs: vec![dir.path().to_path_buf()],
+        ..hermetic_opts()
+    };
+    let profile = load_profile("wire-path", &opts).expect("overlay");
+    assert_eq!(
+        profile.dialect.wire,
+        Some(wiremux_auth::Wire::ChatCompletions)
+    );
+    assert_eq!(
+        profile.http.chat_path.as_deref(),
+        Some("/keep/chat"),
+        "an explicit chat_path still overlays, got {:?}",
+        profile.http.chat_path
+    );
+
+    write_toml(
+        dir.path(),
+        "aa.toml",
+        r#"
+schema_version = 1
+id = "wire-path"
+wire = "messages"
+messages_path = "/custom/messages"
+"#,
+    );
+    let profile = load_profile("wire-path", &opts).expect("overlay without chat_path");
+    assert_eq!(
+        profile.http.chat_path.as_deref(),
+        Some("/v1/chat/completions"),
+        "messages_path must not stick after wire changes, got {:?}",
+        profile.http.chat_path
+    );
+}
+
+#[test]
+fn three_layer_wire_change_uses_final_wire_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_toml(
+        dir.path(),
+        "aa.toml",
+        r#"
+schema_version = 1
+id = "wire-path-3"
+wire = "messages"
+messages_path = "/custom/messages"
+"#,
+    );
+    write_toml(
+        dir.path(),
+        "mm.toml",
+        r#"
+schema_version = 1
+id = "wire-path-3"
+display_name = "middle"
+"#,
+    );
+    write_toml(
+        dir.path(),
+        "zz.toml",
+        r#"
+schema_version = 1
+id = "wire-path-3"
+wire = "chat-completions"
+"#,
+    );
+    let opts = LoadOptions {
+        extra_profile_dirs: vec![dir.path().to_path_buf()],
+        ..hermetic_opts()
+    };
+    let profile = load_profile("wire-path-3", &opts).expect("three layers");
+    assert_eq!(
+        profile.http.chat_path.as_deref(),
+        Some("/v1/chat/completions"),
+        "a middle layer must not bake messages_path into chat_path, got {:?}",
+        profile.http.chat_path
+    );
+
+    write_toml(
+        dir.path(),
+        "aa.toml",
+        r#"
+schema_version = 1
+id = "wire-path-3"
+messages_path = "/custom/messages"
+"#,
+    );
+    write_toml(
+        dir.path(),
+        "zz.toml",
+        r#"
+schema_version = 1
+id = "wire-path-3"
+wire = "messages"
+"#,
+    );
+    let profile = load_profile("wire-path-3", &opts).expect("wire arrives last");
+    assert_eq!(
+        profile.http.chat_path.as_deref(),
+        Some("/custom/messages"),
+        "messages_path must apply once the final wire is messages, got {:?}",
+        profile.http.chat_path
+    );
+}
+
+#[test]
 fn schema_version_is_max_of_layers() {
     let dir = tempfile::tempdir().expect("tempdir");
     write_toml(

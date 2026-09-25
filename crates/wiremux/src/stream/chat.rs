@@ -275,6 +275,19 @@ pub(super) fn encode_finish(reason: &str) -> &str {
     }
 }
 
+/// Dest Chat finish once a tool call has been opened.
+///
+/// Only a real `stop` or Messages `end_turn` becomes `tool_calls`.
+/// `failed`, `cancelled`, `canceled`, `pause_turn`, and `stop_sequence`
+/// stay on [`encode_finish`], so a cut-off call is not executed.
+pub(super) fn finish_after_tool(reason: &str, saw_tool: bool) -> String {
+    if saw_tool && matches!(reason, "stop" | "end_turn") {
+        "tool_calls".to_string()
+    } else {
+        encode_finish(reason).to_string()
+    }
+}
+
 pub(super) fn annotation_url(ann: &Value) -> Option<&str> {
     ann.pointer("/url_citation/url")
         .or_else(|| ann.get("url"))
