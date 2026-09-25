@@ -305,8 +305,7 @@ wire = "chat-completions"
     assert_eq!(
         profile.http.chat_path.as_deref(),
         Some("/keep/chat"),
-        "an explicit chat_path still overlays, got {:?}",
-        profile.http.chat_path
+        "an explicit chat_path still overlays"
     );
 
     write_toml(
@@ -323,8 +322,7 @@ messages_path = "/custom/messages"
     assert_eq!(
         profile.http.chat_path.as_deref(),
         Some("/v1/chat/completions"),
-        "messages_path must not stick after wire changes, got {:?}",
-        profile.http.chat_path
+        "messages_path must not stick after wire changes"
     );
 }
 
@@ -367,8 +365,7 @@ wire = "chat-completions"
     assert_eq!(
         profile.http.chat_path.as_deref(),
         Some("/v1/chat/completions"),
-        "a middle layer must not bake messages_path into chat_path, got {:?}",
-        profile.http.chat_path
+        "a middle layer must not bake messages_path into chat_path"
     );
 
     write_toml(
@@ -393,8 +390,7 @@ wire = "messages"
     assert_eq!(
         profile.http.chat_path.as_deref(),
         Some("/custom/messages"),
-        "messages_path must apply once the final wire is messages, got {:?}",
-        profile.http.chat_path
+        "messages_path must apply once the final wire is messages"
     );
 }
 
