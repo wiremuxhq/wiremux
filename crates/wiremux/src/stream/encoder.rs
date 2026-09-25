@@ -31,6 +31,7 @@ pub struct StreamEncoder {
     finish: Option<String>,
     usage: Option<(u32, u32, u32, u32, u32, u32, u32)>,
     used_tool: HashSet<u32>,
+    saw_custom_tool: bool,
     next_tool: u32,
     tool_slots: HashMap<u32, VecDeque<u32>>,
     tool_got_arg: HashSet<u32>,
@@ -62,6 +63,7 @@ impl StreamEncoder {
             finish: None,
             usage: None,
             used_tool: HashSet::new(),
+            saw_custom_tool: false,
             next_tool: 0,
             tool_slots: HashMap::new(),
             tool_got_arg: HashSet::new(),
@@ -956,7 +958,16 @@ impl StreamEncoder {
                 ));
             }
             IrStreamEvent::ToolCallEnd => {}
-            other => out.push(encode_stream_event(Wire::ChatCompletions, &other)?),
+            other => {
+                if matches!(
+                    other,
+                    IrStreamEvent::CustomToolCallStart { .. }
+                        | IrStreamEvent::CustomToolCallInputDelta { .. }
+                ) {
+                    self.saw_custom_tool = true;
+                }
+                out.push(encode_stream_event(Wire::ChatCompletions, &other)?);
+            }
         }
         Ok(out
             .into_iter()
@@ -968,7 +979,7 @@ impl StreamEncoder {
         let mut out = Vec::new();
         if let Some(reason) = self.finish.take() {
             let mut reason = super::chat::encode_finish(&reason).to_string();
-            if reason == "stop" && !self.used_tool.is_empty() {
+            if reason == "stop" && (!self.used_tool.is_empty() || self.saw_custom_tool) {
                 reason = "tool_calls".to_string();
             }
             out.push(RawSse {
@@ -1678,6 +1689,61 @@ mod tests {
             chat_finish_reason(&filtered_frames).as_deref(),
             Some("content_filter"),
             "content_filter stays even after a tool call, got {filtered_frames:?}"
+        );
+    }
+
+    #[test]
+    fn chat_encoder_stop_after_custom_tool_is_tool_calls() {
+        let mut tools = StreamEncoder::new(Wire::ChatCompletions);
+        let start = tools
+            .push(IrStreamEvent::CustomToolCallStart {
+                id: "call_c".into(),
+                name: "widget".into(),
+                index: 0,
+            })
+            .expect("push custom");
+        assert!(
+            start
+                .iter()
+                .any(|frame| frame.data.contains("\"type\":\"custom\"")),
+            "custom tool frame must stay type custom, got {start:?}"
+        );
+        tools
+            .push(IrStreamEvent::CustomToolCallInputDelta {
+                delta: "x".into(),
+                index: 0,
+            })
+            .expect("push input");
+        tools
+            .push(IrStreamEvent::FinishReason {
+                reason: "stop".into(),
+            })
+            .expect("push stop");
+        let frames = tools.finish().expect("finish");
+        assert_eq!(
+            chat_finish_reason(&frames).as_deref(),
+            Some("tool_calls"),
+            "stop after a custom tool must be tool_calls, got {frames:?}"
+        );
+
+        let mut filtered = StreamEncoder::new(Wire::ChatCompletions);
+        filtered
+            .push(IrStreamEvent::CustomToolCallStart {
+                id: "call_c".into(),
+                name: "widget".into(),
+                index: 0,
+            })
+            .expect("push custom");
+        filtered
+            .push(IrStreamEvent::FinishReason {
+                reason: "content_filter".into(),
+            })
+            .expect("push filter");
+        let filtered_frames = filtered.finish().expect("finish filter");
+        assert_eq!(
+            chat_finish_reason(&filtered_frames).as_deref(),
+            Some("content_filter"),
+            "content_filter stays after a custom tool, got {filtered_frames:?}"
         );
     }
 
