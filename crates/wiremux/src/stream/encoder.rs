@@ -47,6 +47,12 @@ pub struct StreamEncoder {
     metadata: Option<BTreeMap<String, String>>,
     moderation: Option<(Option<Value>, Option<Value>)>,
     refusal: String,
+    /// Tool starts that arrived while another tool block was still open.
+    /// Flushed when that block closes, in content-block index order.
+    held_tools: BTreeMap<u32, (u32, String, String, String)>,
+    /// Non-tool events that arrived while a tool block was still open.
+    deferred: Vec<IrStreamEvent>,
+    closed_tools: HashSet<u32>,
 }
 
 impl StreamEncoder {
@@ -79,6 +85,9 @@ impl StreamEncoder {
             metadata: None,
             moderation: None,
             refusal: String::new(),
+            held_tools: BTreeMap::new(),
+            deferred: Vec::new(),
+            closed_tools: HashSet::new(),
         }
     }
 
@@ -217,75 +226,86 @@ impl StreamEncoder {
         }
         match ev {
             IrStreamEvent::TextDelta { text } => {
-                out.extend(self.ensure_block(BlockKind::Text));
-                let index = self.open.map(|(i, _)| i).unwrap_or(0);
-                out.push(named(
-                    "content_block_delta",
-                    json!({
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": { "type": "text_delta", "text": text }
-                    }),
-                ));
+                if self.tool_block_open() {
+                    self.deferred.push(IrStreamEvent::TextDelta { text });
+                } else {
+                    out.extend(self.emit_text(&text));
+                }
             }
             IrStreamEvent::ReasoningDelta { text } => {
-                out.extend(self.ensure_block(BlockKind::Thinking));
-                let index = self.open.map(|(i, _)| i).unwrap_or(0);
-                out.push(named(
-                    "content_block_delta",
-                    json!({
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": { "type": "thinking_delta", "thinking": text }
-                    }),
-                ));
+                if self.tool_block_open() {
+                    self.deferred.push(IrStreamEvent::ReasoningDelta { text });
+                } else {
+                    out.extend(self.ensure_block(BlockKind::Thinking));
+                    let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                    out.push(named(
+                        "content_block_delta",
+                        json!({
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": { "type": "thinking_delta", "thinking": text }
+                        }),
+                    ));
+                }
             }
             IrStreamEvent::ReasoningSignature { signature } => {
-                out.extend(self.ensure_block(BlockKind::Thinking));
-                let index = self.open.map(|(i, _)| i).unwrap_or(0);
-                out.push(named(
-                    "content_block_delta",
-                    json!({
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": { "type": "signature_delta", "signature": signature }
-                    }),
-                ));
+                if self.tool_block_open() {
+                    self.deferred
+                        .push(IrStreamEvent::ReasoningSignature { signature });
+                } else {
+                    out.extend(self.ensure_block(BlockKind::Thinking));
+                    let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                    out.push(named(
+                        "content_block_delta",
+                        json!({
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": { "type": "signature_delta", "signature": signature }
+                        }),
+                    ));
+                }
             }
             IrStreamEvent::ToolCallStart {
                 id, name, index, ..
             } => {
-                let enc = self.alloc_tool(index);
-                out.extend(self.close_open());
-                out.push(named(
-                    "content_block_start",
-                    json!({
-                        "type": "content_block_start",
-                        "index": enc,
-                        "content_block": {
-                            "type": "tool_use",
-                            "id": id,
-                            "name": name,
-                            "input": {}
-                        }
-                    }),
-                ));
-                self.open = Some((enc, BlockKind::Tool));
+                let open_same = self.open.is_some_and(|(enc, kind)| {
+                    kind == BlockKind::Tool && self.last_tool.get(&index) == Some(&enc)
+                });
+                if open_same {
+                    // A later chunk repeated this call's id or name.
+                } else if let Some(held) = self.held_tools.get_mut(&index) {
+                    if held.1.is_empty() {
+                        held.1 = id;
+                    }
+                    if held.2.is_empty() {
+                        held.2 = name;
+                    }
+                } else {
+                    let enc = self.alloc_tool(index);
+                    let other_tool_open = self
+                        .open
+                        .is_some_and(|(open_enc, kind)| kind == BlockKind::Tool && open_enc != enc);
+                    if other_tool_open {
+                        self.held_tools
+                            .insert(index, (enc, id, name, String::new()));
+                    } else {
+                        out.extend(self.close_open());
+                        out.push(self.tool_start_frame(enc, &id, &name));
+                        self.open = Some((enc, BlockKind::Tool));
+                    }
+                }
             }
             IrStreamEvent::ToolCallArgDelta { delta, index } => {
                 let enc = self.tool_enc(index);
-                out.push(named(
-                    "content_block_delta",
-                    json!({
-                        "type": "content_block_delta",
-                        "index": enc,
-                        "delta": { "type": "input_json_delta", "partial_json": delta }
-                    }),
-                ));
+                if self.open == Some((enc, BlockKind::Tool)) {
+                    out.push(self.tool_arg_frame(enc, &delta));
+                } else if let Some(held) = self.held_tools.get_mut(&index) {
+                    held.3.push_str(&delta);
+                } else if !self.closed_tools.contains(&enc) {
+                    out.push(self.tool_arg_frame(enc, &delta));
+                }
             }
-            IrStreamEvent::ToolCallEnd => {
-                out.extend(self.close_open());
-            }
+            IrStreamEvent::ToolCallEnd => {}
             IrStreamEvent::FinishReason { reason } => {
                 self.finish = Some(reason);
             }
@@ -299,31 +319,32 @@ impl StreamEncoder {
             | IrStreamEvent::Metadata { .. }
             | IrStreamEvent::Moderation { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
-                out.extend(self.ensure_block(BlockKind::Text));
-                let index = self.open.map(|(i, _)| i).unwrap_or(0);
-                out.push(named(
-                    "content_block_delta",
-                    json!({
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": { "type": "text_delta", "text": text }
-                    }),
-                ));
+                if self.tool_block_open() {
+                    self.deferred
+                        .push(IrStreamEvent::AudioTranscriptDelta { text });
+                } else {
+                    out.extend(self.emit_text(&text));
+                }
             }
             IrStreamEvent::AnnotationAdded { annotation } => {
-                out.extend(self.ensure_block(BlockKind::Text));
-                let index = self.open.map(|(i, _)| i).unwrap_or(0);
-                out.push(named(
-                    "content_block_delta",
-                    json!({
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": {
-                            "type": "citations_delta",
-                            "citation": super::messages::citation_from_annotation(&annotation)
-                        }
-                    }),
-                ));
+                if self.tool_block_open() {
+                    self.deferred
+                        .push(IrStreamEvent::AnnotationAdded { annotation });
+                } else {
+                    out.extend(self.ensure_block(BlockKind::Text));
+                    let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                    out.push(named(
+                        "content_block_delta",
+                        json!({
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": {
+                                "type": "citations_delta",
+                                "citation": super::messages::citation_from_annotation(&annotation)
+                            }
+                        }),
+                    ));
+                }
             }
             IrStreamEvent::Usage {
                 prompt_tokens,
@@ -375,14 +396,62 @@ impl StreamEncoder {
         out
     }
 
+    fn tool_start_frame(&self, enc: u32, id: &str, name: &str) -> RawSse {
+        named(
+            "content_block_start",
+            json!({
+                "type": "content_block_start",
+                "index": enc,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": id,
+                    "name": name,
+                    "input": {}
+                }
+            }),
+        )
+    }
+
+    fn tool_arg_frame(&self, enc: u32, delta: &str) -> RawSse {
+        named(
+            "content_block_delta",
+            json!({
+                "type": "content_block_delta",
+                "index": enc,
+                "delta": { "type": "input_json_delta", "partial_json": delta }
+            }),
+        )
+    }
+
+    fn tool_block_open(&self) -> bool {
+        self.open.is_some_and(|(_, kind)| kind == BlockKind::Tool) || !self.held_tools.is_empty()
+    }
+
+    fn emit_text(&mut self, text: &str) -> Vec<RawSse> {
+        let mut out = self.ensure_block(BlockKind::Text);
+        let index = self.open.map(|(i, _)| i).unwrap_or(0);
+        out.push(named(
+            "content_block_delta",
+            json!({
+                "type": "content_block_delta",
+                "index": index,
+                "delta": { "type": "text_delta", "text": text }
+            }),
+        ));
+        out
+    }
+
     fn close_open(&mut self) -> Vec<RawSse> {
         let Some((index, _)) = self.open.take() else {
-            return Vec::new();
+            return self.flush_held_tools();
         };
-        vec![named(
+        self.closed_tools.insert(index);
+        let mut out = vec![named(
             "content_block_stop",
             json!({ "type": "content_block_stop", "index": index }),
-        )]
+        )];
+        out.extend(self.flush_held_tools());
+        out
     }
 
     fn messages_start_frame(&self) -> RawSse {
@@ -419,10 +488,19 @@ impl StreamEncoder {
             out.push(self.messages_start_frame());
         }
         out.extend(self.close_open());
+        for ev in std::mem::take(&mut self.deferred) {
+            if let Ok(frames) = self.push_messages(ev) {
+                out.extend(frames);
+            }
+        }
+        out.extend(self.close_open());
         let refusal = std::mem::take(&mut self.refusal);
         let mapped = self.finish.as_deref().map(encode_stop_reason);
+        let saw_tool = !self.used_tool.is_empty();
         let stop = if !refusal.is_empty() && mapped.is_none_or(|r| r == "content_filter") {
             "refusal"
+        } else if saw_tool && mapped.is_none_or(|reason| reason == "end_turn") {
+            "tool_use"
         } else {
             mapped.unwrap_or("end_turn")
         };
@@ -445,6 +523,25 @@ impl StreamEncoder {
         }
         out.push(named("message_delta", data));
         out.push(named("message_stop", json!({ "type": "message_stop" })));
+        out
+    }
+
+    fn flush_held_tools(&mut self) -> Vec<RawSse> {
+        let held = std::mem::take(&mut self.held_tools);
+        let mut held: Vec<_> = held.into_values().collect();
+        held.sort_by_key(|(enc, _, _, _)| *enc);
+        let mut out = Vec::new();
+        for (enc, id, name, args) in held {
+            self.closed_tools.insert(enc);
+            out.push(self.tool_start_frame(enc, &id, &name));
+            if !args.is_empty() {
+                out.push(self.tool_arg_frame(enc, &args));
+            }
+            out.push(named(
+                "content_block_stop",
+                json!({ "type": "content_block_stop", "index": enc }),
+            ));
+        }
         out
     }
 
@@ -1607,6 +1704,167 @@ mod tests {
                     })
             }),
             "dest Messages STREAM refusal must not fold into text_delta, got {all:?}"
+        );
+    }
+
+    #[test]
+    fn messages_encoder_holds_second_tool_until_first_args_finish() {
+        let mut enc = StreamEncoder::new(Wire::Messages);
+        let mut frames = Vec::new();
+        for ev in [
+            IrStreamEvent::ToolCallStart {
+                id: "call_a".into(),
+                name: "get_weather".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"city":"Paris"}"#.into(),
+                index: 0,
+            },
+            IrStreamEvent::ToolCallStart {
+                id: "call_b".into(),
+                name: "get_time".into(),
+                thought_signature: None,
+                index: 1,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: "{}".into(),
+                index: 1,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: " more".into(),
+                index: 0,
+            },
+        ] {
+            frames.extend(enc.push(ev).expect("push"));
+        }
+        frames.extend(enc.finish().expect("finish"));
+        let body = frames
+            .iter()
+            .map(|frame| frame.data.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let stop0 = body.find("\"content_block_stop\"").expect("first stop");
+        let more = body.find(" more").expect("late arg");
+        assert!(
+            more < stop0,
+            "late index 0 args must precede content_block_stop, got {body}"
+        );
+        assert!(
+            body.contains("call_b") && body.contains("get_time"),
+            "second tool must still be emitted, got {body}"
+        );
+        assert!(
+            body.contains("\"stop_reason\":\"tool_use\""),
+            "tool stream with no finish reason must be tool_use, got {body}"
+        );
+
+        let mut filtered = StreamEncoder::new(Wire::Messages);
+        filtered
+            .push(IrStreamEvent::ToolCallStart {
+                id: "call_a".into(),
+                name: "get_weather".into(),
+                thought_signature: None,
+                index: 0,
+            })
+            .expect("tool");
+        filtered
+            .push(IrStreamEvent::FinishReason {
+                reason: "content_filter".into(),
+            })
+            .expect("filter");
+        let filtered_body = filtered
+            .finish()
+            .expect("finish")
+            .iter()
+            .map(|frame| frame.data.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            filtered_body.contains("\"stop_reason\":\"content_filter\""),
+            "content_filter stays after a tool, got {filtered_body}"
+        );
+
+        let mut interrupted = StreamEncoder::new(Wire::Messages);
+        let mut frames = Vec::new();
+        for ev in [
+            IrStreamEvent::ToolCallStart {
+                id: "call_a".into(),
+                name: "get_weather".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"city":"Paris"}"#.into(),
+                index: 0,
+            },
+            IrStreamEvent::ToolCallStart {
+                id: "call_b".into(),
+                name: "get_time".into(),
+                thought_signature: None,
+                index: 1,
+            },
+            IrStreamEvent::ToolCallEnd,
+            IrStreamEvent::ReasoningDelta {
+                text: "think".into(),
+            },
+            IrStreamEvent::ToolCallStart {
+                id: "call_a".into(),
+                name: "get_weather".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::TextDelta { text: "hi".into() },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: " more".into(),
+                index: 0,
+            },
+            IrStreamEvent::ToolCallStart {
+                id: "call_b".into(),
+                name: "get_time".into(),
+                thought_signature: None,
+                index: 1,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: "{\"tz\":\"UTC\"}".into(),
+                index: 1,
+            },
+        ] {
+            frames.extend(interrupted.push(ev).expect("push"));
+        }
+        frames.extend(interrupted.finish().expect("finish"));
+        let body = frames
+            .iter()
+            .map(|frame| frame.data.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let stop0 = body.find("\"content_block_stop\"").expect("stop");
+        let more = body.find(" more").expect("late arg kept");
+        let call_b = body.find("call_b").expect("second tool");
+        let hi = body.find("\"text\":\"hi\"").expect("text");
+        assert!(more < stop0, "late args stay before stop, got {body}");
+        let think = body.find("think").expect("reasoning");
+        let weather = body.matches("get_weather").count();
+        assert!(call_b < hi, "held tool is framed before text, got {body}");
+        assert!(
+            stop0 < think,
+            "reasoning waits until the tool stops, got {body}"
+        );
+        assert_eq!(
+            weather, 1,
+            "repeat start must not open a second block, got {body}"
+        );
+        assert!(
+            body.contains("UTC"),
+            "repeat start must keep buffered arguments, got {body}"
+        );
+        let after_hi = &body[hi..];
+        let text_stop = after_hi.find("\"content_block_stop\"").expect("text stop");
+        let message_delta = after_hi.find("message_delta").expect("message_delta");
+        assert!(
+            text_stop < message_delta,
+            "deferred text must stop before message_delta, got {body}"
         );
     }
 
