@@ -32,6 +32,11 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         for call in calls {
             check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
         }
+        // One event cannot carry two calls, or a start plus its arguments.
+        // `decode_stream_events` keeps both. An arguments-only delta stays.
+        if calls.len() > 1 || calls.first().is_some_and(call_bundles_arguments) {
+            return Err(singular_tool_limit());
+        }
         if let Some(call) = calls.first() {
             return Ok(Some(decode_tool_call(call, value)));
         }
@@ -40,6 +45,9 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         .pointer("/delta/function_call")
         .filter(|v| v.is_object())
     {
+        if call_bundles_arguments(fc) {
+            return Err(singular_tool_limit());
+        }
         return Ok(Some(decode_tool_call(fc, value)));
     }
 
@@ -373,6 +381,28 @@ pub(super) fn expand_tool_call(call: &Value, chunk: &Value) -> Vec<IrStreamEvent
         out.push(IrStreamEvent::ToolCallArgDelta { delta, index });
     }
     if out.is_empty() { keep() } else { out }
+}
+
+/// `id` or `name` together with a non-empty `arguments` string.
+///
+/// Non-function types stay on the Protocol path. Empty `arguments` is a start.
+fn call_bundles_arguments(call: &Value) -> bool {
+    if let Some(ty) = call.get("type").and_then(Value::as_str)
+        && ty != "function"
+    {
+        return false;
+    }
+    let func = call.get("function").unwrap_or(call);
+    let started = str_field(call, "id").is_some() || str_field(func, "name").is_some();
+    let args = str_field(func, "arguments").is_some_and(|s| !s.is_empty());
+    started && args
+}
+
+fn singular_tool_limit() -> MapError {
+    MapError::Invalid(
+        "decode_stream_event cannot represent multiple Chat tool calls or a call that includes arguments; use decode_stream_events"
+            .into(),
+    )
 }
 
 fn decode_tool_call(call: &Value, chunk: &Value) -> IrStreamEvent {

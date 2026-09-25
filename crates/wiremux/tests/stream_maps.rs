@@ -5286,26 +5286,22 @@ fn responses_reasoning_delta_is_not_output_text() {
 }
 
 #[test]
-fn chat_tool_start_with_args_is_tool_call_start() {
+fn chat_tool_start_with_args_is_not_one_event() {
     let raw = RawSse {
         event: None,
         data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]}}]}"#.into(),
     };
-    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
-        .expect("decode start+args")
-        .expect("must not drop tool-bearing frame");
-    assert!(
-        matches!(
-            ev,
-            IrStreamEvent::ToolCallStart { ref id, ref name, index: 0, .. }
-                if id == "call_1" && name == "lookup"
-        ),
-        "1:1 id plus arguments is a tool-call start, got {ev:?}"
-    );
-    assert!(
-        !matches!(ev, IrStreamEvent::Protocol { ref item_type, .. } if item_type == "chunk"),
-        "arguments must not hide the call in Protocol chunk"
-    );
+    let err = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect_err("start plus arguments is not one event");
+    match err {
+        MapError::Invalid(detail) => {
+            assert!(
+                detail.contains("decode_stream_events"),
+                "singular limit must name decode_stream_events, detail={detail}"
+            );
+        }
+        other => panic!("expected Invalid, got {other}"),
+    }
 
     let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
         .expect("fan-out start+args");
@@ -5326,26 +5322,26 @@ fn chat_tool_start_with_args_is_tool_call_start() {
 }
 
 #[test]
-fn chat_decode_stream_event_keeps_function_call_with_args() {
+fn chat_decode_stream_event_refuses_bundled_parallel_arguments() {
     let raw = RawSse {
         event: None,
         data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}},{"index":1,"id":"call_b","type":"function","function":{"name":"get_time","arguments":"{}"}}]}}]}"#.into(),
     };
-    let ev = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
-        .expect("decode")
-        .expect("event");
-    assert!(
-        matches!(
-            ev,
-            IrStreamEvent::ToolCallStart { ref id, ref name, index: 0, .. }
-                if id == "call_a" && name == "get_weather"
-        ),
-        "singular decode must surface call_a, got {ev:?}"
-    );
-    assert!(
-        !matches!(ev, IrStreamEvent::Protocol { ref item_type, .. } if item_type == "chunk"),
-        "call_a must not hide in Protocol chunk, got {ev:?}"
-    );
+    let err = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect_err("call_a must not be a start whose arguments were never delivered");
+    match err {
+        MapError::Invalid(detail) => {
+            assert!(
+                detail.contains("decode_stream_events"),
+                "singular limit must name decode_stream_events, detail={detail}"
+            );
+            assert!(
+                !detail.contains("call_a"),
+                "the error must not look like a delivered start, detail={detail}"
+            );
+        }
+        other => panic!("expected Invalid, not an argument-free ToolCallStart, got {other}"),
+    }
 
     let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("events");
     let ids: Vec<&str> = all
