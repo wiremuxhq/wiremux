@@ -44,21 +44,63 @@ fn system_text(value: Option<&Value>) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn unmatched_call_id(items: &[IrItem], name: &str) -> Option<String> {
-    let mut used = Vec::new();
-    for item in items {
-        if let IrItem::FunctionOutput { call_id, .. } = item {
-            used.push(call_id.as_str());
+fn unmatched_call_id(items: &[IrItem], name: &str, skip_trailing_user: bool) -> Option<String> {
+    let used: Vec<&str> = items
+        .iter()
+        .filter_map(|item| match item {
+            IrItem::FunctionOutput { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    fn unmatched_id<'a>(item: &'a IrItem, name: &str, used: &[&str]) -> Option<&'a str> {
+        match item {
+            IrItem::FunctionCall {
+                call_id,
+                name: call_name,
+                ..
+            } if call_name == name && !used.iter().any(|id| *id == call_id) => {
+                Some(call_id.as_str())
+            }
+            _ => None,
         }
     }
-    items.iter().find_map(|item| match item {
-        IrItem::FunctionCall {
-            call_id,
-            name: call_name,
-            ..
-        } if call_name == name && !used.iter().any(|id| *id == call_id) => Some(call_id.clone()),
-        _ => None,
-    })
+    // Stay in the latest model turn. User text flushed in this same content
+    // sits in front of that content's function outputs and is not a boundary.
+    let mut end = items.len();
+    if skip_trailing_user && end > 0 && matches!(items[end - 1], IrItem::User { .. }) {
+        end -= 1;
+    }
+    let mut skipped_outputs = 0;
+    while end > 0 && matches!(items[end - 1], IrItem::FunctionOutput { .. }) {
+        end -= 1;
+        skipped_outputs += 1;
+    }
+    if skipped_outputs > 0
+        && end >= 2
+        && matches!(items[end - 1], IrItem::User { .. })
+        && !matches!(
+            items[end - 2],
+            IrItem::User { .. }
+                | IrItem::Developer { .. }
+                | IrItem::FunctionOutput { .. }
+                | IrItem::System { .. }
+        )
+    {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 {
+        match &items[start - 1] {
+            IrItem::User { .. }
+            | IrItem::Developer { .. }
+            | IrItem::FunctionOutput { .. }
+            | IrItem::System { .. } => break,
+            _ => start -= 1,
+        }
+    }
+    items[start..end]
+        .iter()
+        .find_map(|item| unmatched_id(item, name, &used).map(str::to_string))
 }
 
 fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
@@ -89,6 +131,7 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
             continue;
         }
         if let Some(fr) = part.get("functionResponse") {
+            let skip_trailing_user = role != "model" && !text_parts.is_empty();
             flush_parts(role, &mut text_parts, items);
             let name = str_field(fr, "name").unwrap_or_default();
             let output = fr
@@ -100,7 +143,7 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
-                .or_else(|| unmatched_call_id(items, &name))
+                .or_else(|| unmatched_call_id(items, &name, skip_trailing_user))
                 .unwrap_or(name);
             items.push(IrItem::FunctionOutput { call_id, output });
             continue;

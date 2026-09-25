@@ -1118,6 +1118,205 @@ fn gemini_same_name_function_responses_pair_in_order() {
 }
 
 #[test]
+fn gemini_stale_same_name_call_does_not_steal_later_response() {
+    let req = br#"{
+        "contents": [
+            { "role": "user", "parts": [{ "text": "weather" }] },
+            { "role": "model", "parts": [
+                { "functionCall": { "name": "get_weather", "args": { "city": "Paris" } } }
+            ]},
+            { "role": "user", "parts": [{ "text": "try again" }] },
+            { "role": "model", "parts": [
+                { "functionCall": { "name": "get_weather", "args": { "city": "Lyon" } } }
+            ]},
+            { "role": "user", "parts": [
+                { "functionResponse": { "name": "get_weather", "response": { "content": "sunny" } } }
+            ]}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let calls: Vec<&str> = ir
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            IrItem::FunctionCall { call_id, name, .. } if name == "get_weather" => {
+                Some(call_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let outs: Vec<&str> = ir
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            IrItem::FunctionOutput { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 2, "two calls, got {:?}", ir.items);
+    assert_eq!(
+        outs,
+        vec![calls[1]],
+        "the response follows the later call, got outs={outs:?} calls={calls:?}"
+    );
+}
+
+#[test]
+fn gemini_later_turn_without_same_name_does_not_reuse_stale_id() {
+    let req = br#"{
+        "contents": [
+            { "role": "user", "parts": [{ "text": "weather" }] },
+            { "role": "model", "parts": [
+                { "functionCall": { "name": "get_weather", "args": { "city": "Paris" } } }
+            ]},
+            { "role": "user", "parts": [{ "text": "try again" }] },
+            { "role": "model", "parts": [
+                { "text": "checking" },
+                { "functionCall": { "name": "get_time", "args": {} } }
+            ]},
+            { "role": "user", "parts": [
+                { "text": "result" },
+                { "functionResponse": { "name": "get_weather", "response": { "content": "sunny" } } }
+            ]}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let weather_ids: Vec<&str> = ir
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            IrItem::FunctionCall { call_id, name, .. } if name == "get_weather" => {
+                Some(call_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let weather_out = ir.items.iter().find_map(|item| match item {
+        IrItem::FunctionOutput { call_id, .. } => Some(call_id.as_str()),
+        _ => None,
+    });
+    assert_eq!(weather_ids.len(), 1, "one stale call, got {:?}", ir.items);
+    assert_eq!(
+        weather_out,
+        Some("get_weather"),
+        "a response after a turn with no get_weather must not reuse {}, got {:?}",
+        weather_ids[0],
+        ir.items
+    );
+    assert_ne!(weather_out, Some(weather_ids[0]));
+}
+
+#[test]
+fn gemini_sibling_text_and_two_responses_pair_in_order() {
+    let req = br#"{
+        "contents": [
+            { "role": "model", "parts": [
+                { "functionCall": { "name": "read_file", "args": { "path": "a.rs" } } },
+                { "functionCall": { "name": "read_file", "args": { "path": "b.rs" } } }
+            ]},
+            { "role": "user", "parts": [
+                { "text": "files" },
+                { "functionResponse": { "name": "read_file", "response": { "text": "aaa" } } },
+                { "functionResponse": { "name": "read_file", "response": { "text": "bbb" } } }
+            ]}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let calls: Vec<&str> = ir
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            IrItem::FunctionCall { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let outs: Vec<&str> = ir
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            IrItem::FunctionOutput { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        outs, calls,
+        "leading text plus two responses must still pair in order, got {:?}",
+        ir.items
+    );
+}
+
+#[test]
+fn gemini_sibling_user_text_does_not_hide_the_call() {
+    let req = br#"{
+        "contents": [
+            { "role": "model", "parts": [
+                { "functionCall": { "name": "read_file", "args": { "path": "a.rs" } } }
+            ]},
+            { "role": "user", "parts": [
+                { "text": "file" },
+                { "functionResponse": { "name": "read_file", "response": { "text": "aaa" } } }
+            ]}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let call = ir.items.iter().find_map(|item| match item {
+        IrItem::FunctionCall { call_id, .. } => Some(call_id.as_str()),
+        _ => None,
+    });
+    let out = ir.items.iter().find_map(|item| match item {
+        IrItem::FunctionOutput { call_id, .. } => Some(call_id.as_str()),
+        _ => None,
+    });
+    assert_eq!(
+        out, call,
+        "text before the response must still bind that call, got {:?}",
+        ir.items
+    );
+}
+
+#[test]
+fn gemini_same_turn_text_between_calls_still_pairs_in_order() {
+    let req = br#"{
+        "contents": [
+            { "role": "user", "parts": [{ "text": "hi" }] },
+            { "role": "model", "parts": [
+                { "text": "checking" },
+                { "functionCall": { "name": "read_file", "args": { "path": "a.rs" } } },
+                { "text": "and" },
+                { "functionCall": { "name": "read_file", "args": { "path": "b.rs" } } }
+            ]},
+            { "role": "user", "parts": [
+                { "functionResponse": { "name": "read_file", "response": { "text": "aaa" } } },
+                { "functionResponse": { "name": "read_file", "response": { "text": "bbb" } } }
+            ]}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let calls: Vec<&str> = ir
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            IrItem::FunctionCall { call_id, name, .. } if name == "read_file" => {
+                Some(call_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let outs: Vec<&str> = ir
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            IrItem::FunctionOutput { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        outs, calls,
+        "text between calls in one turn still pairs oldest-first, got outs={outs:?} calls={calls:?}"
+    );
+}
+
+#[test]
 fn gemini_function_response_uses_function_name_not_call_id() {
     let ir = wiremux::IrRequest::new(
         "gemini-2.5-flash",

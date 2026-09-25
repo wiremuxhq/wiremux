@@ -34,6 +34,10 @@ pub(crate) fn merge(earlier: RawProfile, later: RawProfile) -> RawProfile {
             .or(earlier.stream_unknown_policy),
         base_url: later.base_url.or(earlier.base_url),
         chat_path: later.chat_path.or(earlier.chat_path),
+        messages_path: later.messages_path.or(earlier.messages_path),
+        responses_path: later.responses_path.or(earlier.responses_path),
+        gemini_path: later.gemini_path.or(earlier.gemini_path),
+        converse_path: later.converse_path.or(earlier.converse_path),
         auth_scheme: later.auth_scheme.or(earlier.auth_scheme),
         headers: merge_map(
             earlier.headers,

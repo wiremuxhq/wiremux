@@ -75,7 +75,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 moderation = Some((input.clone(), output.clone()));
             }
             IrStreamEvent::FinishReason { reason } => {
-                finish = Some(super::chat::encode_finish(reason).to_string());
+                finish = Some(reason.clone());
             }
             IrStreamEvent::Usage {
                 prompt_tokens,
@@ -125,9 +125,12 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     if let Some((id, name, args, custom)) = current.take() {
         tool_calls.push(chat_tool_call_value(&id, &name, &args, custom));
     }
-    if !tool_calls.is_empty() && matches!(finish.as_deref(), None | Some("stop")) {
-        finish = Some("tool_calls".to_string());
-    }
+    let saw_tool = !tool_calls.is_empty();
+    finish = match finish {
+        Some(reason) => Some(super::chat::finish_after_tool(&reason, saw_tool)),
+        None if saw_tool => Some("tool_calls".to_string()),
+        None => None,
+    };
 
     let mut message = json!({ "role": "assistant" });
     if tool_calls.is_empty() {
@@ -1419,6 +1422,80 @@ fn decode_gemini_complete(
 mod tests {
     use super::*;
     use crate::ir::IrStreamEvent;
+
+    #[test]
+    fn dest_chat_complete_failed_tool_stays_stop() {
+        let events = [
+            IrStreamEvent::ToolCallStart {
+                id: "call_a".into(),
+                name: "get_weather".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: "{\"city\":".into(),
+                index: 0,
+            },
+            IrStreamEvent::FinishReason {
+                reason: "failed".into(),
+            },
+        ];
+        let mapped = encode_response(Wire::ChatCompletions, &events).expect("encode");
+        assert_eq!(
+            mapped
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str),
+            Some("stop"),
+            "failed after a partial tool call must stay stop, got {mapped}"
+        );
+        assert!(
+            mapped
+                .pointer("/choices/0/message/tool_calls/0/function/arguments")
+                .and_then(Value::as_str)
+                == Some("{\"city\":"),
+            "partial arguments stay on the message, got {mapped}"
+        );
+
+        let end = [
+            IrStreamEvent::ToolCallStart {
+                id: "call_a".into(),
+                name: "get_weather".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::FinishReason {
+                reason: "end_turn".into(),
+            },
+        ];
+        let mapped = encode_response(Wire::ChatCompletions, &end).expect("encode end_turn");
+        assert_eq!(
+            mapped
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str),
+            Some("tool_calls"),
+            "end_turn after a tool call must be tool_calls, got {mapped}"
+        );
+
+        let stop = [
+            IrStreamEvent::ToolCallStart {
+                id: "call_a".into(),
+                name: "get_weather".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::FinishReason {
+                reason: "stop".into(),
+            },
+        ];
+        let mapped = encode_response(Wire::ChatCompletions, &stop).expect("encode stop");
+        assert_eq!(
+            mapped
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str),
+            Some("tool_calls"),
+            "stop after a tool call must be tool_calls, got {mapped}"
+        );
+    }
 
     #[test]
     fn dest_chat_complete_uses_dest_model() {
