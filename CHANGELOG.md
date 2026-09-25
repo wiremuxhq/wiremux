@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.9.0](https://github.com/wiremuxhq/wiremux/compare/v0.8.0...v0.9.0) (2026-09-25)
+
+
+### Features
+
+* dest-model crate-root encode and TransientKind is_reset ([#276](https://github.com/wiremuxhq/wiremux/issues/276)) ([a0c4d0b](https://github.com/wiremuxhq/wiremux/commit/a0c4d0b36b5d7b66ba97679607186781892a6909)), closes [#271](https://github.com/wiremuxhq/wiremux/issues/271) [#272](https://github.com/wiremuxhq/wiremux/issues/272) [#273](https://github.com/wiremuxhq/wiremux/issues/273) [#274](https://github.com/wiremuxhq/wiremux/issues/274)
+
+
+### Bug Fixes
+
+* Chat finish_reason tool_calls for a Responses function call ([#287](https://github.com/wiremuxhq/wiremux/issues/287)) ([a948bbf](https://github.com/wiremuxhq/wiremux/commit/a948bbf0d52537130c24aabd36bd589172f8c2d2))
+* Chat stream finish_reason tool_calls after a custom tool ([#291](https://github.com/wiremuxhq/wiremux/issues/291)) ([4144a7a](https://github.com/wiremuxhq/wiremux/commit/4144a7af56747827587d46b682d7f4fe418e9819))
+* Chat stream finish_reason tool_calls after a tool ([#290](https://github.com/wiremuxhq/wiremux/issues/290)) ([6da184e](https://github.com/wiremuxhq/wiremux/commit/6da184e9734df344b5972329a7e29a92d20c5472))
+* do not run a cut-off tool call or steal a Gemini response ([#292](https://github.com/wiremuxhq/wiremux/issues/292)) ([64d45eb](https://github.com/wiremuxhq/wiremux/commit/64d45eb77a132550bfb9a64694c2df39b169ec18))
+* drop profile debug text from overlay path tests ([#293](https://github.com/wiremuxhq/wiremux/issues/293)) ([74dded8](https://github.com/wiremuxhq/wiremux/commit/74dded888dc3a6e96db46800bc0ffd1ec1f4c94a))
+* keep Gemini tool calls and unknown finish reasons ([#284](https://github.com/wiremuxhq/wiremux/issues/284)) ([ccb41da](https://github.com/wiremuxhq/wiremux/commit/ccb41da9140250f09e4acd258321a2e72a6ff859))
+* **maps:** dest Responses STREAM metadata remaps dest Chat STREAM ([#278](https://github.com/wiremuxhq/wiremux/issues/278)) ([8ca7a72](https://github.com/wiremuxhq/wiremux/commit/8ca7a724fa3806b9993b1c07f798e1f3049e6e54))
+* number parallel tool calls ([#285](https://github.com/wiremuxhq/wiremux/issues/285)) ([f8e8bf4](https://github.com/wiremuxhq/wiremux/commit/f8e8bf4548fa8f24f67ab33e38c72344875c9093))
+* pair same-name Gemini function responses in order ([#286](https://github.com/wiremuxhq/wiremux/issues/286)) ([12f641c](https://github.com/wiremuxhq/wiremux/commit/12f641cdb66a4be354ea57ee3084dcb5733d13a0))
+* surface Chat function calls that include arguments ([#289](https://github.com/wiremuxhq/wiremux/issues/289)) ([5e15135](https://github.com/wiremuxhq/wiremux/commit/5e151352311b0ec9b36f7512313880a29a7f5033))
+
 ## [0.8.0](https://github.com/wiremuxhq/wiremux/compare/v0.7.0...v0.8.0) (2026-09-20)
 
 
