@@ -936,10 +936,10 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
             if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
                     check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
-                    out.extend(complete_chat_tool_call(call));
+                    out.extend(complete_chat_tool_call(call)?);
                 }
             } else if let Some(fc) = message.get("function_call").filter(|v| v.is_object()) {
-                out.extend(complete_chat_tool_call(fc));
+                out.extend(complete_chat_tool_call(fc)?);
             }
         }
         if let Some(content) = super::chat::logprobs_content(choice) {
@@ -961,34 +961,34 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     Ok(out)
 }
 
-fn complete_chat_tool_call(call: &Value) -> Vec<IrStreamEvent> {
+fn complete_chat_tool_call(call: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     if let Some(ty) = call.get("type").and_then(Value::as_str)
         && ty == "custom"
     {
         let custom = call.get("custom").unwrap_or(call);
         let id = str_field(call, "id").unwrap_or_default();
         let name = str_field(custom, "name").unwrap_or_default();
-        let input = str_field(custom, "input");
+        let input = super::json_text_field(custom, "input")?;
         let index = super::chat::tool_call_index(call);
         let mut out = vec![IrStreamEvent::CustomToolCallStart { id, name, index }];
         if let Some(delta) = input {
             out.push(IrStreamEvent::CustomToolCallInputDelta { delta, index });
         }
         out.push(IrStreamEvent::ToolCallEnd);
-        return out;
+        return Ok(out);
     }
     if let Some(ty) = call.get("type").and_then(Value::as_str)
         && ty != "function"
     {
-        return vec![IrStreamEvent::Protocol {
+        return Ok(vec![IrStreamEvent::Protocol {
             item_type: "chunk".into(),
             payload: call.clone(),
-        }];
+        }]);
     }
     let func = call.get("function").unwrap_or(call);
     let id = str_field(call, "id").unwrap_or_default();
     let name = str_field(func, "name").unwrap_or_default();
-    let args = str_field(func, "arguments");
+    let args = super::json_text_field(func, "arguments")?;
     let index = super::chat::tool_call_index(call);
     let mut out = vec![IrStreamEvent::ToolCallStart {
         id,
@@ -1000,7 +1000,7 @@ fn complete_chat_tool_call(call: &Value) -> Vec<IrStreamEvent> {
         out.push(IrStreamEvent::ToolCallArgDelta { delta, index });
     }
     out.push(IrStreamEvent::ToolCallEnd);
-    out
+    Ok(out)
 }
 
 fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
@@ -1109,7 +1109,7 @@ fn decode_responses_complete(
         },
         profile,
     )?;
-    let extra = complete_responses_output_events(value);
+    let extra = complete_responses_output_events(value)?;
     if extra.is_empty() {
         return Ok(events);
     }
@@ -1292,13 +1292,13 @@ fn moderation_results_to_responses(value: &Value) -> Value {
     Value::Object(obj)
 }
 
-fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
+fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     let Some(items) = value
         .get("output")
         .and_then(Value::as_array)
         .or_else(|| value.pointer("/response/output").and_then(Value::as_array))
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut out = Vec::new();
     let mut tool_index = 0u32;
@@ -1357,7 +1357,7 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                     thought_signature: None,
                     index,
                 });
-                if let Some(delta) = str_field(item, "arguments").filter(|s| !s.is_empty()) {
+                if let Some(delta) = super::json_text_field(item, "arguments")? {
                     out.push(IrStreamEvent::ToolCallArgDelta { delta, index });
                 }
                 out.push(IrStreamEvent::ToolCallEnd);
@@ -1372,7 +1372,7 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
                     name: str_field(item, "name").unwrap_or_default(),
                     index,
                 });
-                if let Some(delta) = str_field(item, "input").filter(|s| !s.is_empty()) {
+                if let Some(delta) = super::json_text_field(item, "input")? {
                     out.push(IrStreamEvent::CustomToolCallInputDelta { delta, index });
                 }
                 out.push(IrStreamEvent::ToolCallEnd);
@@ -1392,7 +1392,7 @@ fn complete_responses_output_events(value: &Value) -> Vec<IrStreamEvent> {
             _ => {}
         }
     }
-    out
+    Ok(out)
 }
 
 fn push_output_audio_events(out: &mut Vec<IrStreamEvent>, value: &Value) {

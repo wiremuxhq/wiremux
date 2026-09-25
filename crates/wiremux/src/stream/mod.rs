@@ -174,19 +174,25 @@ pub fn decode_stream_events(
             }
         }
     }
-    let first = first?;
     if matches!(wire, Wire::Responses)
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
     {
         let name = frame_event_name(wire, raw);
-        if let Some(events) = responses::decode_terminal_events(&name, &value) {
+        let singular_limit = matches!(
+            &first,
+            Err(MapError::Invalid(detail)) if detail.contains("decode_stream_events")
+        );
+        if let Some(events) = responses::decode_terminal_events(&name, &value)
+            && first.is_ok()
+        {
             return Ok(events);
         }
         let events = responses::decode_all(&name, &value)?;
-        if !events.is_empty() {
+        if !events.is_empty() && (first.is_ok() || singular_limit) {
             return Ok(events);
         }
     }
+    let first = first?;
     if matches!(wire, Wire::Converse)
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
     {
@@ -718,6 +724,20 @@ fn unknown_event(
 
 fn str_field(value: &Value, key: &str) -> Option<String> {
     value.get(key)?.as_str().map(str::to_string)
+}
+
+/// String, object, or array. Objects and arrays become compact JSON.
+/// Empty string is absent. Anything else is an error, not a silent drop.
+fn json_text_field(value: &Value, key: &str) -> Result<Option<String>, MapError> {
+    match value.get(key) {
+        None => Ok(None),
+        Some(Value::String(text)) if text.is_empty() => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(text @ (Value::Object(_) | Value::Array(_))) => Ok(Some(text.to_string())),
+        Some(_) => Err(MapError::Invalid(format!(
+            "{key} must be a string, object, or array"
+        ))),
+    }
 }
 
 fn u32_field(value: &Value, key: &str) -> Option<u32> {

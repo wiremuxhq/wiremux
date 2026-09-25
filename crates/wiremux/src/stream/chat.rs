@@ -31,6 +31,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     {
         for call in calls {
             check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
+            super::json_text_field(function_body(call), "arguments")?;
         }
         // One event cannot carry two calls, or a start plus its arguments.
         // `decode_stream_events` keeps both. An arguments-only delta stays.
@@ -45,6 +46,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         .pointer("/delta/function_call")
         .filter(|v| v.is_object())
     {
+        super::json_text_field(function_body(fc), "arguments")?;
         if call_bundles_arguments(fc) {
             return Err(singular_tool_limit());
         }
@@ -153,12 +155,14 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     {
         for call in calls {
             check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
+            super::json_text_field(function_body(call), "arguments")?;
             out.extend(expand_tool_call(call, value));
         }
     } else if let Some(fc) = choice
         .pointer("/delta/function_call")
         .filter(|v| v.is_object())
     {
+        super::json_text_field(function_body(fc), "arguments")?;
         out.extend(expand_tool_call(fc, value));
     }
 
@@ -343,6 +347,10 @@ pub(super) fn annotation_to_chat(ann: &Value) -> Value {
     })
 }
 
+fn function_body(call: &Value) -> &Value {
+    call.get("function").unwrap_or(call)
+}
+
 pub(super) fn tool_call_index(call: &Value) -> u32 {
     call.get("index")
         .and_then(Value::as_u64)
@@ -363,10 +371,10 @@ pub(super) fn expand_tool_call(call: &Value, chunk: &Value) -> Vec<IrStreamEvent
     {
         return keep();
     }
-    let func = call.get("function").unwrap_or(call);
+    let func = function_body(call);
     let id = str_field(call, "id").unwrap_or_default();
     let name = str_field(func, "name").unwrap_or_default();
-    let args = str_field(func, "arguments").filter(|s| !s.is_empty());
+    let args = super::json_text_field(func, "arguments").ok().flatten();
     let index = tool_call_index(call);
     let mut out = Vec::new();
     if !id.is_empty() || !name.is_empty() {
@@ -392,13 +400,16 @@ fn call_bundles_arguments(call: &Value) -> bool {
     {
         return false;
     }
-    let func = call.get("function").unwrap_or(call);
+    let func = function_body(call);
     let started = str_field(call, "id").is_some() || str_field(func, "name").is_some();
-    let args = str_field(func, "arguments").is_some_and(|s| !s.is_empty());
+    let args = super::json_text_field(func, "arguments")
+        .ok()
+        .flatten()
+        .is_some();
     started && args
 }
 
-fn singular_tool_limit() -> MapError {
+pub(super) fn singular_tool_limit() -> MapError {
     MapError::Invalid(
         "decode_stream_event cannot represent multiple Chat tool calls or a call that includes arguments; use decode_stream_events"
             .into(),
@@ -415,10 +426,10 @@ fn decode_tool_call(call: &Value, chunk: &Value) -> IrStreamEvent {
     {
         return keep();
     }
-    let func = call.get("function").unwrap_or(call);
+    let func = function_body(call);
     let id = str_field(call, "id");
     let name = str_field(func, "name");
-    let args = str_field(func, "arguments").filter(|s| !s.is_empty());
+    let args = super::json_text_field(func, "arguments").ok().flatten();
     let index = tool_call_index(call);
     if id.is_some() || name.is_some() {
         return IrStreamEvent::ToolCallStart {
