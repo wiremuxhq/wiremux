@@ -101,6 +101,13 @@ impl UpstreamFrames {
 ///
 /// Unknown names follow `profile.dialect.stream_unknown_policy`. A
 /// tool-bearing frame is never `Ok(None)`.
+///
+/// Chat Completions returns one event. A chunk with two `tool_calls`,
+/// or one call that includes an id or a name plus `arguments`, is
+/// [`MapError::Invalid`] and names [`decode_stream_events`]. That
+/// function keeps every call and its argument text. A later chunk that
+/// is only `{"index":0,"function":{"arguments":"..."}}` stays
+/// [`IrStreamEvent::ToolCallArgDelta`].
 pub fn decode_stream_event(
     wire: Wire,
     raw: &RawSse,
@@ -143,12 +150,18 @@ pub fn decode_stream_events(
     raw: &RawSse,
     profile: &ResolvedProfile,
 ) -> Result<Vec<IrStreamEvent>, MapError> {
-    let first = decode_stream_event(wire, raw, profile)?;
+    let first = decode_stream_event(wire, raw, profile);
     if matches!(wire, Wire::ChatCompletions)
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
     {
         let events = chat::decode_all(&value)?;
-        if !events.is_empty() {
+        // Singular refuses a frame that would drop arguments or a second
+        // call. The plural decode above already kept them.
+        let singular_limit = matches!(
+            &first,
+            Err(MapError::Invalid(detail)) if detail.contains("decode_stream_events")
+        );
+        if !events.is_empty() && (first.is_ok() || singular_limit) {
             if let Some(IrStreamEvent::Protocol { .. }) = events.first()
                 && let Some(mut expanded) = expand_complete_tool_call(wire, &events[0], raw)
             {
@@ -161,6 +174,7 @@ pub fn decode_stream_events(
             }
         }
     }
+    let first = first?;
     if matches!(wire, Wire::Responses)
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
     {
