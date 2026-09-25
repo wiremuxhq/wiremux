@@ -162,15 +162,15 @@ pub fn decode_stream_events(
             Err(MapError::Invalid(detail)) if detail.contains("decode_stream_events")
         );
         if !events.is_empty() && (first.is_ok() || singular_limit) {
-            if let Some(IrStreamEvent::Protocol { .. }) = events.first()
-                && let Some(mut expanded) = expand_complete_tool_call(wire, &events[0], raw)
-            {
-                expanded.extend(events.into_iter().skip(1));
-                return Ok(expanded);
-            }
+            // decode_all already expanded every tool call. Re-expanding a
+            // leading Protocol entry and then appending the tail duplicates
+            // a later custom or function call and drops the unknown entry.
             let lone_protocol = matches!(events.as_slice(), [IrStreamEvent::Protocol { .. }]);
             if !lone_protocol {
                 return Ok(events);
+            }
+            if let Some(expanded) = expand_complete_tool_call(wire, &events[0], raw)? {
+                return Ok(expanded);
             }
         }
     }
@@ -210,7 +210,7 @@ pub fn decode_stream_events(
     {
         return Ok(events);
     }
-    if let Some(expanded) = expand_complete_tool_call(wire, &first, raw) {
+    if let Some(expanded) = expand_complete_tool_call(wire, &first, raw)? {
         return Ok(expanded);
     }
     if matches!(wire, Wire::Messages)
@@ -395,27 +395,35 @@ fn expand_complete_tool_call(
     wire: Wire,
     first: &IrStreamEvent,
     raw: &RawSse,
-) -> Option<Vec<IrStreamEvent>> {
-    let value: Value = serde_json::from_str(&raw.data).ok()?;
+) -> Result<Option<Vec<IrStreamEvent>>, MapError> {
+    let Ok(value) = serde_json::from_str::<Value>(&raw.data) else {
+        return Ok(None);
+    };
     match wire {
         Wire::ChatCompletions => expand_chat_tool_call(first, &value),
-        Wire::Gemini => expand_gemini_function_call(first, &value),
-        Wire::Responses => expand_responses_function_call(first, &value),
-        Wire::Messages | Wire::Converse => None,
-        _ => None,
+        Wire::Gemini => Ok(expand_gemini_function_call(first, &value)),
+        Wire::Responses => Ok(expand_responses_function_call(first, &value)),
+        Wire::Messages | Wire::Converse => Ok(None),
+        _ => Ok(None),
     }
 }
 
-fn expand_chat_tool_call(first: &IrStreamEvent, value: &Value) -> Option<Vec<IrStreamEvent>> {
+fn expand_chat_tool_call(
+    first: &IrStreamEvent,
+    value: &Value,
+) -> Result<Option<Vec<IrStreamEvent>>, MapError> {
     let IrStreamEvent::Protocol { .. } = first else {
-        return None;
+        return Ok(None);
     };
-    let tool_calls = value
+    let Some(tool_calls) = value
         .pointer("/choices/0/delta/tool_calls")
-        .and_then(Value::as_array)?;
+        .and_then(Value::as_array)
+    else {
+        return Ok(None);
+    };
     let mut out = Vec::new();
     for call in tool_calls {
-        let expanded = chat::expand_tool_call(call, value);
+        let expanded = chat::expand_tool_call(call, value)?;
         if expanded
             .iter()
             .all(|ev| matches!(ev, IrStreamEvent::Protocol { .. }))
@@ -429,9 +437,9 @@ fn expand_chat_tool_call(first: &IrStreamEvent, value: &Value) -> Option<Vec<IrS
         );
     }
     if out.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(out)
+    Ok(Some(out))
 }
 
 fn expand_gemini_function_call(first: &IrStreamEvent, value: &Value) -> Option<Vec<IrStreamEvent>> {

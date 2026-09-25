@@ -5363,20 +5363,23 @@ fn chat_object_arguments_become_compact_json() {
         "array arguments must be compact JSON, got {events:?}"
     );
 
-    let number = RawSse {
-        event: None,
-        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_n","type":"function","function":{"name":"n","arguments":1}}]}}]}"#.into(),
-    };
-    let err = decode_stream_events(Wire::ChatCompletions, &number, &chat_profile())
-        .expect_err("number arguments are not a silent empty call");
-    match err {
-        MapError::Invalid(detail) => {
-            assert!(
-                detail.contains("arguments"),
-                "error must name arguments, detail={detail}"
-            );
+    for (label, arguments) in [("number", "1"), ("boolean", "true"), ("null", "null")] {
+        let raw = RawSse {
+            event: None,
+            data: format!(
+                r#"{{"choices":[{{"delta":{{"tool_calls":[{{"index":0,"id":"call_n","type":"function","function":{{"name":"n","arguments":{arguments}}}}}]}}}}]}}"#
+            ),
+        };
+        let err = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).unwrap_err();
+        match err {
+            MapError::Invalid(detail) => {
+                assert!(
+                    detail.contains("arguments must be a string, object, or array"),
+                    "{label} arguments must be Invalid, detail={detail}"
+                );
+            }
+            other => panic!("{label} arguments: expected Invalid, got {other}"),
         }
-        other => panic!("expected Invalid, got {other}"),
     }
 
     let body = r#"{"choices":[{"message":{"tool_calls":[{"id":"call_a","type":"function","function":{"name":"get_weather","arguments":{"city":"Paris"}}}]},"finish_reason":"tool_calls"}]}"#;
@@ -5598,6 +5601,120 @@ fn chat_id_then_name_assembles_one_start() {
             IrStreamEvent::ToolCallStart { id, name, .. } if id == "call_1" && name == "lookup"
         ),
         "merged start, got {out:?}"
+    );
+}
+
+#[test]
+fn chat_stream_custom_tool_call_decodes() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_custom","type":"custom","custom":{"name":"code_exec","input":"print(1)"}}]}}]}"#.into(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode custom tool chunk");
+    assert!(
+        matches!(
+            events.first(),
+            Some(IrStreamEvent::CustomToolCallStart { id, name, index })
+                if id == "call_custom" && name == "code_exec" && *index == 0
+        ),
+        "custom start, got {events:?}"
+    );
+    assert!(
+        matches!(
+            events.get(1),
+            Some(IrStreamEvent::CustomToolCallInputDelta { delta, index: 0 })
+                if delta == "print(1)"
+        ),
+        "custom input delta, got {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::Protocol { .. })),
+        "type=custom must not stay Protocol, got {events:?}"
+    );
+
+    let more = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"type":"custom","custom":{"input":"\nprint(2)"}}]}}]}"#.into(),
+    };
+    let tail = decode_stream_events(Wire::ChatCompletions, &more, &chat_profile())
+        .expect("input continuation");
+    assert_eq!(
+        tail,
+        vec![IrStreamEvent::CustomToolCallInputDelta {
+            delta: "\nprint(2)".into(),
+            index: 0,
+        }],
+        "later custom.input is another delta, got {tail:?}"
+    );
+
+    let bare = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"custom":{"input":"more"}}]}}]}"#
+            .into(),
+    };
+    let bare_events = decode_stream_events(Wire::ChatCompletions, &bare, &chat_profile())
+        .expect("custom.input without type");
+    assert_eq!(
+        bare_events,
+        vec![IrStreamEvent::CustomToolCallInputDelta {
+            delta: "more".into(),
+            index: 1,
+        }],
+        "custom object without type is still an input delta, got {bare_events:?}"
+    );
+
+    let mixed = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"other","other":{"name":"n"}},{"index":1,"id":"call_custom","type":"custom","custom":{"name":"code_exec","input":"print(1)"}}]}}]}"#.into(),
+    };
+    let mixed_events = decode_stream_events(Wire::ChatCompletions, &mixed, &chat_profile())
+        .expect("unknown then custom");
+    let custom_starts = mixed_events
+        .iter()
+        .filter(|ev| {
+            matches!(
+                ev,
+                IrStreamEvent::CustomToolCallStart { id, .. } if id == "call_custom"
+            )
+        })
+        .count();
+    assert_eq!(
+        custom_starts, 1,
+        "custom call after an unknown type must be emitted once, got {mixed_events:?}"
+    );
+    assert!(
+        mixed_events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::Protocol { .. })),
+        "leading unknown type must stay, got {mixed_events:?}"
+    );
+
+    let unknown = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"other","other":{"name":"n"}}]}}]}"#.into(),
+    };
+    let unknown_events = decode_stream_events(Wire::ChatCompletions, &unknown, &chat_profile())
+        .expect("unknown type");
+    assert!(
+        matches!(
+            unknown_events.as_slice(),
+            [IrStreamEvent::Protocol { item_type, .. }] if item_type == "chunk"
+        ),
+        "unknown tool type stays Protocol, got {unknown_events:?}"
+    );
+
+    let bad_input = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_custom","type":"custom","custom":{"name":"code_exec","input":1}}]}}]}"#.into(),
+    };
+    let err = decode_stream_events(Wire::ChatCompletions, &bad_input, &chat_profile())
+        .expect_err("number custom.input");
+    assert!(
+        matches!(err, MapError::Invalid(ref detail) if detail.contains("input must be a string, object, or array")),
+        "number custom.input must be Invalid, got {err}"
     );
 }
 
