@@ -51,6 +51,13 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
         "response.output_item.added" => match item_type(value) {
             Some("function_call") => {
                 let item = value.get("item").unwrap_or(value);
+                if item
+                    .get("arguments")
+                    .is_some_and(|v| v.is_object() || v.is_array())
+                {
+                    return Err(super::chat::singular_tool_limit());
+                }
+                super::json_text_field(item, "arguments")?;
                 Ok(Some(IrStreamEvent::ToolCallStart {
                     id: str_field(item, "call_id")
                         .or_else(|| str_field(item, "id"))
@@ -62,6 +69,13 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             }
             Some("custom_tool_call") => {
                 let item = value.get("item").unwrap_or(value);
+                if item
+                    .get("input")
+                    .is_some_and(|v| v.is_object() || v.is_array())
+                {
+                    return Err(super::chat::singular_tool_limit());
+                }
+                super::json_text_field(item, "input")?;
                 Ok(Some(IrStreamEvent::CustomToolCallStart {
                     id: str_field(item, "call_id")
                         .or_else(|| str_field(item, "id"))
@@ -110,6 +124,9 @@ pub(super) fn decode_all(name: &str, value: &Value) -> Result<Vec<IrStreamEvent>
     if name == "response.created" {
         return Ok(response_slot_events(value));
     }
+    if name == "response.output_item.added" {
+        return added_item_events(value);
+    }
     if name != "response.output_text.delta" {
         return Ok(Vec::new());
     }
@@ -121,6 +138,41 @@ pub(super) fn decode_all(name: &str, value: &Value) -> Result<Vec<IrStreamEvent>
         out.push(IrStreamEvent::Logprobs { content });
     }
     Ok(out)
+}
+
+fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
+    let item = value.get("item").unwrap_or(value);
+    let index = output_index(value);
+    match item_type(value) {
+        Some("function_call") => {
+            let mut out = vec![IrStreamEvent::ToolCallStart {
+                id: str_field(item, "call_id")
+                    .or_else(|| str_field(item, "id"))
+                    .unwrap_or_default(),
+                name: str_field(item, "name").unwrap_or_default(),
+                thought_signature: None,
+                index,
+            }];
+            if let Some(delta) = super::json_text_field(item, "arguments")? {
+                out.push(IrStreamEvent::ToolCallArgDelta { delta, index });
+            }
+            Ok(out)
+        }
+        Some("custom_tool_call") => {
+            let mut out = vec![IrStreamEvent::CustomToolCallStart {
+                id: str_field(item, "call_id")
+                    .or_else(|| str_field(item, "id"))
+                    .unwrap_or_default(),
+                name: str_field(item, "name").unwrap_or_default(),
+                index,
+            }];
+            if let Some(delta) = super::json_text_field(item, "input")? {
+                out.push(IrStreamEvent::CustomToolCallInputDelta { delta, index });
+            }
+            Ok(out)
+        }
+        _ => Ok(Vec::new()),
+    }
 }
 
 fn response_slot_events(value: &Value) -> Vec<IrStreamEvent> {

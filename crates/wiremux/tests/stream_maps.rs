@@ -5322,6 +5322,107 @@ fn chat_tool_start_with_args_is_not_one_event() {
 }
 
 #[test]
+fn chat_object_arguments_become_compact_json() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"get_weather","arguments":{"city":"Paris","n":1}}}]}}]}"#.into(),
+    };
+    let err = decode_stream_event(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect_err("object arguments are not one event");
+    match err {
+        MapError::Invalid(detail) => {
+            assert!(
+                detail.contains("decode_stream_events"),
+                "singular decode must not look like an argument-free start, detail={detail}"
+            );
+        }
+        other => panic!("expected Invalid, got {other}"),
+    }
+    let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("fan-out");
+    assert!(
+        all.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta, index: 0 }
+                if delta == r#"{"city":"Paris","n":1}"#
+        )),
+        "object arguments must be compact JSON, got {all:?}"
+    );
+
+    let array = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":["a",1]}}]}}]}"#.into(),
+    };
+    let events = decode_stream_event(Wire::ChatCompletions, &array, &chat_profile())
+        .expect("array-only delta")
+        .expect("event");
+    assert!(
+        matches!(
+            events,
+            IrStreamEvent::ToolCallArgDelta { ref delta, index: 0 } if delta == r#"["a",1]"#
+        ),
+        "array arguments must be compact JSON, got {events:?}"
+    );
+
+    let number = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_n","type":"function","function":{"name":"n","arguments":1}}]}}]}"#.into(),
+    };
+    let err = decode_stream_events(Wire::ChatCompletions, &number, &chat_profile())
+        .expect_err("number arguments are not a silent empty call");
+    match err {
+        MapError::Invalid(detail) => {
+            assert!(
+                detail.contains("arguments"),
+                "error must name arguments, detail={detail}"
+            );
+        }
+        other => panic!("expected Invalid, got {other}"),
+    }
+
+    let body = r#"{"choices":[{"message":{"tool_calls":[{"id":"call_a","type":"function","function":{"name":"get_weather","arguments":{"city":"Paris"}}}]},"finish_reason":"tool_calls"}]}"#;
+    let events =
+        decode_response(Wire::ChatCompletions, body.as_bytes(), &chat_profile()).expect("complete");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta, .. } if delta == r#"{"city":"Paris"}"#
+        )),
+        "complete object arguments must be compact JSON, got {events:?}"
+    );
+
+    let responses = r#"{"output":[{"type":"function_call","call_id":"call_r","name":"lookup","arguments":{"q":"x"}}]}"#;
+    let events = decode_response(Wire::Responses, responses.as_bytes(), &responses_profile())
+        .expect("responses");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta, .. } if delta == r#"{"q":"x"}"#
+        )),
+        "Responses object arguments must be compact JSON, got {events:?}"
+    );
+
+    let added = RawSse {
+        event: Some("response.output_item.added".into()),
+        data: r#"{"output_index":0,"item":{"type":"function_call","call_id":"call_r","name":"lookup","arguments":{"q":"x"}}}"#.into(),
+    };
+    let err = decode_stream_event(Wire::Responses, &added, &responses_profile())
+        .expect_err("Responses object arguments are not one event");
+    assert!(
+        matches!(err, MapError::Invalid(ref detail) if detail.contains("decode_stream_events")),
+        "singular Responses decode must not drop the object, got {err}"
+    );
+    let events =
+        decode_stream_events(Wire::Responses, &added, &responses_profile()).expect("added item");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta, .. } if delta == r#"{"q":"x"}"#
+        )),
+        "Responses stream object arguments must be compact JSON, got {events:?}"
+    );
+}
+
+#[test]
 fn chat_decode_stream_event_refuses_bundled_parallel_arguments() {
     let raw = RawSse {
         event: None,
