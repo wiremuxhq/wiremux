@@ -125,6 +125,9 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     if let Some((id, name, args, custom)) = current.take() {
         tool_calls.push(chat_tool_call_value(&id, &name, &args, custom));
     }
+    if !tool_calls.is_empty() && matches!(finish.as_deref(), None | Some("stop")) {
+        finish = Some("tool_calls".to_string());
+    }
 
     let mut message = json!({ "role": "assistant" });
     if tool_calls.is_empty() {
