@@ -48,13 +48,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                 index: output_index(value),
             }))
         }
-        "response.content_part.added" => {
-            let part = value.get("part").unwrap_or(value);
-            if let Some(ev) = image_delta_from_output_image(part) {
-                return Ok(Some(ev));
-            }
-            Ok(audio_events_from_output_part(part).into_iter().next())
-        }
+        "response.content_part.added" => Ok(content_part_events(value).into_iter().next()),
         "response.output_item.added" => match item_type(value) {
             Some("function_call") => {
                 let item = value.get("item").unwrap_or(value);
@@ -94,11 +88,24 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             Some("reasoning") => Ok(Some(decode_reasoning_item(name, value))),
             Some("message") => {
                 let item = value.get("item").unwrap_or(value);
-                let image = item
+                let part_count = item
                     .get("content")
                     .and_then(Value::as_array)
-                    .and_then(|parts| parts.iter().find_map(image_delta_from_output_image));
-                Ok(Some(image.unwrap_or_else(|| protocol(name, value))))
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                if part_count > 1 {
+                    return Err(MapError::Invalid(
+                        "decode_stream_event cannot represent a Responses message with more than one content part; use decode_stream_events"
+                            .into(),
+                    ));
+                }
+                let events = message_content_events(item);
+                Ok(Some(
+                    events
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| protocol(name, value)),
+                ))
             }
             _ => Ok(Some(protocol(name, value))),
         },
@@ -143,13 +150,7 @@ pub(super) fn decode_all(name: &str, value: &Value) -> Result<Vec<IrStreamEvent>
         return added_item_events(value);
     }
     if name == "response.content_part.added" {
-        let part = value.get("part").unwrap_or(value);
-        let mut out = Vec::new();
-        if let Some(ev) = image_delta_from_output_image(part) {
-            out.push(ev);
-        }
-        out.extend(audio_events_from_output_part(part));
-        return Ok(out);
+        return Ok(content_part_events(value));
     }
     if name != "response.output_text.delta" {
         return Ok(Vec::new());
@@ -195,26 +196,48 @@ fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
             }
             Ok(out)
         }
-        Some("message") => {
-            let mut out = Vec::new();
-            if let Some(content) = item.get("content").and_then(Value::as_array) {
-                for part in content {
-                    let ty = part.get("type").and_then(Value::as_str);
-                    if matches!(ty, Some("output_text") | Some("text"))
-                        && let Some(text) = str_field(part, "text").filter(|s| !s.is_empty())
-                    {
-                        out.push(IrStreamEvent::TextDelta { text });
-                    }
-                    if let Some(ev) = image_delta_from_output_image(part) {
-                        out.push(ev);
-                    }
-                    out.extend(audio_events_from_output_part(part));
-                }
-            }
-            Ok(out)
-        }
+        Some("message") => Ok(message_content_events(item)),
         _ => Ok(Vec::new()),
     }
+}
+
+fn content_part_events(value: &Value) -> Vec<IrStreamEvent> {
+    let part = value.get("part").unwrap_or(value);
+    part_events(part)
+}
+
+fn message_content_events(item: &Value) -> Vec<IrStreamEvent> {
+    let Some(content) = item.get("content").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    content.iter().flat_map(part_events).collect()
+}
+
+fn part_events(part: &Value) -> Vec<IrStreamEvent> {
+    let mut out = Vec::new();
+    let ty = part.get("type").and_then(Value::as_str);
+    if matches!(ty, Some("output_text") | Some("text"))
+        && let Some(text) = str_field(part, "text").filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::TextDelta { text });
+    }
+    if ty == Some("refusal")
+        && let Some(text) = str_field(part, "refusal")
+            .or_else(|| str_field(part, "text"))
+            .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::RefusalDelta { text });
+    }
+    if let Some(ev) = image_delta_from_output_image(part) {
+        out.push(ev);
+    } else if ty == Some("output_image") {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "output_image".into(),
+            payload: part.clone(),
+        });
+    }
+    out.extend(audio_events_from_output_part(part));
+    out
 }
 
 fn audio_events_from_output_part(part: &Value) -> Vec<IrStreamEvent> {

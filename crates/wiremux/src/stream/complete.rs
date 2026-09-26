@@ -1425,6 +1425,11 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
                             if let Some(ev) = super::responses::image_delta_from_output_image(part)
                             {
                                 out.push(ev);
+                            } else {
+                                out.push(IrStreamEvent::Protocol {
+                                    item_type: "output_image".into(),
+                                    payload: part.clone(),
+                                });
                             }
                         }
                         _ => {}
