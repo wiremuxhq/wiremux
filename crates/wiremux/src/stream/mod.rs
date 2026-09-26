@@ -99,7 +99,7 @@ impl UpstreamFrames {
     /// EOF. SSE may emit one last frame. Event Stream fails if bytes remain.
     pub fn finish(&mut self) -> Result<Option<RawSse>, String> {
         match self {
-            Self::Sse(r) => Ok(r.drain()),
+            Self::Sse(r) => r.finish(),
             Self::Event(r) => r.finish(),
         }
     }
