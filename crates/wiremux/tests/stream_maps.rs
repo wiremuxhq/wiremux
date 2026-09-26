@@ -3865,25 +3865,22 @@ fn dest_converse_rejects_image_mime_outside_the_allow_list() {
         media_type: "image/bmp".into(),
         data: "Qk0=".into(),
     }];
-    let converse = encode_response(Wire::Converse, &events).expect("converse");
+    let err = encode_response(Wire::Converse, &events).expect_err("converse");
     assert!(
-        converse
-            .pointer("/output/message/content/0/image")
-            .is_none(),
-        "image/bmp has no Converse format, got {converse}"
+        err.to_string().contains("image/bmp"),
+        "complete encode must fail an unsupported Converse image, got {err}"
     );
-    let frame = encode_stream_event(Wire::Converse, &events[0]).expect("stream");
-    let body: Value = serde_json::from_str(&frame.data).expect("json");
+    let err = encode_stream_event(Wire::Converse, &events[0]).expect_err("bmp");
     assert!(
-        body.pointer("/contentBlockStart/start/image").is_none(),
-        "image/bmp stream must not invent a Converse format, got {body}"
+        err.to_string().contains("image/bmp"),
+        "unsupported Converse image must be an error, got {err}"
     );
-    let frames = encode_all(Wire::Converse, &events);
+    let err = StreamEncoder::new(Wire::Converse)
+        .push(events[0].clone())
+        .expect_err("encoder");
     assert!(
-        frames.iter().all(|frame| {
-            !frame.data.contains("contentBlockDelta") && !frame.data.contains("contentBlockStop")
-        }),
-        "rejected image must not open a Converse block, got {frames:?}"
+        err.to_string().contains("image/bmp"),
+        "stream encoder must fail the unsupported image, got {err}"
     );
 }
 
@@ -4107,6 +4104,303 @@ fn dest_gemini_text_and_image_stream_uses_distinct_block_indexes() {
         }),
         Some("iVBORw0KGgo="),
         "dest Messages stream must keep image bytes, got {bodies:?}"
+    );
+}
+
+#[test]
+fn messages_complete_image_block_keeps_preceding_text() {
+    let body = serde_json::to_vec(&json!({
+        "content": [
+            { "type": "text", "text": "before" },
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "iVBORw0KGgo="
+                }
+            },
+            { "type": "text", "text": "after" },
+            {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "lookup",
+                "input": { "q": "x" }
+            }
+        ]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile()).expect("decode");
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::TextDelta { text } if text == "before" => Some("text"),
+            IrStreamEvent::ImageDelta { media_type, data }
+                if media_type == "image/png" && data == "iVBORw0KGgo=" =>
+            {
+                Some("image")
+            }
+            IrStreamEvent::TextDelta { text } if text == "after" => Some("text"),
+            IrStreamEvent::ToolCallStart { name, .. } if name == "lookup" => Some("tool"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["text", "image", "text", "tool"],
+        "image must follow the leading text and keep the tool block, got {events:?}"
+    );
+}
+
+#[test]
+fn messages_stream_content_block_start_image_becomes_image_delta() {
+    let raw = RawSse {
+        event: Some("content_block_start".into()),
+        data: json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "iVBORw0KGgo="
+                }
+            }
+        })
+        .to_string(),
+    };
+    let events =
+        decode_stream_events(Wire::Messages, &raw, &messages_profile()).expect("decode image");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ImageDelta { media_type, data }
+                if media_type == "image/png" && data == "iVBORw0KGgo="
+        )),
+        "content_block_start image must become ImageDelta, got {events:?}"
+    );
+    let singular = decode_stream_event(Wire::Messages, &raw, &messages_profile())
+        .expect("singular")
+        .expect("event");
+    assert!(
+        matches!(
+            singular,
+            IrStreamEvent::ImageDelta { ref media_type, ref data }
+                if media_type == "image/png" && data == "iVBORw0KGgo="
+        ),
+        "singular decode must return the image, got {singular:?}"
+    );
+}
+
+#[test]
+fn responses_complete_output_image_data_url_becomes_image_delta() {
+    let body = serde_json::to_vec(&json!({
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "output_image",
+                "image_url": "data:image/png;base64,iVBORw0KGgo="
+            }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile()).expect("decode");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ImageDelta { media_type, data }
+                if media_type == "image/png" && data == "iVBORw0KGgo="
+        )),
+        "output_image data URL must become ImageDelta, got {events:?}"
+    );
+
+    let https = serde_json::to_vec(&json!({
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "output_image",
+                "image_url": "https://example.com/a.png"
+            }]
+        }]
+    }))
+    .expect("json");
+    let https_events =
+        decode_response(Wire::Responses, &https, &responses_profile()).expect("https");
+    assert!(
+        !https_events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::ImageDelta { .. })),
+        "https image_url must not become ImageDelta, got {https_events:?}"
+    );
+}
+
+#[test]
+fn responses_stream_output_image_data_url_becomes_image_delta() {
+    let raw = RawSse {
+        event: Some("response.output_item.added".into()),
+        data: json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    { "type": "output_text", "text": "before" },
+                    {
+                        "type": "output_image",
+                        "image_url": "data:image/png;base64,iVBORw0KGgo="
+                    }
+                ]
+            }
+        })
+        .to_string(),
+    };
+    let events =
+        decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("decode image");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ImageDelta { media_type, data }
+                if media_type == "image/png" && data == "iVBORw0KGgo="
+        )),
+        "message output_image data URL must become ImageDelta, got {events:?}"
+    );
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::TextDelta { text } if text == "before" => Some("text"),
+            IrStreamEvent::ImageDelta { .. } => Some("image"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["text", "image"],
+        "text before the image on an added message must stay first, got {events:?}"
+    );
+
+    let part = RawSse {
+        event: Some("response.content_part.added".into()),
+        data: json!({
+            "type": "response.content_part.added",
+            "output_index": 0,
+            "content_index": 1,
+            "part": {
+                "type": "output_image",
+                "image_url": "data:image/webp;base64,UklGR"
+            }
+        })
+        .to_string(),
+    };
+    let part_events =
+        decode_stream_events(Wire::Responses, &part, &responses_profile()).expect("part");
+    assert!(
+        part_events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ImageDelta { media_type, data }
+                if media_type == "image/webp" && data == "UklGR"
+        )),
+        "content_part.added output_image must become ImageDelta, got {part_events:?}"
+    );
+}
+
+#[test]
+fn converse_complete_image_jpeg_bytes_become_image_delta() {
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [
+                    { "text": "before" },
+                    { "image": { "format": "jpeg", "source": { "bytes": "/9j/" } } },
+                    { "audio": { "format": "mp3", "source": { "bytes": "SUQz" } } },
+                    { "toolUse": { "toolUseId": "t1", "name": "lookup", "input": {} } }
+                ]
+            }
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile()).expect("decode");
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::TextDelta { text } if text == "before" => Some("text"),
+            IrStreamEvent::ImageDelta { media_type, data }
+                if media_type == "image/jpeg" && data == "/9j/" =>
+            {
+                Some("image")
+            }
+            IrStreamEvent::AudioDelta { data } if data == "SUQz" => Some("audio"),
+            IrStreamEvent::ToolCallStart { name, .. } if name == "lookup" => Some("tool"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["text", "image", "audio", "tool"],
+        "jpeg bytes must become image/jpeg and keep text, audio, and tool order, got {events:?}"
+    );
+}
+
+#[test]
+fn converse_stream_content_block_start_image_png_becomes_image_delta() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "contentBlockStart": {
+                "start": {
+                    "image": {
+                        "format": "png",
+                        "source": { "bytes": "iVBORw0KGgo=" }
+                    }
+                }
+            }
+        })
+        .to_string(),
+    };
+    let events =
+        decode_stream_events(Wire::Converse, &raw, &converse_profile()).expect("decode image");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ImageDelta { media_type, data }
+                if media_type == "image/png" && data == "iVBORw0KGgo="
+        )),
+        "contentBlockStart image must become ImageDelta, got {events:?}"
+    );
+}
+
+#[test]
+fn converse_stream_empty_image_bytes_are_not_image_delta() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "contentBlockStart": {
+                "start": {
+                    "image": {
+                        "format": "png",
+                        "source": { "bytes": "" }
+                    }
+                }
+            }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Converse, &raw, &converse_profile()).expect("empty");
+    assert!(
+        !events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::ImageDelta { .. })),
+        "empty Converse image bytes must not become ImageDelta, got {events:?}"
+    );
+    let singular =
+        decode_stream_event(Wire::Converse, &raw, &converse_profile()).expect("singular");
+    assert!(
+        singular.is_none(),
+        "empty Converse image bytes must stay a no-op, got {singular:?}"
     );
 }
 

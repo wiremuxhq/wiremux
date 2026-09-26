@@ -513,8 +513,39 @@ async fn stream_http_200_raw_json_error_without_data_prefix_is_transient() {
     let first = stream.next().await.expect("first stream item");
     let _ = handle.join();
     match first {
-        Err(ClientError::Transient { status, .. }) => assert_eq!(status, Some(200)),
-        other => panic!("expected Transient status 200, got {other:?}"),
+        Err(ClientError::RateLimit { status, .. }) => assert_eq!(status, Some(200)),
+        other => panic!("expected RateLimit status 200, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stream_http_200_string_rate_limit_code_is_rate_limit() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let _ = read_http_request(&mut stream);
+        let sse = "data: {\"error\":{\"message\":\"Rate limit reached for requests\",\"type\":\"tokens\",\"code\":\"rate_limit_exceeded\",\"retry_after\":12}}\n\n";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+            sse.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+    let client = client_for(&format!("http://{addr}"), "sk-test");
+    let mut stream = std::pin::pin!(client.stream(simple_ir("gpt-4")));
+    let first = stream.next().await.expect("first stream item");
+    let _ = handle.join();
+    match first {
+        Err(ClientError::RateLimit {
+            status,
+            retry_after,
+            ..
+        }) => {
+            assert_eq!(status, Some(200));
+            assert_eq!(retry_after, Some(12));
+        }
+        other => panic!("expected RateLimit, got {other:?}"),
     }
 }
 
@@ -592,8 +623,8 @@ async fn stream_http_200_wrapped_error_is_transient() {
     let first = stream.next().await.expect("first stream item");
     let _ = handle.join();
     match first {
-        Err(ClientError::Transient { status, .. }) => assert_eq!(status, Some(200)),
-        other => panic!("expected Transient status 200, got {other:?}"),
+        Err(ClientError::RateLimit { status, .. }) => assert_eq!(status, Some(200)),
+        other => panic!("expected RateLimit status 200, got {other:?}"),
     }
 }
 
@@ -711,9 +742,9 @@ async fn stream_error_after_chat_delta_is_transient() {
     }
     let _ = handle.join();
     match first_err {
-        Some(ClientError::Transient { status, .. }) => assert_eq!(status, Some(200)),
-        Some(other) => panic!("expected Transient status 200, got {other:?}"),
-        None => panic!("expected Transient status 200, got empty success"),
+        Some(ClientError::RateLimit { status, .. }) => assert_eq!(status, Some(200)),
+        Some(other) => panic!("expected RateLimit status 200, got {other:?}"),
+        None => panic!("expected RateLimit status 200, got empty success"),
     }
 }
 
@@ -878,7 +909,7 @@ async fn http_200_assistant_does_not_exist_is_not_not_found() {
 }
 
 #[tokio::test]
-async fn http_200_wrapped_overload_is_transient() {
+async fn http_200_code_429_is_rate_limit() {
     let (base, handle) = spawn_one(
         200,
         "OK",
@@ -891,14 +922,8 @@ async fn http_200_wrapped_overload_is_transient() {
         .expect_err("200 error");
     let _ = handle.join();
     match err {
-        ClientError::Transient { status, kind, .. } => {
-            assert_eq!(status, Some(200));
-            assert_eq!(kind, TransientKind::Http);
-            assert!(!err.is_connect());
-            assert!(!err.is_timeout());
-            assert!(!err.is_reset());
-        }
-        other => panic!("expected Transient, not {other}"),
+        ClientError::RateLimit { status, .. } => assert_eq!(status, Some(200)),
+        other => panic!("expected RateLimit, not {other}"),
     }
 }
 

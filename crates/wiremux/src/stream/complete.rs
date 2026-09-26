@@ -27,7 +27,7 @@ pub fn encode_response_with_model(
         Wire::Messages => Ok(encode_messages_complete(events, model)),
         Wire::Gemini => Ok(encode_gemini_complete(events, model)),
         Wire::Responses => Ok(encode_responses_complete(events, model)),
-        Wire::Converse => Ok(super::converse::encode_complete(events)),
+        Wire::Converse => super::converse::encode_complete(events),
         _ => Err(MapError::Invalid(format!(
             "unsupported wire `{}`",
             wire.as_str()
@@ -1104,6 +1104,16 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
                         out.push(IrStreamEvent::ReasoningSignature { signature });
                     }
                 }
+                Some("image") => {
+                    if let Some(ev) = super::messages::image_delta_from_block(block) {
+                        out.push(ev);
+                    } else {
+                        out.push(IrStreamEvent::Protocol {
+                            item_type: "image".into(),
+                            payload: block.clone(),
+                        });
+                    }
+                }
                 Some("tool_use") => {
                     let index = tool_index;
                     tool_index = tool_index.saturating_add(1);
@@ -1410,6 +1420,12 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
                         }
                         Some("output_audio") | Some("audio") => {
                             push_output_audio_events(&mut out, part);
+                        }
+                        Some("output_image") => {
+                            if let Some(ev) = super::responses::image_delta_from_output_image(part)
+                            {
+                                out.push(ev);
+                            }
                         }
                         _ => {}
                     }

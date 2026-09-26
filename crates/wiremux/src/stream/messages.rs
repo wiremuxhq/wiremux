@@ -35,6 +35,9 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                     thought_signature: None,
                     index: block_index(value),
                 })),
+                Some("image") => Ok(Some(
+                    image_delta_from_block(block).unwrap_or_else(|| protocol(name, value)),
+                )),
                 _ => Ok(Some(protocol(name, value))),
             }
         }
@@ -87,6 +90,29 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
         }
         other => Ok(Some(protocol(other, value))),
     }
+}
+
+/// Base64 image block (`source.type` absent or `"base64"`).
+/// Empty `data` and non-image media types stay `None` so the caller
+/// keeps the Protocol path.
+pub(super) fn image_delta_from_block(block: &Value) -> Option<IrStreamEvent> {
+    let source = block.get("source")?;
+    match source.get("type").and_then(Value::as_str) {
+        None | Some("base64") => {}
+        Some(_) => return None,
+    }
+    let data = source
+        .get("data")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    let media_type = source.get("media_type").and_then(Value::as_str)?;
+    if !media_type.to_ascii_lowercase().starts_with("image/") {
+        return None;
+    }
+    Some(IrStreamEvent::ImageDelta {
+        media_type: media_type.to_string(),
+        data: data.to_string(),
+    })
 }
 
 pub(super) fn annotation_from_messages_citation(citation: &Value) -> Option<Value> {

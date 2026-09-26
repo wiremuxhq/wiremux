@@ -63,6 +63,12 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             index: content_block_index(start)?,
         }));
     }
+    if let Some(start) = value.get("contentBlockStart")
+        && let Some(image) = start.pointer("/start/image")
+    {
+        // Empty bytes are a no-op, same as contentBlockStop, not an error.
+        return Ok(image_delta_from_converse(image));
+    }
     if value.get("contentBlockStop").is_some() {
         // AWS also emits this for text/reasoning blocks.
         return Ok(None);
@@ -118,9 +124,9 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
         })),
         IrStreamEvent::ImageDelta { media_type, data } => {
             let Some(format) = crate::map::converse_image_format(media_type) else {
-                return Ok(json!({
-                    "contentBlockDelta": { "delta": { "text": "" } }
-                }));
+                return Err(MapError::Invalid(format!(
+                    "converse image format is not supported: {media_type}"
+                )));
             };
             Ok(json!({
                 "contentBlockStart": {
@@ -178,7 +184,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
     }
 }
 
-pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
+pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapError> {
     let mut text = String::new();
     let mut content = Vec::new();
     let mut current_tool: Option<(String, String, String)> = None;
@@ -200,7 +206,9 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
             IrStreamEvent::AudioDelta { data } => audio_data.push_str(data),
             IrStreamEvent::ImageDelta { media_type, data } => {
                 let Some(format) = crate::map::converse_image_format(media_type) else {
-                    continue;
+                    return Err(MapError::Invalid(format!(
+                        "converse image format is not supported: {media_type}"
+                    )));
                 };
                 flush_text(&mut text, &mut content);
                 content.push(json!({
@@ -340,7 +348,7 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
     if let Some((input, output, cache_read, cache_write)) = usage {
         body["usage"] = encode_converse_usage(input, output, cache_read, cache_write);
     }
-    body
+    Ok(body)
 }
 
 pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
@@ -390,6 +398,11 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
             out.push(IrStreamEvent::AudioDelta {
                 data: data.to_string(),
             });
+        }
+        if let Some(image) = block.get("image")
+            && let Some(ev) = image_delta_from_converse(image)
+        {
+            out.push(ev);
         }
         if let Some(citations) = block
             .pointer("/citationsContent/citations")
@@ -570,6 +583,31 @@ fn tool_use(id: &str, name: &str, args: &str) -> Value {
     })
 }
 
+fn image_delta_from_converse(image: &Value) -> Option<IrStreamEvent> {
+    let data = image
+        .pointer("/source/bytes")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    let format = image
+        .get("format")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    Some(IrStreamEvent::ImageDelta {
+        media_type: converse_image_media_type(format),
+        data: data.to_string(),
+    })
+}
+
+fn converse_image_media_type(format: &str) -> String {
+    match format.to_ascii_lowercase().as_str() {
+        "png" => "image/png".into(),
+        "jpeg" | "jpg" => "image/jpeg".into(),
+        "gif" => "image/gif".into(),
+        "webp" => "image/webp".into(),
+        _ => format!("image/{format}"),
+    }
+}
+
 fn content_block_index(block: &Value) -> Result<u32, MapError> {
     check_index(
         block,
@@ -645,7 +683,8 @@ mod tests {
         );
         let complete = encode_complete(&[IrStreamEvent::FinishReason {
             reason: "content_filter".into(),
-        }]);
+        }])
+        .expect("complete");
         assert_eq!(
             complete.get("stopReason").and_then(Value::as_str),
             Some("content_filtered"),
