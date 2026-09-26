@@ -97,6 +97,7 @@ impl UpstreamFrames {
     }
 
     /// EOF. SSE may emit one last frame. Event Stream fails if bytes remain.
+    #[cfg(any(feature = "client", feature = "proxy"))]
     pub fn finish(&mut self) -> Result<Option<RawSse>, String> {
         match self {
             Self::Sse(r) => r.finish(),
@@ -745,6 +746,7 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
 /// Chat-shaped SSE `data` that is only an `error` object.
 ///
 /// `choices` or `delta` means a normal chunk, even if `error` is also set.
+#[cfg(any(feature = "client", feature = "proxy"))]
 pub(crate) fn sse_wrapped_error_message(data: &str) -> Option<String> {
     let value: Value = serde_json::from_str(data).ok()?;
     if value.get("choices").is_some() || value.get("delta").is_some() {
@@ -840,6 +842,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(feature = "client", feature = "proxy"))]
     #[test]
     fn sse_wrapped_error_message_extracts_error_object() {
         let msg = sse_wrapped_error_message(
@@ -848,18 +851,21 @@ mod tests {
         assert_eq!(msg.as_deref(), Some("upstream failed"));
     }
 
+    #[cfg(any(feature = "client", feature = "proxy"))]
     #[test]
     fn sse_wrapped_error_message_ignores_error_when_choices_present() {
         let msg = sse_wrapped_error_message(r#"{"choices":[],"error":{"message":"nope"}}"#);
         assert!(msg.is_none(), "{msg:?}");
     }
 
+    #[cfg(any(feature = "client", feature = "proxy"))]
     #[test]
     fn sse_wrapped_error_message_keeps_code_only_payload() {
         let raw = r#"{"error":{"code":"server_error"}}"#;
         assert_eq!(sse_wrapped_error_message(raw).as_deref(), Some(raw));
     }
 
+    #[cfg(any(feature = "client", feature = "proxy"))]
     #[test]
     fn sse_wrapped_error_message_ignores_normal_chat_chunk() {
         let msg =

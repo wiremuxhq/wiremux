@@ -56,6 +56,7 @@ impl EventStreamReader {
     }
 
     /// EOF. Leftover bytes are a truncated message, not a clean stop.
+    #[cfg(any(feature = "client", feature = "proxy", feature = "cli", test))]
     pub fn finish(&mut self) -> Result<Option<RawSse>, String> {
         if self.buffer.is_empty() {
             return Ok(None);
