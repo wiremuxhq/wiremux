@@ -45,6 +45,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut annotations = Vec::new();
     let mut audio_data = String::new();
     let mut audio_transcript = String::new();
+    let mut images = Vec::new();
     let mut tool_calls = Vec::new();
     let mut logprobs_content = Vec::new();
     let mut created = None;
@@ -64,6 +65,13 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 annotations.push(super::chat::annotation_to_chat(annotation));
             }
             IrStreamEvent::AudioDelta { data } => audio_data.push_str(data),
+            IrStreamEvent::ImageDelta { media_type, data } => {
+                if !text.is_empty() {
+                    images.push(json!({ "type": "text", "text": text }));
+                    text.clear();
+                }
+                images.push(super::chat::chat_image_url_part(media_type, data));
+            }
             IrStreamEvent::AudioTranscriptDelta { text } => audio_transcript.push_str(text),
             IrStreamEvent::Logprobs { content } => {
                 extend_logprobs_content(&mut logprobs_content, content);
@@ -133,18 +141,9 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     };
 
     let mut message = json!({ "role": "assistant" });
-    if tool_calls.is_empty() {
-        message["content"] = if text.is_empty() && !refusal.is_empty() {
-            Value::Null
-        } else {
-            json!(text)
-        };
-    } else {
-        message["content"] = if text.is_empty() {
-            Value::Null
-        } else {
-            json!(text)
-        };
+    let content = chat_message_content(&text, &refusal, &images, tool_calls.is_empty());
+    message["content"] = content;
+    if !tool_calls.is_empty() {
         message["tool_calls"] = Value::Array(tool_calls);
     }
     if !refusal.is_empty() {
@@ -229,6 +228,20 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     out
 }
 
+fn chat_message_content(text: &str, refusal: &str, images: &[Value], no_tools: bool) -> Value {
+    if images.is_empty() {
+        if text.is_empty() && (!refusal.is_empty() || !no_tools) {
+            return Value::Null;
+        }
+        return json!(text);
+    }
+    let mut parts = images.to_vec();
+    if !text.is_empty() {
+        parts.push(json!({ "type": "text", "text": text }));
+    }
+    Value::Array(parts)
+}
+
 fn extend_logprobs_content(dst: &mut Vec<Value>, content: &Value) {
     match content {
         Value::Array(arr) => dst.extend(arr.iter().cloned()),
@@ -263,6 +276,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut service_tier = None;
     let mut tool_calls = Vec::new();
     let mut citations = Vec::new();
+    let mut images = Vec::new();
     let mut current: Option<(String, String, String)> = None;
     for ev in events {
         match ev {
@@ -271,6 +285,20 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::RefusalDelta { text: delta } => refusal.push_str(delta),
             IrStreamEvent::AnnotationAdded { annotation } => {
                 citations.push(super::messages::citation_from_annotation(annotation));
+            }
+            IrStreamEvent::ImageDelta { media_type, data } => {
+                if !text.is_empty() {
+                    images.push(json!({ "type": "text", "text": text }));
+                    text.clear();
+                }
+                images.push(json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data
+                    }
+                }));
             }
             IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
             IrStreamEvent::ReasoningSignature { signature } => {
@@ -329,13 +357,24 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
         }
         content.push(block);
     }
-    if !text.is_empty() || !citations.is_empty() {
+    if text.is_empty() && !citations.is_empty() {
+        if let Some(block) = images
+            .iter_mut()
+            .rev()
+            .find(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        {
+            block["citations"] = json!(citations);
+        } else {
+            images.push(json!({ "type": "text", "text": "", "citations": citations }));
+        }
+    } else if !text.is_empty() || !citations.is_empty() {
         let mut block = json!({ "type": "text", "text": text });
         if !citations.is_empty() {
             block["citations"] = json!(citations);
         }
-        content.push(block);
+        images.push(block);
     }
+    content.extend(images);
     content.extend(tool_calls);
 
     let mut out = json!({
@@ -399,7 +438,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut tool_calls = Vec::new();
     let mut grounding_chunks = Vec::new();
     let mut grounding_supports = Vec::new();
-    let mut audio_parts = Vec::new();
+    let mut media_parts = Vec::new();
     let mut logprobs_content = Vec::new();
     let mut service_tier = None;
     let mut current: Option<(String, String, String)> = None;
@@ -415,8 +454,21 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 ));
             }
             IrStreamEvent::AudioDelta { data } => {
-                audio_parts.push(json!({
+                if !text.is_empty() {
+                    media_parts.push(json!({ "text": text }));
+                    text.clear();
+                }
+                media_parts.push(json!({
                     "inlineData": { "mimeType": "audio/mpeg", "data": data }
+                }));
+            }
+            IrStreamEvent::ImageDelta { media_type, data } => {
+                if !text.is_empty() {
+                    media_parts.push(json!({ "text": text }));
+                    text.clear();
+                }
+                media_parts.push(json!({
+                    "inlineData": { "mimeType": media_type, "data": data }
                 }));
             }
             IrStreamEvent::Logprobs { content } => {
@@ -484,9 +536,9 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
         parts.push(part);
     }
     if !text.is_empty() {
-        parts.push(json!({ "text": text }));
+        media_parts.push(json!({ "text": text }));
     }
-    parts.extend(audio_parts);
+    parts.extend(media_parts);
     parts.extend(tool_calls);
 
     let mut candidate = json!({
@@ -572,6 +624,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut annotations = Vec::new();
     let mut audio_data = String::new();
     let mut audio_transcript = String::new();
+    let mut images = Vec::new();
     let mut logprobs_content = Vec::new();
     let mut created = None;
     let mut service_tier = None;
@@ -591,6 +644,16 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 annotations.push(annotation.clone());
             }
             IrStreamEvent::AudioDelta { data } => audio_data.push_str(data),
+            IrStreamEvent::ImageDelta { media_type, data } => {
+                if !text.is_empty() {
+                    images.push(json!({ "type": "output_text", "text": text }));
+                    text.clear();
+                }
+                images.push(json!({
+                    "type": "output_image",
+                    "image_url": format!("data:{media_type};base64,{data}")
+                }));
+            }
             IrStreamEvent::AudioTranscriptDelta { text } => audio_transcript.push_str(text),
             IrStreamEvent::Logprobs { content } => {
                 extend_logprobs_content(&mut logprobs_content, content);
@@ -667,9 +730,10 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
         || !refusal.is_empty()
         || !annotations.is_empty()
         || !logprobs_content.is_empty()
+        || !images.is_empty()
     {
-        let mut content = Vec::new();
-        if !text.is_empty() || !annotations.is_empty() || !logprobs_content.is_empty() {
+        let mut content = images;
+        if !text.is_empty() {
             let mut part = json!({ "type": "output_text", "text": text });
             if !annotations.is_empty() {
                 part["annotations"] = json!(annotations);
@@ -678,6 +742,28 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 part["logprobs"] = json!(logprobs_content);
             }
             content.push(part);
+        } else if !annotations.is_empty() || !logprobs_content.is_empty() {
+            let sidecar = content
+                .iter_mut()
+                .rev()
+                .find(|block| block.get("type").and_then(Value::as_str) == Some("output_text"));
+            if let Some(block) = sidecar {
+                if !annotations.is_empty() {
+                    block["annotations"] = json!(annotations);
+                }
+                if !logprobs_content.is_empty() {
+                    block["logprobs"] = json!(logprobs_content);
+                }
+            } else {
+                let mut part = json!({ "type": "output_text", "text": "" });
+                if !annotations.is_empty() {
+                    part["annotations"] = json!(annotations);
+                }
+                if !logprobs_content.is_empty() {
+                    part["logprobs"] = json!(logprobs_content);
+                }
+                content.push(part);
+            }
         }
         if !refusal.is_empty() {
             content.push(json!({ "type": "refusal", "refusal": refusal }));
@@ -901,11 +987,8 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
                     signature: signature.to_string(),
                 });
             }
-            if let Some(text) = message
-                .get("content")
-                .and_then(super::chat::flatten_content)
-            {
-                out.push(IrStreamEvent::TextDelta { text });
+            if let Some(content) = message.get("content") {
+                out.extend(super::chat::content_events(content));
             }
             if let Some(text) = message
                 .get("refusal")

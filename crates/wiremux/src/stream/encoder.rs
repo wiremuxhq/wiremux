@@ -312,6 +312,30 @@ impl StreamEncoder {
             IrStreamEvent::RefusalDelta { text } => {
                 self.refusal.push_str(&text);
             }
+            IrStreamEvent::ImageDelta { media_type, data } => {
+                out.extend(self.close_open());
+                let index = self.next_block;
+                self.next_block = self.next_block.saturating_add(1);
+                out.push(named(
+                    "content_block_start",
+                    json!({
+                        "type": "content_block_start",
+                        "index": index,
+                        "content_block": {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": data
+                            }
+                        }
+                    }),
+                ));
+                out.push(named(
+                    "content_block_stop",
+                    json!({ "type": "content_block_stop", "index": index }),
+                ));
+            }
             IrStreamEvent::AudioDelta { .. } => {}
             IrStreamEvent::Logprobs { .. } => {}
             IrStreamEvent::Created { .. }
@@ -700,6 +724,35 @@ impl StreamEncoder {
                     json!({
                         "type": "response.audio.delta",
                         "delta": data
+                    }),
+                ));
+            }
+            IrStreamEvent::ImageDelta { media_type, data } => {
+                out.extend(self.close_item());
+                let index = self.next_block;
+                self.next_block = self.next_block.saturating_add(1);
+                let item = json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "output_image",
+                        "image_url": format!("data:{media_type};base64,{data}")
+                    }]
+                });
+                out.push(named(
+                    "response.output_item.added",
+                    json!({
+                        "type": "response.output_item.added",
+                        "output_index": index,
+                        "item": item.clone()
+                    }),
+                ));
+                out.push(named(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": index,
+                        "item": item
                     }),
                 ));
             }
@@ -1158,6 +1211,21 @@ impl StreamEncoder {
             }
             IrStreamEvent::FinishReason { reason } => {
                 self.finish = Some(reason);
+            }
+            IrStreamEvent::ImageDelta { media_type, data } => {
+                if crate::map::converse_image_format(&media_type).is_some() {
+                    out.extend(self.close_converse());
+                    let index = self.next_block;
+                    self.next_block = self.next_block.saturating_add(1);
+                    out.push(converse_frame_with_index(
+                        super::converse::encode(&IrStreamEvent::ImageDelta { media_type, data })?,
+                        index,
+                    ));
+                    out.push(converse_frame_with_index(
+                        json!({ "contentBlockStop": {} }),
+                        index,
+                    ));
+                }
             }
             IrStreamEvent::AudioDelta { .. } => {}
             IrStreamEvent::Logprobs { .. } => {}
