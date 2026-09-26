@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.2](https://github.com/wiremuxhq/wiremux/compare/v0.9.1...v0.9.2) (2026-09-26)
+
+
+### Bug Fixes
+
+* decode Chat stream custom tools and reject scalar arguments ([#303](https://github.com/wiremuxhq/wiremux/issues/303)) ([7727ac0](https://github.com/wiremuxhq/wiremux/commit/7727ac03283ff64f3cce695ffa867292c0a7b079)), closes [#301](https://github.com/wiremuxhq/wiremux/issues/301) [#302](https://github.com/wiremuxhq/wiremux/issues/302)
+* decode Gemini response images into IR events ([#307](https://github.com/wiremuxhq/wiremux/issues/307)) ([b321376](https://github.com/wiremuxhq/wiremux/commit/b321376174333df7ab9a24a0b33456ccbb04337d))
+* decode Responses stream output_audio ([#315](https://github.com/wiremuxhq/wiremux/issues/315)) ([c9dde75](https://github.com/wiremuxhq/wiremux/commit/c9dde756ec35b4441f243bdf13bd0550e1c27067))
+* decode source image blocks into ImageDelta ([#309](https://github.com/wiremuxhq/wiremux/issues/309)) ([5248cc0](https://github.com/wiremuxhq/wiremux/commit/5248cc04117472b6bb43ee294b56d8cdf6f97dff))
+* fail streams that end on an error or a truncated frame ([#305](https://github.com/wiremuxhq/wiremux/issues/305)) ([987abc3](https://github.com/wiremuxhq/wiremux/commit/987abc328919334d5fe8ceff515dda2655fea78b))
+* keep Chat audio and image on singular decode ([#319](https://github.com/wiremuxhq/wiremux/issues/319)) ([10e926f](https://github.com/wiremuxhq/wiremux/commit/10e926f47a50bf9c376b6959feff7a9bbb612a17))
+* keep Converse stream audio bytes ([#314](https://github.com/wiremuxhq/wiremux/issues/314)) ([fa8f410](https://github.com/wiremuxhq/wiremux/commit/fa8f41032accae7139d816db06f9a61d4a4d3563))
+* keep image text order on Responses and Converse ([#308](https://github.com/wiremuxhq/wiremux/issues/308)) ([e86f31c](https://github.com/wiremuxhq/wiremux/commit/e86f31cde54e17d35223ad1a138d4330bc85dd63))
+* keep Responses text and non-data image URLs ([#317](https://github.com/wiremuxhq/wiremux/issues/317)) ([98d289d](https://github.com/wiremuxhq/wiremux/commit/98d289d2ef9ba8b29b3a264f48cc800bde14bd7e))
+* refuse a singular decode that drops an audio transcript ([#318](https://github.com/wiremuxhq/wiremux/issues/318)) ([2fb6dfa](https://github.com/wiremuxhq/wiremux/commit/2fb6dfa8cd3dce54bebd6d50e34dd2b37351355e))
+
 ## [0.9.1](https://github.com/wiremuxhq/wiremux/compare/v0.9.0...v0.9.1) (2026-09-25)
 
 
