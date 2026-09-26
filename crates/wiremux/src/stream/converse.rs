@@ -124,9 +124,9 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
         })),
         IrStreamEvent::ImageDelta { media_type, data } => {
             let Some(format) = crate::map::converse_image_format(media_type) else {
-                return Ok(json!({
-                    "contentBlockDelta": { "delta": { "text": "" } }
-                }));
+                return Err(MapError::Invalid(format!(
+                    "converse image format is not supported: {media_type}"
+                )));
             };
             Ok(json!({
                 "contentBlockStart": {
@@ -184,7 +184,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
     }
 }
 
-pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
+pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapError> {
     let mut text = String::new();
     let mut content = Vec::new();
     let mut current_tool: Option<(String, String, String)> = None;
@@ -206,7 +206,9 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
             IrStreamEvent::AudioDelta { data } => audio_data.push_str(data),
             IrStreamEvent::ImageDelta { media_type, data } => {
                 let Some(format) = crate::map::converse_image_format(media_type) else {
-                    continue;
+                    return Err(MapError::Invalid(format!(
+                        "converse image format is not supported: {media_type}"
+                    )));
                 };
                 flush_text(&mut text, &mut content);
                 content.push(json!({
@@ -346,7 +348,7 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
     if let Some((input, output, cache_read, cache_write)) = usage {
         body["usage"] = encode_converse_usage(input, output, cache_read, cache_write);
     }
-    body
+    Ok(body)
 }
 
 pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
@@ -681,7 +683,8 @@ mod tests {
         );
         let complete = encode_complete(&[IrStreamEvent::FinishReason {
             reason: "content_filter".into(),
-        }]);
+        }])
+        .expect("complete");
         assert_eq!(
             complete.get("stopReason").and_then(Value::as_str),
             Some("content_filtered"),

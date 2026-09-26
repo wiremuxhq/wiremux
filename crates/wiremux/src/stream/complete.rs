@@ -27,7 +27,7 @@ pub fn encode_response_with_model(
         Wire::Messages => Ok(encode_messages_complete(events, model)),
         Wire::Gemini => Ok(encode_gemini_complete(events, model)),
         Wire::Responses => Ok(encode_responses_complete(events, model)),
-        Wire::Converse => Ok(super::converse::encode_complete(events)),
+        Wire::Converse => super::converse::encode_complete(events),
         _ => Err(MapError::Invalid(format!(
             "unsupported wire `{}`",
             wire.as_str()

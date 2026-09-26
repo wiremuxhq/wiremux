@@ -267,13 +267,15 @@ pub(super) fn content_events(content: &Value) -> Vec<IrStreamEvent> {
             text.push_str(piece);
             continue;
         }
-        if let Some(ev) = image_event_from_part(part) {
+        if part.get("type").and_then(Value::as_str) == Some("image_url") {
             if !text.is_empty() {
                 out.push(IrStreamEvent::TextDelta {
                     text: std::mem::take(&mut text),
                 });
             }
-            out.push(ev);
+            out.push(
+                image_event_from_part(part).unwrap_or_else(|| super::protocol("image_url", part)),
+            );
             continue;
         }
         let ty = part.get("type").and_then(Value::as_str);

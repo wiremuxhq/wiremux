@@ -918,7 +918,7 @@ fn classify_sse_wrapped_error(data: &str, status: u16) -> Option<ClientError> {
         code,
         &message,
         data,
-        None,
+        json_retry_after(error),
     ))
 }
 
@@ -1012,7 +1012,7 @@ fn classify_error_payload(
             message: message.to_string(),
         };
     }
-    if code == Some(429) && status == Some(429) {
+    if code == Some(429) || looks_like_rate_limit(message) || looks_like_rate_limit(body) {
         return ClientError::RateLimit {
             status,
             retry_after,
@@ -1050,6 +1050,18 @@ fn looks_like_bad_key(text: &str) -> bool {
 fn looks_like_model_not_found(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
     t.contains("does not exist") || t.contains("model_not_found") || t.contains("unknown model")
+}
+
+fn json_retry_after(error: &Value) -> Option<u64> {
+    let value = error.get("retry_after")?;
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+}
+
+fn looks_like_rate_limit(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    t.contains("rate_limit") || t.contains("rate limit")
 }
 
 fn looks_like_overload(text: &str) -> bool {

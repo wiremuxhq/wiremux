@@ -1257,19 +1257,16 @@ impl StreamEncoder {
                 self.finish = Some(reason);
             }
             IrStreamEvent::ImageDelta { media_type, data } => {
-                if crate::map::converse_image_format(&media_type).is_some() {
-                    out.extend(self.close_converse());
-                    let index = self.next_block;
-                    self.next_block = self.next_block.saturating_add(1);
-                    out.push(converse_frame_with_index(
-                        super::converse::encode(&IrStreamEvent::ImageDelta { media_type, data })?,
-                        index,
-                    ));
-                    out.push(converse_frame_with_index(
-                        json!({ "contentBlockStop": {} }),
-                        index,
-                    ));
-                }
+                let frame =
+                    super::converse::encode(&IrStreamEvent::ImageDelta { media_type, data })?;
+                out.extend(self.close_converse());
+                let index = self.next_block;
+                self.next_block = self.next_block.saturating_add(1);
+                out.push(converse_frame_with_index(frame, index));
+                out.push(converse_frame_with_index(
+                    json!({ "contentBlockStop": {} }),
+                    index,
+                ));
             }
             IrStreamEvent::AudioDelta { .. } => {}
             IrStreamEvent::Logprobs { .. } => {}

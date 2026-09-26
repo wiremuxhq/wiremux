@@ -3865,25 +3865,22 @@ fn dest_converse_rejects_image_mime_outside_the_allow_list() {
         media_type: "image/bmp".into(),
         data: "Qk0=".into(),
     }];
-    let converse = encode_response(Wire::Converse, &events).expect("converse");
+    let err = encode_response(Wire::Converse, &events).expect_err("converse");
     assert!(
-        converse
-            .pointer("/output/message/content/0/image")
-            .is_none(),
-        "image/bmp has no Converse format, got {converse}"
+        err.to_string().contains("image/bmp"),
+        "complete encode must fail an unsupported Converse image, got {err}"
     );
-    let frame = encode_stream_event(Wire::Converse, &events[0]).expect("stream");
-    let body: Value = serde_json::from_str(&frame.data).expect("json");
+    let err = encode_stream_event(Wire::Converse, &events[0]).expect_err("bmp");
     assert!(
-        body.pointer("/contentBlockStart/start/image").is_none(),
-        "image/bmp stream must not invent a Converse format, got {body}"
+        err.to_string().contains("image/bmp"),
+        "unsupported Converse image must be an error, got {err}"
     );
-    let frames = encode_all(Wire::Converse, &events);
+    let err = StreamEncoder::new(Wire::Converse)
+        .push(events[0].clone())
+        .expect_err("encoder");
     assert!(
-        frames.iter().all(|frame| {
-            !frame.data.contains("contentBlockDelta") && !frame.data.contains("contentBlockStop")
-        }),
-        "rejected image must not open a Converse block, got {frames:?}"
+        err.to_string().contains("image/bmp"),
+        "stream encoder must fail the unsupported image, got {err}"
     );
 }
 
