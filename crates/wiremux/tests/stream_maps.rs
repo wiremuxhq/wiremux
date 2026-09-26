@@ -3885,6 +3885,63 @@ fn dest_converse_rejects_image_mime_outside_the_allow_list() {
 }
 
 #[test]
+fn responses_content_part_audio_becomes_audio_delta() {
+    let raw = RawSse {
+        event: Some("response.content_part.added".into()),
+        data: json!({
+            "type": "response.content_part.added",
+            "output_index": 0,
+            "content_index": 0,
+            "part": {
+                "type": "output_audio",
+                "data": "SUQz",
+                "transcript": "hello"
+            }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("part");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::AudioDelta { data } if data == "SUQz")),
+        "output_audio data must become AudioDelta, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::AudioTranscriptDelta { text } if text == "hello"
+        )),
+        "output_audio transcript must stay with the bytes, got {events:?}"
+    );
+
+    let added = RawSse {
+        event: Some("response.output_item.added".into()),
+        data: json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_audio",
+                    "data": "SUQz"
+                }]
+            }
+        })
+        .to_string(),
+    };
+    let added_events =
+        decode_stream_events(Wire::Responses, &added, &responses_profile()).expect("added");
+    assert!(
+        added_events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::AudioDelta { data } if data == "SUQz")),
+        "message output_audio must become AudioDelta, got {added_events:?}"
+    );
+}
+
+#[test]
 fn converse_stream_audio_bytes_round_trip() {
     let raw = RawSse {
         event: None,

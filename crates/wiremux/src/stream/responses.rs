@@ -50,7 +50,10 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
         }
         "response.content_part.added" => {
             let part = value.get("part").unwrap_or(value);
-            Ok(image_delta_from_output_image(part))
+            if let Some(ev) = image_delta_from_output_image(part) {
+                return Ok(Some(ev));
+            }
+            Ok(audio_events_from_output_part(part).into_iter().next())
         }
         "response.output_item.added" => match item_type(value) {
             Some("function_call") => {
@@ -139,6 +142,15 @@ pub(super) fn decode_all(name: &str, value: &Value) -> Result<Vec<IrStreamEvent>
     if name == "response.output_item.added" {
         return added_item_events(value);
     }
+    if name == "response.content_part.added" {
+        let part = value.get("part").unwrap_or(value);
+        let mut out = Vec::new();
+        if let Some(ev) = image_delta_from_output_image(part) {
+            out.push(ev);
+        }
+        out.extend(audio_events_from_output_part(part));
+        return Ok(out);
+    }
     if name != "response.output_text.delta" {
         return Ok(Vec::new());
     }
@@ -196,12 +208,28 @@ fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
                     if let Some(ev) = image_delta_from_output_image(part) {
                         out.push(ev);
                     }
+                    out.extend(audio_events_from_output_part(part));
                 }
             }
             Ok(out)
         }
         _ => Ok(Vec::new()),
     }
+}
+
+fn audio_events_from_output_part(part: &Value) -> Vec<IrStreamEvent> {
+    let ty = part.get("type").and_then(Value::as_str);
+    if !matches!(ty, Some("output_audio") | Some("audio")) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if let Some(data) = str_field(part, "data").filter(|s| !s.is_empty()) {
+        out.push(IrStreamEvent::AudioDelta { data });
+    }
+    if let Some(text) = str_field(part, "transcript").filter(|s| !s.is_empty()) {
+        out.push(IrStreamEvent::AudioTranscriptDelta { text });
+    }
+    out
 }
 
 /// `output_image` whose `image_url` is `data:{mime};base64,{bytes}`.
