@@ -909,7 +909,7 @@ async fn http_200_assistant_does_not_exist_is_not_not_found() {
 }
 
 #[tokio::test]
-async fn http_200_wrapped_overload_is_transient() {
+async fn http_200_code_429_is_rate_limit() {
     let (base, handle) = spawn_one(
         200,
         "OK",
@@ -922,14 +922,8 @@ async fn http_200_wrapped_overload_is_transient() {
         .expect_err("200 error");
     let _ = handle.join();
     match err {
-        ClientError::Transient { status, kind, .. } => {
-            assert_eq!(status, Some(200));
-            assert_eq!(kind, TransientKind::Http);
-            assert!(!err.is_connect());
-            assert!(!err.is_timeout());
-            assert!(!err.is_reset());
-        }
-        other => panic!("expected Transient, not {other}"),
+        ClientError::RateLimit { status, .. } => assert_eq!(status, Some(200)),
+        other => panic!("expected RateLimit, not {other}"),
     }
 }
 
