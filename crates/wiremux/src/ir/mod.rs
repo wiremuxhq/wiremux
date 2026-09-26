@@ -404,6 +404,13 @@ pub enum IrStreamEvent {
     AudioDelta {
         data: String,
     },
+    /// Generated image bytes. Dest Gemini `inlineData` with `image/*`,
+    /// dest Chat `image_url` data URL, dest Messages image block,
+    /// dest Responses `output_image`, and dest Converse `image`.
+    ImageDelta {
+        media_type: String,
+        data: String,
+    },
     /// Dest Chat `message.audio.transcript` and dest Responses
     /// `response.audio.transcript.delta`.
     AudioTranscriptDelta {

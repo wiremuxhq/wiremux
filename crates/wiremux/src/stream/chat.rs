@@ -183,11 +183,8 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
             signature: signature.to_string(),
         });
     }
-    if let Some(text) = delta
-        .and_then(|d| d.get("content"))
-        .and_then(flatten_content)
-    {
-        out.push(IrStreamEvent::TextDelta { text });
+    if let Some(content) = delta.and_then(|d| d.get("content")) {
+        out.extend(content_events(content));
     }
     if let Some(anns) = delta
         .and_then(|d| d.get("annotations"))
@@ -245,6 +242,67 @@ pub(super) fn logprobs_content(choice: &Value) -> Option<Value> {
         }
     }
     (!out.is_empty()).then_some(Value::Array(out))
+}
+
+pub(super) fn chat_image_url_part(media_type: &str, data: &str) -> Value {
+    json!({
+        "type": "image_url",
+        "image_url": { "url": format!("data:{media_type};base64,{data}") }
+    })
+}
+
+pub(super) fn content_events(content: &Value) -> Vec<IrStreamEvent> {
+    if let Some(text) = content.as_str().filter(|s| !s.is_empty()) {
+        return vec![IrStreamEvent::TextDelta {
+            text: text.to_string(),
+        }];
+    }
+    let Some(parts) = content.as_array() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut text = String::new();
+    for part in parts {
+        if let Some(piece) = part.as_str() {
+            text.push_str(piece);
+            continue;
+        }
+        if let Some(ev) = image_event_from_part(part) {
+            if !text.is_empty() {
+                out.push(IrStreamEvent::TextDelta {
+                    text: std::mem::take(&mut text),
+                });
+            }
+            out.push(ev);
+            continue;
+        }
+        let ty = part.get("type").and_then(Value::as_str);
+        if (ty.is_none() || ty == Some("text"))
+            && let Some(piece) = part.get("text").and_then(Value::as_str)
+        {
+            text.push_str(piece);
+        }
+    }
+    if !text.is_empty() {
+        out.push(IrStreamEvent::TextDelta { text });
+    }
+    out
+}
+
+fn image_event_from_part(part: &Value) -> Option<IrStreamEvent> {
+    if part.get("type").and_then(Value::as_str) != Some("image_url") {
+        return None;
+    }
+    let url = part.pointer("/image_url/url").and_then(Value::as_str)?;
+    let rest = url.strip_prefix("data:")?;
+    let (media_type, data) = rest.split_once(";base64,")?;
+    if data.is_empty() || !media_type.to_ascii_lowercase().starts_with("image/") {
+        return None;
+    }
+    Some(IrStreamEvent::ImageDelta {
+        media_type: media_type.to_string(),
+        data: data.to_string(),
+    })
 }
 
 pub(super) fn flatten_content(content: &Value) -> Option<String> {
@@ -537,6 +595,12 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         }),
         IrStreamEvent::AudioDelta { data } => json!({
             "choices": [{ "index": 0, "delta": { "audio": { "data": data } } }]
+        }),
+        IrStreamEvent::ImageDelta { media_type, data } => json!({
+            "choices": [{
+                "index": 0,
+                "delta": { "content": [chat_image_url_part(media_type, data)] }
+            }]
         }),
         IrStreamEvent::AudioTranscriptDelta { text } => json!({
             "choices": [{ "index": 0, "delta": { "audio": { "transcript": text } } }]

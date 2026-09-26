@@ -3526,6 +3526,402 @@ fn dest_gemini_complete_inline_data_audio_remaps_dest_chat_message_audio() {
     );
 }
 
+fn gemini_inline_chunk(mime: &str, data: &str, finish: bool) -> RawSse {
+    let mut candidate = json!({
+        "content": {
+            "role": "model",
+            "parts": [{
+                "inlineData": { "mimeType": mime, "data": data }
+            }]
+        }
+    });
+    if finish {
+        candidate["finishReason"] = json!("STOP");
+    }
+    RawSse {
+        event: None,
+        data: json!({ "candidates": [candidate] }).to_string(),
+    }
+}
+
+#[test]
+fn gemini_stream_image_inline_data_becomes_image_delta() {
+    let raw = gemini_inline_chunk("image/png", "iVBORw0KGgo=", true);
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("image chunk");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ImageDelta { media_type, data }
+                if media_type == "image/png" && data == "iVBORw0KGgo="
+        )),
+        "image inlineData must become ImageDelta, got {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+        "image chunk with finishReason must still finish, got {events:?}"
+    );
+
+    let singular = decode_stream_event(Wire::Gemini, &raw, &gemini_profile())
+        .expect("singular")
+        .expect("event");
+    assert!(
+        matches!(
+            singular,
+            IrStreamEvent::ImageDelta { ref media_type, ref data }
+                if media_type == "image/png" && data == "iVBORw0KGgo="
+        ),
+        "singular decode must return the image, got {singular:?}"
+    );
+}
+
+#[test]
+fn gemini_stream_audio_inline_data_stays_audio_delta() {
+    let raw = gemini_inline_chunk("audio/mpeg", "SUQz", false);
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("audio");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::AudioDelta { data } if data == "SUQz")),
+        "audio inlineData must stay AudioDelta, got {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::ImageDelta { .. })),
+        "audio inlineData must not become ImageDelta, got {events:?}"
+    );
+}
+
+#[test]
+fn gemini_stream_empty_or_non_image_inline_data_is_not_an_image() {
+    let empty = gemini_inline_chunk("image/png", "", true);
+    let empty_events =
+        decode_stream_events(Wire::Gemini, &empty, &gemini_profile()).expect("empty data");
+    assert!(
+        !empty_events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::ImageDelta { .. })),
+        "empty image data must not become ImageDelta, got {empty_events:?}"
+    );
+    assert!(
+        empty_events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { .. })),
+        "empty image chunk must still finish, got {empty_events:?}"
+    );
+
+    let pdf = gemini_inline_chunk("application/pdf", "JVBERi0=", false);
+    let pdf_events = decode_stream_events(Wire::Gemini, &pdf, &gemini_profile()).expect("pdf");
+    assert!(
+        !pdf_events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ImageDelta { .. } | IrStreamEvent::AudioDelta { .. }
+        )),
+        "pdf inlineData must not become an image or audio event, got {pdf_events:?}"
+    );
+}
+
+#[test]
+fn gemini_stream_text_and_image_parts_both_emit() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        { "text": "here" },
+                        { "inlineData": { "mimeType": "image/jpeg", "data": "/9j/" } }
+                    ]
+                }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("both");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "here")),
+        "text part must remain, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ImageDelta { media_type, data }
+                if media_type == "image/jpeg" && data == "/9j/"
+        )),
+        "image part must become ImageDelta, got {events:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_image_inline_data_remaps_dest_chat_image_url() {
+    let raw = gemini_inline_chunk("image/png", "iVBORw0KGgo=", false);
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("decode");
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    let url = bodies.iter().find_map(|body| {
+        body.pointer("/choices/0/delta/content/0/image_url/url")
+            .and_then(Value::as_str)
+    });
+    assert_eq!(
+        url,
+        Some("data:image/png;base64,iVBORw0KGgo="),
+        "dest Chat stream must write an image_url data URL, got {frames:?}"
+    );
+
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("complete");
+    assert_eq!(
+        chat.pointer("/choices/0/message/content/0/image_url/url")
+            .and_then(Value::as_str),
+        Some("data:image/png;base64,iVBORw0KGgo="),
+        "dest Chat complete must write an image_url data URL, got {chat}"
+    );
+
+    let round = decode_response(
+        Wire::ChatCompletions,
+        &serde_json::to_vec(&chat).expect("bytes"),
+        &chat_profile(),
+    )
+    .expect("decode chat complete");
+    assert!(
+        round.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ImageDelta { media_type, data }
+                if media_type == "image/png" && data == "iVBORw0KGgo="
+        )),
+        "dest Chat complete image_url must decode back to ImageDelta, got {round:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_image_inline_data_keeps_mime_on_dest_gemini() {
+    let raw = gemini_inline_chunk("image/webp", "UklGR", false);
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("decode");
+    let frame = encode_stream_event(Wire::Gemini, &events[0]).expect("encode");
+    let body: Value = serde_json::from_str(&frame.data).expect("json");
+    assert_eq!(
+        body.pointer("/candidates/0/content/parts/0/inlineData/mimeType")
+            .and_then(Value::as_str),
+        Some("image/webp"),
+        "dest Gemini must keep the image mime, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/candidates/0/content/parts/0/inlineData/data")
+            .and_then(Value::as_str),
+        Some("UklGR"),
+        "dest Gemini must keep the image bytes, got {body}"
+    );
+
+    let complete = encode_response(Wire::Gemini, &events).expect("complete");
+    assert_eq!(
+        complete
+            .pointer("/candidates/0/content/parts/0/inlineData/mimeType")
+            .and_then(Value::as_str),
+        Some("image/webp"),
+        "dest Gemini complete must keep the image mime, got {complete}"
+    );
+}
+
+#[test]
+fn dest_gemini_image_inline_data_reaches_messages_responses_and_converse() {
+    let events = [IrStreamEvent::ImageDelta {
+        media_type: "image/png".into(),
+        data: "iVBORw0KGgo=".into(),
+    }];
+    let messages = encode_response(Wire::Messages, &events).expect("messages");
+    assert_eq!(
+        messages
+            .pointer("/content/0/source/data")
+            .and_then(Value::as_str),
+        Some("iVBORw0KGgo="),
+        "dest Messages complete must keep image bytes, got {messages}"
+    );
+    assert_eq!(
+        messages
+            .pointer("/content/0/source/media_type")
+            .and_then(Value::as_str),
+        Some("image/png"),
+        "dest Messages complete must keep the image mime, got {messages}"
+    );
+
+    let responses = encode_response(Wire::Responses, &events).expect("responses");
+    assert_eq!(
+        responses
+            .pointer("/output/0/content/0/image_url")
+            .and_then(Value::as_str),
+        Some("data:image/png;base64,iVBORw0KGgo="),
+        "dest Responses complete must write output_image, got {responses}"
+    );
+
+    let converse = encode_response(Wire::Converse, &events).expect("converse");
+    assert_eq!(
+        converse
+            .pointer("/output/message/content/0/image/source/bytes")
+            .and_then(Value::as_str),
+        Some("iVBORw0KGgo="),
+        "dest Converse complete must keep image bytes, got {converse}"
+    );
+    assert_eq!(
+        converse
+            .pointer("/output/message/content/0/image/format")
+            .and_then(Value::as_str),
+        Some("png"),
+        "dest Converse complete must map image/png to png, got {converse}"
+    );
+}
+
+#[test]
+fn dest_complete_image_before_text_keeps_part_order() {
+    let events = [
+        IrStreamEvent::ImageDelta {
+            media_type: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+        },
+        IrStreamEvent::TextDelta {
+            text: "caption".into(),
+        },
+    ];
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("chat");
+    assert_eq!(
+        chat.pointer("/choices/0/message/content/0/type")
+            .and_then(Value::as_str),
+        Some("image_url"),
+        "image before text must stay first on dest Chat, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/choices/0/message/content/1/text")
+            .and_then(Value::as_str),
+        Some("caption"),
+        "text after an image must follow it on dest Chat, got {chat}"
+    );
+    let messages = encode_response(Wire::Messages, &events).expect("messages");
+    assert_eq!(
+        messages.pointer("/content/0/type").and_then(Value::as_str),
+        Some("image"),
+        "image before text must stay first on dest Messages, got {messages}"
+    );
+    assert_eq!(
+        messages.pointer("/content/1/text").and_then(Value::as_str),
+        Some("caption"),
+        "text after an image must follow it on dest Messages, got {messages}"
+    );
+    let gemini = encode_response(Wire::Gemini, &events).expect("gemini");
+    assert!(
+        gemini
+            .pointer("/candidates/0/content/parts/0/inlineData")
+            .is_some(),
+        "image before text must stay first on dest Gemini, got {gemini}"
+    );
+    assert_eq!(
+        gemini
+            .pointer("/candidates/0/content/parts/1/text")
+            .and_then(Value::as_str),
+        Some("caption"),
+        "text after an image must follow it on dest Gemini, got {gemini}"
+    );
+    let responses = encode_response(Wire::Responses, &events).expect("responses");
+    assert_eq!(
+        responses
+            .pointer("/output/0/content/0/type")
+            .and_then(Value::as_str),
+        Some("output_image"),
+        "image before text must stay first on dest Responses, got {responses}"
+    );
+    assert_eq!(
+        responses
+            .pointer("/output/0/content/1/text")
+            .and_then(Value::as_str),
+        Some("caption"),
+        "text after an image must follow it on dest Responses, got {responses}"
+    );
+    let round = decode_response(
+        Wire::ChatCompletions,
+        &serde_json::to_vec(&chat).expect("bytes"),
+        &chat_profile(),
+    )
+    .expect("decode chat");
+    let kinds: Vec<&str> = round
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ImageDelta { .. } => Some("image"),
+            IrStreamEvent::TextDelta { text } if text == "caption" => Some("text"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["image", "text"],
+        "dest Chat complete image-then-text must decode in that order, got {round:?}"
+    );
+}
+
+#[test]
+fn dest_converse_rejects_image_mime_outside_the_allow_list() {
+    let events = [IrStreamEvent::ImageDelta {
+        media_type: "image/bmp".into(),
+        data: "Qk0=".into(),
+    }];
+    let converse = encode_response(Wire::Converse, &events).expect("converse");
+    assert!(
+        converse
+            .pointer("/output/message/content/0/image")
+            .is_none(),
+        "image/bmp has no Converse format, got {converse}"
+    );
+    let frame = encode_stream_event(Wire::Converse, &events[0]).expect("stream");
+    let body: Value = serde_json::from_str(&frame.data).expect("json");
+    assert!(
+        body.pointer("/contentBlockStart/start/image").is_none(),
+        "image/bmp stream must not invent a Converse format, got {body}"
+    );
+    let frames = encode_all(Wire::Converse, &events);
+    assert!(
+        frames.iter().all(|frame| {
+            !frame.data.contains("contentBlockDelta") && !frame.data.contains("contentBlockStop")
+        }),
+        "rejected image must not open a Converse block, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_text_and_image_stream_uses_distinct_block_indexes() {
+    let events = [
+        IrStreamEvent::TextDelta {
+            text: "here".into(),
+        },
+        IrStreamEvent::ImageDelta {
+            media_type: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+        },
+    ];
+    let messages = encode_all(Wire::Messages, &events);
+    let bodies = sse_json_frames(&messages);
+    let text_index = bodies.iter().find_map(|body| {
+        (body.get("type").and_then(Value::as_str) == Some("content_block_delta"))
+            .then(|| body.get("index").and_then(Value::as_u64))
+            .flatten()
+    });
+    let image_index = bodies.iter().find_map(|body| {
+        (body.pointer("/content_block/type").and_then(Value::as_str) == Some("image"))
+            .then(|| body.get("index").and_then(Value::as_u64))
+            .flatten()
+    });
+    assert_eq!(text_index, Some(0), "text block index, got {bodies:?}");
+    assert_eq!(image_index, Some(1), "image block index, got {bodies:?}");
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/content_block/source/data")
+                .and_then(Value::as_str)
+        }),
+        Some("iVBORw0KGgo="),
+        "dest Messages stream must keep image bytes, got {bodies:?}"
+    );
+}
+
 #[test]
 fn dest_chat_complete_tool_call_id_remaps_dest_gemini_function_call_id() {
     let body = serde_json::to_vec(&json!({

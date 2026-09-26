@@ -243,6 +243,21 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 }),
             ),
         },
+        IrStreamEvent::ImageDelta { media_type, data } => (
+            "content_block_start",
+            json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data
+                    }
+                }
+            }),
+        ),
         IrStreamEvent::AudioDelta { .. }
         | IrStreamEvent::Logprobs { .. }
         | IrStreamEvent::Created { .. }

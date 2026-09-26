@@ -397,6 +397,21 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "delta": data
             }),
         ),
+        IrStreamEvent::ImageDelta { media_type, data } => (
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "output_image",
+                        "image_url": format!("data:{media_type};base64,{data}")
+                    }]
+                }
+            }),
+        ),
         IrStreamEvent::AudioTranscriptDelta { text } => (
             "response.audio.transcript.delta",
             json!({

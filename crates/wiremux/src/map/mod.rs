@@ -365,7 +365,7 @@ fn media_type_from_converse_image_format(format: &str) -> String {
     }
 }
 
-fn converse_image_format(media_type: &str) -> Option<&'static str> {
+pub(crate) fn converse_image_format(media_type: &str) -> Option<&'static str> {
     let media = media_type.to_ascii_lowercase();
     let media = media.strip_prefix("image/").unwrap_or(media.as_str());
     match media {

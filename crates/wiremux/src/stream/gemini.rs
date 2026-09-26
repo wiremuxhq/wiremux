@@ -99,7 +99,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                     index: 0,
                 }));
             }
-            if let Some(ev) = audio_delta_from_inline_data(part) {
+            if let Some(ev) = inline_data_event(part) {
                 return Ok(Some(ev));
             }
             if let Some(text) = part
@@ -201,14 +201,21 @@ fn candidate_has_function_call(candidate: &Value) -> bool {
         .is_some_and(|parts| parts.iter().any(|p| p.get("functionCall").is_some()))
 }
 
-pub(super) fn audio_delta_from_inline_data(part: &Value) -> Option<IrStreamEvent> {
+pub(super) fn inline_data_event(part: &Value) -> Option<IrStreamEvent> {
     let inline = part.get("inlineData")?;
     let mime = str_field(inline, "mimeType").unwrap_or_default();
-    if !mime.to_ascii_lowercase().starts_with("audio/") {
-        return None;
-    }
     let data = str_field(inline, "data").filter(|s| !s.is_empty())?;
-    Some(IrStreamEvent::AudioDelta { data })
+    let mime_l = mime.to_ascii_lowercase();
+    if mime_l.starts_with("audio/") {
+        return Some(IrStreamEvent::AudioDelta { data });
+    }
+    if mime_l.starts_with("image/") {
+        return Some(IrStreamEvent::ImageDelta {
+            media_type: mime,
+            data,
+        });
+    }
+    None
 }
 
 pub(crate) fn gemini_call_id(fc: &Value, name: &str, seq: usize) -> String {
@@ -310,6 +317,16 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                     "role": "model",
                     "parts": [{
                         "inlineData": { "mimeType": "audio/mpeg", "data": data }
+                    }]
+                }
+            }]
+        }),
+        IrStreamEvent::ImageDelta { media_type, data } => json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "inlineData": { "mimeType": media_type, "data": data }
                     }]
                 }
             }]

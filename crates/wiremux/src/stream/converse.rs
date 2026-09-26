@@ -116,6 +116,23 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
         IrStreamEvent::AnnotationAdded { annotation } => Ok(json!({
             "contentBlockDelta": { "delta": { "citation": citation_from_annotation(annotation) } }
         })),
+        IrStreamEvent::ImageDelta { media_type, data } => {
+            let Some(format) = crate::map::converse_image_format(media_type) else {
+                return Ok(json!({
+                    "contentBlockDelta": { "delta": { "text": "" } }
+                }));
+            };
+            Ok(json!({
+                "contentBlockStart": {
+                    "start": {
+                        "image": {
+                            "format": format,
+                            "source": { "bytes": data }
+                        }
+                    }
+                }
+            }))
+        }
         IrStreamEvent::AudioDelta { .. }
         | IrStreamEvent::Logprobs { .. }
         | IrStreamEvent::Created { .. }
@@ -181,6 +198,18 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
                 reasoning_signature = Some(signature.clone());
             }
             IrStreamEvent::AudioDelta { data } => audio_data.push_str(data),
+            IrStreamEvent::ImageDelta { media_type, data } => {
+                let Some(format) = crate::map::converse_image_format(media_type) else {
+                    continue;
+                };
+                flush_text(&mut text, &mut content);
+                content.push(json!({
+                    "image": {
+                        "format": format,
+                        "source": { "bytes": data }
+                    }
+                }));
+            }
             IrStreamEvent::AnnotationAdded { annotation } => {
                 citations.push(citation_from_annotation(annotation));
             }
