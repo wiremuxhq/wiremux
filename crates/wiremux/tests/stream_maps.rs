@@ -4440,6 +4440,65 @@ fn messages_complete_image_block_keeps_preceding_text() {
 }
 
 #[test]
+fn messages_stream_redacted_thinking_matches_complete() {
+    let raw = RawSse {
+        event: Some("content_block_start".into()),
+        data: json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": { "type": "redacted_thinking", "data": "enc_x" }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Messages, &raw, &messages_profile()).expect("redacted");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "redacted_thinking"
+                    && payload.get("data").and_then(Value::as_str) == Some("enc_x")
+                    && payload.get("type").and_then(Value::as_str) == Some("redacted_thinking")
+        )),
+        "stream redacted_thinking must match complete Protocol, got {events:?}"
+    );
+
+    let empty = RawSse {
+        event: Some("content_block_start".into()),
+        data: json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": { "type": "redacted_thinking", "data": "" }
+        })
+        .to_string(),
+    };
+    let empty_events =
+        decode_stream_events(Wire::Messages, &empty, &messages_profile()).expect("empty");
+    assert!(
+        empty_events.is_empty(),
+        "empty redacted_thinking data must stay absent, got {empty_events:?}"
+    );
+
+    let thinking = RawSse {
+        event: Some("content_block_start".into()),
+        data: json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": { "type": "thinking" }
+        })
+        .to_string(),
+    };
+    let thinking_events =
+        decode_stream_events(Wire::Messages, &thinking, &messages_profile()).expect("thinking");
+    assert!(
+        thinking_events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, .. } if item_type == "content_block_start"
+        )),
+        "thinking start without text stays the SSE envelope, got {thinking_events:?}"
+    );
+}
+
+#[test]
 fn messages_stream_content_block_start_image_becomes_image_delta() {
     let raw = RawSse {
         event: Some("content_block_start".into()),
