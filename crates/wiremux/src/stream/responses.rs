@@ -48,6 +48,10 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                 index: output_index(value),
             }))
         }
+        "response.content_part.added" => {
+            let part = value.get("part").unwrap_or(value);
+            Ok(image_delta_from_output_image(part))
+        }
         "response.output_item.added" => match item_type(value) {
             Some("function_call") => {
                 let item = value.get("item").unwrap_or(value);
@@ -85,6 +89,14 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                 }))
             }
             Some("reasoning") => Ok(Some(decode_reasoning_item(name, value))),
+            Some("message") => {
+                let item = value.get("item").unwrap_or(value);
+                let image = item
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .and_then(|parts| parts.iter().find_map(image_delta_from_output_image));
+                Ok(Some(image.unwrap_or_else(|| protocol(name, value))))
+            }
             _ => Ok(Some(protocol(name, value))),
         },
         "response.output_item.done" => match item_type(value) {
@@ -171,8 +183,42 @@ fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
             }
             Ok(out)
         }
+        Some("message") => {
+            let mut out = Vec::new();
+            if let Some(content) = item.get("content").and_then(Value::as_array) {
+                for part in content {
+                    let ty = part.get("type").and_then(Value::as_str);
+                    if matches!(ty, Some("output_text") | Some("text"))
+                        && let Some(text) = str_field(part, "text").filter(|s| !s.is_empty())
+                    {
+                        out.push(IrStreamEvent::TextDelta { text });
+                    }
+                    if let Some(ev) = image_delta_from_output_image(part) {
+                        out.push(ev);
+                    }
+                }
+            }
+            Ok(out)
+        }
         _ => Ok(Vec::new()),
     }
+}
+
+/// `output_image` whose `image_url` is `data:{mime};base64,{bytes}`.
+/// A non-data URL, empty bytes, or a non-image mime stays `None`.
+pub(super) fn image_delta_from_output_image(part: &Value) -> Option<IrStreamEvent> {
+    if part.get("type").and_then(Value::as_str) != Some("output_image") {
+        return None;
+    }
+    let url = part.get("image_url").and_then(Value::as_str)?;
+    let (media_type, data) = url.strip_prefix("data:")?.split_once(";base64,")?;
+    if data.is_empty() || !media_type.to_ascii_lowercase().starts_with("image/") {
+        return None;
+    }
+    Some(IrStreamEvent::ImageDelta {
+        media_type: media_type.to_string(),
+        data: data.to_string(),
+    })
 }
 
 fn response_slot_events(value: &Value) -> Vec<IrStreamEvent> {

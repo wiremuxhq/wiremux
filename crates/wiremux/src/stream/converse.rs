@@ -63,6 +63,12 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             index: content_block_index(start)?,
         }));
     }
+    if let Some(start) = value.get("contentBlockStart")
+        && let Some(image) = start.pointer("/start/image")
+    {
+        // Empty bytes are a no-op, same as contentBlockStop, not an error.
+        return Ok(image_delta_from_converse(image));
+    }
     if value.get("contentBlockStop").is_some() {
         // AWS also emits this for text/reasoning blocks.
         return Ok(None);
@@ -391,6 +397,11 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
                 data: data.to_string(),
             });
         }
+        if let Some(image) = block.get("image")
+            && let Some(ev) = image_delta_from_converse(image)
+        {
+            out.push(ev);
+        }
         if let Some(citations) = block
             .pointer("/citationsContent/citations")
             .and_then(Value::as_array)
@@ -568,6 +579,31 @@ fn tool_use(id: &str, name: &str, args: &str) -> Value {
             "input": input
         }
     })
+}
+
+fn image_delta_from_converse(image: &Value) -> Option<IrStreamEvent> {
+    let data = image
+        .pointer("/source/bytes")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    let format = image
+        .get("format")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    Some(IrStreamEvent::ImageDelta {
+        media_type: converse_image_media_type(format),
+        data: data.to_string(),
+    })
+}
+
+fn converse_image_media_type(format: &str) -> String {
+    match format.to_ascii_lowercase().as_str() {
+        "png" => "image/png".into(),
+        "jpeg" | "jpg" => "image/jpeg".into(),
+        "gif" => "image/gif".into(),
+        "webp" => "image/webp".into(),
+        _ => format!("image/{format}"),
+    }
 }
 
 fn content_block_index(block: &Value) -> Result<u32, MapError> {
