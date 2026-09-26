@@ -90,17 +90,41 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             signature: signature.to_string(),
         }));
     }
-    if let Some(reason) = choice
+    let mut media = Vec::new();
+    if let Some(content) = delta.and_then(|d| d.get("content")) {
+        media.extend(content_events(content));
+    }
+    if let Some(audio) = delta.and_then(|d| d.get("audio")).filter(|v| v.is_object()) {
+        if let Some(data) = str_field(audio, "data").filter(|s| !s.is_empty()) {
+            media.push(IrStreamEvent::AudioDelta { data });
+        }
+        if let Some(text) = str_field(audio, "transcript").filter(|s| !s.is_empty()) {
+            media.push(IrStreamEvent::AudioTranscriptDelta { text });
+        }
+    }
+    let finish = choice
         .get("finish_reason")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-    {
-        return Ok(Some(IrStreamEvent::FinishReason {
+        .map(|reason| IrStreamEvent::FinishReason {
             reason: map_finish(reason).to_string(),
-        }));
+        });
+    let usage = value
+        .get("usage")
+        .filter(|v| v.is_object())
+        .map(usage::from_chat);
+    let signals = media.len() + usize::from(finish.is_some()) + usize::from(usage.is_some());
+    if signals > 1 {
+        return Err(singular_media_limit());
     }
-    if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
-        return Ok(Some(usage::from_chat(usage)));
+    if let Some(ev) = media.into_iter().next() {
+        return Ok(Some(ev));
+    }
+    if let Some(ev) = finish {
+        return Ok(Some(ev));
+    }
+    if let Some(ev) = usage {
+        return Ok(Some(ev));
     }
     Ok(None)
 }
@@ -508,6 +532,13 @@ fn call_bundles_arguments(call: &Value) -> bool {
         .flatten()
         .is_some();
     started && args
+}
+
+fn singular_media_limit() -> MapError {
+    MapError::Invalid(
+        "decode_stream_event cannot represent every event in this Chat chunk; use decode_stream_events"
+            .into(),
+    )
 }
 
 pub(super) fn singular_tool_limit() -> MapError {

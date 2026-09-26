@@ -5582,6 +5582,110 @@ fn dest_chat_complete_reasoning_and_tool_calls_remaps_dest_converse_reasoning_be
 }
 
 #[test]
+fn chat_singular_keeps_audio_and_image_only_chunks() {
+    let audio = RawSse {
+        event: None,
+        data: json!({
+            "choices": [{
+                "index": 0,
+                "delta": { "audio": { "data": "SUQz" } }
+            }]
+        })
+        .to_string(),
+    };
+    let audio_ev = decode_stream_event(Wire::ChatCompletions, &audio, &chat_profile())
+        .expect("audio")
+        .expect("event");
+    assert!(
+        matches!(audio_ev, IrStreamEvent::AudioDelta { ref data } if data == "SUQz"),
+        "audio-only Chat chunk must become AudioDelta, got {audio_ev:?}"
+    );
+
+    let both = RawSse {
+        event: None,
+        data: json!({
+            "choices": [{
+                "index": 0,
+                "delta": { "audio": { "data": "SUQz", "transcript": "hello" } }
+            }]
+        })
+        .to_string(),
+    };
+    let err = decode_stream_event(Wire::ChatCompletions, &both, &chat_profile()).expect_err("both");
+    assert!(
+        err.to_string().contains("decode_stream_events"),
+        "singular decode must not drop the transcript, got {err}"
+    );
+    let events =
+        decode_stream_events(Wire::ChatCompletions, &both, &chat_profile()).expect("plural");
+    assert!(
+        events.iter().any(
+            |ev| matches!(ev, IrStreamEvent::AudioTranscriptDelta { text } if text == "hello")
+        ),
+        "plural decode must keep the transcript, got {events:?}"
+    );
+
+    let image = RawSse {
+        event: None,
+        data: json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "content": [{
+                        "type": "image_url",
+                        "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" }
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+    };
+    let image_ev = decode_stream_event(Wire::ChatCompletions, &image, &chat_profile())
+        .expect("image")
+        .expect("event");
+    assert!(
+        matches!(
+            image_ev,
+            IrStreamEvent::ImageDelta { ref media_type, ref data }
+                if media_type == "image/png" && data == "iVBORw0KGgo="
+        ),
+        "image-only Chat chunk must become ImageDelta, got {image_ev:?}"
+    );
+
+    let finished = RawSse {
+        event: None,
+        data: json!({
+            "choices": [{
+                "index": 0,
+                "delta": { "audio": { "data": "SUQz" } },
+                "finish_reason": "stop"
+            }]
+        })
+        .to_string(),
+    };
+    let finished_err =
+        decode_stream_event(Wire::ChatCompletions, &finished, &chat_profile()).expect_err("finish");
+    assert!(
+        finished_err.to_string().contains("decode_stream_events"),
+        "singular decode must not drop audio when the chunk also finishes, got {finished_err}"
+    );
+    let finished_events =
+        decode_stream_events(Wire::ChatCompletions, &finished, &chat_profile()).expect("plural");
+    assert!(
+        finished_events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::AudioDelta { data } if data == "SUQz")),
+        "plural decode must keep the audio, got {finished_events:?}"
+    );
+    assert!(
+        finished_events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+        "plural decode must keep the finish, got {finished_events:?}"
+    );
+}
+
+#[test]
 fn dest_converse_complete_audio_bytes_remaps_dest_chat_message_audio() {
     let body = serde_json::to_vec(&json!({
         "output": {
