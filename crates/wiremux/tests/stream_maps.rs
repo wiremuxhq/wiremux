@@ -3888,6 +3888,194 @@ fn dest_converse_rejects_image_mime_outside_the_allow_list() {
 }
 
 #[test]
+fn dest_responses_stream_image_stays_on_one_message() {
+    let events = [
+        IrStreamEvent::TextDelta {
+            text: "before".into(),
+        },
+        IrStreamEvent::ImageDelta {
+            media_type: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+        },
+        IrStreamEvent::TextDelta {
+            text: "after".into(),
+        },
+    ];
+    let bodies = sse_json_frames(&encode_all(Wire::Responses, &events));
+    let added = bodies
+        .iter()
+        .filter(|body| {
+            body.get("type").and_then(Value::as_str) == Some("response.output_item.added")
+                && body.pointer("/item/type").and_then(Value::as_str) == Some("message")
+        })
+        .count();
+    assert_eq!(
+        added, 1,
+        "image must not open a second message, got {bodies:?}"
+    );
+    let done = bodies.iter().find(|body| {
+        body.get("type").and_then(Value::as_str) == Some("response.output_item.done")
+            && body.pointer("/item/type").and_then(Value::as_str) == Some("message")
+    });
+    let Some(done) = done else {
+        panic!("missing message done, got {bodies:?}");
+    };
+    assert_eq!(
+        done.pointer("/item/content/0/text").and_then(Value::as_str),
+        Some("before"),
+        "{done}"
+    );
+    assert_eq!(
+        done.pointer("/item/content/1/type").and_then(Value::as_str),
+        Some("output_image"),
+        "{done}"
+    );
+    assert_eq!(
+        done.pointer("/item/content/2/text").and_then(Value::as_str),
+        Some("after"),
+        "{done}"
+    );
+    let done_text: Vec<(u64, &str)> = bodies
+        .iter()
+        .filter(|body| {
+            body.get("type").and_then(Value::as_str) == Some("response.output_text.done")
+        })
+        .filter_map(|body| {
+            Some((
+                body.get("content_index").and_then(Value::as_u64)?,
+                body.get("text").and_then(Value::as_str)?,
+            ))
+        })
+        .collect();
+    assert_eq!(
+        done_text,
+        vec![(0, "before"), (2, "after")],
+        "each text part needs its own done event, got {bodies:?}"
+    );
+}
+
+#[test]
+fn dest_converse_citation_uses_flushed_caption_text() {
+    let events = [
+        IrStreamEvent::TextDelta {
+            text: "caption".into(),
+        },
+        IrStreamEvent::ImageDelta {
+            media_type: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+        },
+        IrStreamEvent::AnnotationAdded {
+            annotation: json!({ "type": "url_citation", "url": "https://example.com" }),
+        },
+    ];
+    let body = encode_response(Wire::Converse, &events).expect("converse");
+    assert_eq!(
+        body.pointer("/output/message/content/0/citationsContent/content/0/text")
+            .and_then(Value::as_str),
+        Some("caption"),
+        "flushed caption must move into citationsContent, got {body}"
+    );
+    assert!(
+        body.pointer("/output/message/content/1/image").is_some(),
+        "image must stay beside the citation, got {body}"
+    );
+    let plain = body
+        .pointer("/output/message/content")
+        .and_then(Value::as_array)
+        .is_some_and(|blocks| {
+            blocks
+                .iter()
+                .any(|block| block.get("text").and_then(Value::as_str) == Some("caption"))
+        });
+    assert!(
+        !plain,
+        "caption must not also be a plain text block, got {body}"
+    );
+
+    let split = [
+        IrStreamEvent::TextDelta {
+            text: "before".into(),
+        },
+        IrStreamEvent::ImageDelta {
+            media_type: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+        },
+        IrStreamEvent::TextDelta {
+            text: "after".into(),
+        },
+        IrStreamEvent::AnnotationAdded {
+            annotation: json!({ "type": "url_citation", "url": "https://example.com" }),
+        },
+    ];
+    let split_body = encode_response(Wire::Converse, &split).expect("split");
+    assert_eq!(
+        split_body
+            .pointer("/output/message/content/0/citationsContent/content/0/text")
+            .and_then(Value::as_str),
+        Some("before"),
+        "the prefix stays in the first citations block, got {split_body}"
+    );
+    assert!(
+        split_body
+            .pointer("/output/message/content/1/image")
+            .is_some(),
+        "the image stays between the text runs, got {split_body}"
+    );
+    assert_eq!(
+        split_body
+            .pointer("/output/message/content/2/text")
+            .and_then(Value::as_str),
+        Some("after"),
+        "text after the image stays after it, got {split_body}"
+    );
+}
+
+#[test]
+fn split_text_around_an_image_keeps_sidecars_on_the_first_segment() {
+    let events = [
+        IrStreamEvent::TextDelta {
+            text: "before".into(),
+        },
+        IrStreamEvent::ImageDelta {
+            media_type: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+        },
+        IrStreamEvent::TextDelta {
+            text: "after".into(),
+        },
+        IrStreamEvent::AnnotationAdded {
+            annotation: json!({ "type": "url_citation", "url": "https://example.com" }),
+        },
+    ];
+    let messages = encode_response(Wire::Messages, &events).expect("messages");
+    assert!(
+        messages
+            .pointer("/content/0/citations")
+            .and_then(Value::as_array)
+            .is_some_and(|c| !c.is_empty()),
+        "citations belong on the first text segment, got {messages}"
+    );
+    assert!(
+        messages.pointer("/content/2/citations").is_none(),
+        "the text after the image must not take the citations, got {messages}"
+    );
+    let responses = encode_response(Wire::Responses, &events).expect("responses");
+    assert!(
+        responses
+            .pointer("/output/0/content/0/annotations")
+            .and_then(Value::as_array)
+            .is_some_and(|c| !c.is_empty()),
+        "annotations belong on the first text segment, got {responses}"
+    );
+    assert!(
+        responses
+            .pointer("/output/0/content/2/annotations")
+            .is_none(),
+        "the text after the image must not take the annotations, got {responses}"
+    );
+}
+
+#[test]
 fn dest_gemini_text_and_image_stream_uses_distinct_block_indexes() {
     let events = [
         IrStreamEvent::TextDelta {
