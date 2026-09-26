@@ -3885,6 +3885,61 @@ fn dest_converse_rejects_image_mime_outside_the_allow_list() {
 }
 
 #[test]
+fn converse_stream_audio_bytes_round_trip() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "contentBlockStart": {
+                "start": {
+                    "audio": { "format": "mp3", "source": { "bytes": "SUQz" } }
+                }
+            }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Converse, &raw, &converse_profile()).expect("decode");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::AudioDelta { data } if data == "SUQz")),
+        "converse stream audio bytes must become AudioDelta, got {events:?}"
+    );
+    let empty = RawSse {
+        event: None,
+        data: json!({
+            "contentBlockStart": {
+                "start": { "audio": { "format": "mp3", "source": { "bytes": "" } } }
+            }
+        })
+        .to_string(),
+    };
+    let empty_events =
+        decode_stream_events(Wire::Converse, &empty, &converse_profile()).expect("empty");
+    assert!(
+        !empty_events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::AudioDelta { .. })),
+        "empty converse audio bytes must stay absent, got {empty_events:?}"
+    );
+
+    let encoded = encode_all(
+        Wire::Converse,
+        &[IrStreamEvent::AudioDelta {
+            data: "SUQz".into(),
+        }],
+    );
+    let bodies = sse_json_frames(&encoded);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/contentBlockStart/start/audio/source/bytes")
+                .and_then(Value::as_str)
+        }),
+        Some("SUQz"),
+        "dest Converse stream must keep audio bytes, got {bodies:?}"
+    );
+}
+
+#[test]
 fn dest_responses_stream_image_stays_on_one_message() {
     let events = [
         IrStreamEvent::TextDelta {

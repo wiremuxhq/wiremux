@@ -1268,7 +1268,17 @@ impl StreamEncoder {
                     index,
                 ));
             }
-            IrStreamEvent::AudioDelta { .. } => {}
+            IrStreamEvent::AudioDelta { data } => {
+                let frame = super::converse::encode(&IrStreamEvent::AudioDelta { data })?;
+                out.extend(self.close_converse());
+                let index = self.next_block;
+                self.next_block = self.next_block.saturating_add(1);
+                out.push(converse_frame_with_index(frame, index));
+                out.push(converse_frame_with_index(
+                    json!({ "contentBlockStop": {} }),
+                    index,
+                ));
+            }
             IrStreamEvent::Logprobs { .. } => {}
             IrStreamEvent::Created { .. }
             | IrStreamEvent::ServiceTier { .. }
