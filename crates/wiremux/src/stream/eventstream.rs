@@ -54,6 +54,17 @@ impl EventStreamReader {
     pub fn drain(&mut self) -> Option<RawSse> {
         None
     }
+
+    /// EOF. Leftover bytes are a truncated message, not a clean stop.
+    #[cfg(any(feature = "client", feature = "proxy", feature = "cli", test))]
+    pub fn finish(&mut self) -> Result<Option<RawSse>, String> {
+        if self.buffer.is_empty() {
+            return Ok(None);
+        }
+        let n = self.buffer.len();
+        self.buffer.clear();
+        Err(format!("eventstream ended with {n} trailing bytes"))
+    }
 }
 
 struct EventStreamMessage {
@@ -468,5 +479,37 @@ mod tests {
         assert!(err.contains("modelStreamErrorException"), "{err}");
         assert!(err.contains("cut"), "{err}");
         assert!(reader.buffer.is_empty(), "exception bytes must be consumed");
+    }
+
+    #[test]
+    fn finish_partial_prelude_is_error() {
+        let mut reader = EventStreamReader::new();
+        let (frames, err) = reader.feed(&[0x00, 0x00, 0x00, 0x10]).expect("partial");
+        assert!(frames.is_empty());
+        assert!(err.is_none());
+        let err = reader.finish().expect_err("truncated prelude");
+        assert!(err.contains("trailing"), "{err}");
+    }
+
+    #[test]
+    fn finish_complete_message_plus_extra_bytes_is_error() {
+        let mut bytes = encode_message("metadata", br#"{}"#);
+        bytes.extend_from_slice(&[1, 2, 3, 4]);
+        let mut reader = EventStreamReader::new();
+        let (frames, err) = reader.feed(&bytes).expect("feed");
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(frames.len(), 1);
+        let err = reader.finish().expect_err("trailing bytes");
+        assert!(err.contains('4'), "{err}");
+    }
+
+    #[test]
+    fn finish_complete_message_is_ok_none() {
+        let bytes = encode_message("metadata", br#"{}"#);
+        let mut reader = EventStreamReader::new();
+        let (frames, err) = reader.feed(&bytes).expect("feed");
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(frames.len(), 1);
+        assert!(reader.finish().expect("clean eof").is_none());
     }
 }

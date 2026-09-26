@@ -26,7 +26,8 @@ use crate::map::{decode, encode};
 use crate::stream::{
     RawSse, StreamEncoder, ToolCallAssembler, UpstreamFrames, decode_response,
     decode_stream_events, encode_eventstream_exception, encode_eventstream_message,
-    encode_response_with_model, event_has_slot, frame_event_name, unwrap_event_payload,
+    encode_response_with_model, event_has_slot, frame_event_name, sse_wrapped_error_message,
+    unwrap_event_payload,
 };
 use crate::upstream::upstream_url_for_model;
 
@@ -569,16 +570,28 @@ fn map_sse_stream(
                 return;
             }
         }
-        if let Some(last) = reader.drain() {
-            let _ = push_mapped_frames(
-                &state,
-                target,
-                &tx,
-                vec![last],
-                &mut assembler,
-                &mut encoder,
-            )
-            .await;
+        match reader.finish() {
+            Ok(Some(last)) => {
+                if !push_mapped_frames(
+                    &state,
+                    target,
+                    &tx,
+                    vec![last],
+                    &mut assembler,
+                    &mut encoder,
+                )
+                .await
+                {
+                    return;
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                let _ = tx
+                    .send(Ok(Frame::data(dest_error_bytes(state.from, err))))
+                    .await;
+                return;
+            }
         }
         for ev in assembler.flush() {
             if !event_has_slot(state.from, &ev) {
@@ -648,6 +661,12 @@ async fn push_mapped_frames(
     encoder: &mut StreamEncoder,
 ) -> bool {
     for raw in frames {
+        if let Some(msg) = sse_wrapped_error_message(&raw.data) {
+            let _ = tx
+                .send(Ok(Frame::data(dest_error_bytes(state.from, msg))))
+                .await;
+            return false;
+        }
         match decode_stream_events(target, &raw, &state.profile) {
             Ok(events) => {
                 for ev in events.into_iter().flat_map(|ev| assembler.push(ev)) {

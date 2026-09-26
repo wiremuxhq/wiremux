@@ -95,6 +95,15 @@ impl UpstreamFrames {
             Self::Event(r) => r.drain(),
         }
     }
+
+    /// EOF. SSE may emit one last frame. Event Stream fails if bytes remain.
+    #[cfg(any(feature = "client", feature = "proxy"))]
+    pub fn finish(&mut self) -> Result<Option<RawSse>, String> {
+        match self {
+            Self::Sse(r) => r.finish(),
+            Self::Event(r) => r.finish(),
+        }
+    }
 }
 
 /// Decode one SSE frame. `None` is a recognized no-op (ping, empty delta).
@@ -378,7 +387,7 @@ fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> 
         }
     } else if let Some(ev) = gemini::audio_delta_from_inline_data(part) {
         out.push(ev);
-    } else if out.is_empty()
+    } else if part.get("thought").and_then(Value::as_bool) != Some(true)
         && let Some(text) = part
             .get("text")
             .and_then(Value::as_str)
@@ -734,6 +743,22 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
     value.get(key)?.as_str().map(str::to_string)
 }
 
+/// Chat-shaped SSE `data` that is only an `error` object.
+///
+/// `choices` or `delta` means a normal chunk, even if `error` is also set.
+#[cfg(any(feature = "client", feature = "proxy"))]
+pub(crate) fn sse_wrapped_error_message(data: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(data).ok()?;
+    if value.get("choices").is_some() || value.get("delta").is_some() {
+        return None;
+    }
+    let error = value.get("error").filter(|v| v.is_object())?;
+    match error.get("message").and_then(Value::as_str) {
+        Some(message) if !message.is_empty() => Some(message.to_string()),
+        _ => Some(data.to_string()),
+    }
+}
+
 /// String, object, or array. Objects and arrays become compact JSON.
 /// Empty string is absent. Anything else is an error, not a silent drop.
 fn json_text_field(value: &Value, key: &str) -> Result<Option<String>, MapError> {
@@ -793,6 +818,59 @@ mod tests {
         assert_eq!(frames[0].data, r#"{"type":"ping"}"#);
         assert_eq!(frames[1].event, None);
         assert_eq!(frames[1].data, "[DONE]");
+    }
+
+    #[test]
+    fn gemini_visible_text_keeps_thought_signature() {
+        let part = serde_json::json!({
+            "text": "answer",
+            "thoughtSignature": "sig"
+        });
+        let mut seq = 0;
+        let events = gemini_part_events(&part, &mut seq);
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "answer")),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(
+                |ev| matches!(ev, IrStreamEvent::ReasoningSignature { signature } if signature == "sig")
+            ),
+            "{events:?}"
+        );
+    }
+
+    #[cfg(any(feature = "client", feature = "proxy"))]
+    #[test]
+    fn sse_wrapped_error_message_extracts_error_object() {
+        let msg = sse_wrapped_error_message(
+            r#"{"error":{"message":"upstream failed","type":"server_error"}}"#,
+        );
+        assert_eq!(msg.as_deref(), Some("upstream failed"));
+    }
+
+    #[cfg(any(feature = "client", feature = "proxy"))]
+    #[test]
+    fn sse_wrapped_error_message_ignores_error_when_choices_present() {
+        let msg = sse_wrapped_error_message(r#"{"choices":[],"error":{"message":"nope"}}"#);
+        assert!(msg.is_none(), "{msg:?}");
+    }
+
+    #[cfg(any(feature = "client", feature = "proxy"))]
+    #[test]
+    fn sse_wrapped_error_message_keeps_code_only_payload() {
+        let raw = r#"{"error":{"code":"server_error"}}"#;
+        assert_eq!(sse_wrapped_error_message(raw).as_deref(), Some(raw));
+    }
+
+    #[cfg(any(feature = "client", feature = "proxy"))]
+    #[test]
+    fn sse_wrapped_error_message_ignores_normal_chat_chunk() {
+        let msg =
+            sse_wrapped_error_message(r#"{"choices":[{"delta":{"content":"hi"},"index":0}]}"#);
+        assert!(msg.is_none(), "{msg:?}");
     }
 
     #[cfg(feature = "proxy")]

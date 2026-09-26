@@ -61,16 +61,21 @@ impl SseFrameReader {
 
     /// Emit a last frame if fields are pending (EOF without a blank line).
     pub fn drain(&mut self) -> Option<RawSse> {
+        self.finish().ok().flatten()
+    }
+
+    /// EOF. A pending line that breaks the data cap is an error.
+    pub fn finish(&mut self) -> Result<Option<RawSse>, String> {
         if !self.buffer.is_empty() {
             let line = String::from_utf8_lossy(&self.buffer).into_owned();
             self.buffer.clear();
             match self.push_line(line.trim_end_matches('\r')) {
-                Ok(Some(frame)) => return Some(frame),
+                Ok(Some(frame)) => return Ok(Some(frame)),
                 Ok(None) => {}
-                Err(_) => return None,
+                Err(err) => return Err(err),
             }
         }
-        self.take_frame()
+        Ok(self.take_frame())
     }
 
     fn push_line(&mut self, line: &str) -> Result<Option<RawSse>, String> {
@@ -209,5 +214,23 @@ mod tests {
             "joined data: lines must fail closed at {MAX_SSE_PENDING} bytes"
         );
         assert!(reader.drain().is_none());
+    }
+
+    #[test]
+    fn finish_pending_line_over_joined_cap_is_error() {
+        let chunk = 64 * 1024;
+        let payload = "x".repeat(chunk);
+        let line = format!("data: {payload}\n");
+        let n = MAX_SSE_PENDING / (chunk + 1);
+        let mut reader = SseFrameReader::new();
+        for _ in 0..n.saturating_sub(1) {
+            reader.feed(line.as_bytes()).expect("under cap");
+        }
+        let pending = format!("data: {}", "y".repeat(chunk * 2));
+        reader.feed(pending.as_bytes()).expect("buffer the tail");
+        assert!(
+            reader.finish().is_err(),
+            "pending data line that crosses the joined cap must fail"
+        );
     }
 }
