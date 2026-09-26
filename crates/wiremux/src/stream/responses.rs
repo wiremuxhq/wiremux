@@ -48,7 +48,16 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                 index: output_index(value),
             }))
         }
-        "response.content_part.added" => Ok(content_part_events(value).into_iter().next()),
+        "response.content_part.added" => {
+            let events = content_part_events(value);
+            if events.len() > 1 {
+                return Err(MapError::Invalid(
+                    "decode_stream_event cannot represent a Responses content part with more than one event; use decode_stream_events"
+                        .into(),
+                ));
+            }
+            Ok(events.into_iter().next())
+        }
         "response.output_item.added" => match item_type(value) {
             Some("function_call") => {
                 let item = value.get("item").unwrap_or(value);
@@ -93,13 +102,13 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                     .and_then(Value::as_array)
                     .map(Vec::len)
                     .unwrap_or(0);
-                if part_count > 1 {
+                let events = message_content_events(item);
+                if part_count > 1 || events.len() > 1 {
                     return Err(MapError::Invalid(
-                        "decode_stream_event cannot represent a Responses message with more than one content part; use decode_stream_events"
+                        "decode_stream_event cannot represent every event in this Responses message; use decode_stream_events"
                             .into(),
                     ));
                 }
-                let events = message_content_events(item);
                 Ok(Some(
                     events
                         .into_iter()

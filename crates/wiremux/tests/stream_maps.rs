@@ -4075,6 +4075,45 @@ fn responses_content_part_audio_becomes_audio_delta() {
             .any(|ev| matches!(ev, IrStreamEvent::AudioDelta { data } if data == "SUQz")),
         "message output_audio must become AudioDelta, got {added_events:?}"
     );
+
+    let singular = decode_stream_event(Wire::Responses, &raw, &responses_profile());
+    let err = singular.expect_err("singular");
+    assert!(
+        err.to_string().contains("decode_stream_events"),
+        "singular decode must not drop the transcript, got {err}"
+    );
+
+    let message = RawSse {
+        event: Some("response.output_item.added".into()),
+        data: json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "type": "message",
+                "content": [{
+                    "type": "output_audio",
+                    "data": "SUQz",
+                    "transcript": "hello"
+                }]
+            }
+        })
+        .to_string(),
+    };
+    let message_err = decode_stream_event(Wire::Responses, &message, &responses_profile())
+        .expect_err("message singular");
+    assert!(
+        message_err.to_string().contains("decode_stream_events"),
+        "a message with audio bytes and a transcript must not drop the transcript, got {message_err}"
+    );
+    let message_events =
+        decode_stream_events(Wire::Responses, &message, &responses_profile()).expect("plural");
+    assert!(
+        message_events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::AudioTranscriptDelta { text } if text == "hello"
+        )),
+        "plural decode must keep the transcript, got {message_events:?}"
+    );
 }
 
 #[test]
