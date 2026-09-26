@@ -113,8 +113,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         .get("usage")
         .filter(|v| v.is_object())
         .map(usage::from_chat);
-    let signals = media.len() + usize::from(finish.is_some()) + usize::from(usage.is_some());
-    if signals > 1 {
+    if media.len() > 1 || (!media.is_empty() && (finish.is_some() || usage.is_some())) {
         return Err(singular_media_limit());
     }
     if let Some(ev) = media.into_iter().next() {
