@@ -38,6 +38,15 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                 Some("image") => Ok(Some(
                     image_delta_from_block(block).unwrap_or_else(|| protocol(name, value)),
                 )),
+                Some("redacted_thinking") => {
+                    if str_field(block, "data").filter(|s| !s.is_empty()).is_none() {
+                        return Ok(None);
+                    }
+                    Ok(Some(IrStreamEvent::Protocol {
+                        item_type: "redacted_thinking".into(),
+                        payload: block.clone(),
+                    }))
+                }
                 _ => Ok(Some(protocol(name, value))),
             }
         }
