@@ -753,7 +753,7 @@ pub(crate) fn sse_wrapped_error_message(data: &str) -> Option<String> {
     let error = value.get("error").filter(|v| v.is_object())?;
     match error.get("message").and_then(Value::as_str) {
         Some(message) if !message.is_empty() => Some(message.to_string()),
-        _ => Some("upstream error".to_string()),
+        _ => Some(data.to_string()),
     }
 }
 
@@ -830,6 +830,12 @@ mod tests {
     fn sse_wrapped_error_message_ignores_error_when_choices_present() {
         let msg = sse_wrapped_error_message(r#"{"choices":[],"error":{"message":"nope"}}"#);
         assert!(msg.is_none(), "{msg:?}");
+    }
+
+    #[test]
+    fn sse_wrapped_error_message_keeps_code_only_payload() {
+        let raw = r#"{"error":{"code":"server_error"}}"#;
+        assert_eq!(sse_wrapped_error_message(raw).as_deref(), Some(raw));
     }
 
     #[test]

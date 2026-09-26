@@ -683,6 +683,13 @@ async fn pull_live(
                     }
                     Ok(None) => {}
                     Err(err) => {
+                        if !live.saw_frame {
+                            let text = String::from_utf8_lossy(&live.leftover);
+                            return Some((
+                                Err(classify_empty_stream(live.http_status, &text)),
+                                StreamPhase::Done,
+                            ));
+                        }
                         return Some((
                             Err(classify_feed_err(err, live.http_status)),
                             StreamPhase::Done,
@@ -1304,6 +1311,34 @@ fn vision_from_show(value: &Value) -> Option<bool> {
 mod tests {
     use super::*;
     use wiremux_auth::parse_profile_str;
+
+    #[tokio::test]
+    async fn converse_error_body_keeps_status_when_no_frame() {
+        let profile = parse_profile_str("schema_version = 1\nid = \"c\"\nwire = \"converse\"\n")
+            .expect("parse");
+        let body: &[u8] = &[0x00, 0x00, 0x00, 0x10];
+        let live = LiveStream {
+            bytes: Box::pin(futures_util::stream::iter(vec![Ok(
+                Bytes::copy_from_slice(body),
+            )])),
+            reader: UpstreamFrames::for_wire(Wire::Converse),
+            assembler: ToolCallAssembler::new(),
+            pending: VecDeque::new(),
+            wire: Wire::Converse,
+            profile,
+            eof: false,
+            saw_frame: false,
+            leftover: Vec::new(),
+            http_status: 401,
+        };
+        let (result, _) = pull_live(live).await.expect("one result");
+        match result {
+            Err(ClientError::Auth { status, .. }) => {
+                assert_eq!(status, Some(401));
+            }
+            other => panic!("401 body with no frame must stay Auth, got {other:?}"),
+        }
+    }
 
     #[test]
     fn missing_wire_names_legal_values() {
