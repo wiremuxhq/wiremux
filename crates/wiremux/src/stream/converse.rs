@@ -69,6 +69,11 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         // Empty bytes are a no-op, same as contentBlockStop, not an error.
         return Ok(image_delta_from_converse(image));
     }
+    if let Some(start) = value.get("contentBlockStart")
+        && let Some(audio) = start.pointer("/start/audio")
+    {
+        return Ok(audio_delta_from_block(audio));
+    }
     if value.get("contentBlockStop").is_some() {
         // AWS also emits this for text/reasoning blocks.
         return Ok(None);
@@ -139,8 +144,17 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
                 }
             }))
         }
-        IrStreamEvent::AudioDelta { .. }
-        | IrStreamEvent::Logprobs { .. }
+        IrStreamEvent::AudioDelta { data } => Ok(json!({
+            "contentBlockStart": {
+                "start": {
+                    "audio": {
+                        "format": "mp3",
+                        "source": { "bytes": data }
+                    }
+                }
+            }
+        })),
+        IrStreamEvent::Logprobs { .. }
         | IrStreamEvent::Created { .. }
         | IrStreamEvent::Metadata { .. }
         | IrStreamEvent::Moderation { .. } => Ok(json!({
@@ -390,14 +404,10 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
                 signature: signature.to_string(),
             });
         }
-        if let Some(data) = block
-            .pointer("/audio/source/bytes")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
+        if let Some(audio) = block.get("audio")
+            && let Some(ev) = audio_delta_from_block(audio)
         {
-            out.push(IrStreamEvent::AudioDelta {
-                data: data.to_string(),
-            });
+            out.push(ev);
         }
         if let Some(image) = block.get("image")
             && let Some(ev) = image_delta_from_converse(image)
@@ -580,6 +590,16 @@ fn tool_use(id: &str, name: &str, args: &str) -> Value {
             "name": name,
             "input": input
         }
+    })
+}
+
+fn audio_delta_from_block(audio: &Value) -> Option<IrStreamEvent> {
+    let data = audio
+        .pointer("/source/bytes")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    Some(IrStreamEvent::AudioDelta {
+        data: data.to_string(),
     })
 }
 
