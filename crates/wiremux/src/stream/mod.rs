@@ -386,7 +386,7 @@ fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> 
         }
     } else if let Some(ev) = gemini::audio_delta_from_inline_data(part) {
         out.push(ev);
-    } else if out.is_empty()
+    } else if part.get("thought").and_then(Value::as_bool) != Some(true)
         && let Some(text) = part
             .get("text")
             .and_then(Value::as_str)
@@ -816,6 +816,28 @@ mod tests {
         assert_eq!(frames[0].data, r#"{"type":"ping"}"#);
         assert_eq!(frames[1].event, None);
         assert_eq!(frames[1].data, "[DONE]");
+    }
+
+    #[test]
+    fn gemini_visible_text_keeps_thought_signature() {
+        let part = serde_json::json!({
+            "text": "answer",
+            "thoughtSignature": "sig"
+        });
+        let mut seq = 0;
+        let events = gemini_part_events(&part, &mut seq);
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "answer")),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(
+                |ev| matches!(ev, IrStreamEvent::ReasoningSignature { signature } if signature == "sig")
+            ),
+            "{events:?}"
+        );
     }
 
     #[test]
