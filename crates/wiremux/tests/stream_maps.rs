@@ -3885,6 +3885,142 @@ fn dest_converse_rejects_image_mime_outside_the_allow_list() {
 }
 
 #[test]
+fn responses_content_part_keeps_text_and_https_image() {
+    let text = RawSse {
+        event: Some("response.content_part.added".into()),
+        data: json!({
+            "type": "response.content_part.added",
+            "output_index": 0,
+            "content_index": 0,
+            "part": { "type": "output_text", "text": "hello" }
+        })
+        .to_string(),
+    };
+    let text_events =
+        decode_stream_events(Wire::Responses, &text, &responses_profile()).expect("text");
+    assert!(
+        text_events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "hello")),
+        "content_part text must become TextDelta, got {text_events:?}"
+    );
+
+    let https = RawSse {
+        event: Some("response.content_part.added".into()),
+        data: json!({
+            "type": "response.content_part.added",
+            "output_index": 0,
+            "content_index": 1,
+            "part": {
+                "type": "output_image",
+                "image_url": "https://example.com/a.png"
+            }
+        })
+        .to_string(),
+    };
+    let https_events =
+        decode_stream_events(Wire::Responses, &https, &responses_profile()).expect("https");
+    assert!(
+        https_events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { payload, .. }
+                if payload.get("image_url").and_then(Value::as_str)
+                    == Some("https://example.com/a.png")
+        )),
+        "https content part must stay Protocol, got {https_events:?}"
+    );
+
+    let empty = RawSse {
+        event: Some("response.content_part.added".into()),
+        data: json!({
+            "type": "response.content_part.added",
+            "output_index": 0,
+            "content_index": 0,
+            "part": { "type": "output_text", "text": "" }
+        })
+        .to_string(),
+    };
+    let empty_events =
+        decode_stream_events(Wire::Responses, &empty, &responses_profile()).expect("empty");
+    assert!(
+        empty_events.is_empty(),
+        "empty content_part text must stay a no-op, got {empty_events:?}"
+    );
+}
+
+#[test]
+fn responses_singular_message_with_text_and_image_names_plural_decode() {
+    let raw = RawSse {
+        event: Some("response.output_item.added".into()),
+        data: json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "type": "message",
+                "content": [
+                    { "type": "output_text", "text": "before" },
+                    {
+                        "type": "output_image",
+                        "image_url": "data:image/png;base64,iVBORw0KGgo="
+                    }
+                ]
+            }
+        })
+        .to_string(),
+    };
+    let err =
+        decode_stream_event(Wire::Responses, &raw, &responses_profile()).expect_err("singular");
+    assert!(
+        err.to_string().contains("decode_stream_events"),
+        "singular decode must not drop the text, got {err}"
+    );
+    let events = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("plural");
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::TextDelta { text } if text == "before" => Some("text"),
+            IrStreamEvent::ImageDelta { .. } => Some("image"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["text", "image"],
+        "plural decode keeps both, got {events:?}"
+    );
+
+    let refusal = RawSse {
+        event: Some("response.output_item.added".into()),
+        data: json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "type": "message",
+                "content": [
+                    { "type": "output_text", "text": "before" },
+                    { "type": "refusal", "refusal": "no" }
+                ]
+            }
+        })
+        .to_string(),
+    };
+    let refusal_err = decode_stream_event(Wire::Responses, &refusal, &responses_profile())
+        .expect_err("two parts");
+    assert!(
+        refusal_err.to_string().contains("decode_stream_events"),
+        "a second part must not be dropped, got {refusal_err}"
+    );
+    let refusal_events =
+        decode_stream_events(Wire::Responses, &refusal, &responses_profile()).expect("plural");
+    assert!(
+        refusal_events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::RefusalDelta { text } if text == "no")),
+        "plural decode must keep the refusal, got {refusal_events:?}"
+    );
+}
+
+#[test]
 fn responses_content_part_audio_becomes_audio_delta() {
     let raw = RawSse {
         event: Some("response.content_part.added".into()),
@@ -4346,6 +4482,16 @@ fn responses_complete_output_image_data_url_becomes_image_delta() {
             .iter()
             .any(|ev| matches!(ev, IrStreamEvent::ImageDelta { .. })),
         "https image_url must not become ImageDelta, got {https_events:?}"
+    );
+    assert!(
+        https_events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "output_image"
+                    && payload.get("image_url").and_then(Value::as_str)
+                        == Some("https://example.com/a.png")
+        )),
+        "https output_image must stay Protocol, got {https_events:?}"
     );
 }
 
