@@ -279,17 +279,49 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Value {
     prefix.append(&mut content);
     content = prefix;
     if !citations.is_empty() {
-        let mut generated = Vec::new();
         if !text.is_empty() {
-            generated.push(json!({ "text": text.as_str() }));
+            content.push(json!({ "text": text }));
             text.clear();
         }
-        content.push(json!({
-            "citationsContent": {
-                "content": generated,
-                "citations": citations
+        let mut kept = Vec::new();
+        let mut run = Vec::new();
+        let mut cited = false;
+        let flush_run =
+            |kept: &mut Vec<Value>, run: &mut Vec<Value>, cited: &mut bool, citations: &[Value]| {
+                if run.is_empty() {
+                    return;
+                }
+                if !*cited {
+                    kept.push(json!({
+                        "citationsContent": {
+                            "content": run.clone(),
+                            "citations": citations
+                        }
+                    }));
+                    *cited = true;
+                    run.clear();
+                } else {
+                    kept.append(run);
+                }
+            };
+        for block in content.drain(..) {
+            if block.get("text").is_some() {
+                run.push(block);
+            } else {
+                flush_run(&mut kept, &mut run, &mut cited, &citations);
+                kept.push(block);
             }
-        }));
+        }
+        flush_run(&mut kept, &mut run, &mut cited, &citations);
+        if !cited {
+            kept.push(json!({
+                "citationsContent": {
+                    "content": [],
+                    "citations": citations
+                }
+            }));
+        }
+        content = kept;
     }
     flush_text(&mut text, &mut content);
     if let Some((id, name, args)) = current_tool.take() {

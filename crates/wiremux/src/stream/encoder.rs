@@ -38,6 +38,8 @@ pub struct StreamEncoder {
     last_tool: HashMap<u32, u32>,
     tool_items: HashMap<u32, (String, String, String)>,
     text_items: HashMap<u32, String>,
+    /// Message parts closed before the current text buffer, in order.
+    message_parts: HashMap<u32, Vec<Value>>,
     text_annotations: HashMap<u32, Vec<Value>>,
     text_logprobs: HashMap<u32, Vec<Value>>,
     refusal_items: HashMap<u32, String>,
@@ -76,6 +78,7 @@ impl StreamEncoder {
             last_tool: HashMap::new(),
             tool_items: HashMap::new(),
             text_items: HashMap::new(),
+            message_parts: HashMap::new(),
             text_annotations: HashMap::new(),
             text_logprobs: HashMap::new(),
             refusal_items: HashMap::new(),
@@ -707,12 +710,13 @@ impl StreamEncoder {
                 annotations.push(annotation.clone());
                 let annotation_index =
                     u32::try_from(annotations.len().saturating_sub(1)).unwrap_or(0);
+                let content_index = self.output_text_index(index);
                 out.push(named(
                     "response.output_text.annotation.added",
                     json!({
                         "type": "response.output_text.annotation.added",
                         "output_index": index,
-                        "content_index": 0,
+                        "content_index": content_index,
                         "annotation_index": annotation_index,
                         "annotation": annotation
                     }),
@@ -728,31 +732,26 @@ impl StreamEncoder {
                 ));
             }
             IrStreamEvent::ImageDelta { media_type, data } => {
-                out.extend(self.close_item());
-                let index = self.next_block;
-                self.next_block = self.next_block.saturating_add(1);
-                let item = json!({
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{
-                        "type": "output_image",
-                        "image_url": format!("data:{media_type};base64,{data}")
-                    }]
+                out.extend(self.ensure_item(BlockKind::Text));
+                let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                let prior = self.text_items.remove(&index).unwrap_or_default();
+                let parts = self.message_parts.entry(index).or_default();
+                if !prior.is_empty() {
+                    parts.push(json!({ "type": "output_text", "text": prior }));
+                }
+                let part = json!({
+                    "type": "output_image",
+                    "image_url": format!("data:{media_type};base64,{data}")
                 });
+                let content_index = parts.len();
+                parts.push(part.clone());
                 out.push(named(
-                    "response.output_item.added",
+                    "response.content_part.added",
                     json!({
-                        "type": "response.output_item.added",
+                        "type": "response.content_part.added",
                         "output_index": index,
-                        "item": item.clone()
-                    }),
-                ));
-                out.push(named(
-                    "response.output_item.done",
-                    json!({
-                        "type": "response.output_item.done",
-                        "output_index": index,
-                        "item": item
+                        "content_index": content_index,
+                        "part": part
                     }),
                 ));
             }
@@ -878,6 +877,26 @@ impl StreamEncoder {
         Ok(out)
     }
 
+    fn output_text_index(&self, index: u32) -> u32 {
+        let Some(parts) = self.message_parts.get(&index) else {
+            return 0;
+        };
+        if let Some(found) = parts
+            .iter()
+            .position(|part| part.get("type").and_then(Value::as_str) == Some("output_text"))
+        {
+            return u32::try_from(found).unwrap_or(0);
+        }
+        if self
+            .text_items
+            .get(&index)
+            .is_some_and(|text| !text.is_empty())
+        {
+            return u32::try_from(parts.len()).unwrap_or(0);
+        }
+        0
+    }
+
     fn ensure_item(&mut self, kind: BlockKind) -> Vec<RawSse> {
         if self.open.is_some_and(|(_, k)| k == kind) {
             return Vec::new();
@@ -907,23 +926,37 @@ impl StreamEncoder {
         let Some((index, kind)) = self.open.take() else {
             return Vec::new();
         };
-        let mut text_done: Option<Value> = None;
+        let mut text_done: Vec<Value> = Vec::new();
         let item = match kind {
             BlockKind::Text => {
                 let text = self.text_items.remove(&index).unwrap_or_default();
                 let refusal = self.refusal_items.remove(&index).unwrap_or_default();
                 let annotations = self.text_annotations.remove(&index).unwrap_or_default();
                 let logprobs = self.text_logprobs.remove(&index).unwrap_or_default();
-                let mut content = Vec::new();
-                if !text.is_empty() || !annotations.is_empty() || !logprobs.is_empty() {
-                    let mut part = json!({ "type": "output_text", "text": text });
-                    if !annotations.is_empty() {
-                        part["annotations"] = json!(annotations);
+                let mut content = self.message_parts.remove(&index).unwrap_or_default();
+                if !text.is_empty() {
+                    content.push(json!({ "type": "output_text", "text": text }));
+                }
+                if !annotations.is_empty() || !logprobs.is_empty() {
+                    if let Some(block) = content.iter_mut().find(|block| {
+                        block.get("type").and_then(Value::as_str) == Some("output_text")
+                    }) {
+                        if !annotations.is_empty() {
+                            block["annotations"] = json!(annotations);
+                        }
+                        if !logprobs.is_empty() {
+                            block["logprobs"] = json!(logprobs);
+                        }
+                    } else {
+                        let mut part = json!({ "type": "output_text", "text": "" });
+                        if !annotations.is_empty() {
+                            part["annotations"] = json!(annotations);
+                        }
+                        if !logprobs.is_empty() {
+                            part["logprobs"] = json!(logprobs);
+                        }
+                        content.push(part);
                     }
-                    if !logprobs.is_empty() {
-                        part["logprobs"] = json!(logprobs);
-                    }
-                    content.push(part);
                 }
                 if !refusal.is_empty() {
                     content.push(json!({ "type": "refusal", "refusal": refusal }));
@@ -931,16 +964,27 @@ impl StreamEncoder {
                 if content.is_empty() {
                     content.push(json!({ "type": "output_text", "text": "" }));
                 }
-                if !text.is_empty() || !logprobs.is_empty() {
+                for (part_index, part) in content.iter().enumerate() {
+                    if part.get("type").and_then(Value::as_str) != Some("output_text") {
+                        continue;
+                    }
+                    let part_text = part.get("text").and_then(Value::as_str).unwrap_or("");
+                    let Some(part_index) = u32::try_from(part_index).ok() else {
+                        continue;
+                    };
+                    if part_text.is_empty() && part.get("logprobs").is_none() {
+                        continue;
+                    }
                     let mut done = json!({
                         "type": "response.output_text.done",
                         "output_index": index,
-                        "text": text,
+                        "content_index": part_index,
+                        "text": part_text,
                     });
-                    if !logprobs.is_empty() {
-                        done["logprobs"] = json!(logprobs);
+                    if let Some(logprobs) = part.get("logprobs") {
+                        done["logprobs"] = logprobs.clone();
                     }
-                    text_done = Some(done);
+                    text_done.push(done);
                 }
                 json!({
                     "type": "message",
@@ -977,7 +1021,7 @@ impl StreamEncoder {
             },
         };
         let mut out = Vec::new();
-        if let Some(done) = text_done {
+        for done in text_done {
             out.push(named("response.output_text.done", done));
         }
         out.push(named(

@@ -357,22 +357,18 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
         }
         content.push(block);
     }
-    if text.is_empty() && !citations.is_empty() {
+    if !text.is_empty() {
+        images.push(json!({ "type": "text", "text": text }));
+    }
+    if !citations.is_empty() {
         if let Some(block) = images
             .iter_mut()
-            .rev()
             .find(|block| block.get("type").and_then(Value::as_str) == Some("text"))
         {
             block["citations"] = json!(citations);
         } else {
             images.push(json!({ "type": "text", "text": "", "citations": citations }));
         }
-    } else if !text.is_empty() || !citations.is_empty() {
-        let mut block = json!({ "type": "text", "text": text });
-        if !citations.is_empty() {
-            block["citations"] = json!(citations);
-        }
-        images.push(block);
     }
     content.extend(images);
     content.extend(tool_calls);
@@ -734,20 +730,13 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     {
         let mut content = images;
         if !text.is_empty() {
-            let mut part = json!({ "type": "output_text", "text": text });
-            if !annotations.is_empty() {
-                part["annotations"] = json!(annotations);
-            }
-            if !logprobs_content.is_empty() {
-                part["logprobs"] = json!(logprobs_content);
-            }
-            content.push(part);
-        } else if !annotations.is_empty() || !logprobs_content.is_empty() {
-            let sidecar = content
+            content.push(json!({ "type": "output_text", "text": text }));
+        }
+        if !annotations.is_empty() || !logprobs_content.is_empty() {
+            if let Some(block) = content
                 .iter_mut()
-                .rev()
-                .find(|block| block.get("type").and_then(Value::as_str) == Some("output_text"));
-            if let Some(block) = sidecar {
+                .find(|block| block.get("type").and_then(Value::as_str) == Some("output_text"))
+            {
                 if !annotations.is_empty() {
                     block["annotations"] = json!(annotations);
                 }
