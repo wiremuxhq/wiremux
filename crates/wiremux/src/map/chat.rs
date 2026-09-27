@@ -585,14 +585,18 @@ fn encode_tool(tool: &PreparedTool) -> Value {
             name,
             description,
             parameters,
-        } => json!({
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": description,
-                "parameters": parameters,
-            }
-        }),
+        } => {
+            let mut parameters = parameters.clone();
+            super::messages::normalize_object_schema_required(&mut parameters);
+            json!({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters,
+                }
+            })
+        }
         PreparedTool::Raw(raw) => raw.clone(),
     }
 }
