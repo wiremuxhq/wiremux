@@ -1216,11 +1216,13 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
 
 fn encode_output_config(s: &IrSampling, body: &mut Value, report: &mut LossReport) {
     let mut out = serde_json::Map::new();
-    if let Some(effort) = s
-        .reasoning_effort
-        .as_deref()
-        .map(str::trim)
-        .filter(|effort| !effort.is_empty())
+    // encode_thinking already Drops reasoning_effort when thinking is disabled.
+    if s.include_thoughts != Some(false)
+        && let Some(effort) = s
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|effort| !effort.is_empty())
     {
         out.insert("effort".into(), json!(effort));
     }

@@ -2790,7 +2790,7 @@ fn messages_encode_disables_thinking_when_include_thoughts_false() {
         s.reasoning_effort = Some("high".into());
         s.max_reasoning_tokens = Some(2048);
     }));
-    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
         body.pointer("/thinking/type").and_then(Value::as_str),
@@ -2800,6 +2800,14 @@ fn messages_encode_disables_thinking_when_include_thoughts_false() {
     assert!(
         body.pointer("/thinking/budget_tokens").is_none(),
         "disabled thinking must not carry budget_tokens, got {body}"
+    );
+    assert!(
+        body.pointer("/output_config/effort").is_none(),
+        "disabled thinking must not emit output_config.effort, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.reasoning_effort"),
+        "disabled thinking must Drop reasoning_effort, got {report:?}"
     );
 }
 
