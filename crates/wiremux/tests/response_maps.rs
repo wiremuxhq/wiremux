@@ -1371,3 +1371,110 @@ fn responses_complete_custom_tool_shares_function_call_index() {
         "custom_tool_call shares the tool slot counter, got {events:?}"
     );
 }
+
+#[test]
+fn responses_hosted_search_and_encrypted_reasoning_round_trip() {
+    let body = serde_json::to_vec(&json!({
+        "status": "completed",
+        "output": [
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "encrypted_content": "enc-xyz",
+                "summary": [{ "type": "summary_text", "text": "Search first" }]
+            },
+            {
+                "type": "reasoning",
+                "id": "rs_empty",
+                "encrypted_content": "",
+                "summary": [{ "type": "summary_text", "text": "plain" }]
+            },
+            {
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed",
+                "action": { "query": "2025 NBA champion" }
+            },
+            {
+                "type": "x_search_call",
+                "id": "xs_1",
+                "status": "completed",
+                "action": { "query": "latest" }
+            }
+        ]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile()).expect("decode");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ReasoningDelta { text } if text == "Search first"
+        )),
+        "summary text stays ReasoningDelta, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "reasoning"
+                    && payload.get("encrypted_content").and_then(|v| v.as_str()) == Some("enc-xyz")
+        )),
+        "non-empty encrypted_content stays Protocol, got {events:?}"
+    );
+    assert!(
+        !events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { payload, .. }
+                if payload.get("id").and_then(|v| v.as_str()) == Some("rs_empty")
+        )),
+        "empty encrypted_content stays absent, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "web_search_call"
+                    && payload.pointer("/action/query").and_then(|v| v.as_str())
+                        == Some("2025 NBA champion")
+        )),
+        "web_search_call must stay Protocol, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "x_search_call"
+                    && payload.pointer("/action/query").and_then(|v| v.as_str()) == Some("latest")
+        )),
+        "x_search_call must stay Protocol, got {events:?}"
+    );
+    let web_count = events
+        .iter()
+        .filter(|ev| {
+            matches!(
+                ev,
+                IrStreamEvent::Protocol { item_type, .. } if item_type == "web_search_call"
+            )
+        })
+        .count();
+    let enc_count = events
+        .iter()
+        .filter(|ev| {
+            matches!(
+                ev,
+                IrStreamEvent::Protocol { item_type, payload }
+                    if item_type == "reasoning"
+                        && payload.get("encrypted_content").and_then(|v| v.as_str())
+                            == Some("enc-xyz")
+            )
+        })
+        .count();
+    assert_eq!(
+        web_count, 1,
+        "web_search_call must not be duplicated, got {events:?}"
+    );
+    assert_eq!(
+        enc_count, 1,
+        "encrypted reasoning must not be duplicated, got {events:?}"
+    );
+}

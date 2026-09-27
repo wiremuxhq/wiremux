@@ -116,7 +116,22 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                         .unwrap_or_else(|| protocol(name, value)),
                 ))
             }
-            _ => Ok(Some(protocol(name, value))),
+            _ => {
+                let item = value.get("item").unwrap_or(value);
+                let replay = replay_output_item(item);
+                if replay.len() > 1 {
+                    return Err(MapError::Invalid(
+                        "decode_stream_event cannot represent every event in this Responses item; use decode_stream_events"
+                            .into(),
+                    ));
+                }
+                Ok(Some(
+                    replay
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| protocol(name, value)),
+                ))
+            }
         },
         "response.output_item.done" => match item_type(value) {
             Some("function_call") | Some("custom_tool_call") => {
@@ -138,9 +153,18 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                 Ok(Some(IrStreamEvent::Done))
             }
         }
-        "response.failed" => Ok(Some(IrStreamEvent::FinishReason {
-            reason: "failed".into(),
-        })),
+        "response.failed" => {
+            if let Some(message) = value
+                .pointer("/response/last_error/message")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                return Err(MapError::Invalid(message.to_string()));
+            }
+            Ok(Some(IrStreamEvent::FinishReason {
+                reason: "failed".into(),
+            }))
+        }
         "response.incomplete" => Ok(Some(IrStreamEvent::FinishReason {
             reason: decode_incomplete_reason(value, "incomplete"),
         })),
@@ -206,8 +230,40 @@ fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
             Ok(out)
         }
         Some("message") => Ok(message_content_events(item)),
-        _ => Ok(Vec::new()),
+        Some("reasoning") => {
+            let mut out = Vec::new();
+            if let Some(signature) = str_field(item, "signature").filter(|s| !s.is_empty()) {
+                out.push(IrStreamEvent::ReasoningSignature { signature });
+            } else if let Some(text) = str_field(item, "text").filter(|s| !s.is_empty()) {
+                out.push(IrStreamEvent::ReasoningDelta { text });
+            }
+            out.extend(replay_output_item(item));
+            Ok(out)
+        }
+        _ => Ok(replay_output_item(item)),
     }
+}
+
+pub(super) fn replay_output_item(item: &Value) -> Vec<IrStreamEvent> {
+    let mut out = Vec::new();
+    let ty = item.get("type").and_then(Value::as_str).unwrap_or("");
+    let encrypted = item
+        .get("encrypted_content")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty());
+    let hosted = ty.ends_with("_call") && ty != "function_call" && ty != "custom_tool_call";
+    if hosted || encrypted {
+        let item_type = if ty.is_empty() {
+            "reasoning".to_string()
+        } else {
+            ty.to_string()
+        };
+        out.push(IrStreamEvent::Protocol {
+            item_type,
+            payload: item.clone(),
+        });
+    }
+    out
 }
 
 fn content_part_events(value: &Value) -> Vec<IrStreamEvent> {
@@ -318,21 +374,7 @@ pub(super) fn decode_terminal_events(name: &str, value: &Value) -> Option<Vec<Ir
     let mut out = Vec::new();
     if let Some(items) = value.pointer("/response/output").and_then(Value::as_array) {
         for item in items {
-            if item
-                .get("encrypted_content")
-                .and_then(Value::as_str)
-                .is_none_or(|s| s.is_empty())
-            {
-                continue;
-            }
-            out.push(IrStreamEvent::Protocol {
-                item_type: item
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("reasoning")
-                    .to_string(),
-                payload: item.clone(),
-            });
+            out.extend(replay_output_item(item));
         }
     }
     if let Some(reason) = terminal_finish_reason(name, value) {

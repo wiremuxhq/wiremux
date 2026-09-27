@@ -5641,6 +5641,173 @@ fn dest_chat_complete_reasoning_and_tool_calls_remaps_dest_converse_reasoning_be
 }
 
 #[test]
+fn responses_failed_keeps_last_error_message() {
+    let raw = RawSse {
+        event: Some("response.failed".into()),
+        data: json!({
+            "type": "response.failed",
+            "response": {
+                "status": "failed",
+                "last_error": { "message": "The model is currently at capacity due to high demand." }
+            }
+        })
+        .to_string(),
+    };
+    let err =
+        decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect_err("failed");
+    let text = err.to_string();
+    assert!(
+        text.contains("at capacity due to high demand"),
+        "last_error.message must survive, got {text}"
+    );
+    assert!(
+        !text.contains("reason: \"stop\"") && !text.ends_with("stop"),
+        "response.failed must not become stop, got {text}"
+    );
+
+    let empty = RawSse {
+        event: Some("response.failed".into()),
+        data: json!({
+            "type": "response.failed",
+            "response": { "status": "failed", "last_error": { "message": "" } }
+        })
+        .to_string(),
+    };
+    let events =
+        decode_stream_events(Wire::Responses, &empty, &responses_profile()).expect("empty");
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "failed")),
+        "empty last_error stays a failed finish, got {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+        "empty failure must not be stop, got {events:?}"
+    );
+}
+
+#[test]
+fn responses_completed_keeps_hosted_search_calls() {
+    let raw = RawSse {
+        event: Some("response.completed".into()),
+        data: json!({
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "encrypted_content": "enc-xyz",
+                        "summary": [{ "type": "summary_text", "text": "Search first" }]
+                    },
+                    {
+                        "type": "web_search_call",
+                        "id": "ws_1",
+                        "status": "completed",
+                        "action": { "query": "2025 NBA champion" }
+                    },
+                    {
+                        "type": "x_search_call",
+                        "id": "xs_1",
+                        "status": "completed",
+                        "action": { "query": "latest" }
+                    }
+                ]
+            }
+        })
+        .to_string(),
+    };
+    let events =
+        decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("completed");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "reasoning"
+                    && payload.get("encrypted_content").and_then(|v| v.as_str()) == Some("enc-xyz")
+        )),
+        "terminal event must keep encrypted reasoning, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, .. } if item_type == "web_search_call"
+        )),
+        "terminal event must keep web_search_call, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, .. } if item_type == "x_search_call"
+        )),
+        "terminal event must keep x_search_call, got {events:?}"
+    );
+
+    let added = RawSse {
+        event: Some("response.output_item.added".into()),
+        data: json!({
+            "type": "response.output_item.added",
+            "output_index": 1,
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed",
+                "action": { "query": "2025 NBA champion" }
+            }
+        })
+        .to_string(),
+    };
+    let added_events =
+        decode_stream_events(Wire::Responses, &added, &responses_profile()).expect("added");
+    assert!(
+        added_events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "web_search_call"
+                    && payload.pointer("/action/query").and_then(|v| v.as_str())
+                        == Some("2025 NBA champion")
+        )),
+        "added web_search_call must not stay a generic envelope, got {added_events:?}"
+    );
+
+    let reasoning = RawSse {
+        event: Some("response.output_item.added".into()),
+        data: json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "type": "reasoning",
+                "id": "rs_1",
+                "signature": "sig",
+                "encrypted_content": "enc-xyz"
+            }
+        })
+        .to_string(),
+    };
+    let reasoning_events =
+        decode_stream_events(Wire::Responses, &reasoning, &responses_profile()).expect("reasoning");
+    assert!(
+        reasoning_events.iter().any(
+            |ev| matches!(ev, IrStreamEvent::ReasoningSignature { signature } if signature == "sig")
+        ),
+        "encrypted reasoning must keep a sibling signature, got {reasoning_events:?}"
+    );
+    assert!(
+        reasoning_events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "reasoning"
+                    && payload.get("encrypted_content").and_then(|v| v.as_str()) == Some("enc-xyz")
+        )),
+        "encrypted reasoning must stay Protocol, got {reasoning_events:?}"
+    );
+}
+
+#[test]
 fn chat_singular_keeps_audio_and_image_only_chunks() {
     let audio = RawSse {
         event: None,
