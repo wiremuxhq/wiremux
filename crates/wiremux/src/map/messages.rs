@@ -1113,7 +1113,7 @@ fn encode_tool(tool: &PreparedTool) -> Value {
 
 /// Grok Build Messages rejects `required: null` (and treats a missing
 /// `required` the same way): HTTP 400 `/required: null is not of type "array"`.
-fn normalize_object_schema_required(schema: &mut Value) {
+pub(super) fn normalize_object_schema_required(schema: &mut Value) {
     let Some(obj) = schema.as_object_mut() else {
         return;
     };
