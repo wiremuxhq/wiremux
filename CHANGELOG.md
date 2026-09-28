@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.3](https://github.com/wiremuxhq/wiremux/compare/v0.9.2...v0.9.3) (2026-09-28)
+
+
+### Bug Fixes
+
+* clarify stream indexes and hosted-tool errors ([#337](https://github.com/wiremuxhq/wiremux/issues/337)) ([33c734d](https://github.com/wiremuxhq/wiremux/commit/33c734d314e3964e60e6f39d77bb8b0d00e7e752))
+* emit an empty required array on Chat tool schemas ([#329](https://github.com/wiremuxhq/wiremux/issues/329)) ([2ee8000](https://github.com/wiremuxhq/wiremux/commit/2ee8000034dc1489539e8055de594736a8d343d1)), closes [#325](https://github.com/wiremuxhq/wiremux/issues/325) [#326](https://github.com/wiremuxhq/wiremux/issues/326) [#327](https://github.com/wiremuxhq/wiremux/issues/327) [#328](https://github.com/wiremuxhq/wiremux/issues/328)
+* keep unknown Chat modalities through decode ([#333](https://github.com/wiremuxhq/wiremux/issues/333)) ([b8bb51c](https://github.com/wiremuxhq/wiremux/commit/b8bb51c4b0cc9774c11d7c5f0be5b5c858f00074))
+* name the wire when a request body is not an object ([#332](https://github.com/wiremuxhq/wiremux/issues/332)) ([7c7fd3e](https://github.com/wiremuxhq/wiremux/commit/7c7fd3edec16e720fd8b19cc7f15d77040394b3d))
+* omit Messages effort when thinking is disabled ([#331](https://github.com/wiremuxhq/wiremux/issues/331)) ([0073c93](https://github.com/wiremuxhq/wiremux/commit/0073c93c5f0f1336fbeeb6daa4b3fcfeab312ab4))
+* record when Responses adds encrypted reasoning include ([#335](https://github.com/wiremuxhq/wiremux/issues/335)) ([6e668d4](https://github.com/wiremuxhq/wiremux/commit/6e668d4b268fdf0d6019da23d1a7dbda1f668117))
+* reject a same-wire upstream success that is not JSON ([#334](https://github.com/wiremuxhq/wiremux/issues/334)) ([4c31695](https://github.com/wiremuxhq/wiremux/commit/4c31695f374f1c23332bb04cd9e7ed8f47651c3a))
+* report silent rewrites and reject an empty tool name ([#336](https://github.com/wiremuxhq/wiremux/issues/336)) ([08fbf6e](https://github.com/wiremuxhq/wiremux/commit/08fbf6e15ef29799ee1b524933d324d77ef9b581))
+
 ## [0.9.2](https://github.com/wiremuxhq/wiremux/compare/v0.9.1...v0.9.2) (2026-09-27)
 
 
