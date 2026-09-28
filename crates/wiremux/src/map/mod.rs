@@ -46,13 +46,26 @@ impl MapError {
     }
 }
 
+fn json_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 /// Decode a dialect request body into IR. Does not apply profile policy.
 pub fn decode(wire: Wire, bytes: &[u8]) -> Result<(IrRequest, LossReport), MapError> {
     let value: Value = serde_json::from_slice(bytes)?;
     if !value.is_object() {
-        return Err(MapError::Invalid(
-            "request body must be a JSON object".into(),
-        ));
+        return Err(MapError::Invalid(format!(
+            "request body for wire `{}` must be a JSON object, got {}",
+            wire.as_str(),
+            json_kind(&value)
+        )));
     }
     match wire {
         Wire::ChatCompletions => chat::decode(&value),
@@ -615,6 +628,17 @@ fn convert_case(name: &str, sep: char) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremux_auth::Wire;
+
+    #[test]
+    fn decode_non_object_names_the_wire_and_json_kind() {
+        let err = decode(Wire::Messages, b"[1]").expect_err("array is not an object");
+        let text = err.to_string();
+        assert!(
+            text.contains("wire `messages`") && text.contains("got array"),
+            "{text}"
+        );
+    }
 
     #[test]
     fn snake_and_kebab_leave_dots() {
