@@ -282,9 +282,14 @@ fn gemini_images_and_thought_signatures_replay_on_the_next_request() {
         .iter()
         .find(|c| c["role"] == "user")
         .unwrap();
-    assert_eq!(user_turn["parts"].as_array().unwrap().len(), 2);
-    assert!(user_turn["parts"][0].get("functionResponse").is_some());
-    assert!(user_turn["parts"][1].get("functionResponse").is_some());
+    let responses = user_turn["parts"].as_array().expect("parts");
+    assert_eq!(responses.len(), 2);
+    assert_eq!(responses[0]["functionResponse"]["id"], "fn_a");
+    assert_eq!(responses[0]["functionResponse"]["name"], "fn_a");
+    assert_eq!(responses[0]["functionResponse"]["response"]["result"], "a");
+    assert_eq!(responses[1]["functionResponse"]["id"], "fn_b");
+    assert_eq!(responses[1]["functionResponse"]["name"], "fn_b");
+    assert_eq!(responses[1]["functionResponse"]["response"]["result"], "b");
 }
 
 #[test]
