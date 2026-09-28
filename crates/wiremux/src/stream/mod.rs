@@ -786,7 +786,7 @@ fn check_index(value: &Value, key: &str, cap: u32, kind: &str) -> Result<(), Map
     };
     let Some(n) = raw.as_u64() else {
         return Err(MapError::Invalid(format!(
-            "{kind} index exceeds cap ({cap})"
+            "{kind} index must be an unsigned integer"
         )));
     };
     if n > u64::from(cap) {
@@ -881,5 +881,23 @@ mod tests {
             payload: Value::Null,
         };
         assert!(!event_has_slot(Wire::Gemini, &ev));
+    }
+
+    #[test]
+    fn check_index_rejects_non_integer_without_saying_over_cap() {
+        let err = check_index(
+            &serde_json::json!({"index": "nope"}),
+            "index",
+            4,
+            "tool call",
+        )
+        .expect_err("string index");
+        let msg = err.to_string();
+        assert!(msg.contains("must be an unsigned integer"), "{msg}");
+        assert!(!msg.contains("exceeds cap"), "{msg}");
+
+        let err = check_index(&serde_json::json!({"index": 99}), "index", 4, "tool call")
+            .expect_err("index over cap");
+        assert!(err.to_string().contains("exceeds cap"), "{err}");
     }
 }

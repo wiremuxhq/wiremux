@@ -145,7 +145,16 @@ pub(super) fn prepare_tools(
                 )?;
             }
             IrTool::Hosted { kind, raw } => {
-                push_hosted(&mut out, kind, raw, &path, policy, has_hosted_slot, report)?;
+                push_hosted(
+                    &mut out,
+                    kind,
+                    raw,
+                    &path,
+                    policy,
+                    wire,
+                    has_hosted_slot,
+                    report,
+                )?;
             }
             IrTool::Unknown { type_name, raw } => match policy {
                 ToolTypePolicy::Passthrough => {
@@ -238,6 +247,7 @@ fn push_hosted(
     raw: &Value,
     path: &str,
     policy: ToolTypePolicy,
+    wire: Wire,
     has_hosted_slot: bool,
     report: &mut LossReport,
 ) -> Result<(), MapError> {
@@ -255,7 +265,7 @@ fn push_hosted(
             } else {
                 Err(MapError::hard(
                     path,
-                    format!("hosted tool `{kind}` has no slot on this dialect"),
+                    format!("hosted tool `{kind}` has no slot on `{}`", wire.as_str()),
                 ))
             }
         }
@@ -447,6 +457,34 @@ tool_type_policy = "{policy}"
                         && detail.contains("hard-error"),
                     "must list tool_type_policy values, got {detail}"
                 );
+            }
+            other => panic!("expected HardError, got {other}"),
+        }
+    }
+
+    #[test]
+    fn hosted_tool_without_slot_names_wire() {
+        let ir = IrRequest {
+            model: "m".into(),
+            items: Vec::new(),
+            tools: vec![IrTool::Hosted {
+                kind: "web_search".into(),
+                raw: json!({"type": "web_search"}),
+            }],
+            sampling: IrSampling::default(),
+        };
+        let mut report = LossReport::default();
+        let err = prepare_tools(
+            Wire::ChatCompletions,
+            &ir,
+            &profile("hard-error"),
+            &mut report,
+        )
+        .expect_err("hosted tool has no slot");
+        match err {
+            MapError::HardError { detail, .. } => {
+                assert!(detail.contains("web_search"), "detail={detail}");
+                assert!(detail.contains("chat-completions"), "detail={detail}");
             }
             other => panic!("expected HardError, got {other}"),
         }
