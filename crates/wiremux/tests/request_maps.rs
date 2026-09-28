@@ -1639,13 +1639,42 @@ fn messages_whitespace_only_assistant_becomes_dot() {
             parts: vec![IrPart::Text("\n".into())],
         }],
     );
-    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
         body.pointer("/messages/0/content/0/text")
             .and_then(Value::as_str),
         Some("."),
         "whitespace-only text must become '.', got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "items[0]"),
+        "placeholder '.' must Degrade, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_null_user_content_becomes_dot_with_loss() {
+    let req = br#"{
+        "model": "claude-haiku-4-5",
+        "messages": [{"role": "user", "content": null}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("."),
+        "null user content must not be an empty Messages text block, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "items[0]"
+                && event.action == LossAction::Degrade
+                && event.detail.contains("empty content became '.'")
+        }),
+        "null user content must Degrade, got {report:?}"
     );
 }
 

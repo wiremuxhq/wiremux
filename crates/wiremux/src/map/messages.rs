@@ -576,7 +576,7 @@ fn encode_user(
     report: &mut LossReport,
 ) -> (Value, usize) {
     let mut consumed = 1;
-    let mut content = encode_user_parts(parts, report);
+    let mut content = encode_user_parts(parts, &format!("items[{start}]"), report);
     while let Some(IrItem::FunctionOutput { call_id, output }) = ir.items.get(start + consumed) {
         content.push(tool_result_block(
             call_id,
@@ -654,6 +654,11 @@ fn encode_assistant(
         }
     }
     if content.is_empty() {
+        report.record(
+            format!("items[{start}]"),
+            LossAction::Degrade,
+            "empty content became '.'",
+        );
         content.push(json!({"type": "text", "text": "."}));
     }
     (
@@ -717,12 +722,13 @@ fn reasoning_block(
     Some(block)
 }
 
-fn encode_user_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
+fn encode_user_parts(parts: &[IrPart], path: &str, report: &mut LossReport) -> Vec<Value> {
     let out: Vec<Value> = parts
         .iter()
         .filter_map(|part| encode_part(part, report))
         .collect();
     if out.is_empty() {
+        report.record(path, LossAction::Degrade, "empty content became '.'");
         vec![json!({"type": "text", "text": "."})]
     } else {
         out
