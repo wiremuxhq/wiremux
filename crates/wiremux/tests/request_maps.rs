@@ -5751,10 +5751,9 @@ fn dest_gemini_response_modalities_and_speech_reach_chat() {
         Some("Puck"),
         "dest Gemini speechConfig voiceName must reach Chat audio.voice, got {body}"
     );
-    assert!(
-        body.pointer("/audio/format")
-            .and_then(Value::as_str)
-            .is_some(),
+    assert_eq!(
+        body.pointer("/audio/format").and_then(Value::as_str),
+        Some("wav"),
         "dest Chat audio.format must be present, got {body}"
     );
     assert!(
@@ -6483,8 +6482,9 @@ fn assert_chat_classic_max_tokens(model: &str) {
         body.get("max_completion_tokens").is_none(),
         "{model} must omit max_completion_tokens, got {body}"
     );
+    let temperature = body.get("temperature").and_then(Value::as_f64);
     assert!(
-        body.get("temperature").is_some(),
+        temperature.is_some_and(|value| (value - 0.2).abs() < 1e-6),
         "{model} must keep temperature, got {body}"
     );
     assert!(
@@ -7527,10 +7527,7 @@ fn converse_decode_tool_use_missing_id_fails() {
     }"#;
     let err = decode(Wire::Converse, req).expect_err("toolUse without toolUseId");
     let msg = err.to_string();
-    assert!(
-        msg.contains("toolUseId") || msg.contains("toolUse"),
-        "{msg}"
-    );
+    assert!(msg.contains("toolUse omitted toolUseId"), "{msg}");
 }
 
 #[test]
@@ -7542,10 +7539,7 @@ fn converse_decode_tool_result_missing_id_fails() {
     }"#;
     let err = decode(Wire::Converse, req).expect_err("toolResult without toolUseId");
     let msg = err.to_string();
-    assert!(
-        msg.contains("toolUseId") || msg.contains("toolResult"),
-        "{msg}"
-    );
+    assert!(msg.contains("toolResult omitted toolUseId"), "{msg}");
 }
 
 #[test]
