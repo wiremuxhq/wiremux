@@ -247,13 +247,13 @@ fn chat_output_modalities(value: &Value) -> Vec<String> {
     };
     arr.iter()
         .filter_map(Value::as_str)
-        .filter_map(|raw| {
+        .map(|raw| {
             if raw.eq_ignore_ascii_case("text") {
-                Some("text".to_string())
+                "text".to_string()
             } else if raw.eq_ignore_ascii_case("audio") {
-                Some("audio".to_string())
+                "audio".to_string()
             } else {
-                None
+                raw.to_string()
             }
         })
         .collect()

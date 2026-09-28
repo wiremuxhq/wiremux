@@ -5551,6 +5551,32 @@ fn chat_unknown_modality_is_not_a_silent_preserve() {
 }
 
 #[test]
+fn chat_decode_unknown_modality_is_a_drop() {
+    let raw =
+        br#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"modalities":["video"]}"#;
+    let (ir, _) = decode(Wire::ChatCompletions, raw).expect("decode");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(body.get("modalities").is_none(), "{body}");
+    assert!(
+        loss_dropped(&report, "sampling.output_modalities"),
+        "decode must keep video so encode can Drop it, got {report:?}"
+    );
+
+    let mixed = br#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"modalities":["text","video"]}"#;
+    let (ir, _) = decode(Wire::ChatCompletions, mixed).expect("decode");
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(body["modalities"], serde_json::json!(["text"]));
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.output_modalities" && event.action == LossAction::Degrade
+        }),
+        "mixed decode must Degrade, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_messages_output_modalities_drop() {
     let req = br#"{
         "model": "gpt-4o",
