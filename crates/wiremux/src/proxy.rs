@@ -244,6 +244,16 @@ fn is_json_content_type(value: &str) -> bool {
         .eq_ignore_ascii_case("application/json")
 }
 
+/// Same-wire success is passed through. An HTML status-200 page is not a
+/// completion, so only a JSON object or array may take that path.
+fn same_wire_success_is_json(content_type: &str, body: &[u8]) -> bool {
+    if !content_type.is_empty() && !is_json_content_type(content_type) {
+        return false;
+    }
+    let trimmed = body.trim_ascii_start();
+    trimmed.starts_with(b"{") || trimmed.starts_with(b"[")
+}
+
 fn request_guard(req: &Request<Incoming>, post: bool) -> Option<Response<ProxyBody>> {
     let host = req
         .headers()
@@ -391,6 +401,15 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         );
     }
     if target == state.from || !status.is_success() {
+        if target == state.from
+            && status.is_success()
+            && !same_wire_success_is_json(&content_type, &body)
+        {
+            return text(
+                StatusCode::BAD_GATEWAY,
+                "upstream success body is not JSON\n",
+            );
+        }
         return bytes_response(status_from_reqwest(status), &content_type, body);
     }
     match decode_response(target, &body, &state.profile) {
@@ -851,7 +870,24 @@ fn status_from_reqwest(status: reqwest::StatusCode) -> StatusCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{host_is_loopback, is_json_content_type};
+    use super::{host_is_loopback, is_json_content_type, same_wire_success_is_json};
+
+    #[test]
+    fn html_success_is_not_a_same_wire_completion() {
+        assert!(!same_wire_success_is_json(
+            "text/html",
+            b"<html><body>bad gateway page</body></html>"
+        ));
+        assert!(!same_wire_success_is_json(
+            "application/json",
+            b"<html></html>"
+        ));
+        assert!(same_wire_success_is_json(
+            "application/json; charset=utf-8",
+            b" {\"id\":\"x\"}"
+        ));
+        assert!(same_wire_success_is_json("", b"[1]"));
+    }
 
     #[test]
     fn loopback_hosts_accepted() {
