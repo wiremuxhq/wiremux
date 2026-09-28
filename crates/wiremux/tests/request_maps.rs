@@ -1681,6 +1681,40 @@ fn gemini_non_object_tool_output_is_wrapped_and_degraded() {
 }
 
 #[test]
+fn responses_system_between_users_moves_and_keeps_turns() {
+    let req = br#"{
+        "model": "gpt-4.1-mini",
+        "messages": [
+            {"role": "user", "content": "first"},
+            {"role": "system", "content": "late rule"},
+            {"role": "user", "content": "second"}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(body["instructions"], "late rule", "got {body}");
+    let input = body["input"].as_array().expect("input");
+    assert_eq!(
+        input.len(),
+        2,
+        "Responses keeps separate user items, got {body}"
+    );
+    assert_eq!(input[0]["role"], "user");
+    assert_eq!(input[1]["role"], "user");
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "items[1]"
+                && event.action == LossAction::Degrade
+                && event
+                    .detail
+                    .contains("system message moved out of the turn list")
+        }),
+        "moving a mid-list system must Degrade, got {report:?}"
+    );
+}
+
+#[test]
 fn converse_system_between_users_is_moved_and_users_join() {
     let req = br#"{
         "model": "amazon.nova-lite-v1:0",
