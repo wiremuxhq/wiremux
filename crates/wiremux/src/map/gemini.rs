@@ -527,9 +527,16 @@ pub(super) fn encode(
     let mut system_parts = Vec::new();
     let mut contents = Vec::new();
     let mut call_names = Vec::new();
-    for item in &ir.items {
+    for (idx, item) in ir.items.iter().enumerate() {
         match item {
             IrItem::System { text } | IrItem::Developer { text } => {
+                if !contents.is_empty() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "system message moved out of the turn list",
+                    );
+                }
                 if matches!(item, IrItem::Developer { .. }) {
                     report.record(
                         "item.developer",
@@ -540,11 +547,25 @@ pub(super) fn encode(
                 system_parts.push(json!({ "text": text }));
             }
             IrItem::User { parts } => {
+                if last_role(&contents) == Some("user") {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "consecutive turns with the same role were joined",
+                    );
+                }
                 for part in encode_parts(parts, report) {
                     push_role_part(&mut contents, "user", part);
                 }
             }
             IrItem::Assistant { parts } => {
+                if last_role(&contents) == Some("model") {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "consecutive turns with the same role were joined",
+                    );
+                }
                 for part in encode_parts(parts, report) {
                     push_role_part(&mut contents, "model", part);
                 }
@@ -688,6 +709,10 @@ fn is_gemini_hosted_raw(raw: &Value) -> bool {
     obj.contains_key("googleSearch")
         || obj.contains_key("codeExecution")
         || obj.contains_key("googleSearchRetrieval")
+}
+
+fn last_role(contents: &[Value]) -> Option<&str> {
+    contents.last()?.get("role")?.as_str()
 }
 
 fn push_role_part(contents: &mut Vec<Value>, role: &str, part: Value) {

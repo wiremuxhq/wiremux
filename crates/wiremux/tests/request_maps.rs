@@ -1681,6 +1681,46 @@ fn gemini_non_object_tool_output_is_wrapped_and_degraded() {
 }
 
 #[test]
+fn gemini_system_between_users_is_moved_and_users_join() {
+    let req = br#"{
+        "model": "gemini-2.5-flash",
+        "messages": [
+            {"role": "user", "content": "first"},
+            {"role": "system", "content": "late rule"},
+            {"role": "user", "content": "second"}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/systemInstruction/parts/0/text")
+            .and_then(Value::as_str),
+        Some("late rule"),
+        "got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts"),
+        Some(&serde_json::json!([{"text": "first"}, {"text": "second"}])),
+        "adjacent user turns must share one content, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "items[1]"
+                && event.action == LossAction::Degrade
+                && event
+                    .detail
+                    .contains("system message moved out of the turn list")
+        }),
+        "moving a mid-list system must Degrade, got {report:?}"
+    );
+    assert!(
+        loss_degraded(&report, "items[2]"),
+        "the second user turn must Degrade when joined, got {report:?}"
+    );
+}
+
+#[test]
 fn messages_system_between_users_is_moved_and_users_join() {
     let req = br#"{
         "model": "claude-haiku-4-5",
