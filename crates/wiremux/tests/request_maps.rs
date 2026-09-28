@@ -5520,6 +5520,37 @@ fn dest_gemini_image_plus_audio_still_reaches_chat() {
 }
 
 #[test]
+fn chat_unknown_modality_is_not_a_silent_preserve() {
+    let dropped = user_ir(IrSampling::patch(|s| {
+        s.output_modalities = vec!["video".into()];
+    }));
+    let (bytes, report) = encode(Wire::ChatCompletions, &dropped, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(body.get("modalities").is_none(), "{body}");
+    assert!(
+        loss_dropped(&report, "sampling.output_modalities"),
+        "unrecognized modality must Drop, got {report:?}"
+    );
+
+    let mixed = user_ir(IrSampling::patch(|s| {
+        s.output_modalities = vec!["text".into(), "video".into()];
+    }));
+    let (bytes, report) = encode(Wire::ChatCompletions, &mixed, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(body["modalities"], serde_json::json!(["text"]));
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.output_modalities" && event.action == LossAction::Degrade
+        }),
+        "a dropped sibling must Degrade, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.output_modalities"),
+        "kept text must not share a Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn dest_messages_output_modalities_drop() {
     let req = br#"{
         "model": "gpt-4o",
