@@ -462,8 +462,12 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 arguments,
                 ..
             } => {
-                let input: Value =
-                    serde_json::from_str(arguments).unwrap_or_else(|_| json!(arguments));
+                let input = super::json_object_or_raw(
+                    arguments,
+                    "toolUse.input",
+                    report,
+                    "tool arguments are not a JSON object",
+                );
                 let block = json!({
                     "toolUse": {
                         "toolUseId": call_id,

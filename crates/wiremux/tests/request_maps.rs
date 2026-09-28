@@ -3499,7 +3499,7 @@ fn gemini_encode_does_not_invent_empty_function_call_args() {
             thought_signature: None,
         }],
     );
-    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let args = body.pointer("/contents/0/parts/0/functionCall/args");
     assert_ne!(
@@ -3509,8 +3509,61 @@ fn gemini_encode_does_not_invent_empty_function_call_args() {
     );
     assert_eq!(
         args,
-        Some(&Value::String("not-json".into())),
-        "invalid JSON must stay a string, got {body}"
+        Some(&serde_json::json!({ "raw": "not-json" })),
+        "invalid JSON must stay visible inside an object, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "functionCall.args"),
+        "non-object tool arguments must Degrade, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_non_object_tool_arguments_stay_visible() {
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![IrItem::FunctionCall {
+            call_id: "call_1".into(),
+            name: "echo".into(),
+            arguments: "not-json".into(),
+            thought_signature: None,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/input"),
+        Some(&serde_json::json!({ "raw": "not-json" })),
+        "Anthropic tool_use.input must be an object, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "items[0]"),
+        "non-object tool arguments must Degrade, got {report:?}"
+    );
+
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![IrItem::FunctionCall {
+            call_id: "call_2".into(),
+            name: "echo".into(),
+            arguments: "[1]".into(),
+            thought_signature: None,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/input"),
+        Some(&serde_json::json!({ "raw": [1] })),
+        "a JSON array is not a tool_use.input object, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "items[0]"
+                && event.action == LossAction::Degrade
+                && event.detail.contains("not a JSON object")
+        }),
+        "parsed non-object must Degrade, got {report:?}"
     );
 }
 
@@ -6999,7 +7052,7 @@ fn converse_encode_does_not_invent_empty_function_call_args() {
             thought_signature: None,
         }],
     );
-    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let input = body.pointer("/messages/0/content/0/toolUse/input");
     assert_ne!(
@@ -7009,8 +7062,12 @@ fn converse_encode_does_not_invent_empty_function_call_args() {
     );
     assert_eq!(
         input,
-        Some(&Value::String("not-json".into())),
-        "invalid JSON must stay a string, got {body}"
+        Some(&serde_json::json!({ "raw": "not-json" })),
+        "invalid JSON must stay visible inside an object, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "toolUse.input"),
+        "non-object tool arguments must Degrade, got {report:?}"
     );
 }
 

@@ -1062,8 +1062,14 @@ fn tool_use_block(
     path: impl Into<String>,
     report: &mut LossReport,
 ) -> Value {
-    let id = rewrite_messages_tool_use_id(call_id, path, report);
-    let input = serde_json::from_str::<Value>(arguments).unwrap_or_else(|_| json!(arguments));
+    let path = path.into();
+    let id = rewrite_messages_tool_use_id(call_id, path.as_str(), report);
+    let input = super::json_object_or_raw(
+        arguments,
+        &path,
+        report,
+        "tool arguments are not a JSON object",
+    );
     json!({
         "type": "tool_use",
         "id": id,

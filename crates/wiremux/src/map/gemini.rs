@@ -556,8 +556,12 @@ pub(super) fn encode(
                 thought_signature,
             } => {
                 call_names.push((call_id.as_str(), name.as_str()));
-                let args: Value =
-                    serde_json::from_str(arguments).unwrap_or_else(|_| json!(arguments));
+                let args = super::json_object_or_raw(
+                    arguments,
+                    "functionCall.args",
+                    report,
+                    "tool arguments are not a JSON object",
+                );
                 let mut part = json!({
                     "functionCall": { "id": call_id, "name": name, "args": args }
                 });
