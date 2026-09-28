@@ -311,8 +311,15 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     {
         return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
     }
-    let collected = match req.collect().await {
-        Ok(c) => c.to_bytes(),
+    let collected = match read_capped_body(req.into_body(), MAX_BODY).await {
+        Ok(bytes) => bytes,
+        Err(err)
+            if err
+                .downcast_ref::<http_body_util::LengthLimitError>()
+                .is_some() =>
+        {
+            return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
+        }
         Err(err) => return text(StatusCode::BAD_REQUEST, format!("read body: {err}\n")),
     };
     if collected.len() > MAX_BODY {
@@ -430,6 +437,18 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         StatusCode::NOT_IMPLEMENTED,
         "non-stream cross-dialect responses are not mapped\n",
     )
+}
+
+async fn read_capped_body<B>(
+    body: B,
+    cap: usize,
+) -> Result<Bytes, Box<dyn std::error::Error + Send + Sync>>
+where
+    B: hyper::body::Body,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let limited = http_body_util::Limited::new(body, cap);
+    Ok(limited.collect().await?.to_bytes())
 }
 
 async fn read_capped_upstream(resp: reqwest::Response, cap: usize) -> Result<Bytes, String> {
@@ -870,7 +889,29 @@ fn status_from_reqwest(status: reqwest::StatusCode) -> StatusCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{host_is_loopback, is_json_content_type, same_wire_success_is_json};
+    use super::{
+        host_is_loopback, is_json_content_type, read_capped_body, same_wire_success_is_json,
+    };
+
+    #[tokio::test]
+    async fn capped_body_stops_when_the_next_chunk_crosses_the_cap() {
+        use bytes::Bytes;
+        use hyper::body::Frame;
+        use http_body_util::StreamBody;
+
+        let frames = futures_util::stream::iter(vec![
+            Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from(vec![1; 3]))),
+            Ok(Frame::data(Bytes::from(vec![2; 8]))),
+        ]);
+        let err = read_capped_body(StreamBody::new(frames), 4)
+            .await
+            .expect_err("over cap");
+        assert!(
+            err.downcast_ref::<http_body_util::LengthLimitError>()
+                .is_some(),
+            "{err}"
+        );
+    }
 
     #[test]
     fn html_success_is_not_a_same_wire_completion() {
