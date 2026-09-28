@@ -4602,6 +4602,18 @@ fn dest_responses_verbosity_keeps_json_schema() {
         "dest Responses json_schema must reach Chat, got {body}"
     );
     assert_eq!(
+        body.pointer("/response_format/json_schema/name")
+            .and_then(Value::as_str),
+        Some("answer"),
+        "dest Responses json_schema name must reach Chat, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/response_format/json_schema/schema/properties/ok/type")
+            .and_then(Value::as_str),
+        Some("boolean"),
+        "dest Responses json_schema property must reach Chat, got {body}"
+    );
+    assert_eq!(
         body.get("verbosity").and_then(Value::as_str),
         Some("low"),
         "dest Responses verbosity must keep json_schema on Chat, got {body}"
@@ -4647,6 +4659,17 @@ fn dest_chat_verbosity_and_schema_reach_responses() {
         body.pointer("/text/format/type").and_then(Value::as_str),
         Some("json_schema"),
         "dest Responses encode must keep text.format next to verbosity, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/text/format/name").and_then(Value::as_str),
+        Some("answer"),
+        "dest Chat json_schema name must reach Responses, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/text/format/schema/properties/ok/type")
+            .and_then(Value::as_str),
+        Some("boolean"),
+        "dest Chat json_schema property must reach Responses, got {body}"
     );
     assert!(
         !loss_dropped(&report, "sampling.verbosity"),
@@ -5728,10 +5751,9 @@ fn dest_gemini_response_modalities_and_speech_reach_chat() {
         Some("Puck"),
         "dest Gemini speechConfig voiceName must reach Chat audio.voice, got {body}"
     );
-    assert!(
-        body.pointer("/audio/format")
-            .and_then(Value::as_str)
-            .is_some(),
+    assert_eq!(
+        body.pointer("/audio/format").and_then(Value::as_str),
+        Some("wav"),
         "dest Chat audio.format must be present, got {body}"
     );
     assert!(
@@ -6460,8 +6482,9 @@ fn assert_chat_classic_max_tokens(model: &str) {
         body.get("max_completion_tokens").is_none(),
         "{model} must omit max_completion_tokens, got {body}"
     );
+    let temperature = body.get("temperature").and_then(Value::as_f64);
     assert!(
-        body.get("temperature").is_some(),
+        temperature.is_some_and(|value| (value - 0.2).abs() < 1e-6),
         "{model} must keep temperature, got {body}"
     );
     assert!(
@@ -7288,6 +7311,44 @@ fn messages_encode_object_tool_schema_emits_required_array() {
     );
 }
 
+#[test]
+fn non_array_required_becomes_empty_array() {
+    for required in [serde_json::json!("q"), serde_json::json!({"bad": true})] {
+        let req = serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "lookup",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"q": {"type": "string"}},
+                        "required": required
+                    }
+                }
+            }]
+        });
+        let bytes = serde_json::to_vec(&req).expect("ser");
+        let (ir, _) = decode(Wire::ChatCompletions, &bytes).expect("decode");
+        let (msg_bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("messages");
+        let msg: Value = serde_json::from_slice(&msg_bytes).expect("json");
+        assert_eq!(
+            msg.pointer("/tools/0/input_schema/required"),
+            Some(&serde_json::json!([])),
+            "string or object required becomes [] on Messages, got {msg}"
+        );
+        let (chat_bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+        let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+        assert_eq!(
+            chat.pointer("/tools/0/function/parameters/required"),
+            Some(&serde_json::json!([])),
+            "string or object required becomes [] on Chat, got {chat}"
+        );
+    }
+}
+
 fn converse_profile() -> ResolvedProfile {
     profile(
         r#"
@@ -7410,6 +7471,54 @@ fn converse_encode_empty_messages_fails() {
 }
 
 #[test]
+fn converse_system_only_and_empty_request_are_rejected() {
+    let system_only = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::System {
+            text: "rules".into(),
+        }],
+    );
+    let err = encode(Wire::Converse, &system_only, &converse_profile())
+        .expect_err("system-only Converse must fail");
+    let shown = err.to_string();
+    assert!(
+        matches!(err, MapError::Invalid(_)),
+        "expected MapError::Invalid, got {shown}"
+    );
+    assert!(
+        shown.contains("converse messages must not be empty"),
+        "{shown}"
+    );
+
+    let empty = IrRequest::new("amazon.nova-lite-v1:0", vec![]);
+    let err = encode(Wire::Converse, &empty, &converse_profile())
+        .expect_err("empty Converse request must fail");
+    let shown = err.to_string();
+    assert!(
+        matches!(err, MapError::Invalid(_)),
+        "expected MapError::Invalid, got {shown}"
+    );
+    assert!(
+        shown.contains("converse messages must not be empty"),
+        "{shown}"
+    );
+
+    let user = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    );
+    let (bytes, _) = encode(Wire::Converse, &user, &converse_profile()).expect("encode user");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    assert_eq!(messages.len(), 1, "one user message, got {body}");
+}
+
+#[test]
 fn converse_decode_tool_use_missing_id_fails() {
     let req = br#"{
       "messages": [
@@ -7418,10 +7527,7 @@ fn converse_decode_tool_use_missing_id_fails() {
     }"#;
     let err = decode(Wire::Converse, req).expect_err("toolUse without toolUseId");
     let msg = err.to_string();
-    assert!(
-        msg.contains("toolUseId") || msg.contains("toolUse"),
-        "{msg}"
-    );
+    assert!(msg.contains("toolUse omitted toolUseId"), "{msg}");
 }
 
 #[test]
@@ -7433,10 +7539,7 @@ fn converse_decode_tool_result_missing_id_fails() {
     }"#;
     let err = decode(Wire::Converse, req).expect_err("toolResult without toolUseId");
     let msg = err.to_string();
-    assert!(
-        msg.contains("toolUseId") || msg.contains("toolResult"),
-        "{msg}"
-    );
+    assert!(msg.contains("toolResult omitted toolUseId"), "{msg}");
 }
 
 #[test]

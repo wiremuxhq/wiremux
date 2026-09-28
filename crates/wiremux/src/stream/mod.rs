@@ -111,11 +111,13 @@ impl UpstreamFrames {
 /// Unknown names follow `profile.dialect.stream_unknown_policy`. A
 /// tool-bearing frame is never `Ok(None)`.
 ///
-/// Chat Completions returns one event. A chunk with two `tool_calls`,
-/// or one call that includes an id or a name plus `arguments`, is
-/// [`MapError::Invalid`] and names [`decode_stream_events`]. That
-/// function keeps every call and its argument text. A later chunk that
-/// is only `{"index":0,"function":{"arguments":"..."}}` stays
+/// Chat Completions returns one event for a single text, audio, finish,
+/// or usage field. Content together with `finish_reason` or `usage`,
+/// two media parts, two `tool_calls`, or one call that includes an id
+/// or a name plus `arguments`, is [`MapError::Invalid`] and names
+/// [`decode_stream_events`]. That function keeps every call and its
+/// argument text. A later chunk that is only
+/// `{"index":0,"function":{"arguments":"..."}}` stays
 /// [`IrStreamEvent::ToolCallArgDelta`].
 pub fn decode_stream_event(
     wire: Wire,
@@ -151,8 +153,9 @@ pub fn decode_stream_event(
 
 /// Decode one SSE frame into every IR event it carries.
 ///
-/// Chat Completions can emit usage and finish from the same
-/// `message_delta`. A 1:1 map would drop one. Empty vec is a
+/// Chat Completions can put content, `finish_reason`, and `usage` on
+/// one chunk. A Messages `message_delta` can carry a stop reason and
+/// `usage`. Singular decode keeps one of those. Empty vec is a
 /// recognized no-op.
 pub fn decode_stream_events(
     wire: Wire,
@@ -786,7 +789,7 @@ fn check_index(value: &Value, key: &str, cap: u32, kind: &str) -> Result<(), Map
     };
     let Some(n) = raw.as_u64() else {
         return Err(MapError::Invalid(format!(
-            "{kind} index exceeds cap ({cap})"
+            "{kind} index must be an unsigned integer"
         )));
     };
     if n > u64::from(cap) {
@@ -881,5 +884,23 @@ mod tests {
             payload: Value::Null,
         };
         assert!(!event_has_slot(Wire::Gemini, &ev));
+    }
+
+    #[test]
+    fn check_index_rejects_non_integer_without_saying_over_cap() {
+        let err = check_index(
+            &serde_json::json!({"index": "nope"}),
+            "index",
+            4,
+            "tool call",
+        )
+        .expect_err("string index");
+        let msg = err.to_string();
+        assert!(msg.contains("must be an unsigned integer"), "{msg}");
+        assert!(!msg.contains("exceeds cap"), "{msg}");
+
+        let err = check_index(&serde_json::json!({"index": 99}), "index", 4, "tool call")
+            .expect_err("index over cap");
+        assert!(err.to_string().contains("exceeds cap"), "{err}");
     }
 }

@@ -1,5 +1,11 @@
 [graph]
-targets = []
+# Lint runs on Ubuntu only. Name the other CI targets so their
+# crates, including the macOS keyring stack, are in this graph.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+]
 all-features = true
 
 [advisories]
