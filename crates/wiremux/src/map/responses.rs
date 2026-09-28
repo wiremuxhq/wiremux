@@ -411,13 +411,29 @@ fn encode_items(
     let mut input = Vec::new();
     for (idx, item) in ir.items.iter().enumerate() {
         match item {
-            IrItem::System { text } => instructions.push(text.clone()),
+            IrItem::System { text } => {
+                if !input.is_empty() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "system message moved out of the turn list",
+                    );
+                }
+                instructions.push(text.clone());
+            }
             IrItem::Developer { text } => {
                 report.record(
                     format!("items[{idx}]"),
                     LossAction::Degrade,
                     "developer to system",
                 );
+                if !input.is_empty() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "system message moved out of the turn list",
+                    );
+                }
                 instructions.push(text.clone());
             }
             IrItem::User { parts } => input.push(json!({

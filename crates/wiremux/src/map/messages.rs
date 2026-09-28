@@ -464,6 +464,13 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
     while idx < ir.items.len() {
         match &ir.items[idx] {
             IrItem::System { text } => {
+                if !messages.is_empty() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "system message moved out of the turn list",
+                    );
+                }
                 system_blocks.push(text_block(text, false, None));
                 idx += 1;
             }
@@ -478,7 +485,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
             }
             IrItem::User { parts } => {
                 let (msg, consumed) = encode_user(ir, idx, parts, report);
-                messages.push(msg);
+                push_alternating_message(&mut messages, msg, idx, report);
                 idx += consumed;
             }
             IrItem::Assistant { parts } => {
@@ -562,6 +569,34 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
     (system, Value::Array(messages))
 }
 
+fn push_alternating_message(
+    messages: &mut Vec<Value>,
+    msg: Value,
+    idx: usize,
+    report: &mut LossReport,
+) {
+    if let Some(last) = messages.last_mut()
+        && last.get("role") == msg.get("role")
+        && matches!(
+            last.get("role").and_then(Value::as_str),
+            Some("user" | "assistant")
+        )
+        && let (Some(dst), Some(src)) = (
+            last.get_mut("content").and_then(Value::as_array_mut),
+            msg.get("content").and_then(Value::as_array),
+        )
+    {
+        report.record(
+            format!("items[{idx}]"),
+            LossAction::Degrade,
+            "consecutive turns with the same role were joined",
+        );
+        dst.extend(src.iter().cloned());
+        return;
+    }
+    messages.push(msg);
+}
+
 fn messages_need_continue(ir: &IrRequest) -> bool {
     matches!(
         ir.items.last(),
@@ -576,7 +611,7 @@ fn encode_user(
     report: &mut LossReport,
 ) -> (Value, usize) {
     let mut consumed = 1;
-    let mut content = encode_user_parts(parts, report);
+    let mut content = encode_user_parts(parts, &format!("items[{start}]"), report);
     while let Some(IrItem::FunctionOutput { call_id, output }) = ir.items.get(start + consumed) {
         content.push(tool_result_block(
             call_id,
@@ -654,6 +689,11 @@ fn encode_assistant(
         }
     }
     if content.is_empty() {
+        report.record(
+            format!("items[{start}]"),
+            LossAction::Degrade,
+            "empty content became '.'",
+        );
         content.push(json!({"type": "text", "text": "."}));
     }
     (
@@ -717,12 +757,13 @@ fn reasoning_block(
     Some(block)
 }
 
-fn encode_user_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
+fn encode_user_parts(parts: &[IrPart], path: &str, report: &mut LossReport) -> Vec<Value> {
     let out: Vec<Value> = parts
         .iter()
         .filter_map(|part| encode_part(part, report))
         .collect();
     if out.is_empty() {
+        report.record(path, LossAction::Degrade, "empty content became '.'");
         vec![json!({"type": "text", "text": "."})]
     } else {
         out
@@ -1062,8 +1103,15 @@ fn tool_use_block(
     path: impl Into<String>,
     report: &mut LossReport,
 ) -> Value {
-    let id = rewrite_messages_tool_use_id(call_id, path, report);
-    let input = serde_json::from_str::<Value>(arguments).unwrap_or_else(|_| json!(arguments));
+    let path = path.into();
+    let id = rewrite_messages_tool_use_id(call_id, path.as_str(), report);
+    let input = super::json_object_or_raw(
+        arguments,
+        &path,
+        report,
+        "tool arguments are not a JSON object",
+        "raw",
+    );
     json!({
         "type": "tool_use",
         "id": id,

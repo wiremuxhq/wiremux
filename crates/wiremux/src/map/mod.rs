@@ -57,9 +57,39 @@ fn json_kind(value: &Value) -> &'static str {
     }
 }
 
+/// A JSON object field. A non-object stays visible under `wrap_key` and
+/// is a Degrade. An empty object would drop the caller's text.
+pub(super) fn json_object_or_raw(
+    raw_text: &str,
+    path: &str,
+    report: &mut LossReport,
+    detail: &str,
+    wrap_key: &str,
+) -> Value {
+    let mut wrap = |value: Value| {
+        report.record(path, LossAction::Degrade, detail);
+        let mut map = serde_json::Map::new();
+        map.insert(wrap_key.to_string(), value);
+        Value::Object(map)
+    };
+    match serde_json::from_str::<Value>(raw_text) {
+        Ok(value) if value.is_object() => value,
+        Ok(value) => wrap(value),
+        Err(_) => wrap(Value::String(raw_text.to_string())),
+    }
+}
+
 /// Decode a dialect request body into IR. Does not apply profile policy.
 pub fn decode(wire: Wire, bytes: &[u8]) -> Result<(IrRequest, LossReport), MapError> {
-    let value: Value = serde_json::from_slice(bytes)?;
+    let value: Value = match serde_json::from_slice(bytes) {
+        Ok(value) => value,
+        Err(err) => {
+            return Err(MapError::Invalid(format!(
+                "request body for wire `{}` is invalid JSON: {err}",
+                wire.as_str()
+            )));
+        }
+    };
     if !value.is_object() {
         return Err(MapError::Invalid(format!(
             "request body for wire `{}` must be a JSON object, got {}",
@@ -636,6 +666,16 @@ mod tests {
         let text = err.to_string();
         assert!(
             text.contains("wire `messages`") && text.contains("got array"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn decode_invalid_json_names_the_wire() {
+        let err = decode(Wire::ChatCompletions, b"").expect_err("empty");
+        let text = err.to_string();
+        assert!(
+            text.contains("wire `chat-completions`") && text.contains("invalid JSON"),
             "{text}"
         );
     }

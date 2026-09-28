@@ -415,12 +415,20 @@ pub(super) fn encode(
 fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Value) {
     let mut system = Vec::new();
     let mut messages = Vec::new();
-    for item in &ir.items {
+    for (idx, item) in ir.items.iter().enumerate() {
         match item {
             IrItem::System { text } | IrItem::Developer { text } => {
-                if !text.is_empty() {
-                    system.push(json!({ "text": text }));
+                if text.is_empty() {
+                    continue;
                 }
+                if !messages.is_empty() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "system message moved out of the turn list",
+                    );
+                }
+                system.push(json!({ "text": text }));
             }
             IrItem::User { parts } => {
                 let blocks: Vec<Value> = parts
@@ -430,10 +438,22 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 if blocks.is_empty() {
                     continue;
                 }
-                if last_user_has_tool_result(&messages)
+                let tool_result_tail = last_user_has_tool_result(&messages);
+                if messages
+                    .last()
+                    .and_then(|message| message.get("role"))
+                    .and_then(Value::as_str)
+                    == Some("user")
                     && let Some(last) = messages.last_mut()
                     && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)
                 {
+                    if !tool_result_tail {
+                        report.record(
+                            format!("items[{idx}]"),
+                            LossAction::Degrade,
+                            "consecutive turns with the same role were joined",
+                        );
+                    }
                     arr.extend(blocks);
                     continue;
                 }
@@ -462,8 +482,13 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 arguments,
                 ..
             } => {
-                let input: Value =
-                    serde_json::from_str(arguments).unwrap_or_else(|_| json!(arguments));
+                let input = super::json_object_or_raw(
+                    arguments,
+                    "toolUse.input",
+                    report,
+                    "tool arguments are not a JSON object",
+                    "raw",
+                );
                 let block = json!({
                     "toolUse": {
                         "toolUseId": call_id,
@@ -482,6 +507,11 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
             }
             IrItem::FunctionOutput { call_id, output } => {
                 let text = if output.trim().is_empty() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "empty content became '.'",
+                    );
                     "."
                 } else {
                     output.as_str()

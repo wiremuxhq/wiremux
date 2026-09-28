@@ -1632,6 +1632,236 @@ fn chat_stream_true_requests_include_usage() {
 }
 
 #[test]
+fn gemini_non_object_tool_output_is_wrapped_and_degraded() {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![
+            IrItem::FunctionCall {
+                call_id: "call_1".into(),
+                name: "lookup".into(),
+                arguments: r#"{"q":"x"}"#.into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionOutput {
+                call_id: "call_1".into(),
+                output: "not-json".into(),
+            },
+        ],
+    );
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/1/parts/0/functionResponse/response"),
+        Some(&serde_json::json!({ "result": "not-json" })),
+        "non-JSON tool output must stay visible in an object, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "functionResponse.response"
+                && event.action == LossAction::Degrade
+                && event.detail.contains("tool output is not a JSON object")
+        }),
+        "non-object tool output must Degrade, got {report:?}"
+    );
+
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::FunctionOutput {
+            call_id: "call_2".into(),
+            output: "[1]".into(),
+        }],
+    );
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/functionResponse/response"),
+        Some(&serde_json::json!({ "result": [1] })),
+        "a JSON array is not a functionResponse object, got {body}"
+    );
+}
+
+#[test]
+fn responses_system_between_users_moves_and_keeps_turns() {
+    let req = br#"{
+        "model": "gpt-4.1-mini",
+        "messages": [
+            {"role": "user", "content": "first"},
+            {"role": "system", "content": "late rule"},
+            {"role": "user", "content": "second"}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(body["instructions"], "late rule", "got {body}");
+    let input = body["input"].as_array().expect("input");
+    assert_eq!(
+        input.len(),
+        2,
+        "Responses keeps separate user items, got {body}"
+    );
+    assert_eq!(input[0]["role"], "user");
+    assert_eq!(input[1]["role"], "user");
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "items[1]"
+                && event.action == LossAction::Degrade
+                && event
+                    .detail
+                    .contains("system message moved out of the turn list")
+        }),
+        "moving a mid-list system must Degrade, got {report:?}"
+    );
+}
+
+#[test]
+fn converse_system_between_users_is_moved_and_users_join() {
+    let req = br#"{
+        "model": "amazon.nova-lite-v1:0",
+        "messages": [
+            {"role": "user", "content": "first"},
+            {"role": "system", "content": "late rule"},
+            {"role": "user", "content": "second"}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/system/0/text").and_then(Value::as_str),
+        Some("late rule"),
+        "got {body}"
+    );
+    let messages = body["messages"].as_array().expect("messages");
+    assert_eq!(
+        messages.len(),
+        1,
+        "adjacent user turns must be one message, got {body}"
+    );
+    assert_eq!(
+        messages[0]["content"],
+        serde_json::json!([{"text": "first"}, {"text": "second"}]),
+        "got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "items[1]"
+                && event.action == LossAction::Degrade
+                && event
+                    .detail
+                    .contains("system message moved out of the turn list")
+        }),
+        "moving a mid-list system must Degrade, got {report:?}"
+    );
+    assert!(
+        loss_degraded(&report, "items[2]"),
+        "the second user turn must Degrade when joined, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_system_between_users_is_moved_and_users_join() {
+    let req = br#"{
+        "model": "gemini-2.5-flash",
+        "messages": [
+            {"role": "user", "content": "first"},
+            {"role": "system", "content": "late rule"},
+            {"role": "user", "content": "second"}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/systemInstruction/parts/0/text")
+            .and_then(Value::as_str),
+        Some("late rule"),
+        "got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts"),
+        Some(&serde_json::json!([{"text": "first"}, {"text": "second"}])),
+        "adjacent user turns must share one content, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "items[1]"
+                && event.action == LossAction::Degrade
+                && event
+                    .detail
+                    .contains("system message moved out of the turn list")
+        }),
+        "moving a mid-list system must Degrade, got {report:?}"
+    );
+    assert!(
+        loss_degraded(&report, "items[2]"),
+        "the second user turn must Degrade when joined, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_system_between_users_is_moved_and_users_join() {
+    let req = br#"{
+        "model": "claude-haiku-4-5",
+        "messages": [
+            {"role": "user", "content": "first"},
+            {"role": "system", "content": "late rule"},
+            {"role": "user", "content": "second"}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(body["system"], "late rule", "got {body}");
+    let messages = body["messages"].as_array().expect("messages");
+    assert_eq!(
+        messages.len(),
+        1,
+        "adjacent user turns must be one message, got {body}"
+    );
+    assert_eq!(
+        messages[0]["content"],
+        serde_json::json!([
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"}
+        ]),
+        "got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Degrade
+                && event
+                    .detail
+                    .contains("system message moved out of the turn list")
+        }),
+        "moving a mid-list system must Degrade, got {report:?}"
+    );
+    assert!(
+        loss_degraded(&report, "items[2]"),
+        "the second user turn must Degrade when joined, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_empty_function_tool_name_is_a_hard_error() {
+    let req = br#"{
+        "model": "claude-haiku-4-5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"description": "no name"}}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let err = encode(Wire::Messages, &ir, &messages_profile())
+        .expect_err("empty tool name must not be sent upstream");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "tools[0]", "{path}");
+            assert!(detail.contains("function tool name is empty"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+}
+
+#[test]
 fn messages_whitespace_only_assistant_becomes_dot() {
     let ir = IrRequest::new(
         "claude-opus-4-6",
@@ -1639,13 +1869,42 @@ fn messages_whitespace_only_assistant_becomes_dot() {
             parts: vec![IrPart::Text("\n".into())],
         }],
     );
-    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
         body.pointer("/messages/0/content/0/text")
             .and_then(Value::as_str),
         Some("."),
         "whitespace-only text must become '.', got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "items[0]"),
+        "placeholder '.' must Degrade, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_null_user_content_becomes_dot_with_loss() {
+    let req = br#"{
+        "model": "claude-haiku-4-5",
+        "messages": [{"role": "user", "content": null}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("."),
+        "null user content must not be an empty Messages text block, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "items[0]"
+                && event.action == LossAction::Degrade
+                && event.detail.contains("empty content became '.'")
+        }),
+        "null user content must Degrade, got {report:?}"
     );
 }
 
@@ -3499,7 +3758,7 @@ fn gemini_encode_does_not_invent_empty_function_call_args() {
             thought_signature: None,
         }],
     );
-    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let args = body.pointer("/contents/0/parts/0/functionCall/args");
     assert_ne!(
@@ -3509,8 +3768,61 @@ fn gemini_encode_does_not_invent_empty_function_call_args() {
     );
     assert_eq!(
         args,
-        Some(&Value::String("not-json".into())),
-        "invalid JSON must stay a string, got {body}"
+        Some(&serde_json::json!({ "raw": "not-json" })),
+        "invalid JSON must stay visible inside an object, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "functionCall.args"),
+        "non-object tool arguments must Degrade, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_non_object_tool_arguments_stay_visible() {
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![IrItem::FunctionCall {
+            call_id: "call_1".into(),
+            name: "echo".into(),
+            arguments: "not-json".into(),
+            thought_signature: None,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/input"),
+        Some(&serde_json::json!({ "raw": "not-json" })),
+        "Anthropic tool_use.input must be an object, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "items[0]"),
+        "non-object tool arguments must Degrade, got {report:?}"
+    );
+
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![IrItem::FunctionCall {
+            call_id: "call_2".into(),
+            name: "echo".into(),
+            arguments: "[1]".into(),
+            thought_signature: None,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/input"),
+        Some(&serde_json::json!({ "raw": [1] })),
+        "a JSON array is not a tool_use.input object, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "items[0]"
+                && event.action == LossAction::Degrade
+                && event.detail.contains("not a JSON object")
+        }),
+        "parsed non-object must Degrade, got {report:?}"
     );
 }
 
@@ -6999,7 +7311,7 @@ fn converse_encode_does_not_invent_empty_function_call_args() {
             thought_signature: None,
         }],
     );
-    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let input = body.pointer("/messages/0/content/0/toolUse/input");
     assert_ne!(
@@ -7009,8 +7321,12 @@ fn converse_encode_does_not_invent_empty_function_call_args() {
     );
     assert_eq!(
         input,
-        Some(&Value::String("not-json".into())),
-        "invalid JSON must stay a string, got {body}"
+        Some(&serde_json::json!({ "raw": "not-json" })),
+        "invalid JSON must stay visible inside an object, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "toolUse.input"),
+        "non-object tool arguments must Degrade, got {report:?}"
     );
 }
 
@@ -7296,7 +7612,7 @@ fn converse_empty_function_output_encodes_nonempty_tool_result_text() {
             output: String::new(),
         }],
     );
-    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let text = body
         .pointer("/messages/0/content/0/toolResult/content/0/text")
@@ -7315,6 +7631,10 @@ fn converse_empty_function_output_encodes_nonempty_tool_result_text() {
             .and_then(Value::as_str),
         Some("t1"),
         "toolUseId must stay, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "items[0]"),
+        "placeholder '.' must Degrade, got {report:?}"
     );
 }
 
