@@ -896,8 +896,8 @@ mod tests {
     #[tokio::test]
     async fn capped_body_stops_when_the_next_chunk_crosses_the_cap() {
         use bytes::Bytes;
-        use hyper::body::Frame;
         use http_body_util::StreamBody;
+        use hyper::body::Frame;
 
         let frames = futures_util::stream::iter(vec![
             Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from(vec![1; 3]))),
