@@ -1632,6 +1632,25 @@ fn chat_stream_true_requests_include_usage() {
 }
 
 #[test]
+fn messages_empty_function_tool_name_is_a_hard_error() {
+    let req = br#"{
+        "model": "claude-haiku-4-5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"description": "no name"}}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let err = encode(Wire::Messages, &ir, &messages_profile())
+        .expect_err("empty tool name must not be sent upstream");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "tools[0]", "{path}");
+            assert!(detail.contains("function tool name is empty"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+}
+
+#[test]
 fn messages_whitespace_only_assistant_becomes_dot() {
     let ir = IrRequest::new(
         "claude-opus-4-6",

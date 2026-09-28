@@ -121,6 +121,9 @@ pub(super) fn prepare_tools(
                 description,
                 parameters,
             } => {
+                if name.trim().is_empty() {
+                    return Err(MapError::hard(path, "function tool name is empty"));
+                }
                 out.push(PreparedTool::Function {
                     name: apply_tool_name_case(name, case),
                     description: description.clone(),
