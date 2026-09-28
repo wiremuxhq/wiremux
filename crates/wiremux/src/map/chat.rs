@@ -848,13 +848,20 @@ fn encode_output_modalities_and_audio(s: &IrSampling, body: &mut Value, report: 
             }
         })
         .collect();
-    if !s.output_modalities.is_empty() && !modalities.is_empty() {
-        body["modalities"] = json!(modalities);
+    if !s.output_modalities.is_empty() && modalities.is_empty() {
         report.record(
             "sampling.output_modalities",
-            LossAction::Preserve,
-            "chat modalities",
+            LossAction::Drop,
+            "chat modalities are text or audio",
         );
+    } else if !modalities.is_empty() {
+        body["modalities"] = json!(modalities);
+        let action = if modalities.len() < s.output_modalities.len() {
+            LossAction::Degrade
+        } else {
+            LossAction::Preserve
+        };
+        report.record("sampling.output_modalities", action, "chat modalities");
     }
     let has_audio_modality = s
         .output_modalities

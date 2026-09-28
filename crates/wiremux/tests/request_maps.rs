@@ -2790,7 +2790,7 @@ fn messages_encode_disables_thinking_when_include_thoughts_false() {
         s.reasoning_effort = Some("high".into());
         s.max_reasoning_tokens = Some(2048);
     }));
-    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
         body.pointer("/thinking/type").and_then(Value::as_str),
@@ -2800,6 +2800,14 @@ fn messages_encode_disables_thinking_when_include_thoughts_false() {
     assert!(
         body.pointer("/thinking/budget_tokens").is_none(),
         "disabled thinking must not carry budget_tokens, got {body}"
+    );
+    assert!(
+        body.pointer("/output_config/effort").is_none(),
+        "disabled thinking must not emit output_config.effort, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.reasoning_effort"),
+        "disabled thinking must Drop reasoning_effort, got {report:?}"
     );
 }
 
@@ -5508,6 +5516,37 @@ fn dest_gemini_image_plus_audio_still_reaches_chat() {
     assert!(
         !loss_dropped(&report, "sampling.output_modalities"),
         "Chat has modalities and must not Drop AUDIO, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_unknown_modality_is_not_a_silent_preserve() {
+    let dropped = user_ir(IrSampling::patch(|s| {
+        s.output_modalities = vec!["video".into()];
+    }));
+    let (bytes, report) = encode(Wire::ChatCompletions, &dropped, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(body.get("modalities").is_none(), "{body}");
+    assert!(
+        loss_dropped(&report, "sampling.output_modalities"),
+        "unrecognized modality must Drop, got {report:?}"
+    );
+
+    let mixed = user_ir(IrSampling::patch(|s| {
+        s.output_modalities = vec!["text".into(), "video".into()];
+    }));
+    let (bytes, report) = encode(Wire::ChatCompletions, &mixed, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(body["modalities"], serde_json::json!(["text"]));
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.output_modalities" && event.action == LossAction::Degrade
+        }),
+        "a dropped sibling must Degrade, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.output_modalities"),
+        "kept text must not share a Drop, got {report:?}"
     );
 }
 
