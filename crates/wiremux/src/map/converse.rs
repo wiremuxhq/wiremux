@@ -415,7 +415,7 @@ pub(super) fn encode(
 fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Value) {
     let mut system = Vec::new();
     let mut messages = Vec::new();
-    for item in &ir.items {
+    for (idx, item) in ir.items.iter().enumerate() {
         match item {
             IrItem::System { text } | IrItem::Developer { text } => {
                 if !text.is_empty() {
@@ -487,6 +487,11 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
             }
             IrItem::FunctionOutput { call_id, output } => {
                 let text = if output.trim().is_empty() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "empty content became '.'",
+                    );
                     "."
                 } else {
                     output.as_str()

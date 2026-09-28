@@ -7450,7 +7450,7 @@ fn converse_empty_function_output_encodes_nonempty_tool_result_text() {
             output: String::new(),
         }],
     );
-    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let text = body
         .pointer("/messages/0/content/0/toolResult/content/0/text")
@@ -7469,6 +7469,10 @@ fn converse_empty_function_output_encodes_nonempty_tool_result_text() {
             .and_then(Value::as_str),
         Some("t1"),
         "toolUseId must stay, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "items[0]"),
+        "placeholder '.' must Degrade, got {report:?}"
     );
 }
 
