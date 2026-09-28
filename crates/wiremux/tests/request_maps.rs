@@ -1565,6 +1565,14 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
         !loss_dropped(&report, "part.raw"),
         "Raw must not be dropped, got {report:?}"
     );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.include"
+                && event.action == LossAction::Preserve
+                && event.detail.contains("reasoning.encrypted_content")
+        }),
+        "injected include must be in the loss report, got {report:?}"
+    );
 }
 
 #[test]

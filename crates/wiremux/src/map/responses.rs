@@ -783,7 +783,19 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             "responses stream_options.include_obfuscation",
         );
     }
-    body["include"] = json!(encode_include(&s.include));
+    let include = encode_include(&s.include);
+    if !s
+        .include
+        .iter()
+        .any(|item| item == "reasoning.encrypted_content")
+    {
+        report.record(
+            "sampling.include",
+            LossAction::Preserve,
+            "responses include adds reasoning.encrypted_content",
+        );
+    }
+    body["include"] = json!(include);
     if let Some(effort) = s
         .reasoning_effort
         .as_deref()
