@@ -1075,6 +1075,7 @@ fn tool_use_block(
         &path,
         report,
         "tool arguments are not a JSON object",
+        "raw",
     );
     json!({
         "type": "tool_use",

@@ -561,6 +561,7 @@ pub(super) fn encode(
                     "functionCall.args",
                     report,
                     "tool arguments are not a JSON object",
+                    "raw",
                 );
                 let mut part = json!({
                     "functionCall": { "id": call_id, "name": name, "args": args }
@@ -576,8 +577,13 @@ pub(super) fn encode(
                     .rev()
                     .find_map(|(id, name)| (*id == call_id).then_some(*name))
                     .unwrap_or(call_id.as_str());
-                let response: Value =
-                    serde_json::from_str(output).unwrap_or_else(|_| json!({ "result": output }));
+                let response = super::json_object_or_raw(
+                    output,
+                    "functionResponse.response",
+                    report,
+                    "tool output is not a JSON object",
+                    "result",
+                );
                 push_role_part(
                     &mut contents,
                     "user",

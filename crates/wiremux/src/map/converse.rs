@@ -467,6 +467,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                     "toolUse.input",
                     report,
                     "tool arguments are not a JSON object",
+                    "raw",
                 );
                 let block = json!({
                     "toolUse": {

@@ -57,26 +57,25 @@ fn json_kind(value: &Value) -> &'static str {
     }
 }
 
-/// Tool-call arguments for a wire whose schema is a JSON object.
-///
-/// A non-object stays visible under `raw` and is a Degrade. An empty
-/// object would drop the caller's text.
+/// A JSON object field. A non-object stays visible under `wrap_key` and
+/// is a Degrade. An empty object would drop the caller's text.
 pub(super) fn json_object_or_raw(
     raw_text: &str,
     path: &str,
     report: &mut LossReport,
     detail: &str,
+    wrap_key: &str,
 ) -> Value {
+    let mut wrap = |value: Value| {
+        report.record(path, LossAction::Degrade, detail);
+        let mut map = serde_json::Map::new();
+        map.insert(wrap_key.to_string(), value);
+        Value::Object(map)
+    };
     match serde_json::from_str::<Value>(raw_text) {
         Ok(value) if value.is_object() => value,
-        Ok(value) => {
-            report.record(path, LossAction::Degrade, detail);
-            serde_json::json!({ "raw": value })
-        }
-        Err(_) => {
-            report.record(path, LossAction::Degrade, detail);
-            serde_json::json!({ "raw": raw_text })
-        }
+        Ok(value) => wrap(value),
+        Err(_) => wrap(Value::String(raw_text.to_string())),
     }
 }
 

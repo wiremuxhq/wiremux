@@ -1632,6 +1632,55 @@ fn chat_stream_true_requests_include_usage() {
 }
 
 #[test]
+fn gemini_non_object_tool_output_is_wrapped_and_degraded() {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![
+            IrItem::FunctionCall {
+                call_id: "call_1".into(),
+                name: "lookup".into(),
+                arguments: r#"{"q":"x"}"#.into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionOutput {
+                call_id: "call_1".into(),
+                output: "not-json".into(),
+            },
+        ],
+    );
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/1/parts/0/functionResponse/response"),
+        Some(&serde_json::json!({ "result": "not-json" })),
+        "non-JSON tool output must stay visible in an object, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "functionResponse.response"
+                && event.action == LossAction::Degrade
+                && event.detail.contains("tool output is not a JSON object")
+        }),
+        "non-object tool output must Degrade, got {report:?}"
+    );
+
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::FunctionOutput {
+            call_id: "call_2".into(),
+            output: "[1]".into(),
+        }],
+    );
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/functionResponse/response"),
+        Some(&serde_json::json!({ "result": [1] })),
+        "a JSON array is not a functionResponse object, got {body}"
+    );
+}
+
+#[test]
 fn messages_empty_function_tool_name_is_a_hard_error() {
     let req = br#"{
         "model": "claude-haiku-4-5",
