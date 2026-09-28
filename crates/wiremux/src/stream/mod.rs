@@ -111,11 +111,13 @@ impl UpstreamFrames {
 /// Unknown names follow `profile.dialect.stream_unknown_policy`. A
 /// tool-bearing frame is never `Ok(None)`.
 ///
-/// Chat Completions returns one event. A chunk with two `tool_calls`,
-/// or one call that includes an id or a name plus `arguments`, is
-/// [`MapError::Invalid`] and names [`decode_stream_events`]. That
-/// function keeps every call and its argument text. A later chunk that
-/// is only `{"index":0,"function":{"arguments":"..."}}` stays
+/// Chat Completions returns one event for a single text, audio, finish,
+/// or usage field. Content together with `finish_reason` or `usage`,
+/// two media parts, two `tool_calls`, or one call that includes an id
+/// or a name plus `arguments`, is [`MapError::Invalid`] and names
+/// [`decode_stream_events`]. That function keeps every call and its
+/// argument text. A later chunk that is only
+/// `{"index":0,"function":{"arguments":"..."}}` stays
 /// [`IrStreamEvent::ToolCallArgDelta`].
 pub fn decode_stream_event(
     wire: Wire,
@@ -151,8 +153,9 @@ pub fn decode_stream_event(
 
 /// Decode one SSE frame into every IR event it carries.
 ///
-/// Chat Completions can emit usage and finish from the same
-/// `message_delta`. A 1:1 map would drop one. Empty vec is a
+/// Chat Completions can put content, `finish_reason`, and `usage` on
+/// one chunk. A Messages `message_delta` can carry a stop reason and
+/// `usage`. Singular decode keeps one of those. Empty vec is a
 /// recognized no-op.
 pub fn decode_stream_events(
     wire: Wire,
