@@ -110,8 +110,6 @@ pub(super) fn prepare_tools(
         .fingerprint
         .as_ref()
         .and_then(|fp| fp.tool_name_case);
-    let has_hosted_slot = matches!(wire, Wire::Responses);
-
     let mut out = Vec::new();
     for (idx, tool) in ir.tools.iter().enumerate() {
         let path = format!("tools[{idx}]");
@@ -145,16 +143,7 @@ pub(super) fn prepare_tools(
                 )?;
             }
             IrTool::Hosted { kind, raw } => {
-                push_hosted(
-                    &mut out,
-                    kind,
-                    raw,
-                    &path,
-                    policy,
-                    wire,
-                    has_hosted_slot,
-                    report,
-                )?;
+                push_hosted(&mut out, kind, raw, &path, policy, wire, report)?;
             }
             IrTool::Unknown { type_name, raw } => match policy {
                 ToolTypePolicy::Passthrough => {
@@ -248,9 +237,9 @@ fn push_hosted(
     path: &str,
     policy: ToolTypePolicy,
     wire: Wire,
-    has_hosted_slot: bool,
     report: &mut LossReport,
 ) -> Result<(), MapError> {
+    let has_hosted_slot = matches!(wire, Wire::Responses);
     match policy {
         ToolTypePolicy::Passthrough => {
             report.record(path, LossAction::Preserve, "hosted passthrough");
