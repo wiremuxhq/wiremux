@@ -464,6 +464,13 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
     while idx < ir.items.len() {
         match &ir.items[idx] {
             IrItem::System { text } => {
+                if !messages.is_empty() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "system message moved out of the turn list",
+                    );
+                }
                 system_blocks.push(text_block(text, false, None));
                 idx += 1;
             }
@@ -478,7 +485,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
             }
             IrItem::User { parts } => {
                 let (msg, consumed) = encode_user(ir, idx, parts, report);
-                messages.push(msg);
+                push_alternating_message(&mut messages, msg, idx, report);
                 idx += consumed;
             }
             IrItem::Assistant { parts } => {
@@ -560,6 +567,34 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
         Some(Value::Array(system_blocks))
     };
     (system, Value::Array(messages))
+}
+
+fn push_alternating_message(
+    messages: &mut Vec<Value>,
+    msg: Value,
+    idx: usize,
+    report: &mut LossReport,
+) {
+    if let Some(last) = messages.last_mut()
+        && last.get("role") == msg.get("role")
+        && matches!(
+            last.get("role").and_then(Value::as_str),
+            Some("user" | "assistant")
+        )
+        && let (Some(dst), Some(src)) = (
+            last.get_mut("content").and_then(Value::as_array_mut),
+            msg.get("content").and_then(Value::as_array),
+        )
+    {
+        report.record(
+            format!("items[{idx}]"),
+            LossAction::Degrade,
+            "consecutive turns with the same role were joined",
+        );
+        dst.extend(src.iter().cloned());
+        return;
+    }
+    messages.push(msg);
 }
 
 fn messages_need_continue(ir: &IrRequest) -> bool {

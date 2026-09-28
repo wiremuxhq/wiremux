@@ -1681,6 +1681,49 @@ fn gemini_non_object_tool_output_is_wrapped_and_degraded() {
 }
 
 #[test]
+fn messages_system_between_users_is_moved_and_users_join() {
+    let req = br#"{
+        "model": "claude-haiku-4-5",
+        "messages": [
+            {"role": "user", "content": "first"},
+            {"role": "system", "content": "late rule"},
+            {"role": "user", "content": "second"}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(body["system"], "late rule", "got {body}");
+    let messages = body["messages"].as_array().expect("messages");
+    assert_eq!(
+        messages.len(),
+        1,
+        "adjacent user turns must be one message, got {body}"
+    );
+    assert_eq!(
+        messages[0]["content"],
+        serde_json::json!([
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"}
+        ]),
+        "got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Degrade
+                && event
+                    .detail
+                    .contains("system message moved out of the turn list")
+        }),
+        "moving a mid-list system must Degrade, got {report:?}"
+    );
+    assert!(
+        loss_degraded(&report, "items[2]"),
+        "the second user turn must Degrade when joined, got {report:?}"
+    );
+}
+
+#[test]
 fn messages_empty_function_tool_name_is_a_hard_error() {
     let req = br#"{
         "model": "claude-haiku-4-5",
