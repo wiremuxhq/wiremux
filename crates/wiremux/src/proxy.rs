@@ -21,7 +21,7 @@ use wiremux_auth::{
 use crate::aws_sign::{apply_aws_sigv4, bearer_token_applied};
 use crate::cli::{parse_listen, proxy_token};
 use crate::headers::{apply_profile_headers, apply_provider_headers};
-use crate::ir::LossReport;
+use crate::ir::{LossAction, LossReport};
 use crate::map::{decode, encode};
 use crate::stream::{
     INCOMPLETE_STREAM_MESSAGE, RawSse, StreamDecoder, StreamEncoder, ToolCallAssembler,
@@ -42,6 +42,7 @@ pub async fn run(
     from: Wire,
     profile: ResolvedProfile,
     dump_loss: bool,
+    model_override: Option<String>,
 ) -> Result<(), String> {
     let addr = parse_listen(listen)?;
     let listener = TcpListener::bind(addr)
@@ -80,6 +81,7 @@ pub async fn run(
         dump_loss,
         provider,
         client,
+        model_override: model_override.filter(|model| !model.is_empty()),
     });
 
     loop {
@@ -107,6 +109,7 @@ struct ProxyState {
     dump_loss: bool,
     provider: Result<AnyTokenProvider, String>,
     client: reqwest::Client,
+    model_override: Option<String>,
 }
 
 async fn handle(
@@ -137,6 +140,8 @@ async fn resolve_proxy_token(state: &ProxyState) -> Result<Option<String>, Strin
 
 async fn send_upstream(
     state: &ProxyState,
+    profile: &ResolvedProfile,
+    anthropic_version: Option<&str>,
     url: &str,
     encoded: &[u8],
 ) -> Result<reqwest::Response, Response<ProxyBody>> {
@@ -154,7 +159,10 @@ async fn send_upstream(
         if url.contains("/converse-stream") {
             upstream = upstream.header("accept", "application/vnd.amazon.eventstream");
         }
-        upstream = apply_profile_headers(upstream, &state.profile, token.as_deref());
+        upstream = apply_profile_headers(upstream, profile, token.as_deref());
+        if let Some(version) = anthropic_version.filter(|value| !value.is_empty()) {
+            upstream = upstream.header("anthropic-version", version);
+        }
         if let Ok(provider) = &state.provider {
             upstream = apply_provider_headers(upstream, &state.profile, provider);
         }
@@ -295,6 +303,9 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     if req.method() == Method::GET && matches!(req.uri().path(), "/" | "/health" | "/healthz") {
         return text(StatusCode::OK, "ok\n");
     }
+    if req.method() == Method::GET && req.uri().path() == "/v1/models" {
+        return models_list(&state);
+    }
     if req.method() != Method::POST {
         return text(StatusCode::METHOD_NOT_ALLOWED, "POST required\n");
     }
@@ -311,6 +322,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     {
         return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
     }
+    let inbound_headers = req.headers().clone();
     let collected = match read_capped_body(req.into_body(), MAX_BODY).await {
         Ok(bytes) => bytes,
         Err(err)
@@ -326,7 +338,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
     }
 
-    let (mut ir, dec_loss) = match decode(state.from, &collected) {
+    let (mut ir, mut dec_loss) = match decode(state.from, &collected) {
         Ok(v) => v,
         Err(err) => return text(StatusCode::BAD_REQUEST, format!("{err}\n")),
     };
@@ -338,6 +350,15 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     {
         ir.model = model;
     }
+    if let Some(model) = state
+        .model_override
+        .as_deref()
+        .filter(|model| !model.is_empty())
+        && ir.model != model
+    {
+        dec_loss.record("model", LossAction::Degrade, "proxy --model");
+        ir.model = model.to_string();
+    }
     let target = match state.profile.dialect.wire {
         Some(w) => w,
         None => {
@@ -347,13 +368,21 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
             );
         }
     };
+    // This request can extend betas. The shared profile stays unchanged.
+    let mut header_profile = state.profile.clone();
+    let anthropic_version =
+        forward_inbound_headers(&mut header_profile, &mut dec_loss, target, &inbound_headers);
     let (encoded, enc_loss) = match encode(target, &ir, &state.profile) {
         Ok(v) => v,
         Err(err) => return text(StatusCode::BAD_REQUEST, format!("{err}\n")),
     };
     if state.dump_loss {
-        eprintln!("loss.decode: {dec_loss:?}");
-        eprintln!("loss.encode: {enc_loss:?}");
+        for event in dec_loss.lossy() {
+            eprintln!("loss.decode: {event}");
+        }
+        for event in enc_loss.lossy() {
+            eprintln!("loss.encode: {event}");
+        }
     }
 
     let url = match upstream_url_for_model(
@@ -364,7 +393,15 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         Ok(u) => u,
         Err(err) => return text(StatusCode::BAD_GATEWAY, format!("{err}\n")),
     };
-    let resp = match send_upstream(&state, &url, &encoded).await {
+    let resp = match send_upstream(
+        &state,
+        &header_profile,
+        anthropic_version.as_deref(),
+        &url,
+        &encoded,
+    )
+    .await
+    {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -437,6 +474,100 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         StatusCode::NOT_IMPLEMENTED,
         "non-stream cross-dialect responses are not mapped\n",
     )
+}
+
+fn models_list(state: &ProxyState) -> Response<ProxyBody> {
+    let id = state
+        .model_override
+        .as_deref()
+        .filter(|model| !model.is_empty())
+        .unwrap_or(state.profile.id.as_str());
+    let body = serde_json::json!({
+        "object": "list",
+        "data": [{
+            "id": id,
+            "object": "model",
+            "owned_by": "wiremux"
+        }]
+    });
+    bytes_response(
+        StatusCode::OK,
+        "application/json",
+        Bytes::from(body.to_string()),
+    )
+}
+
+fn forward_inbound_headers(
+    profile: &mut ResolvedProfile,
+    loss: &mut LossReport,
+    target: Wire,
+    headers: &hyper::HeaderMap,
+) -> Option<String> {
+    let messages = target == Wire::Messages;
+    let profile_has_version = profile
+        .http
+        .headers
+        .keys()
+        .any(|name| name.eq_ignore_ascii_case("anthropic-version"));
+    let mut extra_betas = Vec::new();
+    let mut version = None;
+    for (name, value) in headers.iter() {
+        let name = name.as_str();
+        if matches!(
+            name,
+            "host" | "content-type" | "content-length" | "accept" | "connection" | "authorization"
+        ) {
+            continue;
+        }
+        if messages && name.eq_ignore_ascii_case("anthropic-beta") {
+            let mut took = false;
+            if let Ok(raw) = value.to_str() {
+                for token in raw.split(',') {
+                    let token = token.trim();
+                    if !token.is_empty() {
+                        extra_betas.push(token.to_string());
+                        took = true;
+                    }
+                }
+            }
+            if took {
+                continue;
+            }
+        }
+        if messages
+            && name.eq_ignore_ascii_case("anthropic-version")
+            && !profile_has_version
+            && version.is_none()
+            && let Ok(raw) = value.to_str()
+        {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                version = Some(trimmed.to_string());
+                continue;
+            }
+        }
+        loss.record(
+            format!("header.{}", name.to_ascii_lowercase()),
+            LossAction::Drop,
+            "not forwarded",
+        );
+    }
+    if messages && !extra_betas.is_empty() {
+        if profile.betas.header.trim().is_empty() {
+            profile.betas.header = "anthropic-beta".to_string();
+        }
+        for token in extra_betas {
+            if !profile
+                .betas
+                .values
+                .iter()
+                .any(|existing| existing == &token)
+            {
+                profile.betas.values.push(token);
+            }
+        }
+    }
+    version
 }
 
 async fn read_capped_body<B>(

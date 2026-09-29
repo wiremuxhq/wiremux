@@ -41,7 +41,7 @@ enum Command {
     },
     /// Optional local HTTP proxy (source dialect -> profile target).
     Proxy {
-        /// Bind address. 127.0.0.1 only.
+        /// Bind address. `127.0.0.1` or `localhost`.
         #[arg(long, default_value = "127.0.0.1:0")]
         listen: String,
         /// Incoming harness dialect (`chat-completions` / `chat`, `messages`, `responses`, `gemini`, `converse`).
@@ -50,6 +50,9 @@ enum Command {
         /// Profile id or file path.
         #[arg(long)]
         profile: String,
+        /// Replace the request model. Empty leaves the request unchanged.
+        #[arg(long)]
+        model: Option<String>,
         /// Print LossReport on stderr per request.
         #[arg(long)]
         dump_loss: bool,
@@ -182,9 +185,20 @@ async fn main() -> ExitCode {
             listen,
             from,
             profile,
+            model,
             dump_loss,
             read_timeout_secs,
-        } => cmd_proxy(&listen, &from, &profile, dump_loss, read_timeout_secs).await,
+        } => {
+            cmd_proxy(
+                &listen,
+                &from,
+                &profile,
+                dump_loss,
+                read_timeout_secs,
+                model,
+            )
+            .await
+        }
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
@@ -312,6 +326,7 @@ async fn cmd_proxy(
     profile_arg: &str,
     dump_loss: bool,
     read_timeout_secs: Option<u64>,
+    model: Option<String>,
 ) -> i32 {
     let from = match parse_wire(from) {
         Ok(w) => w,
@@ -330,9 +345,10 @@ async fn cmd_proxy(
     if let Some(secs) = read_timeout_secs.filter(|&s| s > 0) {
         profile.http.read_timeout_secs = Some(secs);
     }
+    let model = model.filter(|value| !value.is_empty());
     #[cfg(feature = "proxy")]
     {
-        if let Err(err) = wiremux::proxy::run(listen, from, profile, dump_loss).await {
+        if let Err(err) = wiremux::proxy::run(listen, from, profile, dump_loss, model).await {
             eprintln!("{err}");
             return EXIT_ERROR;
         }
@@ -340,7 +356,7 @@ async fn cmd_proxy(
     }
     #[cfg(not(feature = "proxy"))]
     {
-        let _ = (listen, from, profile, dump_loss);
+        let _ = (listen, from, profile, dump_loss, model);
         eprintln!("wiremux was built without the proxy feature");
         EXIT_NOT_READY
     }
