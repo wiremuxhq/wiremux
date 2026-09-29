@@ -20,4 +20,12 @@ echo "DO: cargo check -p wiremux"
 cargo check -p wiremux
 echo "DO: cargo metadata --locked"
 cargo metadata --locked --format-version 1 >/dev/null
+if [[ -f fuzz/Cargo.toml ]]; then
+  echo "DO: cargo check --manifest-path fuzz/Cargo.toml"
+  if ! cargo check --manifest-path fuzz/Cargo.toml; then
+    echo "DO: retry fuzz lock refresh with nightly"
+    rustup toolchain install nightly --profile minimal
+    cargo +nightly check --manifest-path fuzz/Cargo.toml
+  fi
+fi
 echo "DONE: Cargo.lock matches crate versions"

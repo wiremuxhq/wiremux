@@ -11,12 +11,59 @@ concurrency:
 
 permissions:
   contents: read
+  # dorny/paths-filter reads the pull request diff
+  pull-requests: read
 
 env:
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # PR-only. merge_group and workflow_dispatch skip this job and run
+  # the heavy jobs. A failed changes job must fail the gates.
+  changes:
+    name: Detect changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      crates: ${{ steps.filter.outputs.crates }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+      lint_only: ${{ steps.filter.outputs.lint_only }}
+      ci: ${{ steps.filter.outputs.ci }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          token: ${{ github.token }}
+          filters: |
+            crates:
+              - 'crates/**'
+              - 'presets/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+            scripts:
+              - 'scripts/**'
+            lint_only:
+              - 'deny.toml'
+              - 'rustfmt.toml'
+            ci:
+              - '.github/workflows/ci.yml'
+              - '.github/actions/**'
+            workflows:
+              - '.github/workflows/**'
+              - '.github/actions/**'
+              - '.github/zizmor.yml'
+              - '.github/actionlint.yaml'
+
   # Check name `Stealth` is required by main-branch-protection.
   # The body asserts public surfaces, not the old Not ready stub.
   stealth:
@@ -34,7 +81,15 @@ jobs:
         run: bash scripts/assert-public.sh
 
   lint:
-    name: Lint
+    name: Lint run
+    needs: changes
+    if: >-
+      always() &&
+      (needs.changes.result == 'skipped' ||
+       needs.changes.outputs.crates == 'true' ||
+       needs.changes.outputs.scripts == 'true' ||
+       needs.changes.outputs.lint_only == 'true' ||
+       needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -48,10 +103,7 @@ jobs:
           persist-credentials: false
       - name: Public surfaces
         run: bash scripts/assert-public.sh
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
-        with:
-          toolchain: "1.95"
-          components: rustfmt, clippy
+      - uses: ./.github/actions/rust-ci
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: cargo-deny@0.20.2
@@ -85,8 +137,43 @@ jobs:
         run: bash scripts/check-cargo-package.sh
       - run: python3 scripts/test_workflow_triggers.py
 
+  lint-gate:
+    name: Lint
+    needs: [changes, lint]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Require lint success or skip
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          JOB_RESULT: ${{ needs.lint.result }}
+        run: |
+          set -euo pipefail
+          case "$CHANGES_RESULT" in
+            failure|cancelled)
+              echo "FAIL: changes job ${CHANGES_RESULT}" >&2
+              exit 1
+              ;;
+          esac
+          case "$JOB_RESULT" in
+            success|skipped) echo "OK: ${JOB_RESULT}" ;;
+            *)
+              echo "FAIL: lint ${JOB_RESULT}" >&2
+              exit 1
+              ;;
+          esac
+
   workflows:
-    name: Workflows
+    name: Workflow lint
+    needs: changes
+    if: >-
+      always() &&
+      (needs.changes.result == 'skipped' ||
+       needs.changes.outputs.workflows == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -100,14 +187,79 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: zizmor@1.16.0
-      - run: zizmor --min-severity=high .github/workflows
+      - run: zizmor --min-severity=high .github/workflows .github/actions
+
+  workflows-gate:
+    name: Workflows
+    needs: [changes, workflows]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Require workflow lint success or skip
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          JOB_RESULT: ${{ needs.workflows.result }}
+        run: |
+          set -euo pipefail
+          case "$CHANGES_RESULT" in
+            failure|cancelled)
+              echo "FAIL: changes job ${CHANGES_RESULT}" >&2
+              exit 1
+              ;;
+          esac
+          case "$JOB_RESULT" in
+            success|skipped) echo "OK: ${JOB_RESULT}" ;;
+            *)
+              echo "FAIL: workflow lint ${JOB_RESULT}" >&2
+              exit 1
+              ;;
+          esac
+
+  # Job-level if cannot read matrix. A release-please PR gets ubuntu only
+  # so macOS and Windows runners are not started. The Test gate still
+  # reports when those legs are absent.
+  test-os:
+    name: Test OS list
+    needs: changes
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      os: ${{ steps.set.outputs.os }}
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Choose OS legs
+        id: set
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ] && [[ "$HEAD_REF" == release-please* ]]; then
+            echo 'os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'os=["ubuntu-latest","macos-latest","windows-latest"]' >> "$GITHUB_OUTPUT"
+          fi
 
   test:
     name: Test (${{ matrix.os }})
+    needs: [changes, test-os]
+    if: >-
+      always() &&
+      (needs.changes.result == 'skipped' ||
+       needs.changes.outputs.crates == 'true' ||
+       needs.changes.outputs.scripts == 'true' ||
+       needs.changes.outputs.ci == 'true')
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(needs.test-os.outputs.os) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     permissions:
@@ -123,9 +275,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
-        with:
-          toolchain: "1.95"
+      - uses: ./.github/actions/rust-ci
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         if: >-
           github.event_name != 'pull_request' ||
@@ -172,7 +322,7 @@ jobs:
 
   test-gate:
     name: Test
-    needs: test
+    needs: [changes, test]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -180,7 +330,22 @@ jobs:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
         with:
           egress-policy: audit
-      - name: All OS tests passed
+      - name: Require test success or skip
         env:
-          TEST_RESULT: ${{ needs.test.result }}
-        run: test "$TEST_RESULT" = "success"
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          JOB_RESULT: ${{ needs.test.result }}
+        run: |
+          set -euo pipefail
+          case "$CHANGES_RESULT" in
+            failure|cancelled)
+              echo "FAIL: changes job ${CHANGES_RESULT}" >&2
+              exit 1
+              ;;
+          esac
+          case "$JOB_RESULT" in
+            success|skipped) echo "OK: ${JOB_RESULT}" ;;
+            *)
+              echo "FAIL: test ${JOB_RESULT}" >&2
+              exit 1
+              ;;
+          esac
