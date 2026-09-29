@@ -82,9 +82,27 @@ runs:
     - name: Wrap rustc with sccache
       shell: bash
       run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+    - name: Expose Actions cache credentials
+      # Shell steps do not receive the cache URL. A JavaScript action does.
+      # Fork pull requests must not write the cache.
+      if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+      with:
+        script: |
+          const url = process.env.ACTIONS_RESULTS_URL || process.env.ACTIONS_CACHE_URL || ''
+          const token = process.env.ACTIONS_RUNTIME_TOKEN || ''
+          if (!url || !token) {
+            core.setFailed('Actions cache credentials are missing')
+            return
+          }
+          core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '')
+          core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '')
+          core.exportVariable('ACTIONS_RUNTIME_TOKEN', token)
+          if (process.env.ACTIONS_CACHE_SERVICE_V2) {
+            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', process.env.ACTIONS_CACHE_SERVICE_V2)
+          }
     - name: Enable sccache GHA cache
       shell: bash
-      # Fork pull requests must not write the cache. An explicit false is
-      # not the same as leaving the variable unset.
+      # An explicit false is not the same as leaving the variable unset.
       if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
       run: echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"

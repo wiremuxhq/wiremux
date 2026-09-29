@@ -317,6 +317,16 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("RUSTC_WRAPPER=sccache", action)
         self.assertIn("SCCACHE_GHA_ENABLED=true", action)
         self.assertIn("sccache@0.18.0", action)
+        self.assertIn(
+            "actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd",
+            action,
+        )
+        self.assertIn("ACTIONS_RESULTS_URL", action)
+        self.assertIn("ACTIONS_RUNTIME_TOKEN", action)
+        self.assertLess(
+            action.index("ACTIONS_RESULTS_URL"),
+            action.index("SCCACHE_GHA_ENABLED=true"),
+        )
         self.assertNotIn('toolchain: "1.95"', action)
         release = (WORKFLOWS / "release-please.yml").read_text(encoding="utf-8")
         self.assertNotIn('toolchain: "1.95"', release)
