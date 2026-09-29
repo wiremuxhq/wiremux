@@ -879,8 +879,20 @@ pub(crate) fn sse_wrapped_error_message(data: &str) -> Option<String> {
         return None;
     }
     let error = value.get("error").filter(|v| v.is_object())?;
-    match error.get("message").and_then(Value::as_str) {
-        Some(message) if !message.is_empty() => Some(message.to_string()),
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty());
+    let code = ["type", "code", "status"].iter().find_map(|key| {
+        error
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    });
+    match (code, message) {
+        (Some(code), Some(message)) => Some(format!("{code}: {message}")),
+        (None, Some(message)) => Some(message.to_string()),
         _ => Some(data.to_string()),
     }
 }
@@ -974,7 +986,7 @@ mod tests {
         let msg = sse_wrapped_error_message(
             r#"{"error":{"message":"upstream failed","type":"server_error"}}"#,
         );
-        assert_eq!(msg.as_deref(), Some("upstream failed"));
+        assert_eq!(msg.as_deref(), Some("server_error: upstream failed"));
     }
 
     #[cfg(any(feature = "client", feature = "proxy"))]

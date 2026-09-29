@@ -1379,6 +1379,42 @@ mod tests {
     }
 
     #[test]
+    fn chat_error_object_proxied_to_messages_keeps_type() {
+        let profile = crate::parse_profile_str(
+            "schema_version = 1\nid = \"err\"\nwire = \"chat-completions\"\n",
+        )
+        .expect("profile");
+        let sse =
+            "data: {\"error\":{\"message\":\"overloaded\",\"type\":\"overloaded_error\"}}\n\n";
+        let bytes = super::map_sse_bytes(
+            wiremux_auth::Wire::Messages,
+            wiremux_auth::Wire::ChatCompletions,
+            &profile,
+            "claude",
+            sse.as_bytes(),
+        );
+        let text = String::from_utf8(bytes).expect("utf8");
+        let value = error_data(&bytes::Bytes::from(text.clone()));
+        assert_eq!(value["error"]["type"], "overloaded_error", "{text}");
+        assert_eq!(value["error"]["message"], "overloaded", "{text}");
+
+        let chat = super::map_sse_bytes(
+            wiremux_auth::Wire::ChatCompletions,
+            wiremux_auth::Wire::ChatCompletions,
+            &profile,
+            "gpt-4o",
+            sse.as_bytes(),
+        );
+        let chat_text = String::from_utf8(chat.clone()).expect("utf8");
+        let chat_value = error_data(&bytes::Bytes::from(chat));
+        assert_eq!(
+            chat_value["error"]["type"], "overloaded_error",
+            "{chat_text}"
+        );
+        assert!(chat_text.contains("data: {"), "{chat_text}");
+    }
+
+    #[test]
     fn incomplete_chat_sse_does_not_emit_finish_reason() {
         let profile = crate::parse_profile_str(
             "schema_version = 1\nid = \"chat-eof\"\nwire = \"chat-completions\"\n",
