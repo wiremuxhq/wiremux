@@ -70,10 +70,7 @@ fn decode_input_item(item: &Value) -> Vec<IrItem> {
                 .unwrap_or_else(|| "{}".into()),
             thought_signature: None,
         }],
-        "function_call_output" => vec![IrItem::FunctionOutput {
-            call_id: str_field(item, "call_id").unwrap_or_default(),
-            output: item.get("output").map(value_as_string).unwrap_or_default(),
-        }],
+        "function_call_output" => vec![decode_function_output(item)],
         "reasoning" => vec![IrItem::Reasoning {
             encrypted: str_field(item, "encrypted_content"),
             summary: reasoning_summary(item),
@@ -88,6 +85,29 @@ fn decode_input_item(item: &Value) -> Vec<IrItem> {
             type_name: other.to_string(),
             raw: item.clone(),
         }],
+    }
+}
+
+fn decode_function_output(item: &Value) -> IrItem {
+    let call_id = str_field(item, "call_id").unwrap_or_default();
+    let (output, parts) = match item.get("output") {
+        Some(Value::Array(arr)) => {
+            let decoded: Vec<IrPart> = arr.iter().filter_map(decode_part).collect();
+            let text = parts_text(&decoded);
+            let parts = decoded
+                .into_iter()
+                .filter(|part| !matches!(part, IrPart::Text(_)))
+                .collect();
+            (text, parts)
+        }
+        Some(other) => (value_as_string(other), Vec::new()),
+        None => (String::new(), Vec::new()),
+    };
+    IrItem::FunctionOutput {
+        call_id,
+        output,
+        parts,
+        is_error: false,
     }
 }
 
@@ -226,6 +246,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
+        top_k: None,
         max_tokens: u32_field(value, "max_output_tokens")
             .or_else(|| u32_field(value, "max_tokens")),
         stop: stop_values(value, &["stop"]),
@@ -250,6 +271,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
             .and_then(|r| u32_field(r, "max_tokens")),
         json_schema,
         json_schema_name,
+        json_schema_strict: None,
         json_object,
         include: decode_include(value),
         prompt_cache_key: str_field(value, "prompt_cache_key").filter(|s| !s.trim().is_empty()),
@@ -470,11 +492,14 @@ fn encode_items(
                     restore_calls,
                 ));
             }
-            IrItem::FunctionOutput { call_id, output } => input.push(json!({
-                "type": "function_call_output",
-                "call_id": call_id,
-                "output": output,
-            })),
+            IrItem::FunctionOutput {
+                call_id,
+                output,
+                parts,
+                is_error,
+            } => input.push(encode_function_output(
+                call_id, output, parts, *is_error, idx, report,
+            )),
             IrItem::Reasoning {
                 encrypted,
                 summary,
@@ -655,18 +680,78 @@ fn encode_document(source: &IrDocumentSource, media_type: &str, name: Option<&st
     obj
 }
 
+fn encode_function_output(
+    call_id: &str,
+    output: &str,
+    parts: &[IrPart],
+    is_error: bool,
+    idx: usize,
+    report: &mut LossReport,
+) -> Value {
+    if is_error {
+        report.record(
+            format!("items[{idx}].is_error"),
+            LossAction::Drop,
+            "no slot",
+        );
+    }
+    let mut content = Vec::new();
+    if !output.is_empty() {
+        content.push(json!({"type": "input_text", "text": output}));
+    }
+    let mut kept_image = false;
+    for part in parts {
+        match part {
+            IrPart::Text(_) => {}
+            IrPart::ImageUrl(url) => {
+                content.push(json!({"type": "input_image", "image_url": url}));
+                kept_image = true;
+            }
+            IrPart::ImageBase64 { media_type, data } => {
+                content.push(json!({
+                    "type": "input_image",
+                    "image_url": format!("data:{media_type};base64,{data}")
+                }));
+                kept_image = true;
+            }
+            _ => report.record(
+                format!("items[{idx}].part"),
+                LossAction::Drop,
+                "function_call_output has no slot",
+            ),
+        }
+    }
+    let output_value = if kept_image {
+        Value::Array(content)
+    } else {
+        json!(output)
+    };
+    json!({
+        "type": "function_call_output",
+        "call_id": call_id,
+        "output": output_value,
+    })
+}
+
 fn encode_tool(tool: &PreparedTool) -> Value {
     match tool {
         PreparedTool::Function {
             name,
             description,
             parameters,
-        } => json!({
-            "type": "function",
-            "name": name,
-            "description": description,
-            "parameters": parameters,
-        }),
+            strict,
+        } => {
+            let mut tool = json!({
+                "type": "function",
+                "name": name,
+                "description": description,
+                "parameters": parameters,
+            });
+            if let Some(strict) = strict {
+                tool["strict"] = json!(strict);
+            }
+            tool
+        }
         PreparedTool::Raw(raw) => raw.clone(),
     }
 }
@@ -678,6 +763,12 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(p) = s.top_p {
         body["top_p"] = json!(p);
+    }
+    if s.top_k.is_some() {
+        report.record("sampling.top_k", LossAction::Drop, "no slot");
+    }
+    if s.json_schema_strict.is_some() {
+        report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
     }
     if let Some(max) = s.max_tokens {
         body["max_output_tokens"] = json!(max);
@@ -807,7 +898,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     {
         report.record(
             "sampling.include",
-            LossAction::Preserve,
+            LossAction::Degrade,
             "responses include adds reasoning.encrypted_content",
         );
     }

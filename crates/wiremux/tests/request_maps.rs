@@ -1330,6 +1330,9 @@ fn gemini_function_response_uses_function_name_not_call_id() {
             IrItem::FunctionOutput {
                 call_id: "call_abc".into(),
                 output: "plain text".into(),
+
+                parts: Vec::new(),
+                is_error: false,
             },
         ],
     )
@@ -1568,7 +1571,7 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
     assert!(
         report.events.iter().any(|event| {
             event.path == "sampling.include"
-                && event.action == LossAction::Preserve
+                && event.action == LossAction::Degrade
                 && event.detail.contains("reasoning.encrypted_content")
         }),
         "injected include must be in the loss report, got {report:?}"
@@ -1645,6 +1648,9 @@ fn gemini_non_object_tool_output_is_wrapped_and_degraded() {
             IrItem::FunctionOutput {
                 call_id: "call_1".into(),
                 output: "not-json".into(),
+
+                parts: Vec::new(),
+                is_error: false,
             },
         ],
     );
@@ -1669,6 +1675,9 @@ fn gemini_non_object_tool_output_is_wrapped_and_degraded() {
         vec![IrItem::FunctionOutput {
             call_id: "call_2".into(),
             output: "[1]".into(),
+
+            parts: Vec::new(),
+            is_error: false,
         }],
     );
     let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
@@ -2072,6 +2081,8 @@ fn gemini_raw_tool_is_dropped_with_loss_report() {
             name: "lookup".into(),
             description: "Look up".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+
+            strict: None,
         },
         IrTool::Unknown {
             type_name: "weird".into(),
@@ -2259,11 +2270,15 @@ fn long_ttl_with_tools_tags_last_tool_before_system() {
             name: "one".into(),
             description: "a".into(),
             parameters: serde_json::json!({"type": "object"}),
+
+            strict: None,
         },
         IrTool::Function {
             name: "two".into(),
             description: "b".into(),
             parameters: serde_json::json!({"type": "object"}),
+
+            strict: None,
         },
     ])
     .with_sampling(IrSampling::patch(|s| {
@@ -2315,6 +2330,8 @@ fn cache_disabled_no_cache_control_blocks() {
         name: "one".into(),
         description: "a".into(),
         parameters: serde_json::json!({"type": "object"}),
+
+        strict: None,
     }]);
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
@@ -2423,11 +2440,15 @@ fn multi_fragment_long_ttl_with_tools_tags_first_system_not_last() {
             name: "one".into(),
             description: "a".into(),
             parameters: serde_json::json!({"type": "object"}),
+
+            strict: None,
         },
         IrTool::Function {
             name: "two".into(),
             description: "b".into(),
             parameters: serde_json::json!({"type": "object"}),
+
+            strict: None,
         },
     ])
     .with_sampling(IrSampling::patch(|s| {
@@ -2643,6 +2664,9 @@ fn large_function_output_at_min_cacheable_tokens_still_tags() {
             IrItem::FunctionOutput {
                 call_id: "c1".into(),
                 output: "x".repeat(5000),
+
+                parts: Vec::new(),
+                is_error: false,
             },
         ],
     )
@@ -3106,7 +3130,7 @@ fn messages_encode_defaults_max_tokens_when_unset() {
     );
     assert!(
         report.events.iter().any(|event| {
-            event.path == "sampling.max_tokens" && event.action == LossAction::Preserve
+            event.path == "sampling.max_tokens" && event.action == LossAction::Degrade
         }),
         "default must be recorded, got {report:?}"
     );
@@ -3840,6 +3864,9 @@ fn messages_sanitizes_gemini_shaped_tool_use_id() {
             IrItem::FunctionOutput {
                 call_id: "lookup.v2".into(),
                 output: "ok".into(),
+
+                parts: Vec::new(),
+                is_error: false,
             },
         ],
     );
@@ -7271,6 +7298,8 @@ fn messages_encode_object_tool_schema_emits_required_array() {
             name: "lookup".into(),
             description: "lookup".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+
+            strict: None,
         },
         IrTool::Function {
             name: "null_required".into(),
@@ -7280,6 +7309,8 @@ fn messages_encode_object_tool_schema_emits_required_array() {
                 "properties": {},
                 "required": null
             }),
+
+            strict: None,
         },
         IrTool::Function {
             name: "keep".into(),
@@ -7289,6 +7320,8 @@ fn messages_encode_object_tool_schema_emits_required_array() {
                 "properties": {"q": {"type": "string"}},
                 "required": ["q"]
             }),
+
+            strict: None,
         },
     ]);
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
@@ -7550,10 +7583,16 @@ fn converse_parallel_function_outputs_encode_one_user_message() {
             IrItem::FunctionOutput {
                 call_id: "t1".into(),
                 output: "one".into(),
+
+                parts: Vec::new(),
+                is_error: false,
             },
             IrItem::FunctionOutput {
                 call_id: "t2".into(),
                 output: "two".into(),
+
+                parts: Vec::new(),
+                is_error: false,
             },
         ],
     );
@@ -7629,7 +7668,9 @@ fn converse_decode_tool_result_json_round_trips_nonempty() {
     }"#;
     let (ir, _) = decode(Wire::Converse, req).expect("decode json toolResult");
     let output = ir.items.iter().find_map(|item| match item {
-        IrItem::FunctionOutput { call_id, output } if call_id == "t1" => Some(output.as_str()),
+        IrItem::FunctionOutput {
+            call_id, output, ..
+        } if call_id == "t1" => Some(output.as_str()),
         _ => None,
     });
     let output = output.expect("FunctionOutput t1");
@@ -7713,6 +7754,9 @@ fn converse_empty_function_output_encodes_nonempty_tool_result_text() {
         vec![IrItem::FunctionOutput {
             call_id: "t1".into(),
             output: String::new(),
+
+            parts: Vec::new(),
+            is_error: false,
         }],
     );
     let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
@@ -8173,6 +8217,8 @@ fn converse_none_tool_choice_omits_tool_config() {
         name: "lookup".into(),
         description: "d".into(),
         parameters: serde_json::json!({"type": "object", "properties": {}}),
+
+        strict: None,
     }])
     .with_sampling(IrSampling::patch(|s| {
         s.tool_choice = IrToolChoice::None;

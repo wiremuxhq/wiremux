@@ -119,10 +119,12 @@ fn decode_user(
                 .get("toolUseId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| MapError::Invalid("toolResult omitted toolUseId".into()))?;
-            let output = tool_result_output(result);
+            let (output, parts) = tool_result_output(result);
             items.push(IrItem::FunctionOutput {
                 call_id: id.to_string(),
                 output,
+                parts,
+                is_error: false,
             });
             continue;
         }
@@ -196,13 +198,20 @@ fn flush_assistant(parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
     }
 }
 
-fn tool_result_output(result: &Value) -> String {
-    result
+fn tool_result_output(result: &Value) -> (String, Vec<IrPart>) {
+    let mut parts = Vec::new();
+    let output = result
         .get("content")
         .and_then(Value::as_array)
         .map(|c| {
             c.iter()
                 .filter_map(|p| {
+                    if let Some(image) = p.get("image") {
+                        if let Some(part) = decode_image(image) {
+                            parts.push(part);
+                        }
+                        return None;
+                    }
                     if let Some(v) = p.get("json") {
                         Some(v.to_string())
                     } else {
@@ -212,7 +221,8 @@ fn tool_result_output(result: &Value) -> String {
                 .collect::<Vec<_>>()
                 .join("")
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (output, parts)
 }
 
 fn decode_part(block: &Value, report: &mut LossReport) -> Option<IrPart> {
@@ -505,8 +515,23 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 }
                 messages.push(json!({ "role": "assistant", "content": [block] }));
             }
-            IrItem::FunctionOutput { call_id, output } => {
-                let text = if output.trim().is_empty() {
+            IrItem::FunctionOutput {
+                call_id,
+                output,
+                parts,
+                is_error,
+            } => {
+                if *is_error {
+                    report.record(
+                        format!("items[{idx}].is_error"),
+                        LossAction::Drop,
+                        "no slot",
+                    );
+                }
+                let has_image = parts
+                    .iter()
+                    .any(|part| matches!(part, IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. }));
+                let text = if output.trim().is_empty() && !has_image {
                     report.record(
                         format!("items[{idx}]"),
                         LossAction::Degrade,
@@ -516,10 +541,35 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 } else {
                     output.as_str()
                 };
+                let mut content = Vec::new();
+                if !text.is_empty() {
+                    content.push(json!({ "text": text }));
+                }
+                for part in parts {
+                    match part {
+                        IrPart::Text(_) => {}
+                        IrPart::ImageUrl(url) => {
+                            if let Some(block) = encode_image_url(url, report) {
+                                content.push(block);
+                            }
+                        }
+                        IrPart::ImageBase64 { media_type, data } => {
+                            if let Some(block) = encode_image_bytes(media_type, data, report) {
+                                content.push(block);
+                            }
+                        }
+                        _ => {
+                            report.record(format!("items[{idx}].part"), LossAction::Drop, "no slot")
+                        }
+                    }
+                }
+                if content.is_empty() {
+                    content.push(json!({ "text": "." }));
+                }
                 let block = json!({
                     "toolResult": {
                         "toolUseId": call_id,
-                        "content": [{ "text": text }]
+                        "content": content
                     }
                 });
                 if last_is_user(&messages)
@@ -728,6 +778,7 @@ fn encode_tool(tool: &PreparedTool) -> Option<Value> {
             name,
             description,
             parameters,
+            strict: _,
         } => Some(json!({
             "toolSpec": {
                 "name": name,
@@ -750,6 +801,12 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(p) = s.top_p {
         cfg.insert("topP".into(), json!(p));
+    }
+    if s.top_k.is_some() {
+        report.record("sampling.top_k", LossAction::Drop, "no slot");
+    }
+    if s.json_schema_strict.is_some() {
+        report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
     }
     if !s.stop.is_empty() {
         cfg.insert("stopSequences".into(), json!(s.stop));

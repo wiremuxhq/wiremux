@@ -145,7 +145,12 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
                 .map(str::to_string)
                 .or_else(|| unmatched_call_id(items, &name, skip_trailing_user))
                 .unwrap_or(name);
-            items.push(IrItem::FunctionOutput { call_id, output });
+            items.push(IrItem::FunctionOutput {
+                call_id,
+                output,
+                parts: Vec::new(),
+                is_error: false,
+            });
             continue;
         }
         if part.get("thought").and_then(Value::as_bool) == Some(true) {
@@ -241,6 +246,7 @@ fn decode_tools(value: &Value) -> Vec<crate::ir::IrTool> {
                         .or_else(|| decl.get("parameters"))
                         .cloned()
                         .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
+                    strict: None,
                 });
             }
             for (key, val) in obj {
@@ -294,6 +300,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     IrSampling {
         temperature: f32_field(cfg, "temperature"),
         top_p: f32_field(cfg, "topP").or_else(|| f32_field(cfg, "top_p")),
+        top_k: u32_field(cfg, "topK").or_else(|| u32_field(cfg, "top_k")),
         max_tokens: u32_field(cfg, "maxOutputTokens").or_else(|| u32_field(cfg, "max_tokens")),
         stop: stop_values(cfg, &["stopSequences", "stop"]),
         tool_choice,
@@ -312,6 +319,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         max_reasoning_tokens: None,
         json_schema,
         json_schema_name,
+        json_schema_strict: None,
         json_object,
         include: Vec::new(),
         prompt_cache_key: None,
@@ -592,7 +600,24 @@ pub(super) fn encode(
                 }
                 push_role_part(&mut contents, "model", part);
             }
-            IrItem::FunctionOutput { call_id, output } => {
+            IrItem::FunctionOutput {
+                call_id,
+                output,
+                parts,
+                is_error,
+            } => {
+                for part in parts {
+                    if matches!(part, IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. }) {
+                        report.record(format!("items[{idx}].image"), LossAction::Drop, "no slot");
+                    }
+                }
+                if *is_error {
+                    report.record(
+                        format!("items[{idx}].is_error"),
+                        LossAction::Drop,
+                        "no slot",
+                    );
+                }
                 let name = call_names
                     .iter()
                     .rev()
@@ -679,6 +704,7 @@ fn encode_prepared_tools(prepared: &[PreparedTool], report: &mut LossReport) -> 
                 name,
                 description,
                 parameters,
+                strict: _,
             } => decls.push(json!({
                 "name": name,
                 "description": description,
@@ -809,6 +835,12 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(p) = s.top_p {
         cfg["topP"] = json!(p);
+    }
+    if let Some(k) = s.top_k {
+        cfg["topK"] = json!(k);
+    }
+    if s.json_schema_strict.is_some() {
+        report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
     }
     if let Some(max) = s.max_tokens {
         cfg["maxOutputTokens"] = json!(max);
