@@ -24,10 +24,10 @@ use crate::headers::{apply_profile_headers, apply_provider_headers};
 use crate::ir::LossReport;
 use crate::map::{decode, encode};
 use crate::stream::{
-    RawSse, StreamEncoder, ToolCallAssembler, UpstreamFrames, decode_response,
-    decode_stream_events, encode_eventstream_exception, encode_eventstream_message,
-    encode_response_with_model, event_has_slot, frame_event_name, sse_wrapped_error_message,
-    unwrap_event_payload,
+    INCOMPLETE_STREAM_MESSAGE, RawSse, StreamDecoder, StreamEncoder, ToolCallAssembler,
+    UpstreamFrames, decode_response, encode_eventstream_exception, encode_eventstream_message,
+    encode_response_with_model, event_has_slot, frame_event_name, frame_is_terminal,
+    sse_wrapped_error_message, unwrap_event_payload,
 };
 use crate::upstream::upstream_url_for_model;
 
@@ -560,6 +560,89 @@ fn passthrough_sse(
         .unwrap_or_else(|_| Response::new(boxed_full("{}\n")))
 }
 
+struct MappedStream {
+    from: Wire,
+    target: Wire,
+    profile: wiremux_auth::ResolvedProfile,
+    decoder: StreamDecoder,
+    assembler: ToolCallAssembler,
+    encoder: StreamEncoder,
+    saw_frame: bool,
+    saw_terminal: bool,
+}
+
+impl MappedStream {
+    fn new(
+        from: Wire,
+        target: Wire,
+        profile: wiremux_auth::ResolvedProfile,
+        model: String,
+    ) -> Self {
+        Self {
+            from,
+            target,
+            profile,
+            decoder: StreamDecoder::new(),
+            assembler: ToolCallAssembler::new(),
+            encoder: StreamEncoder::new(from).with_model(model),
+            saw_frame: false,
+            saw_terminal: false,
+        }
+    }
+
+    fn push_frames(&mut self, frames: Vec<RawSse>) -> Result<Vec<RawSse>, String> {
+        let mut out = Vec::new();
+        for raw in frames {
+            self.saw_frame = true;
+            if frame_is_terminal(self.target, &raw, &self.profile) {
+                self.saw_terminal = true;
+            }
+            if let Some(msg) = sse_wrapped_error_message(&raw.data) {
+                return Err(msg);
+            }
+            let events = self
+                .decoder
+                .decode(self.target, &raw, &self.profile)
+                .map_err(|err| format!("decode stream: {err}"))?;
+            for ev in events.into_iter().flat_map(|ev| self.assembler.push(ev)) {
+                if !event_has_slot(self.from, &ev) {
+                    continue;
+                }
+                out.extend(
+                    self.encoder
+                        .push(ev)
+                        .map_err(|err| format!("encode stream: {err}"))?,
+                );
+            }
+        }
+        Ok(out)
+    }
+
+    fn take_assembler_tail(&mut self) -> Result<Vec<RawSse>, String> {
+        let mut out = Vec::new();
+        for ev in self.assembler.flush() {
+            if !event_has_slot(self.from, &ev) {
+                continue;
+            }
+            out.extend(
+                self.encoder
+                    .push(ev)
+                    .map_err(|err| format!("encode stream: {err}"))?,
+            );
+        }
+        Ok(out)
+    }
+
+    fn finish_encoder(&mut self) -> Result<Vec<RawSse>, String> {
+        if self.saw_frame && !self.saw_terminal {
+            return Err(INCOMPLETE_STREAM_MESSAGE.to_string());
+        }
+        self.encoder
+            .finish()
+            .map_err(|err| format!("encode stream: {err}"))
+    }
+}
+
 fn map_sse_stream(
     state: Arc<ProxyState>,
     target: Wire,
@@ -573,8 +656,7 @@ fn map_sse_stream(
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
         let mut reader = UpstreamFrames::for_wire(target);
-        let mut assembler = ToolCallAssembler::new();
-        let mut encoder = StreamEncoder::new(state.from).with_model(model);
+        let mut mapped = MappedStream::new(state.from, target, state.profile.clone(), model);
         while let Some(item) = stream.next().await {
             let bytes = match item {
                 Ok(b) => b,
@@ -597,8 +679,7 @@ fn map_sse_stream(
                     return;
                 }
             };
-            if !push_mapped_frames(&state, target, &tx, frames, &mut assembler, &mut encoder).await
-            {
+            if !emit_mapped(&state, &tx, &mut mapped, frames).await {
                 return;
             }
             if let Some(err) = terminal {
@@ -610,16 +691,7 @@ fn map_sse_stream(
         }
         match reader.finish() {
             Ok(Some(last)) => {
-                if !push_mapped_frames(
-                    &state,
-                    target,
-                    &tx,
-                    vec![last],
-                    &mut assembler,
-                    &mut encoder,
-                )
-                .await
-                {
+                if !emit_mapped(&state, &tx, &mut mapped, vec![last]).await {
                     return;
                 }
             }
@@ -631,51 +703,26 @@ fn map_sse_stream(
                 return;
             }
         }
-        for ev in assembler.flush() {
-            if !event_has_slot(state.from, &ev) {
-                continue;
-            }
-            match encoder.push(ev) {
-                Ok(mapped) => {
-                    for frame in mapped {
-                        if tx
-                            .send(Ok(Frame::data(dest_frame_bytes(state.from, &frame))))
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                }
-                Err(err) => {
-                    let _ = tx
-                        .send(Ok(Frame::data(dest_error_bytes(
-                            state.from,
-                            format!("encode stream: {err}"),
-                        ))))
-                        .await;
+        match mapped.take_assembler_tail() {
+            Ok(frames) => {
+                if !send_frames(&state, &tx, frames).await {
                     return;
-                }
-            }
-        }
-        match encoder.finish() {
-            Ok(mapped) => {
-                for frame in mapped {
-                    if tx
-                        .send(Ok(Frame::data(dest_frame_bytes(state.from, &frame))))
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
                 }
             }
             Err(err) => {
                 let _ = tx
-                    .send(Ok(Frame::data(dest_error_bytes(
-                        state.from,
-                        format!("encode stream: {err}"),
-                    ))))
+                    .send(Ok(Frame::data(dest_error_bytes(state.from, err))))
+                    .await;
+                return;
+            }
+        }
+        match mapped.finish_encoder() {
+            Ok(frames) => {
+                let _ = send_frames(&state, &tx, frames).await;
+            }
+            Err(err) => {
+                let _ = tx
+                    .send(Ok(Frame::data(dest_error_bytes(state.from, err))))
                     .await;
             }
         }
@@ -690,63 +737,112 @@ fn map_sse_stream(
         .unwrap_or_else(|_| Response::new(boxed_full("{}\n")))
 }
 
-async fn push_mapped_frames(
+async fn emit_mapped(
     state: &ProxyState,
-    target: Wire,
+    tx: &tokio::sync::mpsc::Sender<Result<Frame<Bytes>, Infallible>>,
+    mapped: &mut MappedStream,
+    frames: Vec<RawSse>,
+) -> bool {
+    match mapped.push_frames(frames) {
+        Ok(out) => send_frames(state, tx, out).await,
+        Err(err) => {
+            let _ = tx
+                .send(Ok(Frame::data(dest_error_bytes(state.from, err))))
+                .await;
+            false
+        }
+    }
+}
+
+async fn send_frames(
+    state: &ProxyState,
     tx: &tokio::sync::mpsc::Sender<Result<Frame<Bytes>, Infallible>>,
     frames: Vec<RawSse>,
-    assembler: &mut ToolCallAssembler,
-    encoder: &mut StreamEncoder,
 ) -> bool {
-    for raw in frames {
-        if let Some(msg) = sse_wrapped_error_message(&raw.data) {
-            let _ = tx
-                .send(Ok(Frame::data(dest_error_bytes(state.from, msg))))
-                .await;
+    for frame in frames {
+        if tx
+            .send(Ok(Frame::data(dest_frame_bytes(state.from, &frame))))
+            .await
+            .is_err()
+        {
             return false;
-        }
-        match decode_stream_events(target, &raw, &state.profile) {
-            Ok(events) => {
-                for ev in events.into_iter().flat_map(|ev| assembler.push(ev)) {
-                    if !event_has_slot(state.from, &ev) {
-                        continue;
-                    }
-                    match encoder.push(ev) {
-                        Ok(mapped) => {
-                            for frame in mapped {
-                                if tx
-                                    .send(Ok(Frame::data(dest_frame_bytes(state.from, &frame))))
-                                    .await
-                                    .is_err()
-                                {
-                                    return false;
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            let _ = tx
-                                .send(Ok(Frame::data(dest_error_bytes(
-                                    state.from,
-                                    format!("encode stream: {err}"),
-                                ))))
-                                .await;
-                            return false;
-                        }
-                    }
-                }
-            }
-            Err(err) => {
-                let _ = tx
-                    .send(Ok(Frame::data(dest_error_bytes(
-                        state.from,
-                        format!("decode stream: {err}"),
-                    ))))
-                    .await;
-                return false;
-            }
         }
     }
     true
+}
+
+#[cfg(test)]
+fn map_sse_bytes(
+    from: Wire,
+    target: Wire,
+    profile: &wiremux_auth::ResolvedProfile,
+    model: &str,
+    bytes: &[u8],
+) -> Vec<u8> {
+    let mut reader = UpstreamFrames::for_wire(target);
+    let mut mapped = MappedStream::new(from, target, profile.clone(), model.to_string());
+    let mut out = Vec::new();
+    let push_one = |mapped: &mut MappedStream, frames: Vec<RawSse>, out: &mut Vec<u8>| match mapped
+        .push_frames(frames)
+    {
+        Ok(encoded) => {
+            for frame in encoded {
+                out.extend(dest_frame_bytes(from, &frame));
+            }
+            Ok(())
+        }
+        Err(err) => {
+            out.extend(dest_error_bytes(from, err));
+            Err(())
+        }
+    };
+    match reader.feed(bytes) {
+        Ok((frames, terminal)) => {
+            if push_one(&mut mapped, frames, &mut out).is_err() {
+                return out;
+            }
+            if let Some(err) = terminal {
+                out.extend(dest_error_bytes(from, err));
+                return out;
+            }
+        }
+        Err(err) => {
+            out.extend(dest_error_bytes(from, err));
+            return out;
+        }
+    }
+    match reader.finish() {
+        Ok(Some(last)) => {
+            if push_one(&mut mapped, vec![last], &mut out).is_err() {
+                return out;
+            }
+        }
+        Ok(None) => {}
+        Err(err) => {
+            out.extend(dest_error_bytes(from, err));
+            return out;
+        }
+    }
+    match mapped.take_assembler_tail() {
+        Ok(frames) => {
+            for frame in frames {
+                out.extend(dest_frame_bytes(from, &frame));
+            }
+        }
+        Err(err) => {
+            out.extend(dest_error_bytes(from, err));
+            return out;
+        }
+    }
+    match mapped.finish_encoder() {
+        Ok(frames) => {
+            for frame in frames {
+                out.extend(dest_frame_bytes(from, &frame));
+            }
+        }
+        Err(err) => out.extend(dest_error_bytes(from, err)),
+    }
+    out
 }
 
 fn boxed_full(bytes: impl Into<Bytes>) -> ProxyBody {
@@ -826,19 +922,63 @@ fn dest_frame_bytes(from: Wire, raw: &RawSse) -> Bytes {
     }
 }
 
+fn split_error_prefix(msg: &str) -> (Option<&str>, &str) {
+    match msg.split_once(": ") {
+        Some((code, rest))
+            if !code.is_empty()
+                && !rest.is_empty()
+                && code
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_') =>
+        {
+            (Some(code), rest)
+        }
+        _ => (None, msg),
+    }
+}
+
 fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
     if matches!(from, Wire::Converse) {
         let payload = serde_json::json!({ "message": msg }).to_string();
-        Bytes::from(encode_eventstream_exception(
+        return Bytes::from(encode_eventstream_exception(
             "internalServerException",
             payload.as_bytes(),
-        ))
-    } else {
-        Bytes::from(format_sse(&RawSse {
-            event: Some("error".into()),
-            data: msg,
-        }))
+        ));
     }
+    let (code, text) = split_error_prefix(&msg);
+    let data = match from {
+        Wire::Messages => {
+            let ty = code.unwrap_or("api_error");
+            serde_json::json!({
+                "type": "error",
+                "error": { "type": ty, "message": text }
+            })
+        }
+        Wire::Responses => {
+            let ty = code.unwrap_or("server_error");
+            serde_json::json!({
+                "type": "error",
+                "message": text,
+                "code": ty
+            })
+        }
+        Wire::Gemini => {
+            let status = code.unwrap_or("INTERNAL");
+            serde_json::json!({
+                "error": { "message": text, "status": status }
+            })
+        }
+        _ => {
+            let ty = code.unwrap_or("server_error");
+            serde_json::json!({
+                "error": { "type": ty, "message": text }
+            })
+        }
+    };
+    Bytes::from(format_sse(&RawSse {
+        event: Some("error".into()),
+        data: data.to_string(),
+    }))
 }
 
 fn format_sse(raw: &RawSse) -> String {
@@ -1098,5 +1238,202 @@ mod tests {
         assert!(!is_json_content_type("text/plain"));
         assert!(!is_json_content_type("application/jsonp"));
         assert!(!is_json_content_type(""));
+    }
+
+    #[test]
+    fn proxy_error_frame_keeps_upstream_type() {
+        let messages = super::dest_error_bytes(
+            wiremux_auth::Wire::Messages,
+            "overloaded_error: slow down".into(),
+        );
+        let text = String::from_utf8(messages.to_vec()).unwrap();
+        let data = text
+            .lines()
+            .find(|line| line.starts_with("data:"))
+            .expect("data line")
+            .trim_start_matches("data:")
+            .trim();
+        let value: serde_json::Value = serde_json::from_str(data).expect("error data is JSON");
+        assert_eq!(value["type"], "error", "{value}");
+        assert_eq!(value["error"]["type"], "overloaded_error", "{value}");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("slow"),
+            "{value}"
+        );
+
+        let chat = super::dest_error_bytes(
+            wiremux_auth::Wire::ChatCompletions,
+            "overloaded_error: slow down".into(),
+        );
+        let chat_text = String::from_utf8(chat.to_vec()).unwrap();
+        let chat_data = chat_text
+            .lines()
+            .find(|line| line.starts_with("data:"))
+            .expect("chat data")
+            .trim_start_matches("data:")
+            .trim();
+        let chat_value: serde_json::Value =
+            serde_json::from_str(chat_data).expect("chat error JSON");
+        assert_eq!(
+            chat_value["error"]["type"], "overloaded_error",
+            "{chat_value}"
+        );
+
+        let responses = super::dest_error_bytes(
+            wiremux_auth::Wire::Responses,
+            "overloaded_error: slow down".into(),
+        );
+        let responses_text = String::from_utf8(responses.to_vec()).unwrap();
+        let responses_data = responses_text
+            .lines()
+            .find(|line| line.starts_with("data:"))
+            .expect("responses data")
+            .trim_start_matches("data:")
+            .trim();
+        let responses_value: serde_json::Value =
+            serde_json::from_str(responses_data).expect("responses error JSON");
+        assert_eq!(responses_value["type"], "error", "{responses_value}");
+        assert_eq!(
+            responses_value["code"], "overloaded_error",
+            "{responses_value}"
+        );
+        assert!(
+            responses_value["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("slow"),
+            "{responses_value}"
+        );
+
+        let gemini = super::dest_error_bytes(
+            wiremux_auth::Wire::Gemini,
+            "overloaded_error: slow down".into(),
+        );
+        let gemini_text = String::from_utf8(gemini.to_vec()).unwrap();
+        let gemini_data = gemini_text
+            .lines()
+            .find(|line| line.starts_with("data:"))
+            .expect("gemini data")
+            .trim_start_matches("data:")
+            .trim();
+        let gemini_value: serde_json::Value =
+            serde_json::from_str(gemini_data).expect("gemini error JSON");
+        assert_eq!(
+            gemini_value["error"]["status"], "overloaded_error",
+            "{gemini_value}"
+        );
+        assert!(
+            gemini_value["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("slow"),
+            "{gemini_value}"
+        );
+
+        let chat_plain =
+            super::dest_error_bytes(wiremux_auth::Wire::ChatCompletions, "boom".into());
+        let chat_plain_value = error_data(&chat_plain);
+        assert_eq!(
+            chat_plain_value["error"]["type"], "server_error",
+            "{chat_plain_value}"
+        );
+        let responses_plain = super::dest_error_bytes(wiremux_auth::Wire::Responses, "boom".into());
+        let responses_plain_value = error_data(&responses_plain);
+        assert_eq!(
+            responses_plain_value["code"], "server_error",
+            "{responses_plain_value}"
+        );
+        let messages_plain = super::dest_error_bytes(wiremux_auth::Wire::Messages, "boom".into());
+        let messages_plain_value = error_data(&messages_plain);
+        assert_eq!(
+            messages_plain_value["error"]["type"], "api_error",
+            "{messages_plain_value}"
+        );
+        let gemini_plain = super::dest_error_bytes(wiremux_auth::Wire::Gemini, "boom".into());
+        let gemini_plain_value = error_data(&gemini_plain);
+        assert_eq!(
+            gemini_plain_value["error"]["status"], "INTERNAL",
+            "{gemini_plain_value}"
+        );
+
+        let converse = super::dest_error_bytes(wiremux_auth::Wire::Converse, "boom".into());
+        assert!(
+            !converse.starts_with(b"data:"),
+            "dest Converse errors stay Event Stream, got {}",
+            String::from_utf8_lossy(&converse)
+        );
+    }
+
+    fn error_data(bytes: &bytes::Bytes) -> serde_json::Value {
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let data = text
+            .lines()
+            .find(|line| line.starts_with("data:"))
+            .expect("data line")
+            .trim_start_matches("data:")
+            .trim();
+        serde_json::from_str(data).expect("error JSON")
+    }
+
+    #[test]
+    fn chat_error_object_proxied_to_messages_keeps_type() {
+        let profile = crate::parse_profile_str(
+            "schema_version = 1\nid = \"err\"\nwire = \"chat-completions\"\n",
+        )
+        .expect("profile");
+        let sse =
+            "data: {\"error\":{\"message\":\"overloaded\",\"type\":\"overloaded_error\"}}\n\n";
+        let bytes = super::map_sse_bytes(
+            wiremux_auth::Wire::Messages,
+            wiremux_auth::Wire::ChatCompletions,
+            &profile,
+            "claude",
+            sse.as_bytes(),
+        );
+        let text = String::from_utf8(bytes).expect("utf8");
+        let value = error_data(&bytes::Bytes::from(text.clone()));
+        assert_eq!(value["error"]["type"], "overloaded_error", "{text}");
+        assert_eq!(value["error"]["message"], "overloaded", "{text}");
+
+        let chat = super::map_sse_bytes(
+            wiremux_auth::Wire::ChatCompletions,
+            wiremux_auth::Wire::ChatCompletions,
+            &profile,
+            "gpt-4o",
+            sse.as_bytes(),
+        );
+        let chat_text = String::from_utf8(chat.clone()).expect("utf8");
+        let chat_value = error_data(&bytes::Bytes::from(chat));
+        assert_eq!(
+            chat_value["error"]["type"], "overloaded_error",
+            "{chat_text}"
+        );
+        assert!(chat_text.contains("data: {"), "{chat_text}");
+    }
+
+    #[test]
+    fn incomplete_chat_sse_does_not_emit_finish_reason() {
+        let profile = crate::parse_profile_str(
+            "schema_version = 1\nid = \"chat-eof\"\nwire = \"chat-completions\"\n",
+        )
+        .expect("profile");
+        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        let bytes = super::map_sse_bytes(
+            wiremux_auth::Wire::ChatCompletions,
+            wiremux_auth::Wire::ChatCompletions,
+            &profile,
+            "gpt-4o",
+            sse.as_bytes(),
+        );
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(text.contains("hi"), "{text}");
+        assert!(
+            !text.contains("finish_reason"),
+            "incomplete chat SSE must not become a successful finish, got {text}"
+        );
+        assert!(!text.contains("[DONE]"), "{text}");
     }
 }

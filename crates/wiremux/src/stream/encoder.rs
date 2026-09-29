@@ -37,6 +37,9 @@ pub struct StreamEncoder {
     tool_got_arg: HashSet<u32>,
     last_tool: HashMap<u32, u32>,
     tool_items: HashMap<u32, (String, String, String)>,
+    /// Call id for each encoded tool slot. Kept after the block closes so a
+    /// later argument delta can still name that call.
+    tool_ids: HashMap<u32, String>,
     text_items: HashMap<u32, String>,
     /// Message parts closed before the current text buffer, in order.
     message_parts: HashMap<u32, Vec<Value>>,
@@ -77,6 +80,7 @@ impl StreamEncoder {
             tool_got_arg: HashSet::new(),
             last_tool: HashMap::new(),
             tool_items: HashMap::new(),
+            tool_ids: HashMap::new(),
             text_items: HashMap::new(),
             message_parts: HashMap::new(),
             text_annotations: HashMap::new(),
@@ -148,7 +152,29 @@ impl StreamEncoder {
     }
 
     fn attach_chat_dest_model(&self, frame: RawSse) -> RawSse {
-        self.attach_dest_model_key(frame, "model")
+        if frame.data.trim() == "[DONE]" {
+            return frame;
+        }
+        let Ok(mut value) = serde_json::from_str::<Value>(&frame.data) else {
+            return frame;
+        };
+        let Value::Object(obj) = &mut value else {
+            return frame;
+        };
+        obj.insert("id".into(), json!("chatcmpl-wiremux"));
+        obj.insert("object".into(), json!("chat.completion.chunk"));
+        // Fixed clock when the stream never carried Created.
+        obj.insert(
+            "created".into(),
+            json!(self.created_at.unwrap_or(1_700_000_000)),
+        );
+        if !self.model.is_empty() {
+            obj.insert("model".into(), json!(self.model.clone()));
+        }
+        RawSse {
+            event: frame.event,
+            data: value.to_string(),
+        }
     }
 
     fn attach_dest_model_key(&self, frame: RawSse, key: &str) -> RawSse {
@@ -170,15 +196,12 @@ impl StreamEncoder {
 
     fn alloc_tool(&mut self, ir_index: u32) -> u32 {
         let enc = if matches!(self.wire, Wire::ChatCompletions) {
-            if !self.used_tool.contains(&ir_index) {
-                ir_index
-            } else {
-                let mut n = self.next_tool;
-                while self.used_tool.contains(&n) {
-                    n = n.saturating_add(1);
-                }
-                n
+            // Dest Chat indexes are dense from 0, not the source slot.
+            let mut n = self.next_tool;
+            while self.used_tool.contains(&n) {
+                n = n.saturating_add(1);
             }
+            n
         } else {
             let n = self.next_block;
             self.next_block = n.saturating_add(1);
@@ -271,11 +294,26 @@ impl StreamEncoder {
             IrStreamEvent::ToolCallStart {
                 id, name, index, ..
             } => {
-                let open_same = self.open.is_some_and(|(enc, kind)| {
-                    kind == BlockKind::Tool && self.last_tool.get(&index) == Some(&enc)
-                });
+                let open_enc = self
+                    .open
+                    .and_then(|(enc, kind)| (kind == BlockKind::Tool).then_some(enc));
+                let same_open =
+                    open_enc.is_some_and(|enc| self.last_tool.get(&index) == Some(&enc));
+                let open_id = open_enc
+                    .and_then(|enc| self.tool_ids.get(&enc))
+                    .map(String::as_str)
+                    .unwrap_or("");
+                // Same call only when the ids match, or the new id is empty.
+                let open_same = same_open && (id.is_empty() || open_id == id);
                 if open_same {
-                    // A later chunk repeated this call's id or name.
+                    // A later chunk repeated this call.
+                } else if same_open {
+                    out.extend(self.close_open());
+                    self.tool_slots.remove(&index);
+                    let enc = self.alloc_tool(index);
+                    out.push(self.tool_start_frame(enc, &id, &name));
+                    self.tool_ids.insert(enc, id);
+                    self.open = Some((enc, BlockKind::Tool));
                 } else if let Some(held) = self.held_tools.get_mut(&index) {
                     if held.1.is_empty() {
                         held.1 = id;
@@ -294,6 +332,7 @@ impl StreamEncoder {
                     } else {
                         out.extend(self.close_open());
                         out.push(self.tool_start_frame(enc, &id, &name));
+                        self.tool_ids.insert(enc, id);
                         self.open = Some((enc, BlockKind::Tool));
                     }
                 }
@@ -699,6 +738,7 @@ impl StreamEncoder {
                         }
                     }),
                 ));
+                self.tool_ids.insert(enc, id.clone());
                 self.tool_items
                     .insert(enc, (id.clone(), name.clone(), String::new()));
                 self.open = Some((enc, BlockKind::Tool));
@@ -838,11 +878,13 @@ impl StreamEncoder {
                 if let Some((_, _, args)) = self.tool_items.get_mut(&enc) {
                     args.push_str(&delta);
                 }
+                let item_id = self.tool_ids.get(&enc).cloned().unwrap_or_default();
                 out.push(named(
                     "response.function_call_arguments.delta",
                     json!({
                         "type": "response.function_call_arguments.delta",
                         "output_index": enc,
+                        "item_id": item_id,
                         "delta": delta
                     }),
                 ));
@@ -1045,7 +1087,11 @@ impl StreamEncoder {
             }
             _ => ("response.completed", "completed"),
         };
-        let mut response = json!({ "status": status });
+        let mut response = json!({
+            "id": "resp_wiremux",
+            "object": "response",
+            "status": status
+        });
         if let Some(detail) = super::responses::incomplete_details_reason(reason) {
             response["incomplete_details"] = json!({ "reason": detail });
         }
@@ -1077,6 +1123,9 @@ impl StreamEncoder {
     }
 
     fn push_chat(&mut self, ev: IrStreamEvent) -> Result<Vec<RawSse>, MapError> {
+        if let IrStreamEvent::Created { unix } = &ev {
+            self.created_at = Some(*unix);
+        }
         let mut out = Vec::new();
         if !self.started {
             self.started = true;

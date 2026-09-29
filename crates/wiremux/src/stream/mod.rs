@@ -151,16 +151,56 @@ pub fn decode_stream_event(
     }
 }
 
+/// Gemini function-call sequence for one upstream stream.
+///
+/// [`decode_stream_events`] starts a fresh decoder, so its ids begin at 0
+/// on every call. No process-global counter.
+#[derive(Debug, Default)]
+pub struct StreamDecoder {
+    gemini_call_seq: usize,
+}
+
+impl StreamDecoder {
+    /// Sequence starts at 0.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Decode one frame. Gemini call ids advance across calls on `self`.
+    pub fn decode(
+        &mut self,
+        wire: Wire,
+        raw: &RawSse,
+        profile: &ResolvedProfile,
+    ) -> Result<Vec<IrStreamEvent>, MapError> {
+        decode_stream_events_seq(wire, raw, profile, &mut self.gemini_call_seq)
+    }
+}
+
 /// Decode one SSE frame into every IR event it carries.
 ///
 /// Chat Completions can put content, `finish_reason`, and `usage` on
 /// one chunk. A Messages `message_delta` can carry a stop reason and
 /// `usage`. Singular decode keeps one of those. Empty vec is a
 /// recognized no-op.
+///
+/// Gemini function-call ids start at 0. Use [`StreamDecoder`] to keep
+/// the sequence across chunks of one stream.
 pub fn decode_stream_events(
     wire: Wire,
     raw: &RawSse,
     profile: &ResolvedProfile,
+) -> Result<Vec<IrStreamEvent>, MapError> {
+    let mut seq = 0usize;
+    decode_stream_events_seq(wire, raw, profile, &mut seq)
+}
+
+fn decode_stream_events_seq(
+    wire: Wire,
+    raw: &RawSse,
+    profile: &ResolvedProfile,
+    call_seq: &mut usize,
 ) -> Result<Vec<IrStreamEvent>, MapError> {
     let first = decode_stream_event(wire, raw, profile);
     if matches!(wire, Wire::ChatCompletions)
@@ -218,7 +258,7 @@ pub fn decode_stream_events(
     };
     if matches!(wire, Wire::Gemini)
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
-        && let Some(events) = fan_out_gemini_parts(&value)
+        && let Some(events) = fan_out_gemini_parts(&value, call_seq)
     {
         return Ok(events);
     }
@@ -267,15 +307,15 @@ fn gemini_value_has_function_call(value: &Value) -> bool {
         .is_some_and(|parts| parts.iter().any(|p| p.get("functionCall").is_some()))
 }
 
-fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
+fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStreamEvent>> {
+    let seq_at_entry = *call_seq;
     let mut out = Vec::new();
-    let mut call_seq = 0usize;
     if let Some(parts) = value
         .pointer("/candidates/0/content/parts")
         .and_then(Value::as_array)
     {
         for part in parts {
-            out.extend(gemini_part_events(part, &mut call_seq));
+            out.extend(gemini_part_events(part, call_seq));
         }
     }
     if let Some(chunks) = value
@@ -334,10 +374,93 @@ fn fan_out_gemini_parts(value: &Value) -> Option<Vec<IrStreamEvent>> {
     if let Some(ev) = gemini::usage_from_chunk(value) {
         out.push(ev);
     }
-    if out.len() < 2 {
+    let has_call = out
+        .iter()
+        .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. }));
+    if out.is_empty() || (out.len() < 2 && !has_call) {
+        *call_seq = seq_at_entry;
         return None;
     }
     Some(out)
+}
+
+/// Why a client or proxy rejects a stream that produced frames and then ended.
+#[cfg(any(feature = "client", feature = "proxy"))]
+pub(crate) const INCOMPLETE_STREAM_MESSAGE: &str = "upstream stream ended before a terminal event";
+
+/// Upstream frame that ends a stream. An empty body is not terminal.
+#[cfg(any(feature = "client", feature = "proxy"))]
+pub(crate) fn frame_is_terminal(wire: Wire, raw: &RawSse, profile: &ResolvedProfile) -> bool {
+    match wire {
+        Wire::ChatCompletions => chat_frame_is_terminal(raw),
+        Wire::Messages => messages_frame_is_terminal(raw),
+        Wire::Responses => responses_frame_is_terminal(raw),
+        Wire::Gemini => gemini_frame_is_terminal(raw),
+        Wire::Converse => decode_stream_events(wire, raw, profile).is_ok_and(|events| {
+            events
+                .iter()
+                .any(|ev| matches!(ev, IrStreamEvent::FinishReason { .. }))
+        }),
+        _ => false,
+    }
+}
+
+#[cfg(any(feature = "client", feature = "proxy"))]
+fn chat_frame_is_terminal(raw: &RawSse) -> bool {
+    if raw.event.as_deref() == Some("[DONE]") || raw.data.trim() == "[DONE]" {
+        return true;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(&raw.data) else {
+        return false;
+    };
+    value
+        .pointer("/choices")
+        .and_then(Value::as_array)
+        .is_some_and(|choices| {
+            choices.iter().any(|choice| {
+                choice
+                    .get("finish_reason")
+                    .and_then(Value::as_str)
+                    .is_some_and(|reason| !reason.is_empty())
+            })
+        })
+}
+
+#[cfg(any(feature = "client", feature = "proxy"))]
+fn messages_frame_is_terminal(raw: &RawSse) -> bool {
+    let name = frame_event_name(Wire::Messages, raw);
+    if name == "message_stop" {
+        return true;
+    }
+    if name != "message_delta" {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(&raw.data) else {
+        return false;
+    };
+    value
+        .pointer("/delta/stop_reason")
+        .and_then(Value::as_str)
+        .is_some_and(|reason| !reason.is_empty())
+}
+
+#[cfg(any(feature = "client", feature = "proxy"))]
+fn responses_frame_is_terminal(raw: &RawSse) -> bool {
+    matches!(
+        frame_event_name(Wire::Responses, raw).as_str(),
+        "response.completed" | "response.incomplete" | "response.failed"
+    )
+}
+
+#[cfg(any(feature = "client", feature = "proxy"))]
+fn gemini_frame_is_terminal(raw: &RawSse) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(&raw.data) else {
+        return false;
+    };
+    value
+        .pointer("/candidates/0/finishReason")
+        .and_then(Value::as_str)
+        .is_some_and(|reason| !reason.is_empty())
 }
 
 fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> {
@@ -756,8 +879,20 @@ pub(crate) fn sse_wrapped_error_message(data: &str) -> Option<String> {
         return None;
     }
     let error = value.get("error").filter(|v| v.is_object())?;
-    match error.get("message").and_then(Value::as_str) {
-        Some(message) if !message.is_empty() => Some(message.to_string()),
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty());
+    let code = ["type", "code", "status"].iter().find_map(|key| {
+        error
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    });
+    match (code, message) {
+        (Some(code), Some(message)) => Some(format!("{code}: {message}")),
+        (None, Some(message)) => Some(message.to_string()),
         _ => Some(data.to_string()),
     }
 }
@@ -851,7 +986,7 @@ mod tests {
         let msg = sse_wrapped_error_message(
             r#"{"error":{"message":"upstream failed","type":"server_error"}}"#,
         );
-        assert_eq!(msg.as_deref(), Some("upstream failed"));
+        assert_eq!(msg.as_deref(), Some("server_error: upstream failed"));
     }
 
     #[cfg(any(feature = "client", feature = "proxy"))]
