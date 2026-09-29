@@ -27,9 +27,26 @@ pub(crate) fn apply_profile_headers(
     profile: &ResolvedProfile,
     token: Option<&str>,
 ) -> reqwest::RequestBuilder {
+    let ua_override = profile
+        .fingerprint
+        .as_ref()
+        .and_then(|fp| fp.user_agent.as_ref())
+        .is_some();
+    let beta_override = !profile.betas.values.is_empty();
+    let mut profile_auth = false;
     for (name, value) in &profile.http.headers {
-        if name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("x-api-key") {
+        if ua_override && name.eq_ignore_ascii_case("user-agent") {
             continue;
+        }
+        if beta_override && name.eq_ignore_ascii_case(&profile.betas.header) {
+            continue;
+        }
+        if is_profile_auth_header(profile, name) {
+            if value.trim().is_empty() {
+                continue;
+            }
+            // Profile auth is the credential. Send it raw, once.
+            profile_auth = true;
         }
         req = req.header(name, value);
     }
@@ -44,10 +61,10 @@ pub(crate) fn apply_profile_headers(
             req = req.header("x-app", app);
         }
     }
-    if !profile.betas.values.is_empty() {
+    if beta_override {
         req = req.header(&profile.betas.header, profile.betas.values.join(","));
     }
-    if let Some(token) = token {
+    if !profile_auth && let Some(token) = token {
         match profile
             .http
             .auth_scheme
@@ -71,6 +88,16 @@ pub(crate) fn apply_profile_headers(
         }
     }
     req
+}
+
+fn is_profile_auth_header(profile: &ResolvedProfile, name: &str) -> bool {
+    if name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("x-api-key") {
+        return true;
+    }
+    matches!(
+        &profile.http.auth_scheme,
+        Some(AuthScheme::Header(header)) if name.eq_ignore_ascii_case(header)
+    )
 }
 
 /// Provider-derived headers after profile headers. Profile keys win.
@@ -219,5 +246,158 @@ x-grok-client-version = "9.9.9"
             extra.contains(&("x-grok-client-identifier", "wiremux")),
             "missing identifier still filled, got {extra:?}"
         );
+    }
+
+    fn built(toml: &str, token: Option<&str>) -> reqwest::Request {
+        let client = reqwest::Client::new();
+        apply_profile_headers(
+            client.request(reqwest::Method::POST, "http://127.0.0.1/v1"),
+            &profile(toml),
+            token,
+        )
+        .build()
+        .expect("request builds")
+    }
+
+    #[test]
+    fn profile_x_api_key_stays_on_that_header() {
+        let req = built(
+            r#"
+schema_version = 1
+id = "k"
+wire = "chat-completions"
+base_url = "http://127.0.0.1"
+auth_scheme = "bearer"
+[headers]
+x-api-key = "k"
+"#,
+            Some("k"),
+        );
+        assert!(
+            req.headers().get("authorization").is_none(),
+            "{:?}",
+            req.headers()
+        );
+        assert_eq!(req.headers().get("x-api-key").unwrap(), "k");
+    }
+
+    #[test]
+    fn profile_basic_authorization_is_not_rewrapped() {
+        let req = built(
+            r#"
+schema_version = 1
+id = "basic"
+wire = "chat-completions"
+base_url = "http://127.0.0.1"
+auth_scheme = "bearer"
+[headers]
+Authorization = "Basic abc"
+"#,
+            Some("Basic abc"),
+        );
+        assert_eq!(req.headers().get("authorization").unwrap(), "Basic abc");
+        assert_eq!(req.headers().get_all("authorization").iter().count(), 1);
+    }
+
+    #[test]
+    fn profile_oat_key_is_not_forced_to_bearer() {
+        let req = built(
+            r#"
+schema_version = 1
+id = "oat"
+wire = "messages"
+base_url = "http://127.0.0.1"
+auth_scheme = "x-api-key"
+[headers]
+x-api-key = "sk-ant-oat01-test"
+"#,
+            Some("sk-ant-oat01-test"),
+        );
+        assert!(
+            req.headers().get("authorization").is_none(),
+            "{:?}",
+            req.headers()
+        );
+        assert_eq!(req.headers().get("x-api-key").unwrap(), "sk-ant-oat01-test");
+    }
+
+    #[test]
+    fn provider_oat_token_still_uses_bearer() {
+        let req = built(
+            r#"
+schema_version = 1
+id = "provider-oat"
+wire = "messages"
+base_url = "http://127.0.0.1"
+auth_scheme = "x-api-key"
+"#,
+            Some("sk-ant-oat01-test"),
+        );
+        assert_eq!(
+            req.headers().get("authorization").unwrap(),
+            "Bearer sk-ant-oat01-test"
+        );
+    }
+
+    #[test]
+    fn fingerprint_user_agent_replaces_profile_user_agent() {
+        let req = built(
+            r#"
+schema_version = 1
+id = "ua"
+wire = "chat-completions"
+base_url = "http://127.0.0.1"
+auth_scheme = "none"
+[headers]
+user-agent = "profile-ua"
+[fingerprint]
+user_agent = "fingerprint-ua"
+"#,
+            None,
+        );
+        let values: Vec<_> = req.headers().get_all("user-agent").iter().collect();
+        assert_eq!(values.len(), 1, "{values:?}");
+        assert_eq!(values[0], "fingerprint-ua");
+    }
+
+    #[test]
+    fn betas_header_is_not_sent_twice() {
+        let req = built(
+            r#"
+schema_version = 1
+id = "betas"
+wire = "messages"
+base_url = "http://127.0.0.1"
+auth_scheme = "none"
+[headers]
+anthropic-beta = "from-profile"
+[betas]
+values = ["from-betas"]
+header = "anthropic-beta"
+"#,
+            None,
+        );
+        let values: Vec<_> = req.headers().get_all("anthropic-beta").iter().collect();
+        assert_eq!(values.len(), 1, "{values:?}");
+        assert_eq!(values[0], "from-betas");
+    }
+
+    #[test]
+    fn goog_api_key_header_is_sent_once() {
+        let req = built(
+            r#"
+schema_version = 1
+id = "goog"
+wire = "gemini"
+base_url = "http://127.0.0.1"
+auth_scheme = "header:x-goog-api-key"
+[headers]
+x-goog-api-key = "goog"
+"#,
+            Some("goog"),
+        );
+        let values: Vec<_> = req.headers().get_all("x-goog-api-key").iter().collect();
+        assert_eq!(values.len(), 1, "{values:?}");
+        assert_eq!(values[0], "goog");
     }
 }
