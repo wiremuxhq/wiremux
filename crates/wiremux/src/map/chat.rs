@@ -62,10 +62,20 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>) {
                 }
             }
         }
-        "tool" => items.push(IrItem::FunctionOutput {
-            call_id: str_field(msg, "tool_call_id").unwrap_or_default(),
-            output: parts_text(&parts),
-        }),
+        "tool" => {
+            let output = parts_text(&parts);
+            let images = parts
+                .iter()
+                .filter(|part| matches!(part, IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. }))
+                .cloned()
+                .collect();
+            items.push(IrItem::FunctionOutput {
+                call_id: str_field(msg, "tool_call_id").unwrap_or_default(),
+                output,
+                parts: images,
+                is_error: false,
+            });
+        }
         _ => items.push(IrItem::User { parts }),
     }
 }
@@ -151,13 +161,14 @@ fn parts_text(parts: &[IrPart]) -> String {
 }
 
 fn decode_sampling(value: &Value) -> IrSampling {
-    let (json_schema, json_schema_name) = chat_json_schema(value);
+    let (json_schema, json_schema_name, json_schema_strict) = chat_json_schema(value);
     let json_object = chat_json_object(value);
     let top_logprobs = u32_field(value, "top_logprobs");
     let logprobs = bool_field(value, "logprobs").or(top_logprobs.is_some().then_some(true));
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
+        top_k: None,
         max_tokens: u32_field(value, "max_completion_tokens")
             .or_else(|| u32_field(value, "max_tokens")),
         stop: stop_values(value, &["stop"]),
@@ -173,6 +184,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         max_reasoning_tokens: u32_field(value, "max_reasoning_tokens"),
         json_schema,
         json_schema_name,
+        json_schema_strict,
         json_object,
         include: Vec::new(),
         prompt_cache_key: str_field(value, "prompt_cache_key").filter(|s| !s.trim().is_empty()),
@@ -288,13 +300,13 @@ fn chat_json_object(value: &Value) -> Option<bool> {
     (format.get("type").and_then(Value::as_str) == Some("json_object")).then_some(true)
 }
 
-fn chat_json_schema(value: &Value) -> (Option<Value>, Option<String>) {
+fn chat_json_schema(value: &Value) -> (Option<Value>, Option<String>, Option<bool>) {
     let format = value.get("response_format");
     let Some(format) = format else {
-        return (None, None);
+        return (None, None, None);
     };
     if format.get("type").and_then(Value::as_str) != Some("json_schema") {
-        return (None, None);
+        return (None, None, None);
     }
     let js = format.get("json_schema");
     let schema = js.and_then(|js| js.get("schema")).cloned();
@@ -303,7 +315,8 @@ fn chat_json_schema(value: &Value) -> (Option<Value>, Option<String>) {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    (schema, name)
+    let strict = js.and_then(|js| bool_field(js, "strict"));
+    (schema, name, strict)
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -379,7 +392,24 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 messages.push(msg);
                 idx += consumed;
             }
-            IrItem::FunctionOutput { call_id, output } => {
+            IrItem::FunctionOutput {
+                call_id,
+                output,
+                parts,
+                is_error,
+            } => {
+                for part in parts {
+                    if matches!(part, IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. }) {
+                        report.record(format!("items[{idx}].image"), LossAction::Drop, "no slot");
+                    }
+                }
+                if *is_error {
+                    report.record(
+                        format!("items[{idx}].is_error"),
+                        LossAction::Drop,
+                        "no slot",
+                    );
+                }
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call_id,
@@ -396,16 +426,32 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 idx += 1;
             }
             IrItem::HostedToolCall { kind, raw } => {
-                messages.push(raw.clone());
-                report.record(
-                    format!("items[{idx}]"),
-                    LossAction::Preserve,
-                    format!("hosted item `{kind}` passthrough"),
-                );
+                if chat_string_role(raw) {
+                    messages.push(raw.clone());
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Preserve,
+                        format!("hosted item `{kind}` passthrough"),
+                    );
+                } else {
+                    report.record(
+                        format!("items[{idx}].role"),
+                        LossAction::Drop,
+                        "chat messages require role",
+                    );
+                }
                 idx += 1;
             }
             IrItem::Unknown { raw, .. } => {
-                messages.push(raw.clone());
+                if chat_string_role(raw) {
+                    messages.push(raw.clone());
+                } else {
+                    report.record(
+                        format!("items[{idx}].role"),
+                        LossAction::Drop,
+                        "chat messages require role",
+                    );
+                }
                 idx += 1;
             }
         }
@@ -579,23 +625,32 @@ fn encode_document(source: &IrDocumentSource, media_type: &str, name: Option<&st
     }
 }
 
+fn chat_string_role(raw: &Value) -> bool {
+    raw.get("role").is_some_and(Value::is_string)
+}
+
 fn encode_tool(tool: &PreparedTool) -> Value {
     match tool {
         PreparedTool::Function {
             name,
             description,
             parameters,
+            strict,
         } => {
             let mut parameters = parameters.clone();
             super::messages::normalize_object_schema_required(&mut parameters);
-            json!({
+            let mut tool = json!({
                 "type": "function",
                 "function": {
                     "name": name,
                     "description": description,
                     "parameters": parameters,
                 }
-            })
+            });
+            if let Some(strict) = strict {
+                tool["function"]["strict"] = json!(strict);
+            }
+            tool
         }
         PreparedTool::Raw(raw) => raw.clone(),
     }
@@ -640,6 +695,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         } else {
             body["top_p"] = json!(p);
         }
+    }
+    if s.top_k.is_some() {
+        report.record("sampling.top_k", LossAction::Drop, "no slot");
     }
     if let Some(max) = s.max_tokens {
         if max_completion {
@@ -797,12 +855,16 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         && let Some((schema, name)) =
             super::official_json_schema(schema, s.json_schema_name.as_deref(), report)
     {
+        let mut json_schema = json!({
+            "name": name,
+            "schema": schema,
+        });
+        if let Some(strict) = s.json_schema_strict {
+            json_schema["strict"] = json!(strict);
+        }
         body["response_format"] = json!({
             "type": "json_schema",
-            "json_schema": {
-                "name": name,
-                "schema": schema,
-            },
+            "json_schema": json_schema,
         });
     } else if s.json_object == Some(true) {
         body["response_format"] = json!({ "type": "json_object" });
