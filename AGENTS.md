@@ -17,7 +17,7 @@ Two crates: `wiremux-auth` (profile AST + TokenProvider) and `wiremux`
 
 Do not dest-parent-copy from Bline. Land failing corpus tests before product modules.
 
-Read `CONSTITUTION.md` before changing license, org, crate graph, or OAuth presets.
+Read `CONSTITUTION.md` before changing license, org, crate graph, or OAuth presets. Amendments follow the Amending section there. Record a rejected proposal in `docs/constitution-amendments.md`.
 
 The PR plan is not in this tree. Read `~/.grok/skills/wiremux-contrib/SKILL.md`
 and pass the design path it prints to `/execute-plan`. Do not search `/tmp`

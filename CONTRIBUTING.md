@@ -8,6 +8,11 @@
 Open an issue before a large change. Small, tested fixes can go
 straight to a pull request.
 
+Changes to `CONSTITUTION.md` follow the Amending section in that
+file. A person applies the `constitution` label. That label is the
+yes to merge. Rejected proposals are listed in
+[`docs/constitution-amendments.md`](docs/constitution-amendments.md).
+
 ## Local gate
 
 The commands in `AGENTS.md` must pass on your workspace before you
