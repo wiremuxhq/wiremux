@@ -1,6 +1,7 @@
-//! Thin CLI: profile validate/ingest, auth login/status, optional local proxy.
+//! Thin CLI: map a request, profile validate/ingest, auth login/status, optional local proxy.
 
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -11,6 +12,7 @@ use wiremux::cli::{
 use wiremux::ingest::{
     CatalogKind, IngestAction, IngestRequest, fetch_catalog_url, ingest_catalog,
 };
+use wiremux::{LossAction, LossReport, Wire, decode, encode, parse_profile_str};
 
 #[derive(Parser)]
 #[command(
@@ -25,6 +27,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Encode a request JSON body. Does not send HTTP.
+    Map {
+        /// Source dialect (`chat-completions` / `chat`, `messages`, `responses`, `gemini`, `converse`).
+        #[arg(long)]
+        from: String,
+        /// Dest dialect.
+        #[arg(long)]
+        to: String,
+        /// Request JSON path. `-` reads stdin. Omit to read stdin.
+        #[arg(value_name = "FILE", allow_hyphen_values = true)]
+        file: Option<PathBuf>,
+    },
     /// Optional local HTTP proxy (source dialect -> profile target).
     Proxy {
         /// Bind address. 127.0.0.1 only.
@@ -163,6 +177,7 @@ async fn main() -> ExitCode {
                 EXIT_ERROR
             }
         },
+        Command::Map { from, to, file } => cmd_map(&from, &to, file.as_deref()),
         Command::Proxy {
             listen,
             from,
@@ -328,5 +343,119 @@ async fn cmd_proxy(
         let _ = (listen, from, profile, dump_loss);
         eprintln!("wiremux was built without the proxy feature");
         EXIT_NOT_READY
+    }
+}
+
+fn cmd_map(from: &str, to: &str, file: Option<&Path>) -> i32 {
+    let from = match parse_flag_wire("--from", from) {
+        Ok(wire) => wire,
+        Err(err) => {
+            eprintln!("{err}");
+            return EXIT_ERROR;
+        }
+    };
+    let to = match parse_flag_wire("--to", to) {
+        Ok(wire) => wire,
+        Err(err) => {
+            eprintln!("{err}");
+            return EXIT_ERROR;
+        }
+    };
+    let bytes = match read_map_input(file) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("{err}");
+            return EXIT_ERROR;
+        }
+    };
+    let (ir, decode_loss) = match decode(from, &bytes) {
+        Ok(pair) => pair,
+        Err(err) => {
+            eprintln!("{err}");
+            return EXIT_ERROR;
+        }
+    };
+    print_loss(&decode_loss);
+    // Vendor quirks come from this profile. The command does not send the body.
+    let profile = match parse_profile_str(&format!(
+        "schema_version = 1\nid = \"map\"\nwire = \"{}\"\n",
+        to.as_str()
+    )) {
+        Ok(profile) => profile,
+        Err(err) => {
+            eprintln!("{err}");
+            return EXIT_ERROR;
+        }
+    };
+    let (body, encode_loss) = match encode(to, &ir, &profile) {
+        Ok(pair) => pair,
+        Err(err) => {
+            eprintln!("{err}");
+            return EXIT_ERROR;
+        }
+    };
+    print_loss(&encode_loss);
+    let mut stdout = std::io::stdout().lock();
+    if stdout.write_all(&body).is_err() || stdout.write_all(b"\n").is_err() {
+        return EXIT_ERROR;
+    }
+    if loss_is_hard(&decode_loss) || loss_is_hard(&encode_loss) {
+        EXIT_ERROR
+    } else {
+        EXIT_OK
+    }
+}
+
+fn parse_flag_wire(flag: &str, value: &str) -> Result<Wire, String> {
+    parse_wire(value).map_err(|err| {
+        if flag == "--from" {
+            err
+        } else {
+            err.replacen("--from", flag, 1)
+        }
+    })
+}
+
+fn read_map_input(file: Option<&Path>) -> Result<Vec<u8>, String> {
+    match file {
+        None => read_stdin(),
+        Some(path) if path.as_os_str() == "-" => read_stdin(),
+        Some(path) => std::fs::read(path).map_err(|err| format!("{}: {err}", path.display())),
+    }
+}
+
+fn read_stdin() -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("stdin: {err}"))?;
+    Ok(bytes)
+}
+
+fn print_loss(report: &LossReport) {
+    for event in &report.events {
+        eprintln!(
+            "{} {}: {}",
+            loss_action_label(event.action),
+            event.path,
+            event.detail
+        );
+    }
+}
+
+fn loss_is_hard(report: &LossReport) -> bool {
+    report
+        .events
+        .iter()
+        .any(|event| matches!(event.action, LossAction::HardError))
+}
+
+fn loss_action_label(action: LossAction) -> &'static str {
+    match action {
+        LossAction::Preserve => "preserve",
+        LossAction::Degrade => "degrade",
+        LossAction::Drop => "drop",
+        LossAction::HardError => "harderror",
+        _ => "loss",
     }
 }

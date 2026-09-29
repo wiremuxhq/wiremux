@@ -1,4 +1,4 @@
-//! CLI corpus: profile validate, auth login/status, listen bind.
+//! CLI corpus: map, profile validate, auth login/status, listen bind.
 #![cfg(feature = "cli")]
 
 use std::io::{Read, Write};
@@ -6505,4 +6505,83 @@ fn profile_ingest_writes_azure_deployment_template() {
     let body = std::fs::read_to_string(dest.join("azure.toml")).expect("azure");
     assert!(body.contains("deployments/{model}/chat/completions"));
     assert!(body.contains("header:api-key"));
+}
+
+fn run_map(args: &[&str], stdin_body: Option<&[u8]>) -> std::process::Output {
+    let (_home, mut cmd) = isolated_home();
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if stdin_body.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    let mut child = cmd.spawn().expect("spawn map");
+    if let Some(body) = stdin_body {
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(body)
+            .expect("write stdin");
+    }
+    child.wait_with_output().expect("wait map")
+}
+
+#[test]
+fn map_chat_stdin_to_messages_prints_body() {
+    let out = run_map(
+        &["map", "--from", "chat", "--to", "messages", "-"],
+        Some(br#"{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}"#),
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert!(parsed["messages"].is_array(), "{stdout}");
+    assert!(parsed.get("max_tokens").is_some(), "{stdout}");
+    assert!(stdout.contains("ping"), "{stdout}");
+}
+
+#[test]
+fn map_reads_a_request_file() {
+    let dir = unique_scratch();
+    let path = dir.join("chat.json");
+    std::fs::write(
+        &path,
+        r#"{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}"#,
+    )
+    .expect("request");
+    let out = run_map(
+        &[
+            "map",
+            "--from",
+            "chat-completions",
+            "--to",
+            "messages",
+            path.to_str().expect("utf8"),
+        ],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(stdout.contains("max_tokens"), "{stdout}");
+    assert!(stdout.contains("messages"), "{stdout}");
+}
+
+#[test]
+fn map_invalid_json_exits_1_without_a_body() {
+    let out = run_map(&["map", "--from", "messages", "--to", "chat"], Some(b"{"));
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.to_lowercase().contains("json") || err.contains("invalid"),
+        "{err}"
+    );
+}
+
+#[test]
+fn map_unknown_dest_names_the_to_flag() {
+    let out = run_map(&["map", "--from", "chat", "--to", "nope"], None);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--to"), "{err}");
+    assert!(!err.contains("--from"), "{err}");
 }
