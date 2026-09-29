@@ -10,6 +10,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](https://github.com/wiremuxhq/wiremux/blob/main/LICENSE)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/wiremuxhq/wiremux/badge)](https://securityscorecards.dev/viewer/?uri=github.com/wiremuxhq/wiremux)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15097/badge)](https://www.bestpractices.dev/projects/15097)
 [![FOSSA Status](https://github.com/wiremuxhq/wiremux/actions/workflows/fossa.yml/badge.svg?event=push)](https://github.com/wiremuxhq/wiremux/actions/workflows/fossa.yml?query=event%3Apush)
 [![wiremux-auth](https://img.shields.io/crates/v/wiremux-auth?logo=rust&label=wiremux-auth)](https://crates.io/crates/wiremux-auth)
 
