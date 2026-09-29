@@ -67,6 +67,9 @@ impl Default for IrRequest {
 pub struct IrSampling {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
+    /// Messages `top_k`. Gemini `generationConfig.topK`.
+    /// Chat Completions, Responses, and Converse drop.
+    pub top_k: Option<u32>,
     /// Host max output tokens.
     ///
     /// Chat Completions encode may write `max_completion_tokens` and omit
@@ -109,6 +112,9 @@ pub struct IrSampling {
     /// Optional schema name (Responses `text.format.name` / Chat json_schema.name /
     /// Converse `outputConfig.textFormat.structure.jsonSchema.name`).
     pub json_schema_name: Option<String>,
+    /// Chat Completions `response_format.json_schema.strict`.
+    /// Other dests drop when `Some`.
+    pub json_schema_strict: Option<bool>,
     /// Unconstrained JSON object mode (Chat `response_format.type=json_object`,
     /// Responses `text.format.type=json_object`, Gemini `responseMimeType=
     /// application/json` without a schema). `json_schema` wins when both are set.
@@ -278,7 +284,10 @@ pub enum IrItem {
     },
     FunctionOutput {
         call_id: String,
+        /// Joined text. Images and other blocks live in `parts`.
         output: String,
+        parts: Vec<IrPart>,
+        is_error: bool,
     },
     Reasoning {
         encrypted: Option<String>,
@@ -346,6 +355,8 @@ pub enum IrTool {
         name: String,
         description: String,
         parameters: serde_json::Value,
+        /// Chat Completions and Responses `strict`. Other dests drop when `Some`.
+        strict: Option<bool>,
     },
     Namespace {
         name: String,
@@ -508,6 +519,16 @@ impl LossReport {
             detail: detail.into(),
         });
     }
+
+    /// Events whose action is not [`LossAction::Preserve`], in record order.
+    #[must_use]
+    pub fn lossy(&self) -> Vec<LossEvent> {
+        self.events
+            .iter()
+            .filter(|event| event.action != LossAction::Preserve)
+            .cloned()
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -516,6 +537,18 @@ pub struct LossEvent {
     pub path: String,
     pub action: LossAction,
     pub detail: String,
+}
+
+impl std::fmt::Display for LossEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let action = match self.action {
+            LossAction::Preserve => "preserve",
+            LossAction::Degrade => "degrade",
+            LossAction::Drop => "drop",
+            LossAction::HardError => "harderror",
+        };
+        write!(f, "{action} {}: {}", self.path, self.detail)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -564,6 +597,7 @@ pub fn estimate_prompt_tokens(req: &IrRequest) -> u32 {
             name,
             description,
             parameters,
+            ..
         } = tool
         {
             chars += name.len() + description.len() + parameters.to_string().len();
@@ -592,6 +626,7 @@ mod tests {
                 name: "lookup".into(),
                 description: "Look up a term.".into(),
                 parameters: serde_json::json!({"type": "object"}),
+                strict: None,
             }],
             sampling: IrSampling::default(),
         };
@@ -696,6 +731,8 @@ mod tests {
             items: vec![IrItem::FunctionOutput {
                 call_id: "c1".into(),
                 output: "x".repeat(5000),
+                parts: Vec::new(),
+                is_error: false,
             }],
             tools: vec![],
             sampling: IrSampling::default(),

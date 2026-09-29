@@ -16,8 +16,9 @@ cargo run -p wiremux --example remap --no-default-features
 `default-features = false` is the maps-only path (no clap, tokio,
 reqwest, or aws-lc).
 
-Messages encode records `sampling.max_tokens` as Preserve because
-Messages requires a budget. That is not a drop.
+Messages encode records `sampling.max_tokens` as Degrade because
+Messages requires a budget and the default writes 4096. That changes
+the request. It is not a drop.
 
 Gemini generateContent to Chat Completions:
 
