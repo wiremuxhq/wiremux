@@ -50,7 +50,7 @@ pub use stream::{
 pub use wiremux_auth::VERSION;
 pub use wiremux_auth::{
     LoadOptions, ResolvedProfile, StreamUnknownPolicy, ToolTypePolicy, Wire, load_profile,
-    parse_profile_str,
+    load_profile_for_wire, parse_profile_str,
 };
 
 #[cfg(feature = "client")]
