@@ -1,0 +1,51 @@
+# Close inactive issues and pull requests.
+# Release Please (autorelease: pending) and constitution changes stay open.
+name: Stale
+
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: stale-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  stale:
+    name: Close stale
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          days-before-issue-stale: 90
+          days-before-pr-stale: 60
+          days-before-issue-close: 14
+          days-before-pr-close: 14
+          stale-issue-label: stale
+          stale-pr-label: stale
+          exempt-issue-labels: "good first issue,help wanted,constitution,security"
+          exempt-pr-labels: "constitution,autorelease: pending,dependencies"
+          exempt-draft-pr: true
+          operations-per-run: 50
+          stale-issue-message: >
+            This issue has had no activity for 90 days. Comment if it
+            should stay open.
+          stale-pr-message: >
+            This pull request has had no activity for 60 days. Comment
+            if it should stay open.
+          close-issue-message: >
+            Closed for inactivity. Comment to reopen.
+          close-pr-message: >
+            Closed for inactivity. Comment to reopen.

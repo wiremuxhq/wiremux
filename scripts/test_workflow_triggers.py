@@ -210,6 +210,13 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("github.event_name != 'push'", text)
         self.assertIn("github.event.created", text)
         self.assertIn("inputs.tag != ''", text)
+        header = text.split("\njobs:", 1)[0]
+        self.assertIn("contents: read", header)
+        self.assertNotIn("contents: write", header)
+        self.assertNotIn("id-token:", header)
+        job = text.split("\njobs:", 1)[1]
+        self.assertIn("contents: write", job)
+        self.assertIn("id-token: write", job)
         self.assertNotIn("github.event_name == 'workflow_call'", text)
         self.assertIn("attestations: write", text)
         self.assertIn(
@@ -394,6 +401,40 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("Monday security red", security)
         self.assertIn("scripts/report-scheduled-failure.py", security)
         self.assertIn('cron: "17 4 * * 1"', security)
+
+    def test_pr_title_reports_on_merge_group(self) -> None:
+        text = (WORKFLOWS / "pr-title.yml").read_text(encoding="utf-8")
+        on_block = _on_block(text)
+        self.assertIn("merge_group:", on_block)
+        self.assertIn("workflow_dispatch:", on_block)
+        self.assertIn("name: Semantic PR Title", text)
+        self.assertIn("semantic title already passed on the pull request", text)
+        self.assertIn("dependabot pull requests are exempt", text)
+        self.assertIn("github.event_name == 'pull_request'", text)
+
+    def test_security_codeql_runs_on_main_push(self) -> None:
+        text = (WORKFLOWS / "security.yml").read_text(encoding="utf-8")
+        on_block = _on_block(text)
+        self.assertIn("push:", on_block)
+        self.assertIn("branches: [main]", on_block)
+        self.assertIn('cron: "17 4 * * 1"', on_block)
+        self.assertNotIn("cargo test", text)
+        self.assertNotIn("cargo clippy", text)
+
+    def test_stale_exempts_maintainer_labels(self) -> None:
+        text = (WORKFLOWS / "stale.yml").read_text(encoding="utf-8")
+        on_block = _on_block(text)
+        self.assertIn("workflow_dispatch:", on_block)
+        self.assertIn("schedule:", on_block)
+        self.assertIn(
+            "actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93",
+            text,
+        )
+        self.assertIn("good first issue,help wanted,constitution,security", text)
+        self.assertIn("autorelease: pending", text)
+        self.assertIn("timeout-minutes: 10", text)
+        self.assertIn("cancel-in-progress: false", text)
+        self.assertNotIn("\u2014", text)
 
     def test_reporter_requires_args(self) -> None:
         import subprocess

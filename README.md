@@ -1,5 +1,18 @@
 # Wiremux
 
+![Wiremux. Map five LLM wires in-process.](docs/brand/social-preview.png)
+
+[![CI](https://github.com/wiremuxhq/wiremux/actions/workflows/ci.yml/badge.svg?event=pull_request)](https://github.com/wiremuxhq/wiremux/actions/workflows/ci.yml?query=event%3Apull_request)
+[![Security](https://github.com/wiremuxhq/wiremux/actions/workflows/security.yml/badge.svg?event=push)](https://github.com/wiremuxhq/wiremux/actions/workflows/security.yml?query=event%3Apush)
+[![crates.io](https://img.shields.io/crates/v/wiremux?logo=rust)](https://crates.io/crates/wiremux)
+[![docs.rs](https://img.shields.io/docsrs/wiremux?logo=docs.rs)](https://docs.rs/wiremux)
+[![Release](https://img.shields.io/github/v/release/wiremuxhq/wiremux?logo=github&sort=semver)](https://github.com/wiremuxhq/wiremux/releases/latest)
+
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](https://github.com/wiremuxhq/wiremux/blob/main/LICENSE)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/wiremuxhq/wiremux/badge)](https://securityscorecards.dev/viewer/?uri=github.com/wiremuxhq/wiremux)
+[![FOSSA Status](https://github.com/wiremuxhq/wiremux/actions/workflows/fossa.yml/badge.svg?event=push)](https://github.com/wiremuxhq/wiremux/actions/workflows/fossa.yml?query=event%3Apush)
+[![wiremux-auth](https://img.shields.io/crates/v/wiremux-auth?logo=rust&label=wiremux-auth)](https://crates.io/crates/wiremux-auth)
+
 Map Chat Completions, Messages, Responses, Gemini, and Converse
 through one in-process IR. Refresh tokens from the same pasteable
 vendor profiles. The host keeps the agent loop.
@@ -8,8 +21,8 @@ vendor profiles. The host keeps the agent loop.
 
 | Crate | Job |
 | --- | --- |
-| [`wiremux`](https://crates.io/crates/wiremux) | Dialect maps (`decode` / `encode` / stream) plus optional CLI and loopback proxy |
-| [`wiremux-auth`](https://crates.io/crates/wiremux-auth) | Profile catalog and `TokenProvider` (static, OAuth, GCP, Azure, AWS) |
+| [`wiremux`](https://crates.io/crates/wiremux) ([docs](https://docs.rs/wiremux)) | Dialect maps (`decode` / `encode` / stream) plus optional CLI and loopback proxy |
+| [`wiremux-auth`](https://crates.io/crates/wiremux-auth) ([docs](https://docs.rs/wiremux-auth)) | Profile catalog and `TokenProvider` (static, OAuth, GCP, Azure, AWS) |
 
 Maps-only hosts depend on `wiremux` with `default-features = false`.
 That path does not pull clap, tokio, reqwest, or aws-lc.
@@ -124,7 +137,7 @@ Copy-paste examples: [`examples/`](examples/).
 ## Status
 
 0.x. Public IR and error enums are `#[non_exhaustive]`. Dual license
-MIT OR Apache-2.0.
+[MIT](LICENSE) OR [Apache-2.0](LICENSE-APACHE).
 
 This crate is not a LiteLLM clone, not a desktop switcher, and not a
 subscription pool. It does not ship a public Claude-Pro-in-Codex,
@@ -133,7 +146,9 @@ Cline, or OpenCode preset.
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). `make check` is the local
-gate. Commits need `git commit -s` (DCO).
+gate. Commits need `git commit -s` (DCO). Questions:
+[`SUPPORT.md`](SUPPORT.md). Maintainer rules:
+[`GOVERNANCE.md`](GOVERNANCE.md).
 
 Security reports go to [`SECURITY.md`](SECURITY.md), not a public
 issue.

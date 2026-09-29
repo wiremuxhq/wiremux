@@ -1,6 +1,10 @@
 name: Security
 
+# Push runs CodeQL on main (build-mode none). The product test
+# matrix stays on pull_request and merge_group in ci.yml.
 on:
+  push:
+    branches: [main]
   pull_request:
   merge_group: {}
   schedule:
