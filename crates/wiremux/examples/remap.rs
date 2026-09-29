@@ -4,19 +4,20 @@
 //! cargo run -p wiremux --example remap --no-default-features
 //! ```
 
-use wiremux::{Wire, decode, encode, parse_profile_str};
+use wiremux::{LoadOptions, Wire, decode, encode, load_profile_for_wire};
 
 fn main() {
     let src = br#"{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}"#;
     let (ir, decode_loss) = decode(Wire::ChatCompletions, src).expect("decode Chat Completions");
-    let profile = parse_profile_str(
-        r#"
-schema_version = 1
-id = "example-messages"
-wire = "messages"
-"#,
+    let profile = load_profile_for_wire(
+        Wire::Messages,
+        &LoadOptions {
+            include_shipped: false,
+            include_user_config: false,
+            ..LoadOptions::default()
+        },
     )
-    .expect("example profile");
+    .expect("minimal messages profile");
     let (out, encode_loss) = encode(Wire::Messages, &ir, &profile).expect("encode Messages");
     let value: serde_json::Value = serde_json::from_slice(&out).expect("JSON body");
     println!(

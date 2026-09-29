@@ -22,8 +22,8 @@ This repository may be ahead of crates.io. Host attach notes in
 MSRV is 1.95 (see `rust-toolchain.toml`).
 
 ```bash
-cargo add wiremux-auth
 cargo add wiremux --no-default-features
+cargo add wiremux-auth
 ```
 
 CLI and proxy:
@@ -32,23 +32,32 @@ CLI and proxy:
 cargo install wiremux --locked
 ```
 
+Maps-only hosts stop after the first command. TokenProvider hosts
+also add `wiremux-auth`.
+
 ## Maps
 
 Decode a vendor JSON body into `IrRequest`, then encode another wire.
-Loss is typed (`preserve` / `degrade` / `drop` / `hard-error`), never
-a silent strip.
+The profile supplies vendor quirks. Encode-side loss is typed
+(`preserve` / `degrade` / `drop` / `hard-error`).
+`--dump-loss` prints one line per change:
+
+```text
+loss.encode: degrade sampling.max_tokens: messages requires max_tokens
+```
 
 ```rust
-use wiremux::{Wire, decode, encode, parse_profile_str};
+use wiremux::{LoadOptions, Wire, decode, encode, load_profile_for_wire};
 
 let src = br#"{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}"#;
 let (ir, _loss) = decode(Wire::ChatCompletions, src).unwrap();
-let profile = parse_profile_str(
-    r#"
-schema_version = 1
-id = "example-messages"
-wire = "messages"
-"#,
+let profile = load_profile_for_wire(
+    Wire::Messages,
+    &LoadOptions {
+        include_shipped: false,
+        include_user_config: false,
+        ..LoadOptions::default()
+    },
 )
 .unwrap();
 let (_out, _loss) = encode(Wire::Messages, &ir, &profile).unwrap();
@@ -58,6 +67,12 @@ Run the same program from this tree:
 
 ```bash
 cargo run -p wiremux --example remap --no-default-features
+```
+
+The CLI prints the encoded body on stdout. Loss lines go to stderr:
+
+```bash
+wiremux map --from chat --to messages request.json
 ```
 
 Wires: `chat-completions` (CLI also accepts `chat`), `messages`,

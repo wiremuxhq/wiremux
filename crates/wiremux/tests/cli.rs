@@ -1,4 +1,4 @@
-//! CLI corpus: profile validate, auth login/status, listen bind.
+//! CLI corpus: map, profile validate, auth login/status, listen bind.
 #![cfg(feature = "cli")]
 
 use std::io::{Read, Write};
@@ -6505,4 +6505,373 @@ fn profile_ingest_writes_azure_deployment_template() {
     let body = std::fs::read_to_string(dest.join("azure.toml")).expect("azure");
     assert!(body.contains("deployments/{model}/chat/completions"));
     assert!(body.contains("header:api-key"));
+}
+
+fn run_map(args: &[&str], stdin_body: Option<&[u8]>) -> std::process::Output {
+    let (_home, mut cmd) = isolated_home();
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if stdin_body.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    let mut child = cmd.spawn().expect("spawn map");
+    if let Some(body) = stdin_body {
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(body)
+            .expect("write stdin");
+    }
+    child.wait_with_output().expect("wait map")
+}
+
+#[test]
+fn map_chat_stdin_to_messages_prints_body() {
+    let out = run_map(
+        &["map", "--from", "chat", "--to", "messages", "-"],
+        Some(br#"{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}"#),
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert!(parsed["messages"].is_array(), "{stdout}");
+    assert!(parsed.get("max_tokens").is_some(), "{stdout}");
+    assert!(stdout.contains("ping"), "{stdout}");
+}
+
+#[test]
+fn map_reads_a_request_file() {
+    let dir = unique_scratch();
+    let path = dir.join("chat.json");
+    std::fs::write(
+        &path,
+        r#"{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}"#,
+    )
+    .expect("request");
+    let out = run_map(
+        &[
+            "map",
+            "--from",
+            "chat-completions",
+            "--to",
+            "messages",
+            path.to_str().expect("utf8"),
+        ],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(stdout.contains("max_tokens"), "{stdout}");
+    assert!(stdout.contains("messages"), "{stdout}");
+}
+
+#[test]
+fn map_invalid_json_exits_1_without_a_body() {
+    let out = run_map(&["map", "--from", "messages", "--to", "chat"], Some(b"{"));
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.to_lowercase().contains("json") || err.contains("invalid"),
+        "{err}"
+    );
+}
+
+#[test]
+fn map_unknown_dest_names_the_to_flag() {
+    let out = run_map(&["map", "--from", "chat", "--to", "nope"], None);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--to"), "{err}");
+    assert!(!err.contains("--from"), "{err}");
+}
+
+fn accept_upstream() -> (TcpListener, std::net::SocketAddr) {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let addr = upstream.local_addr().expect("addr");
+    upstream.set_nonblocking(true).expect("nonblocking");
+    (upstream, addr)
+}
+
+fn take_upstream(upstream: TcpListener) -> TcpStream {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match upstream.accept() {
+            Ok((stream, _)) => return stream,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    panic!("upstream got no request");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(err) => panic!("upstream accept: {err}"),
+        }
+    }
+}
+
+fn read_http_request(mut stream: TcpStream) -> String {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("timeout");
+    let mut buf = [0u8; 8192];
+    let n = stream.read(&mut buf).unwrap_or(0);
+    String::from_utf8_lossy(&buf[..n]).into_owned()
+}
+
+fn reply_json(mut stream: TcpStream, status: &str, body: &str) {
+    let resp = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(resp.as_bytes());
+}
+
+#[test]
+fn proxy_model_overwrites_messages_body() {
+    let (upstream, upstream_addr) = accept_upstream();
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "ollama.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "ollama-proxy"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "messages",
+            "--model",
+            "llama3.2",
+            "--dump-loss",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"claude-sonnet-4-5","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let upstream_thread = std::thread::spawn(move || {
+        let stream = take_upstream(upstream);
+        let req = read_http_request(stream.try_clone().expect("clone"));
+        reply_json(
+            stream,
+            "200 OK",
+            r#"{"id":"chatcmpl-proxy","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}"#,
+        );
+        req
+    });
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut err = String::new();
+    let _ = child
+        .stderr
+        .take()
+        .expect("stderr")
+        .read_to_string(&mut err);
+    let upstream_req = upstream_thread.join().expect("upstream");
+    assert!(
+        upstream_req.contains("\"model\":\"llama3.2\"")
+            || upstream_req.contains("\"model\": \"llama3.2\""),
+        "upstream model must be the override, got: {upstream_req}"
+    );
+    assert!(
+        !upstream_req.contains("claude-sonnet-4-5"),
+        "harness model must not reach upstream, got: {upstream_req}"
+    );
+    assert!(
+        err.contains("proxy --model"),
+        "dump-loss must name the overwrite, got: {err}"
+    );
+}
+
+#[test]
+fn proxy_forwards_anthropic_beta_on_messages() {
+    let (upstream, upstream_addr) = accept_upstream();
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "messages.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "beta-proxy"
+wire = "messages"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/messages"
+
+[betas]
+values = ["messages-2023-12-15"]
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "messages",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"claude-sonnet-4-5","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nanthropic-beta: interleaved-thinking-2025-05-14\r\nauthorization: Bearer inbound-must-not-forward\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let upstream_thread = std::thread::spawn(move || {
+        let stream = take_upstream(upstream);
+        let req = read_http_request(stream.try_clone().expect("clone"));
+        reply_json(
+            stream,
+            "200 OK",
+            r#"{"id":"msg_proxy","type":"message","role":"assistant","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn"}"#,
+        );
+        req
+    });
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let upstream_req = upstream_thread.join().expect("upstream");
+    let lower = upstream_req.to_ascii_lowercase();
+    assert_eq!(
+        lower.matches("anthropic-beta:").count(),
+        1,
+        "one beta header, got: {upstream_req}"
+    );
+    assert!(
+        lower.contains("messages-2023-12-15") && lower.contains("interleaved-thinking-2025-05-14"),
+        "profile beta then inbound beta, got: {upstream_req}"
+    );
+    assert!(
+        !lower.contains("inbound-must-not-forward"),
+        "inbound authorization must not be forwarded, got: {upstream_req}"
+    );
+}
+
+#[test]
+fn proxy_get_v1_models_returns_one_entry() {
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "models.toml",
+        r#"
+schema_version = 1
+id = "models-proxy"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://127.0.0.1:1"
+chat_path = "/v1/chat/completions"
+"#,
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--model",
+            "llama3.2",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let listed = raw_http(
+        listen,
+        "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    let missing = raw_http(
+        listen,
+        "GET /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    kill_proxy(child);
+
+    let (_home, mut cmd) = isolated_home();
+    let mut plain = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let plain_listen = read_listen_addr(plain.stdout.as_mut().expect("stdout"));
+    let profile_list = raw_http(
+        plain_listen,
+        "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    kill_proxy(plain);
+
+    assert!(
+        listed.contains("200")
+            && (listed.contains("\"id\":\"llama3.2\"") || listed.contains("\"id\": \"llama3.2\"")),
+        "override id, got: {listed}"
+    );
+    assert!(
+        listed.contains("\"object\":\"list\"") || listed.contains("\"object\": \"list\""),
+        "{listed}"
+    );
+    assert!(
+        listed.contains("\"owned_by\":\"wiremux\"") || listed.contains("\"owned_by\": \"wiremux\""),
+        "{listed}"
+    );
+    assert!(
+        missing.contains("405") && missing.contains("POST required"),
+        "other GET stays 405, got: {missing}"
+    );
+    assert!(
+        profile_list.contains("\"id\":\"models-proxy\"")
+            || profile_list.contains("\"id\": \"models-proxy\""),
+        "profile id when --model is unset, got: {profile_list}"
+    );
 }

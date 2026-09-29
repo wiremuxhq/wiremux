@@ -48,6 +48,14 @@ pub enum AuthError {
         /// Sanitized `error` / `error_description` only.
         summary: String,
     },
+    /// Refresh is cached in memory, but the credential file was not updated.
+    #[error("credential store is stale ({}): {detail}", path.display())]
+    CredentialStoreStale {
+        /// Store path that could not be saved.
+        path: PathBuf,
+        /// Save failure with token material removed.
+        detail: String,
+    },
 }
 
 impl AuthError {
@@ -64,6 +72,16 @@ impl AuthError {
         Self::Json {
             path: Some(redact_pathbuf(path.as_ref().to_path_buf())),
             source,
+        }
+    }
+
+    /// In-memory refresh is newer than the store. `detail` must not contain a token.
+    #[cfg(feature = "net")]
+    pub(crate) fn credential_store_stale(path: PathBuf, detail: impl Into<String>) -> Self {
+        let detail = crate::helpers::redact_secret_looking(&detail.into());
+        Self::CredentialStoreStale {
+            path: redact_pathbuf(path),
+            detail,
         }
     }
 }

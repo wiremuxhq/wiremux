@@ -10,10 +10,22 @@ Current tag is `v0.9.3`. <!-- x-release-please-version -->
 behind `test-util`, shipped `anthropic-oauth` and
 `openai-codex-oauth`). Dialect maps already exist:
 `wiremux::{decode,encode}` for Chat Completions, Messages, Responses,
-and Gemini (`wire = "gemini"`). Stream maps include thoughtSignature
-and a Chat id-then-name assembler.
+Gemini (`wire = "gemini"`), and Converse. Stream maps include
+thoughtSignature and a Chat id-then-name assembler.
 
-Auth-only is a valid first attach (`wiremux-auth` alone).
+```rust
+let opts = wiremux_auth::LoadOptions::default();
+let profile = wiremux_auth::load_profile("anthropic", &opts)?;
+let _provider = wiremux_auth::provider_from_profile(&profile)?;
+let (ir, _decode_loss) = wiremux::decode(wiremux::Wire::ChatCompletions, bytes)?;
+let (_body, _encode_loss) = wiremux::encode(wiremux::Wire::Messages, &ir, &profile)?;
+```
+
+`load_profile_for_wire` is the same attach when the host has a wire
+and no catalog id. Auth-only is a valid first attach (`wiremux-auth`
+alone).
+
+## Crate history
 
 `shipped_profile_ids()`, `xai-grok-build-messages`, URL-first Grok
 Build headers, and Messages `Continue.` shipped in crates.io `0.5.0`.
@@ -89,7 +101,8 @@ instead.
   trait.
 - `get_token`, `mark_stale`, and `wake` forward.
 - Every `AuthError` becomes the host auth error. Typed variants
-  (`LockTimeout`, `EmptyWriteRefused`, `VendorRejected`) stay
+  (`LockTimeout`, `EmptyWriteRefused`, `VendorRejected`,
+  `CredentialStoreStale`) stay
   distinguishable so diagnose can tell flake from "re-run
   setup-token".
 - Construction is `load_profile(id)` then `provider_from_profile`.

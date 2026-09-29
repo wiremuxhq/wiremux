@@ -32,6 +32,8 @@ fn weather_tool() -> IrTool {
         name: "get_weather".into(),
         description: "Get weather for a city".into(),
         parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+
+        strict: None,
     }
 }
 
@@ -268,10 +270,16 @@ fn gemini_images_and_thought_signatures_replay_on_the_next_request() {
                 IrItem::FunctionOutput {
                     call_id: "fn_a".into(),
                     output: r#"{"result":"a"}"#.into(),
+
+                    parts: Vec::new(),
+                    is_error: false,
                 },
                 IrItem::FunctionOutput {
                     call_id: "fn_b".into(),
                     output: r#"{"result":"b"}"#.into(),
+
+                    parts: Vec::new(),
+                    is_error: false,
                 },
             ],
         ),
@@ -382,6 +390,9 @@ fn chat_request_fixtures_match_host_encode() {
                 IrItem::FunctionOutput {
                     call_id: "call_abc".into(),
                     output: r#"{"temp":72}"#.into(),
+
+                    parts: Vec::new(),
+                    is_error: false,
                 },
             ],
         ),
@@ -414,6 +425,9 @@ fn responses_input_item_fixtures() {
             vec![IrItem::FunctionOutput {
                 call_id: "call_abc".into(),
                 output: "sunny".into(),
+
+                parts: Vec::new(),
+                is_error: false,
             }],
         ),
     );
@@ -574,10 +588,16 @@ fn messages_request_fixtures_match_host_encode() {
                 IrItem::FunctionOutput {
                     call_id: "call_1".into(),
                     output: "sunny".into(),
+
+                    parts: Vec::new(),
+                    is_error: false,
                 },
                 IrItem::FunctionOutput {
                     call_id: "call_2".into(),
                     output: "cloudy".into(),
+
+                    parts: Vec::new(),
+                    is_error: false,
                 },
             ],
         ),
@@ -781,6 +801,8 @@ fn messages_cache_breakpoints_follow_host_rules() {
             "type": "object",
             "properties": {"payload": {"type": "string", "description": "y".repeat(400)}}
         }),
+
+        strict: None,
     };
     assert_eq!(count_cache_control(&body(Wire::Messages, &small)), 0);
     let crossed = small.with_tools(vec![big_tool]);
@@ -823,6 +845,8 @@ fn messages_cache_breakpoints_follow_host_rules() {
             name: "second_tool".into(),
             description: "second".into(),
             parameters: json!({"type": "object"}),
+
+            strict: None,
         },
     ])
     .with_sampling(IrSampling::patch(|s| {

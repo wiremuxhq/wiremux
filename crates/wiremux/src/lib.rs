@@ -43,14 +43,14 @@ pub use ir::{
 pub use map::{MapError, decode, encode};
 pub use stream::{
     EventStreamReader, MAX_CONTENT_BLOCK_INDEX, MAX_EVENTSTREAM_PENDING, MAX_SSE_PENDING,
-    MAX_TOOL_CALL_INDEX, RawSse, SseFrameReader, StreamEncoder, ToolCallAssembler, decode_response,
-    decode_response_with_loss, decode_stream_event, decode_stream_events,
+    MAX_TOOL_CALL_INDEX, RawSse, SseFrameReader, StreamDecoder, StreamEncoder, ToolCallAssembler,
+    decode_response, decode_response_with_loss, decode_stream_event, decode_stream_events,
     encode_eventstream_message, encode_response, encode_response_with_model, encode_stream_event,
 };
 pub use wiremux_auth::VERSION;
 pub use wiremux_auth::{
     LoadOptions, ResolvedProfile, StreamUnknownPolicy, ToolTypePolicy, Wire, load_profile,
-    parse_profile_str,
+    load_profile_for_wire, parse_profile_str,
 };
 
 #[cfg(feature = "client")]

@@ -134,9 +134,15 @@ fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) {
         match block.get("type").and_then(Value::as_str).unwrap_or("text") {
             "tool_result" => {
                 flush_user(&mut parts, items);
+                let (output, result_parts) = decode_tool_result(block);
                 items.push(IrItem::FunctionOutput {
                     call_id: str_field(block, "tool_use_id").unwrap_or_default(),
-                    output: tool_result_output(block),
+                    output,
+                    parts: result_parts,
+                    is_error: block
+                        .get("is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 });
             }
             _ => {
@@ -251,15 +257,26 @@ fn decode_document(block: &Value) -> Option<IrPart> {
     })
 }
 
-fn tool_result_output(block: &Value) -> String {
-    if let Some(s) = block.get("content").and_then(Value::as_str) {
-        return s.to_string();
+fn decode_tool_result(block: &Value) -> (String, Vec<IrPart>) {
+    let Some(content) = block.get("content").or_else(|| block.get("text")) else {
+        return (String::new(), Vec::new());
+    };
+    if let Some(text) = content.as_str() {
+        return (text.to_string(), Vec::new());
     }
-    block
-        .get("content")
-        .map(value_as_string)
-        .or_else(|| block.get("text").map(value_as_string))
-        .unwrap_or_default()
+    let Some(arr) = content.as_array() else {
+        return (value_as_string(content), Vec::new());
+    };
+    let mut texts = Vec::new();
+    let mut parts = Vec::new();
+    for item in arr {
+        match decode_content_part(item) {
+            Some(IrPart::Text(text)) => texts.push(text),
+            Some(part) => parts.push(part),
+            None => {}
+        }
+    }
+    (texts.join(""), parts)
 }
 
 fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
@@ -271,6 +288,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     IrSampling {
         temperature: f32_field(value, "temperature"),
         top_p: f32_field(value, "top_p"),
+        top_k: u32_field(value, "top_k"),
         max_tokens: u32_field(value, "max_tokens"),
         stop: stop_values(value, &["stop_sequences", "stop"]),
         tool_choice: decode_tool_choice(value.get("tool_choice")),
@@ -290,6 +308,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         max_reasoning_tokens,
         json_schema,
         json_schema_name,
+        json_schema_strict: None,
         json_object: None,
         include: Vec::new(),
         prompt_cache_key: None,
@@ -512,10 +531,22 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 }));
                 idx += 1;
             }
-            IrItem::FunctionOutput { call_id, output } => {
+            IrItem::FunctionOutput {
+                call_id,
+                output,
+                parts,
+                is_error,
+            } => {
                 messages.push(json!({
                     "role": "user",
-                    "content": [tool_result_block(call_id, output, format!("items[{idx}]"), report)],
+                    "content": [tool_result_block(
+                        call_id,
+                        output,
+                        parts,
+                        *is_error,
+                        format!("items[{idx}]"),
+                        report,
+                    )],
                 }));
                 idx += 1;
             }
@@ -612,10 +643,18 @@ fn encode_user(
 ) -> (Value, usize) {
     let mut consumed = 1;
     let mut content = encode_user_parts(parts, &format!("items[{start}]"), report);
-    while let Some(IrItem::FunctionOutput { call_id, output }) = ir.items.get(start + consumed) {
+    while let Some(IrItem::FunctionOutput {
+        call_id,
+        output,
+        parts,
+        is_error,
+    }) = ir.items.get(start + consumed)
+    {
         content.push(tool_result_block(
             call_id,
             output,
+            parts,
+            *is_error,
             format!("items[{}]", start + consumed),
             report,
         ));
@@ -1123,15 +1162,38 @@ fn tool_use_block(
 fn tool_result_block(
     call_id: &str,
     output: &str,
+    parts: &[IrPart],
+    is_error: bool,
     path: impl Into<String>,
     report: &mut LossReport,
 ) -> Value {
     let id = rewrite_messages_tool_use_id(call_id, path, report);
-    json!({
+    let mut block = json!({
         "type": "tool_result",
         "tool_use_id": id,
-        "content": output,
-    })
+    });
+    if is_error {
+        block["is_error"] = json!(true);
+    }
+    if parts.is_empty() {
+        block["content"] = json!(output);
+        return block;
+    }
+    let mut content = Vec::new();
+    if !output.is_empty() {
+        content.push(json!({"type": "text", "text": output}));
+    }
+    for part in parts {
+        if let Some(encoded) = encode_part(part, report) {
+            content.push(encoded);
+        }
+    }
+    block["content"] = if content.is_empty() {
+        json!(output)
+    } else {
+        Value::Array(content)
+    };
+    block
 }
 
 fn encode_tool(tool: &PreparedTool) -> Value {
@@ -1140,6 +1202,7 @@ fn encode_tool(tool: &PreparedTool) -> Value {
             name,
             description,
             parameters,
+            strict: _,
         } => {
             let mut schema = parameters.clone();
             normalize_object_schema_required(&mut schema);
@@ -1184,13 +1247,22 @@ pub(super) fn normalize_object_schema_required(schema: &mut Value) {
     }
 }
 
+/// Printed decimal of an f32, so the JSON number matches that decimal (`0.2`).
+fn json_f32(value: f32) -> Value {
+    let parsed = value.to_string().parse::<f64>().unwrap_or(f64::from(value));
+    json!(parsed)
+}
+
 fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     let s = &ir.sampling;
     if let Some(t) = s.temperature {
-        body["temperature"] = json!(t);
+        body["temperature"] = json_f32(t);
     }
     if let Some(p) = s.top_p {
         body["top_p"] = json!(p);
+    }
+    if let Some(k) = s.top_k {
+        body["top_k"] = json!(k);
     }
     if let Some(max) = s.max_tokens {
         body["max_tokens"] = json!(max);
@@ -1242,11 +1314,15 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         body["stream"] = json!(stream);
     }
     encode_thinking(s, body, report);
+    omit_sampling_rejected_by_thinking(s, body, report);
+    if s.json_schema_strict.is_some() {
+        report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
+    }
     if body.get("max_tokens").is_none() {
         body["max_tokens"] = json!(MESSAGES_DEFAULT_COMPLETION_TOKENS);
         report.record(
             "sampling.max_tokens",
-            LossAction::Preserve,
+            LossAction::Degrade,
             "messages requires max_tokens",
         );
     }
@@ -1409,9 +1485,54 @@ fn encode_thinking(s: &IrSampling, body: &mut Value, report: &mut LossReport) {
         body["max_tokens"] = json!(raised);
         report.record(
             "sampling.max_tokens",
-            LossAction::Preserve,
+            LossAction::Degrade,
             "raised above thinking.budget_tokens",
         );
+    }
+}
+
+fn omit_sampling_rejected_by_thinking(s: &IrSampling, body: &mut Value, report: &mut LossReport) {
+    let thinking_on = body
+        .pointer("/thinking/type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "enabled" || kind == "adaptive");
+    if !thinking_on {
+        return;
+    }
+    if let Some(obj) = body.as_object_mut() {
+        if s.temperature.is_some() {
+            obj.remove("temperature");
+            report.record(
+                "sampling.temperature",
+                LossAction::Drop,
+                "thinking omits temperature",
+            );
+        }
+        if s.top_p.is_some() {
+            obj.remove("top_p");
+            report.record("sampling.top_p", LossAction::Drop, "thinking omits top_p");
+        }
+        if s.top_k.is_some() {
+            obj.remove("top_k");
+            report.record("sampling.top_k", LossAction::Drop, "thinking omits top_k");
+        }
+    }
+    match &s.tool_choice {
+        IrToolChoice::Required | IrToolChoice::Named(_) => {
+            match body.get_mut("tool_choice") {
+                Some(Value::Object(choice)) => {
+                    choice.insert("type".into(), json!("auto"));
+                    choice.remove("name");
+                }
+                _ => body["tool_choice"] = json!({"type": "auto"}),
+            }
+            report.record(
+                "sampling.tool_choice",
+                LossAction::Degrade,
+                "thinking forces tool_choice auto",
+            );
+        }
+        IrToolChoice::Auto | IrToolChoice::None => {}
     }
 }
 

@@ -18,8 +18,8 @@ use crate::headers::{apply_profile_headers, apply_provider_headers};
 use crate::ir::{IrRequest, IrStreamEvent, LossReport};
 use crate::map::{MapError, encode};
 use crate::stream::{
-    ToolCallAssembler, UpstreamFrames, decode_response, decode_stream_events,
-    sse_wrapped_error_message,
+    INCOMPLETE_STREAM_MESSAGE, StreamDecoder, ToolCallAssembler, UpstreamFrames, decode_response,
+    frame_is_terminal, sse_wrapped_error_message,
 };
 use crate::upstream::upstream_url_for_model;
 
@@ -573,12 +573,14 @@ impl WireClient {
         Ok(LiveStream {
             bytes,
             reader: UpstreamFrames::for_wire(wire),
+            decoder: StreamDecoder::new(),
             assembler: ToolCallAssembler::new(),
             pending: VecDeque::new(),
             wire,
             profile: self.profile.clone(),
             eof: false,
             saw_frame: false,
+            saw_terminal: false,
             leftover: Vec::new(),
             http_status: status,
         })
@@ -597,12 +599,14 @@ enum StreamPhase {
 struct LiveStream {
     bytes: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     reader: UpstreamFrames,
+    decoder: StreamDecoder,
     assembler: ToolCallAssembler,
     pending: VecDeque<IrStreamEvent>,
     wire: Wire,
     profile: ResolvedProfile,
     eof: bool,
     saw_frame: bool,
+    saw_terminal: bool,
     leftover: Vec<u8>,
     http_status: u16,
 }
@@ -611,10 +615,13 @@ impl LiveStream {
     fn push_frames(&mut self, frames: Vec<crate::stream::RawSse>) -> Result<(), ClientError> {
         for raw in frames {
             self.saw_frame = true;
+            if frame_is_terminal(self.wire, &raw, &self.profile) {
+                self.saw_terminal = true;
+            }
             if let Some(err) = classify_sse_wrapped_error(&raw.data, self.http_status) {
                 return Err(err);
             }
-            let events = decode_stream_events(self.wire, &raw, &self.profile)?;
+            let events = self.decoder.decode(self.wire, &raw, &self.profile)?;
             for ev in events {
                 self.pending.extend(self.assembler.push(ev));
             }
@@ -644,6 +651,16 @@ async fn pull_live(
             return Some((Ok(ev), StreamPhase::Live(live)));
         }
         if live.eof {
+            if live.saw_frame && !live.saw_terminal {
+                return Some((
+                    Err(ClientError::Transient {
+                        status: None,
+                        message: INCOMPLETE_STREAM_MESSAGE.to_string(),
+                        kind: TransientKind::Http,
+                    }),
+                    StreamPhase::Done,
+                ));
+            }
             return None;
         }
         match live.bytes.next().await {
@@ -1334,12 +1351,14 @@ mod tests {
                 Bytes::copy_from_slice(body),
             )])),
             reader: UpstreamFrames::for_wire(Wire::Converse),
+            decoder: StreamDecoder::new(),
             assembler: ToolCallAssembler::new(),
             pending: VecDeque::new(),
             wire: Wire::Converse,
             profile,
             eof: false,
             saw_frame: false,
+            saw_terminal: false,
             leftover: Vec::new(),
             http_status: 401,
         };

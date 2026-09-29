@@ -26,6 +26,7 @@ pub(super) enum PreparedTool {
         name: String,
         description: String,
         parameters: Value,
+        strict: Option<bool>,
     },
     Raw(Value),
 }
@@ -92,7 +93,12 @@ fn function_from(src: &Value) -> IrTool {
             .or_else(|| src.get("input_schema"))
             .cloned()
             .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
+        strict: super::bool_field(src, "strict"),
     }
+}
+
+fn wire_keeps_strict(wire: Wire) -> bool {
+    matches!(wire, Wire::ChatCompletions | Wire::Responses)
 }
 
 fn is_hosted(type_name: &str) -> bool {
@@ -118,14 +124,19 @@ pub(super) fn prepare_tools(
                 name,
                 description,
                 parameters,
+                strict,
             } => {
                 if name.trim().is_empty() {
                     return Err(MapError::hard(path, "function tool name is empty"));
+                }
+                if strict.is_some() && !wire_keeps_strict(wire) {
+                    report.record(format!("{path}.strict"), LossAction::Drop, "no slot");
                 }
                 out.push(PreparedTool::Function {
                     name: apply_tool_name_case(name, case),
                     description: description.clone(),
                     parameters: parameters.clone(),
+                    strict: *strict,
                 });
             }
             IrTool::Namespace { name, raw } => {
@@ -205,12 +216,17 @@ fn push_namespace(out: &mut Vec<PreparedTool>, args: NsPush<'_>) -> Result<(), M
                     name,
                     description,
                     parameters,
+                    strict,
                 } = tool
                 {
+                    if strict.is_some() && !wire_keeps_strict(wire) {
+                        report.record(format!("{path}.strict"), LossAction::Drop, "no slot");
+                    }
                     out.push(PreparedTool::Function {
                         name: apply_tool_name_case(&name, case),
                         description,
                         parameters,
+                        strict,
                     });
                 }
             }
@@ -301,6 +317,7 @@ fn flatten_namespace(name: &str, raw: &Value, path: &str) -> Result<Vec<IrTool>,
             name: dotted,
             description,
             parameters,
+            strict: super::bool_field(child, "strict"),
         });
     }
     if out.is_empty() {

@@ -489,14 +489,20 @@ pub fn format_status(status: &TokenStatus) -> String {
     }
 }
 
-/// `127.0.0.1` only (ephemeral port allowed).
+/// `127.0.0.1` only. `localhost` is that address. Ephemeral port allowed.
 pub fn parse_listen(s: &str) -> Result<SocketAddr, String> {
-    let addr: SocketAddr = s
+    let candidate = match s.rsplit_once(':') {
+        Some((host, port)) if host.eq_ignore_ascii_case("localhost") => {
+            format!("127.0.0.1:{port}")
+        }
+        _ => s.to_string(),
+    };
+    let addr: SocketAddr = candidate
         .parse()
-        .map_err(|e| format!("invalid --listen {s}: {e}"))?;
+        .map_err(|_| format!("proxy listen address must be 127.0.0.1 ({s})"))?;
     match addr.ip() {
         IpAddr::V4(ip) if ip == Ipv4Addr::LOCALHOST => Ok(addr),
-        _ => Err("proxy listen address must be 127.0.0.1".into()),
+        _ => Err(format!("proxy listen address must be 127.0.0.1 ({s})")),
     }
 }
 
@@ -986,6 +992,20 @@ chat_path = "/v1/projects/p/locations/us-central1/publishers/anthropic/models/{m
         assert!(parse_listen("0.0.0.0:0").is_err());
         let addr = parse_listen("127.0.0.1:0").expect("loopback ephemeral listen");
         assert_eq!(addr, "127.0.0.1:0".parse().expect("socket addr"));
+    }
+
+    #[test]
+    fn parse_listen_accepts_localhost() {
+        let addr = parse_listen("localhost:8787").expect("localhost");
+        assert_eq!(addr, "127.0.0.1:8787".parse().expect("socket addr"));
+        let upper = parse_listen("LOCALHOST:9").expect("LOCALHOST");
+        assert_eq!(upper, "127.0.0.1:9".parse().expect("socket addr"));
+        let err = parse_listen("example.com:8787").expect_err("public name");
+        assert!(
+            err.contains("example.com:8787"),
+            "error should name the input, got {err}"
+        );
+        assert!(parse_listen("[::1]:8787").is_err());
     }
 
     #[test]
