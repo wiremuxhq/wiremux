@@ -5,6 +5,9 @@
 - [Good first issues](https://github.com/wiremuxhq/wiremux/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 - [Help wanted](https://github.com/wiremuxhq/wiremux/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
 
+Questions that are not bug reports go to [`SUPPORT.md`](SUPPORT.md).
+Maintainer rules are in [`GOVERNANCE.md`](GOVERNANCE.md).
+
 Open an issue before a large change. Small, tested fixes can go
 straight to a pull request.
 

@@ -3,6 +3,9 @@ name: PR Title
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
+  # The merge queue has no pull request payload. The job still
+  # reports Semantic PR Title so the check can be required.
+  merge_group:
   workflow_dispatch: {}
 
 concurrency:
@@ -19,12 +22,20 @@ jobs:
     name: Semantic PR Title
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
         with:
           egress-policy: audit
+      - name: Dependabot stand-in
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        run: echo 'dependabot pull requests are exempt from conventional titles'
+      - name: Merge queue stand-in
+        if: github.event_name != 'pull_request'
+        run: echo 'semantic title already passed on the pull request'
       - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.user.login != 'dependabot[bot]'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
