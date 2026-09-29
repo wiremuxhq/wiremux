@@ -40,6 +40,8 @@ struct CachedToken {
     refresh_token: Option<String>,
     acquired_at: Instant,
     lifetime: Duration,
+    /// Vendor `expires_in` while this refresh is cached but not saved.
+    unsaved_expires_in: Option<u64>,
 }
 
 impl std::fmt::Debug for CachedToken {
@@ -52,6 +54,7 @@ impl std::fmt::Debug for CachedToken {
             )
             .field("acquired_at", &self.acquired_at)
             .field("lifetime", &self.lifetime)
+            .field("unsaved_expires_in", &self.unsaved_expires_in)
             .finish()
     }
 }
@@ -295,6 +298,7 @@ impl ProfileTokenProvider {
                     refresh_token: loaded.refresh_token.filter(|s| !s.trim().is_empty()),
                     acquired_at: Instant::now(),
                     lifetime: loaded.lifetime,
+                    unsaved_expires_in: None,
                 }),
                 inflight: InFlight::new(),
             }),
@@ -460,8 +464,11 @@ impl ProfileTokenProvider {
         {
             Ok(guard) => guard,
             Err(e) => {
-                let cached = self.inner.state.read().await.access_token.clone();
-                return cached_token_on_lock_failure(Some(cached.as_str()), force, e);
+                let state = self.inner.state.read().await;
+                if state.unsaved_expires_in.is_some() {
+                    return Err(self.stale_save_error(&e));
+                }
+                return cached_token_on_lock_failure(Some(state.access_token.as_str()), force, e);
             }
         };
 
@@ -471,6 +478,11 @@ impl ProfileTokenProvider {
 
         let refresh_token = {
             let mut state = self.inner.state.write().await;
+            if state.unsaved_expires_in.is_some() {
+                return Err(self.stale_save_error(&AuthError::TokenProvider(
+                    "credential save still pending".into(),
+                )));
+            }
             if !force && !state.needs_refresh() {
                 return Ok(state.access_token.clone());
             }
@@ -554,8 +566,8 @@ impl ProfileTokenProvider {
             return Err(AuthError::EmptyWriteRefused);
         }
 
-        let lifetime =
-            duration_from_expires_in_secs(token_resp.expires_in.unwrap_or(DEFAULT_LIFETIME_SECS));
+        let expires_in = token_resp.expires_in.unwrap_or(DEFAULT_LIFETIME_SECS);
+        let lifetime = duration_from_expires_in_secs(expires_in);
         let new_refresh = {
             let mut state = self.inner.state.write().await;
             let new_refresh = token_resp
@@ -567,23 +579,87 @@ impl ProfileTokenProvider {
                 refresh_token: new_refresh.clone(),
                 acquired_at: Instant::now(),
                 lifetime,
+                unsaved_expires_in: Some(expires_in),
             };
             new_refresh
         };
 
-        if let Err(e) = self
-            .write_back(
-                &token_resp.access_token,
-                new_refresh.as_deref(),
-                token_resp.expires_in.unwrap_or(DEFAULT_LIFETIME_SECS),
-            )
-            .await
-        {
-            warn!("failed to write refreshed token: {e}");
-            return Err(e);
-        }
-
+        self.write_cached(&token_resp.access_token, new_refresh.as_deref(), expires_in)
+            .await?;
         Ok(token_resp.access_token)
+    }
+
+    /// Retry a save that already updated memory. Does not call the token URL.
+    async fn persist_cached_token(&self) -> Result<String, AuthError> {
+        let lock_timeout = Duration::from_millis(self.inner.lock_timeout_ms.load(Ordering::SeqCst));
+        let _file_lock = match try_acquire_refresh_lock(
+            refresh_lock_path(&self.inner.write_back).as_deref(),
+            "token save",
+            lock_timeout,
+        )
+        .await
+        {
+            Ok(guard) => guard,
+            Err(e) => return Err(self.stale_save_error(&e)),
+        };
+        let (access, refresh, expires_in) = {
+            let state = self.inner.state.read().await;
+            let Some(expires_in) = state.unsaved_expires_in else {
+                return Ok(state.access_token.clone());
+            };
+            (
+                state.access_token.clone(),
+                state.refresh_token.clone(),
+                expires_in,
+            )
+        };
+        self.write_cached(&access, refresh.as_deref(), expires_in)
+            .await?;
+        Ok(access)
+    }
+
+    async fn write_cached(
+        &self,
+        access: &str,
+        refresh: Option<&str>,
+        expires_in: u64,
+    ) -> Result<(), AuthError> {
+        if let Err(e) = self.write_back(access, refresh, expires_in).await {
+            let stale = self.stale_save_error(&e);
+            warn!("failed to write refreshed token: {stale}");
+            return Err(stale);
+        }
+        let mut state = self.inner.state.write().await;
+        if state.access_token == access && state.unsaved_expires_in == Some(expires_in) {
+            state.unsaved_expires_in = None;
+        }
+        if state.unsaved_expires_in.is_some() {
+            return Err(self.stale_save_error(&AuthError::TokenProvider(
+                "credential save still pending".into(),
+            )));
+        }
+        Ok(())
+    }
+
+    fn credential_store_path(&self) -> PathBuf {
+        match &self.inner.write_back {
+            WriteBack::File(path) => path.clone(),
+            #[cfg(any(target_os = "macos", test, feature = "test-util"))]
+            WriteBack::Keychain { .. } => PathBuf::from("keychain"),
+            WriteBack::None => PathBuf::new(),
+        }
+    }
+
+    fn stale_save_error(&self, err: &AuthError) -> AuthError {
+        let detail = match err {
+            AuthError::Io { source, .. } => format!("save failed: {source}"),
+            AuthError::Json { source, .. } => format!("save failed: {source}"),
+            AuthError::EmptyWriteRefused => "save refused empty credentials".to_string(),
+            AuthError::LockTimeout => "save failed: file lock timeout".to_string(),
+            AuthError::CredentialStoreStale { detail, .. } => detail.clone(),
+            other => format!("save failed: {other}"),
+        };
+        AuthError::credential_store_stale(self.credential_store_path(), detail)
     }
 
     async fn adopt_copilot_hosts(&self) -> Result<String, AuthError> {
@@ -630,13 +706,15 @@ impl TokenProvider for ProfileTokenProvider {
         // flag before the InFlight claim.
         {
             let state = self.inner.state.read().await;
-            if self.inner.skip_http_refresh.load(Ordering::SeqCst) {
+            let save_pending = state.unsaved_expires_in.is_some();
+            if !save_pending && self.inner.skip_http_refresh.load(Ordering::SeqCst) {
                 if state.access_token.trim().is_empty() {
                     return Err(empty_access_error(&self.inner.oauth));
                 }
                 return Ok(state.access_token.clone());
             }
-            if !self.inner.force_refresh.load(Ordering::SeqCst)
+            if !save_pending
+                && !self.inner.force_refresh.load(Ordering::SeqCst)
                 && !state.needs_refresh()
                 && !self.inner.inflight.is_busy()
             {
@@ -644,9 +722,17 @@ impl TokenProvider for ProfileTokenProvider {
             }
         }
         lead_or_follow(&self.inner.inflight, || async {
+            if self.inner.state.read().await.unsaved_expires_in.is_some() {
+                return self.persist_cached_token().await;
+            }
             let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
             let result = self.refresh_as_leader(force).await;
-            if result.is_err() && force {
+            // A failed save must not schedule another vendor refresh.
+            // VendorRejected still re-arms.
+            if result.is_err()
+                && force
+                && !matches!(result, Err(AuthError::CredentialStoreStale { .. }))
+            {
                 self.inner.force_refresh.store(true, Ordering::SeqCst);
             }
             result
@@ -1190,7 +1276,10 @@ fn adopt_from_store(
     store_refresh: Option<String>,
     store_lifetime: Duration,
 ) -> Option<CachedToken> {
-    if store_access.is_empty() || store_access == cached.access_token {
+    if cached.unsaved_expires_in.is_some()
+        || store_access.is_empty()
+        || store_access == cached.access_token
+    {
         return None;
     }
     Some(CachedToken {
@@ -1198,6 +1287,7 @@ fn adopt_from_store(
         refresh_token: store_refresh,
         acquired_at: Instant::now(),
         lifetime: store_lifetime,
+        unsaved_expires_in: None,
     })
 }
 
@@ -1405,6 +1495,7 @@ mod tests {
             refresh_token: Some("rt".into()),
             acquired_at: Instant::now() - Duration::from_secs(81),
             lifetime: Duration::from_secs(100),
+            unsaved_expires_in: None,
         };
         assert!(tok.needs_refresh(), "81s of 100s must refresh");
         tok.acquired_at = Instant::now() - Duration::from_secs(79);
@@ -2066,6 +2157,51 @@ expires_unit = "s"
         let _ = handle.join();
         assert!(matches!(err, AuthError::EmptyWriteRefused), "got {err:?}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_back_failure_stays_sticky_and_does_not_refresh_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = IsolatedHome::new();
+        let path = home.plant_credentials(PlantCredentials::Claude {
+            access: "sk-ant-oat01-old",
+            refresh: Some("rt-old"),
+            expires_at_ms: Some(1),
+        });
+        let dir = path.parent().expect("creds dir");
+        // Lock sibling must exist before 0555. Otherwise lock create fails
+        // first, write-back never runs, and the mock accept hangs.
+        let lock_path = crate::helpers::lock_sibling(&path);
+        std::fs::write(&lock_path, b"").expect("lock sibling");
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+        struct ResetDir<'a>(&'a std::path::Path);
+        impl Drop for ResetDir<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+        let _reset_dir = ResetDir(dir);
+        let (url, handle) = spawn_http_script(&[(
+            200,
+            r#"{"access_token":"sk-ant-oat01-fresh","refresh_token":"rt-new","expires_in":3600}"#,
+        )]);
+        let oauth = pack_from_toml(&claude_toml(&url, None));
+        let p = provider(&oauth);
+        let err = p.get_token().await.expect_err("save must fail");
+        assert!(
+            matches!(err, AuthError::CredentialStoreStale { .. }),
+            "write-back failure is sticky, got {err:?}"
+        );
+        let err = p.get_token().await.expect_err("retry stays sticky");
+        assert!(
+            matches!(err, AuthError::CredentialStoreStale { .. }),
+            "second get_token must not call the token endpoint, got {err:?}"
+        );
+        let served = handle.join().expect("server");
+        assert_eq!(served, 1, "one vendor refresh only");
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
+        drop(home);
     }
 
     #[cfg(unix)]
