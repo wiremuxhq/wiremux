@@ -89,7 +89,8 @@ instead.
   trait.
 - `get_token`, `mark_stale`, and `wake` forward.
 - Every `AuthError` becomes the host auth error. Typed variants
-  (`LockTimeout`, `EmptyWriteRefused`, `VendorRejected`) stay
+  (`LockTimeout`, `EmptyWriteRefused`, `VendorRejected`,
+  `CredentialStoreStale`) stay
   distinguishable so diagnose can tell flake from "re-run
   setup-token".
 - Construction is `load_profile(id)` then `provider_from_profile`.
