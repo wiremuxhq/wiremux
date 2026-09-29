@@ -22,8 +22,8 @@ This repository may be ahead of crates.io. Host attach notes in
 MSRV is 1.95 (see `rust-toolchain.toml`).
 
 ```bash
-cargo add wiremux-auth
 cargo add wiremux --no-default-features
+cargo add wiremux-auth
 ```
 
 CLI and proxy:
@@ -32,11 +32,19 @@ CLI and proxy:
 cargo install wiremux --locked
 ```
 
+Maps-only hosts stop after the first command. TokenProvider hosts
+also add `wiremux-auth`.
+
 ## Maps
 
 Decode a vendor JSON body into `IrRequest`, then encode another wire.
-The profile supplies vendor quirks. Loss is typed (`preserve` /
-`degrade` / `drop` / `hard-error`), never a silent strip.
+The profile supplies vendor quirks. Encode-side loss is typed
+(`preserve` / `degrade` / `drop` / `hard-error`).
+`--dump-loss` prints one line per change:
+
+```text
+loss.encode: degrade sampling.max_tokens: messages requires max_tokens
+```
 
 ```rust
 use wiremux::{LoadOptions, Wire, decode, encode, load_profile_for_wire};
