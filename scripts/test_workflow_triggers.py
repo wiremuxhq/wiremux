@@ -87,6 +87,10 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertNotIn("cargo generate-lockfile", script)
         workflow = (WORKFLOWS / "release-please.yml").read_text(encoding="utf-8")
         self.assertIn("git add Cargo.lock crates/wiremux/Cargo.toml", workflow)
+        self.assertIn("git add fuzz/Cargo.lock", workflow)
+        self.assertIn("toolchain-file: release/rust-toolchain.toml", workflow)
+        self.assertIn("attestations: write", workflow)
+        self.assertIn("cargo check --manifest-path fuzz/Cargo.toml", script)
         self.assertIn("publish-crates:", workflow)
         self.assertIn("release_created == 'true'", workflow)
         self.assertIn("apply-release-notes:", workflow)
@@ -171,7 +175,12 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("constitution or public-surface script in diff", text)
 
     def test_cheap_pr_status_checks_do_not_cancel(self) -> None:
-        for name in ("pr-title.yml", "dco.yml"):
+        for name in (
+            "pr-title.yml",
+            "dco.yml",
+            "auto-approve.yml",
+            "dependabot-auto-merge.yml",
+        ):
             text = (WORKFLOWS / name).read_text(encoding="utf-8")
             self.assertIn("cancel-in-progress: false", text, name)
 
@@ -202,6 +211,27 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("github.event.created", text)
         self.assertIn("inputs.tag != ''", text)
         self.assertNotIn("github.event_name == 'workflow_call'", text)
+        self.assertIn("attestations: write", text)
+        self.assertIn(
+            "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8",
+            text,
+        )
+        self.assertIn("scripts/package-release-crates.sh", text)
+        self.assertIn("scripts/upload-release-assets.sh", text)
+        self.assertNotIn('TAG="${TAG}"', text)
+        package = (ROOT / "scripts" / "package-release-crates.sh").read_text(
+            encoding="utf-8"
+        )
+        upload = (ROOT / "scripts" / "upload-release-assets.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("cargo package --locked -p", package)
+        self.assertIn("package_one wiremux-auth auth_crate", package)
+        self.assertIn("package_one wiremux wiremux_crate", package)
+        self.assertIn(".intoto.jsonl", upload)
+        self.assertIn("gh release upload", upload)
+        self.assertNotIn('TAG="${TAG}"', package)
+        self.assertNotIn('TAG="${TAG}"', upload)
 
     def test_gitleaks_tarball_is_sha_pinned(self) -> None:
         text = (WORKFLOWS / "security.yml").read_text(encoding="utf-8")
@@ -220,6 +250,10 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("lycheeverse/lychee-action@", links)
         self.assertIn("workflow_dispatch:", links)
         self.assertIn("fail: ${{ github.event_name != 'pull_request' }}", links)
+        self.assertIn("scripts/report-scheduled-failure.py", scorecard)
+        self.assertIn("Scorecard red", scorecard)
+        self.assertIn("scripts/report-scheduled-failure.py", links)
+        self.assertIn("Link check red", links)
         lychee = (ROOT / "lychee.toml").read_text(encoding="utf-8")
         self.assertIn("exclude_path = [\"CHANGELOG.md\"]", lychee)
         self.assertNotIn("blineai/bline", lychee)
@@ -256,18 +290,235 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertNotIn("push:", on_block)
         self.assertIn("cargo fuzz", text)
         self.assertIn("--target x86_64-unknown-linux-gnu", text)
-        self.assertIn("no live vendor secrets; skip", text)
+        self.assertNotIn("no live vendor secrets; skip", text)
+        self.assertIn("github.event_name == 'schedule'", text)
+        self.assertIn("scripts/report-scheduled-failure.py", text)
+        self.assertIn("Nightly fuzz red", text)
+        self.assertIn('wait "$pid_sse"', text)
+        self.assertIn('wait "$pid_es"', text)
 
     def test_msrv_is_1_95(self) -> None:
         toolchain = (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")
         self.assertIn('channel = "1.95"', toolchain)
         ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
-        self.assertIn('toolchain: "1.95"', ci)
+        self.assertNotIn('toolchain: "1.95"', ci)
         self.assertNotIn('toolchain: "1.85"', ci)
+        self.assertNotIn("1.85", ci)
+        self.assertIn("./.github/actions/rust-ci", ci)
         publish = (WORKFLOWS / "publish-crates.yml").read_text(encoding="utf-8")
-        self.assertIn('toolchain: "1.95"', publish)
+        self.assertNotIn('toolchain: "1.95"', publish)
+        self.assertNotIn("1.85", publish)
+        self.assertIn("toolchain-file: crate/rust-toolchain.toml", publish)
         cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
         self.assertIn('rust-version = "1.95"', cargo)
+        action = (ROOT / ".github" / "actions" / "rust-ci" / "action.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("RUSTC_WRAPPER=sccache", action)
+        self.assertIn("SCCACHE_GHA_ENABLED=true", action)
+        self.assertIn("sccache@0.18.0", action)
+        self.assertNotIn('toolchain: "1.95"', action)
+        release = (WORKFLOWS / "release-please.yml").read_text(encoding="utf-8")
+        self.assertNotIn('toolchain: "1.95"', release)
+
+    def test_dco_rejects_anthropic_and_claude_session(self) -> None:
+        text = (WORKFLOWS / "dco.yml").read_text(encoding="utf-8")
+        self.assertIn("name: DCO", text)
+        self.assertIn("body=$(git log -1 --format='%B' \"$sha\")", text)
+        self.assertIn(
+            "grep -qiE '^[[:space:]]*Co-authored-by:.*anthropic\\.com'",
+            text,
+        )
+        self.assertIn("grep -qiE '^[[:space:]]*Claude-Session:'", text)
+
+    def test_dependabot_auto_merge_skips_majors_and_does_not_checkout(self) -> None:
+        text = (WORKFLOWS / "dependabot-auto-merge.yml").read_text(encoding="utf-8")
+        on_block = _on_block(text)
+        self.assertIn("pull_request_target:", on_block)
+        self.assertIn("workflow_dispatch:", on_block)
+        self.assertNotIn("actions/checkout", text)
+        self.assertIn(
+            "dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98",
+            text,
+        )
+        self.assertIn("version-update:semver-major", text)
+        self.assertIn(
+            "github.event.pull_request.user.login == 'dependabot[bot]'",
+            text,
+        )
+        self.assertIn(
+            "Skipping major version update. It needs manual review.",
+            text,
+        )
+        self.assertNotIn("\u2014", text)
+        self.assertIn("gh pr merge", text)
+        self.assertIn("--auto", text)
+        self.assertIn("--squash", text)
+
+    def test_path_filters_treat_skipped_as_success(self) -> None:
+        ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d",
+            ci,
+        )
+        self.assertIn("needs.changes.result == 'skipped'", ci)
+        self.assertIn("success|skipped", ci)
+        self.assertIn("name: Lint run", ci)
+        self.assertIn("name: Lint", ci)
+        self.assertIn("name: Workflow lint", ci)
+        self.assertIn("name: Workflows", ci)
+        self.assertIn('os=["ubuntu-latest"]', ci)
+        self.assertIn('os=["ubuntu-latest","macos-latest","windows-latest"]', ci)
+        self.assertIn('[[ "$HEAD_REF" == release-please* ]]', ci)
+        self.assertNotIn("github.event_name == 'push'", ci)
+        security = (WORKFLOWS / "security.yml").read_text(encoding="utf-8")
+        self.assertIn("name: CodeQL (rust)", security)
+        self.assertIn("name: CodeQL (actions)", security)
+        self.assertIn("name: CodeQL rust analysis", security)
+        self.assertIn("name: CodeQL actions analysis", security)
+        self.assertIn("name: Dependency review", security)
+        self.assertIn(
+            "version-bump PR; CodeQL already ran on the feature PR",
+            security,
+        )
+        self.assertIn("Monday security red", security)
+        self.assertIn("scripts/report-scheduled-failure.py", security)
+        self.assertIn('cron: "17 4 * * 1"', security)
+
+    def test_reporter_requires_args(self) -> None:
+        import subprocess
+        import sys
+
+        script = ROOT / "scripts" / "report-scheduled-failure.py"
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+
+    def test_reporter_decide(self) -> None:
+        import importlib.util
+        import json
+        from datetime import date
+
+        path = ROOT / "scripts" / "report-scheduled-failure.py"
+        spec = importlib.util.spec_from_file_location("report_scheduled_failure", path)
+        self.assertIsNotNone(spec)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        today = date(2026, 9, 29)
+        yesterday = date(2026, 9, 28).isoformat()
+        red = {"fuzz-smoke": "failure"}
+        green = {"fuzz-smoke": "success"}
+        issue = {
+            "signature": "fuzz-smoke",
+            "first_failed_on": today.isoformat(),
+            "run_id": "10",
+        }
+
+        self.assertEqual(
+            mod.decide(today=today, results={"fuzz-smoke": "cancelled"}, issue=issue, run_id="11"),
+            {"action": "noop"},
+        )
+        self.assertEqual(
+            mod.decide(today=today, results=green, issue=None, run_id="11"),
+            {"action": "noop"},
+        )
+        self.assertEqual(
+            mod.decide(today=today, results=green, issue=issue, run_id="11")["action"],
+            "close",
+        )
+        created = mod.decide(today=today, results=red, issue=None, run_id="11")
+        self.assertEqual(created["action"], "create")
+        self.assertEqual(created["day_count"], 1)
+        self.assertEqual(created["first_failed_on"], today.isoformat())
+        self.assertEqual(
+            mod.decide(today=today, results=red, issue=issue, run_id="10")["action"],
+            "noop",
+        )
+        updated = mod.decide(today=today, results=red, issue=issue, run_id="12")
+        self.assertEqual(updated["action"], "update")
+        self.assertEqual(updated["day_count"], 1)
+        self.assertEqual(updated["first_failed_on"], today.isoformat())
+        next_day = mod.decide(
+            today=today,
+            results=red,
+            issue={
+                "signature": "fuzz-smoke",
+                "first_failed_on": yesterday,
+                "run_id": "9",
+            },
+            run_id="13",
+        )
+        self.assertEqual(next_day["action"], "replace")
+        self.assertEqual(next_day["day_count"], (today - date(2026, 9, 28)).days + 1)
+        self.assertEqual(next_day["first_failed_on"], yesterday)
+        changed = mod.decide(
+            today=today,
+            results={"gitleaks": "failure"},
+            issue=issue,
+            run_id="14",
+        )
+        self.assertEqual(changed["action"], "replace")
+        self.assertEqual(changed["day_count"], 1)
+        self.assertEqual(changed["first_failed_on"], today.isoformat())
+        unmarked = [{"number": 4, "title": "Nightly fuzz red: old", "body": "no marker"}]
+        green_issue, _ordered = mod.prepare_matches(unmarked, results=green, today=today)
+        self.assertIsNotNone(green_issue)
+        assert green_issue is not None
+        self.assertEqual(
+            mod.decide(today=today, results=green, issue=green_issue, run_id="15")["action"],
+            "close",
+        )
+        red_issue, _ordered = mod.prepare_matches(unmarked, results=red, today=today)
+        self.assertIsNone(red_issue)
+        body = mod.render_body(
+            run_url="https://example.test/run/1",
+            signature="fuzz-smoke",
+            day_count_value=2,
+            first_failed_on=yesterday,
+            run_id="13",
+        )
+        self.assertNotIn("\u2014", body)
+        self.assertNotIn("boring", body)
+        self.assertNotIn("honest", body)
+        self.assertEqual(
+            mod.parse_state(body),
+            {
+                "signature": "fuzz-smoke",
+                "first_failed_on": yesterday,
+                "run_id": "13",
+            },
+        )
+        dry = __import__("subprocess").run(
+            [
+                __import__("sys").executable,
+                str(path),
+                "--prefix",
+                "Nightly fuzz red",
+                "--run-id",
+                "11",
+                "--repo",
+                "wiremuxhq/wiremux",
+                "--today",
+                today.isoformat(),
+                "--dry-run",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={
+                "PATH": __import__("os").environ.get("PATH", ""),
+                "JOB_RESULTS": "fuzz-smoke=failure",
+            },
+        )
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        payload = json.loads(dry.stdout.strip().splitlines()[-2])
+        self.assertEqual(payload["action"], "create")
 
 
 if __name__ == "__main__":

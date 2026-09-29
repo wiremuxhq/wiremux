@@ -13,30 +13,6 @@ permissions:
   contents: read
 
 jobs:
-  live-smoke:
-    name: Live preset smoke
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Skip without live secrets
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-        run: |
-          if [ -z "${OPENAI_API_KEY}${ANTHROPIC_API_KEY}${XAI_API_KEY}" ]; then
-            echo "no live vendor secrets; skip"
-            exit 0
-          fi
-          echo "secrets present; live smoke is env-gated in stream_grammar"
-          exit 0
-
   fuzz-smoke:
     name: Fuzz target smoke
     runs-on: ubuntu-latest
@@ -51,9 +27,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      - uses: ./.github/actions/rust-ci
         with:
           toolchain: nightly
+          components: ""
       - name: Prepend nightly toolchain to PATH
         run: dirname "$(rustup which --toolchain nightly cargo)" >> "$GITHUB_PATH"
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
@@ -66,7 +43,7 @@ jobs:
             fuzz
           shared-key: fuzz
           cache-on-failure: true
-          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+          save-if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
       - name: Build and smoke-run fuzz targets
         env:
           RUSTUP_TOOLCHAIN: nightly
@@ -75,5 +52,46 @@ jobs:
           # taiki-e cargo-fuzz is a musl binary. cargo-fuzz then defaults
           # --target to musl, and ASAN refuses statically linked libc.
           cargo fuzz build --target x86_64-unknown-linux-gnu
-          cargo fuzz run --target x86_64-unknown-linux-gnu sse_frames -- -max_total_time=5
-          cargo fuzz run --target x86_64-unknown-linux-gnu eventstream -- -max_total_time=5
+          fail=0
+          cargo fuzz run --target x86_64-unknown-linux-gnu sse_frames -- -max_total_time=5 &
+          pid_sse=$!
+          cargo fuzz run --target x86_64-unknown-linux-gnu eventstream -- -max_total_time=5 &
+          pid_es=$!
+          wait "$pid_sse" || fail=1
+          wait "$pid_es" || fail=1
+          if [ "$fail" -ne 0 ]; then
+            echo "FAIL: fuzz target smoke failed" >&2
+            exit 1
+          fi
+
+  report-failure:
+    name: Report fuzz failure
+    needs: fuzz-smoke
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open or close the failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ASSIGNEE: ${{ vars.NIGHTLY_FAILURE_ASSIGNEE || 'SebTardif' }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_RESULTS: fuzz-smoke=${{ needs.fuzz-smoke.result }}
+        run: |
+          python3 scripts/report-scheduled-failure.py \
+            --prefix "Nightly fuzz red" \
+            --run-id "$RUN_ID" \
+            --run-url "$RUN_URL" \
+            --label nightly-failure \
+            --label ready

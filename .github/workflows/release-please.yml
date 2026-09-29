@@ -48,7 +48,9 @@ jobs:
       always() && !failure() && !cancelled() &&
       needs.release-please.outputs.release_created != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: "0"
     permissions:
       contents: write
       pull-requests: read
@@ -77,6 +79,12 @@ jobs:
             echo "OK: no open release PR"
           fi
           echo "name=${name}" >> "$GITHUB_OUTPUT"
+      - name: Checkout workflow
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.branch.outputs.name != ''
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.branch.outputs.name != ''
         with:
@@ -89,10 +97,13 @@ jobs:
           ref: ${{ steps.branch.outputs.name }}
           path: release
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      - name: Install clang for the fuzz lock refresh
+        if: steps.branch.outputs.name != ''
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends clang
+      - uses: ./.github/actions/rust-ci
         if: steps.branch.outputs.name != ''
         with:
-          toolchain: "1.95"
+          toolchain-file: release/rust-toolchain.toml
       - name: Refresh Cargo.lock workspace versions
         if: steps.branch.outputs.name != ''
         env:
@@ -106,6 +117,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.lock crates/wiremux/Cargo.toml
+          git add fuzz/Cargo.lock
           if git diff --cached --quiet; then
             echo "OK: Cargo.lock already matches crate versions"
             exit 0
@@ -124,8 +136,9 @@ jobs:
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
     permissions:
-      contents: read
+      contents: write
       id-token: write
+      attestations: write
 
   apply-release-notes:
     name: Apply release notes

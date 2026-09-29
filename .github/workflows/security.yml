@@ -13,44 +13,74 @@ concurrency:
 
 permissions:
   contents: read
-  # dependency-review-action comments on the PR
+  # dependency-review-action comments on the PR. paths-filter reads it.
   pull-requests: read
 
 jobs:
+  changes:
+    name: Detect changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      codeql_rust: ${{ steps.filter.outputs.codeql_rust }}
+      codeql_actions: ${{ steps.filter.outputs.codeql_actions }}
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          token: ${{ github.token }}
+          filters: |
+            codeql_rust:
+              - 'crates/**'
+              - 'fuzz/**'
+              - 'presets/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/security.yml'
+            codeql_actions:
+              - '.github/**'
+
   dependency-review:
     name: Dependency review
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
         with:
           egress-policy: audit
+      - name: Not a pull request
+        if: github.event_name != 'pull_request'
+        run: echo 'dependency review runs on pull requests'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
         with:
           persist-credentials: false
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        if: github.event_name == 'pull_request'
         with:
           fail-on-severity: high
 
-  codeql:
-    name: CodeQL (${{ matrix.language }})
+  codeql-actions:
+    name: CodeQL actions analysis
+    needs: changes
+    if: >-
+      always() &&
+      (needs.changes.result == 'skipped' ||
+       needs.changes.outputs.codeql_actions == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      # CodeQL uploads SARIF
       actions: read
       contents: read
       security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [actions, rust]
-        include:
-          - language: actions
-            build-mode: none
-          - language: rust
-            build-mode: none
     steps:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
         with:
@@ -71,15 +101,118 @@ jobs:
           github.event_name != 'pull_request' ||
           !startsWith(github.head_ref, 'release-please')
         with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          languages: actions
+          build-mode: none
           queries: security-and-quality
       - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
         if: >-
           github.event_name != 'pull_request' ||
           !startsWith(github.head_ref, 'release-please')
         with:
-          category: "/language:${{ matrix.language }}"
+          category: "/language:actions"
+
+  codeql-actions-gate:
+    name: CodeQL (actions)
+    needs: [changes, codeql-actions]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Require actions analysis success or skip
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          JOB_RESULT: ${{ needs.codeql-actions.result }}
+        run: |
+          set -euo pipefail
+          case "$CHANGES_RESULT" in
+            failure|cancelled)
+              echo "FAIL: changes job ${CHANGES_RESULT}" >&2
+              exit 1
+              ;;
+          esac
+          case "$JOB_RESULT" in
+            success|skipped) echo "OK: ${JOB_RESULT}" ;;
+            *)
+              echo "FAIL: codeql actions ${JOB_RESULT}" >&2
+              exit 1
+              ;;
+          esac
+
+  codeql-rust:
+    name: CodeQL rust analysis
+    needs: changes
+    if: >-
+      always() &&
+      (needs.changes.result == 'skipped' ||
+       needs.changes.outputs.codeql_rust == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Release-please stand-in
+        if: >-
+          github.event_name == 'pull_request' &&
+          startsWith(github.head_ref, 'release-please')
+        run: echo 'version-bump PR; CodeQL already ran on the feature PR'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: >-
+          github.event_name != 'pull_request' ||
+          !startsWith(github.head_ref, 'release-please')
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        if: >-
+          github.event_name != 'pull_request' ||
+          !startsWith(github.head_ref, 'release-please')
+        with:
+          languages: rust
+          build-mode: none
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        if: >-
+          github.event_name != 'pull_request' ||
+          !startsWith(github.head_ref, 'release-please')
+        with:
+          category: "/language:rust"
+
+  codeql-rust-gate:
+    name: CodeQL (rust)
+    needs: [changes, codeql-rust]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Require rust analysis success or skip
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          JOB_RESULT: ${{ needs.codeql-rust.result }}
+        run: |
+          set -euo pipefail
+          case "$CHANGES_RESULT" in
+            failure|cancelled)
+              echo "FAIL: changes job ${CHANGES_RESULT}" >&2
+              exit 1
+              ;;
+          esac
+          case "$JOB_RESULT" in
+            success|skipped) echo "OK: ${JOB_RESULT}" ;;
+            *)
+              echo "FAIL: codeql rust ${JOB_RESULT}" >&2
+              exit 1
+              ;;
+          esac
 
   gitleaks:
     name: Gitleaks
@@ -108,3 +241,39 @@ jobs:
           rm -f "$archive"
           echo "$dest" >> "$GITHUB_PATH"
       - run: gitleaks detect --source . --exit-code 1
+
+  report-failure:
+    name: Report security failure
+    needs: [dependency-review, codeql-actions, codeql-rust, gitleaks]
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open or close the failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ASSIGNEE: ${{ vars.NIGHTLY_FAILURE_ASSIGNEE || 'SebTardif' }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_RESULTS: >-
+            dependency-review=${{ needs.dependency-review.result }}
+            codeql-actions=${{ needs.codeql-actions.result }}
+            codeql-rust=${{ needs.codeql-rust.result }}
+            gitleaks=${{ needs.gitleaks.result }}
+        run: |
+          python3 scripts/report-scheduled-failure.py \
+            --prefix "Monday security red" \
+            --run-id "$RUN_ID" \
+            --run-url "$RUN_URL" \
+            --label nightly-failure \
+            --label ready
