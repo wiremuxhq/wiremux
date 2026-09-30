@@ -1,0 +1,50 @@
+name: Publish Chocolatey
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/publish-chocolatey.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: publish-chocolatey-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  push:
+    name: Push Chocolatey
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Pack and push the current release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:CHOCOLATEY_API_KEY) { throw "CHOCOLATEY_API_KEY is empty" }
+          $tag = gh release view --repo wiremuxhq/wiremux --json tagName --jq .tagName
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') { throw "bad release tag $tag" }
+          $version = $tag.Substring(1)
+          $dir = Join-Path $env:RUNNER_TEMP 'choco-pkg'
+          $tools = Join-Path $dir 'tools'
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+          gh release download $tag --repo wiremuxhq/wiremux --dir $dir --pattern wiremux.nuspec --pattern chocolateyInstall.ps1 --clobber
+          Move-Item -Force (Join-Path $dir 'chocolateyInstall.ps1') (Join-Path $tools 'chocolateyInstall.ps1')
+          Push-Location $dir
+          choco pack .\wiremux.nuspec
+          $nuspecVersion = ([xml](Get-Content .\wiremux.nuspec -Raw)).GetElementsByTagName('version')[0].InnerText
+          if ($nuspecVersion -ne $version) { throw "nuspec $nuspecVersion != release $version" }
+          $nupkg = Get-ChildItem -Filter 'wiremux.*.nupkg' | Select-Object -First 1
+          if (-not $nupkg) { throw "nupkg missing" }
+          choco push $nupkg.FullName --source 'https://push.chocolatey.org/' --api-key $env:CHOCOLATEY_API_KEY
+          Pop-Location
+          Write-Output "OK: pushed wiremux $version to Chocolatey moderation"
