@@ -67,9 +67,9 @@ request is
 request. That update still waits until this first package is in the
 community repository.
 
-Chocolatey files are on the release. The package is not on the
-community feed. Publishing needs `CHOCOLATEY_API_KEY`, which is not
-set.
+Chocolatey files are on the release. `CHOCOLATEY_API_KEY` is set.
+The package is not on the community feed until a release push is
+accepted by moderation. `choco install` does not work before that.
 
 Git tags are not GPG-signed. The package signature is the
 `.intoto.jsonl` provenance file next to each archive.
