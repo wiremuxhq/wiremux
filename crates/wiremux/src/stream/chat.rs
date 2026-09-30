@@ -715,6 +715,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         IrStreamEvent::FinishReason { reason } => json!({
             "choices": [{ "index": 0, "delta": {}, "finish_reason": encode_finish(reason) }]
         }),
+        IrStreamEvent::Diagnostics { .. } => json!({ "choices": [] }),
         IrStreamEvent::Done => {
             return Ok(RawSse {
                 event: None,

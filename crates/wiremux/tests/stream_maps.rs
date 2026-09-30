@@ -5055,6 +5055,51 @@ fn dest_messages_complete_usage_service_tier_remaps_dest_chat_service_tier() {
 }
 
 #[test]
+fn messages_cache_miss_reason_round_trips_and_other_wires_omit_it() {
+    let reason = json!({ "type": "model_changed", "cache_missed_input_tokens": 3 });
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4",
+        "content": [{ "type": "text", "text": "Hi" }],
+        "stop_reason": "end_turn",
+        "diagnostics": { "cache_miss_reason": reason }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile())
+        .expect("decode dest Messages complete diagnostics");
+    let messages = encode_response(Wire::Messages, &events).expect("encode dest Messages complete");
+    assert_eq!(
+        messages.pointer("/diagnostics/cache_miss_reason"),
+        Some(&reason),
+        "Messages cache_miss_reason must round-trip, got {messages}"
+    );
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert!(
+        !chat.to_string().contains("cache_miss_reason"),
+        "Chat must omit cache_miss_reason, got {chat}"
+    );
+
+    let blank = serde_json::to_vec(&json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4",
+        "content": [{ "type": "text", "text": "Hi" }],
+        "diagnostics": { "cache_miss_reason": null }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &blank, &messages_profile())
+        .expect("decode null cache_miss_reason");
+    let messages = encode_response(Wire::Messages, &events).expect("encode blank");
+    assert!(
+        messages.get("diagnostics").is_none(),
+        "null cache_miss_reason must be omitted, got {messages}"
+    );
+}
+
+#[test]
 fn dest_chat_complete_service_tier_remaps_dest_messages_usage_service_tier() {
     let body = serde_json::to_vec(&json!({
         "id": "chatcmpl-r67",

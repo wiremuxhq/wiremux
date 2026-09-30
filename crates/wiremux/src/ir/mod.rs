@@ -493,6 +493,10 @@ pub enum IrStreamEvent {
         input: Option<serde_json::Value>,
         output: Option<serde_json::Value>,
     },
+    /// Messages response `diagnostics.cache_miss_reason`. Other wires omit it.
+    Diagnostics {
+        cache_miss_reason: serde_json::Value,
+    },
     /// Exclusive buckets: prompt excludes cache
     /// read, completion excludes reasoning. Encoders re-inflate inclusive
     /// wire totals for Chat and Responses.

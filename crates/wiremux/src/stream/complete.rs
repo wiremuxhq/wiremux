@@ -275,6 +275,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut finish = None;
     let mut usage = None;
     let mut service_tier = None;
+    let mut diagnostics = None;
     let mut tool_calls = Vec::new();
     let mut citations = Vec::new();
     let mut images = Vec::new();
@@ -306,6 +307,9 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 reasoning_signature = Some(signature.clone());
             }
             IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
+            IrStreamEvent::Diagnostics { cache_miss_reason } => {
+                diagnostics = Some(cache_miss_reason.clone());
+            }
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(super::messages::encode_stop_reason(reason).to_string());
             }
@@ -416,6 +420,9 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             out["usage"] = json!({ "input_tokens": 0, "output_tokens": 0 });
         }
         out["usage"]["service_tier"] = json!(mapped);
+    }
+    if let Some(reason) = diagnostics {
+        out["diagnostics"] = json!({ "cache_miss_reason": reason });
     }
     out
 }
@@ -1158,6 +1165,14 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
     if let Some(reason) = value.get("stop_reason").and_then(Value::as_str) {
         out.push(IrStreamEvent::FinishReason {
             reason: super::messages::map_stop_reason(reason).to_string(),
+        });
+    }
+    if let Some(reason) = value
+        .pointer("/diagnostics/cache_miss_reason")
+        .filter(|v| v.is_object())
+    {
+        out.push(IrStreamEvent::Diagnostics {
+            cache_miss_reason: reason.clone(),
         });
     }
     if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
