@@ -244,6 +244,51 @@ fn messages_inference_geo_round_trips_and_other_dests_drop_it() {
 }
 
 #[test]
+fn messages_previous_message_id_round_trips_and_other_dests_drop_it() {
+    let raw = br#"{"model":"claude-haiku-4-5","max_tokens":16,"diagnostics":{"previous_message_id":"msg_123"},"messages":[{"role":"user","content":"hi"}]}"#;
+    let (ir, _) = decode(Wire::Messages, raw).expect("decode");
+    assert_eq!(ir.sampling.previous_message_id.as_deref(), Some("msg_123"));
+    let (messages, _) = encode_value(Wire::Messages, &ir);
+    assert_eq!(
+        messages["diagnostics"]["previous_message_id"], "msg_123",
+        "{messages}"
+    );
+    for wire in [
+        Wire::ChatCompletions,
+        Wire::Responses,
+        Wire::Gemini,
+        Wire::Converse,
+    ] {
+        let (body, report) = encode_value(wire, &ir);
+        assert!(
+            body.pointer("/diagnostics/previous_message_id").is_none()
+                && !body.to_string().contains("previous_message_id"),
+            "{wire:?} must omit previous_message_id, got {body}"
+        );
+        assert!(
+            has_action(&report, LossAction::Drop, "previous_message_id"),
+            "{wire:?} must Drop sampling.previous_message_id, got {report:?}"
+        );
+    }
+
+    for blank in ["", "  "] {
+        let raw = format!(
+            r#"{{"model":"claude-haiku-4-5","max_tokens":16,"diagnostics":{{"previous_message_id":"{blank}"}},"messages":[{{"role":"user","content":"hi"}}]}}"#
+        );
+        let (ir, _) = decode(Wire::Messages, raw.as_bytes()).expect("decode");
+        assert!(
+            ir.sampling.previous_message_id.is_none(),
+            "blank previous_message_id decodes as None"
+        );
+        let (messages, _) = encode_value(Wire::Messages, &ir);
+        assert!(
+            messages.get("diagnostics").is_none(),
+            "blank previous_message_id must omit diagnostics, got {messages}"
+        );
+    }
+}
+
+#[test]
 fn converse_performance_latency_round_trips_and_other_dests_drop_it() {
     let raw = br#"{
         "modelId": "amazon.nova-lite-v1:0",

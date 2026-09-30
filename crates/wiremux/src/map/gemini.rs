@@ -351,6 +351,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         web_search_options: None,
         inference_geo: None,
         performance_latency: None,
+        previous_message_id: None,
     }
 }
 
@@ -846,6 +847,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.performance_latency.is_some() {
         report.record("sampling.performance_latency", LossAction::Drop, "no slot");
+    }
+    if s.previous_message_id.is_some() {
+        report.record("sampling.previous_message_id", LossAction::Drop, "no slot");
     }
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");

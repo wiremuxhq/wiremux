@@ -203,6 +203,8 @@ pub struct IrSampling {
     /// Converse `performanceConfig.latency` (`standard` or `optimized`).
     /// Chat, Messages, Responses, and Gemini drop.
     pub performance_latency: Option<String>,
+    /// Messages request `diagnostics.previous_message_id`. Chat, Responses, Gemini, and Converse drop.
+    pub previous_message_id: Option<String>,
 }
 
 impl IrSampling {

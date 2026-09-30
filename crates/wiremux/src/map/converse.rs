@@ -826,6 +826,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.inference_geo.is_some() {
         report.record("sampling.inference_geo", LossAction::Drop, "no slot");
     }
+    if s.previous_message_id.is_some() {
+        report.record("sampling.previous_message_id", LossAction::Drop, "no slot");
+    }
     if let Some(latency) = s.performance_latency.as_deref()
         && let Some(root) = body.as_object_mut()
     {

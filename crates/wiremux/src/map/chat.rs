@@ -236,6 +236,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         web_search_options: chat_object_field(value, "web_search_options"),
         inference_geo: None,
         performance_latency: None,
+        previous_message_id: None,
     }
 }
 
@@ -706,6 +707,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.performance_latency.is_some() {
         report.record("sampling.performance_latency", LossAction::Drop, "no slot");
+    }
+    if s.previous_message_id.is_some() {
+        report.record("sampling.previous_message_id", LossAction::Drop, "no slot");
     }
     if let Some(max) = s.max_tokens {
         if max_completion {
