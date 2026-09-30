@@ -118,7 +118,9 @@ impl StreamEncoder {
                 Ok(vec![encode_stream_event(self.wire, &ev)?])
             }
             IrStreamEvent::Done => self.finish(),
-            IrStreamEvent::Diagnostics { .. } | IrStreamEvent::Container { .. }
+            IrStreamEvent::Diagnostics { .. }
+            | IrStreamEvent::Container { .. }
+            | IrStreamEvent::ContextManagement { .. }
                 if !matches!(self.wire, Wire::Messages) =>
             {
                 Ok(Vec::new())
@@ -393,7 +395,8 @@ impl StreamEncoder {
             | IrStreamEvent::Metadata { .. }
             | IrStreamEvent::Moderation { .. }
             | IrStreamEvent::Diagnostics { .. }
-            | IrStreamEvent::Container { .. } => {}
+            | IrStreamEvent::Container { .. }
+            | IrStreamEvent::ContextManagement { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 if self.tool_block_open() {
                     self.deferred
@@ -679,7 +682,8 @@ impl StreamEncoder {
             | IrStreamEvent::Metadata { .. }
             | IrStreamEvent::Moderation { .. }
             | IrStreamEvent::Diagnostics { .. }
-            | IrStreamEvent::Container { .. } => {}
+            | IrStreamEvent::Container { .. }
+            | IrStreamEvent::ContextManagement { .. } => {}
             IrStreamEvent::TextDelta { text } => {
                 out.extend(self.ensure_item(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -1351,7 +1355,8 @@ impl StreamEncoder {
             | IrStreamEvent::Metadata { .. }
             | IrStreamEvent::Moderation { .. }
             | IrStreamEvent::Diagnostics { .. }
-            | IrStreamEvent::Container { .. } => {}
+            | IrStreamEvent::Container { .. }
+            | IrStreamEvent::ContextManagement { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.extend(self.ensure_converse_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);

@@ -501,6 +501,10 @@ pub enum IrStreamEvent {
     Container {
         value: serde_json::Value,
     },
+    /// Messages response `context_management`. Other wires omit it.
+    ContextManagement {
+        value: serde_json::Value,
+    },
     /// Exclusive buckets: prompt excludes cache
     /// read, completion excludes reasoning. Encoders re-inflate inclusive
     /// wire totals for Chat and Responses.

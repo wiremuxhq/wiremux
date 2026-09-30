@@ -351,6 +351,14 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "container": value
             }),
         ),
+        IrStreamEvent::ContextManagement { value } => (
+            "message_delta",
+            json!({
+                "type": "message_delta",
+                "delta": {},
+                "context_management": value
+            }),
+        ),
         IrStreamEvent::Done => ("message_stop", json!({ "type": "message_stop" })),
         IrStreamEvent::Protocol { .. } | IrStreamEvent::Unknown { .. } => {
             return Err(MapError::Invalid(
