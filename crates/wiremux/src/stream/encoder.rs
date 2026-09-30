@@ -118,6 +118,9 @@ impl StreamEncoder {
                 Ok(vec![encode_stream_event(self.wire, &ev)?])
             }
             IrStreamEvent::Done => self.finish(),
+            IrStreamEvent::Diagnostics { .. } if !matches!(self.wire, Wire::Messages) => {
+                Ok(Vec::new())
+            }
             other => match self.wire {
                 Wire::Messages => self.push_messages(other),
                 Wire::Responses => self.push_responses(other),
@@ -386,7 +389,8 @@ impl StreamEncoder {
             IrStreamEvent::Created { .. }
             | IrStreamEvent::ServiceTier { .. }
             | IrStreamEvent::Metadata { .. }
-            | IrStreamEvent::Moderation { .. } => {}
+            | IrStreamEvent::Moderation { .. }
+            | IrStreamEvent::Diagnostics { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 if self.tool_block_open() {
                     self.deferred
@@ -670,7 +674,8 @@ impl StreamEncoder {
             IrStreamEvent::Created { .. }
             | IrStreamEvent::ServiceTier { .. }
             | IrStreamEvent::Metadata { .. }
-            | IrStreamEvent::Moderation { .. } => {}
+            | IrStreamEvent::Moderation { .. }
+            | IrStreamEvent::Diagnostics { .. } => {}
             IrStreamEvent::TextDelta { text } => {
                 out.extend(self.ensure_item(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -1340,7 +1345,8 @@ impl StreamEncoder {
             IrStreamEvent::Created { .. }
             | IrStreamEvent::ServiceTier { .. }
             | IrStreamEvent::Metadata { .. }
-            | IrStreamEvent::Moderation { .. } => {}
+            | IrStreamEvent::Moderation { .. }
+            | IrStreamEvent::Diagnostics { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.extend(self.ensure_converse_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);

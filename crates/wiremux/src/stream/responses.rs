@@ -684,6 +684,13 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "response": { "status": "completed" }
             }),
         ),
+        IrStreamEvent::Diagnostics { .. } => (
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": { "status": "in_progress" }
+            }),
+        ),
         IrStreamEvent::Protocol { .. } | IrStreamEvent::Unknown { .. } => {
             return Err(MapError::Invalid(
                 "protocol/unknown events are encoded at the stream root".into(),
