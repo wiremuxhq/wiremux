@@ -676,6 +676,25 @@ class WorkflowTriggerTests(unittest.TestCase):
             text,
         )
 
+    def test_publish_chocolatey_pushes_current_release(self) -> None:
+        text = (WORKFLOWS / "publish-chocolatey.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", text)
+        self.assertIn("runs-on: windows-latest", text)
+        self.assertIn("timeout-minutes: 20", text)
+        self.assertIn("cancel-in-progress: false", text)
+        self.assertIn("secrets.CHOCOLATEY_API_KEY", text)
+        self.assertIn("CHOCOLATEY_API_KEY is empty", text)
+        self.assertIn("https://push.chocolatey.org/", text)
+        self.assertIn("choco pack .\\wiremux.nuspec", text)
+        self.assertIn("GetElementsByTagName('version')", text)
+        self.assertIn("choco push", text)
+        self.assertIn("gh release view --repo wiremuxhq/wiremux", text)
+        self.assertNotIn("0.9.3", text)
+        self.assertIn(
+            "step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1",
+            text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

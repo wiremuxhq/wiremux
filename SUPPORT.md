@@ -68,8 +68,9 @@ request. That update still waits until this first package is in the
 community repository.
 
 Chocolatey files are on the release. `CHOCOLATEY_API_KEY` is set.
-The package is not on the community feed until a release push is
-accepted by moderation. `choco install` does not work before that.
+Publish Chocolatey submits the current release to the community
+moderation queue. `choco install` does not work until a moderator
+accepts the package.
 
 Git tags are not GPG-signed. The package signature is the
 `.intoto.jsonl` provenance file next to each archive.
