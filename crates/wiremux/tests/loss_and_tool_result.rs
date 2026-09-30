@@ -609,6 +609,99 @@ fn converse_prompt_variables_and_guardrail_round_trip_and_other_dests_drop_them(
 }
 
 #[test]
+fn messages_container_context_and_mcp_round_trip_and_other_dests_drop_them() {
+    let raw = br#"{
+        "model": "claude-haiku-4-5",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+        "container": "ctr_1",
+        "context_management": {"edits": []},
+        "mcp_servers": [{"type": "url", "url": "https://example.com/mcp", "name": "docs"}]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, raw).expect("decode");
+    assert_eq!(ir.sampling.container, Some(json!("ctr_1")));
+    assert_eq!(ir.sampling.context_management, Some(json!({"edits": []})));
+    assert_eq!(
+        ir.sampling.mcp_servers,
+        Some(json!([
+            {"type": "url", "url": "https://example.com/mcp", "name": "docs"}
+        ]))
+    );
+    let (messages, messages_report) = encode_value(Wire::Messages, &ir);
+    assert_eq!(
+        messages.get("container"),
+        Some(&json!("ctr_1")),
+        "{messages}"
+    );
+    assert_eq!(
+        messages.get("context_management"),
+        Some(&json!({"edits": []})),
+        "{messages}"
+    );
+    assert_eq!(
+        messages.get("mcp_servers"),
+        Some(&json!([
+            {"type": "url", "url": "https://example.com/mcp", "name": "docs"}
+        ])),
+        "{messages}"
+    );
+    assert!(
+        !messages_report.events.iter().any(|event| {
+            event.path.contains("container")
+                || event.path.contains("context_management")
+                || event.path.contains("mcp_servers")
+        }),
+        "Messages must keep the three fields, got {messages_report:?}"
+    );
+    for wire in [
+        Wire::ChatCompletions,
+        Wire::Responses,
+        Wire::Gemini,
+        Wire::Converse,
+    ] {
+        let (body, report) = encode_value(wire, &ir);
+        let text = body.to_string();
+        assert!(
+            body.get("container").is_none()
+                && body.get("context_management").is_none()
+                && body.get("mcp_servers").is_none()
+                && !text.contains("container")
+                && !text.contains("context_management")
+                && !text.contains("mcp_servers")
+                && !text.contains("ctr_1")
+                && !text.contains("example.com"),
+            "{wire:?} must omit container, context_management, and mcp_servers, got {body}"
+        );
+        assert!(
+            has_action(&report, LossAction::Drop, "sampling.container"),
+            "{wire:?} must Drop sampling.container, got {report:?}"
+        );
+        assert!(
+            has_action(&report, LossAction::Drop, "sampling.context_management"),
+            "{wire:?} must Drop sampling.context_management, got {report:?}"
+        );
+        assert!(
+            has_action(&report, LossAction::Drop, "sampling.mcp_servers"),
+            "{wire:?} must Drop sampling.mcp_servers, got {report:?}"
+        );
+    }
+
+    let null_container = br#"{
+        "model": "claude-haiku-4-5",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+        "container": null
+    }"#;
+    let (ir, _) = decode(Wire::Messages, null_container).expect("decode");
+    assert!(ir.sampling.container.is_none(), "JSON null decodes as None");
+    let (messages, _) = encode_value(Wire::Messages, &ir);
+    assert!(
+        messages.get("container").is_none() && !messages.to_string().contains("container"),
+        "JSON null must omit container, got {messages}"
+    );
+}
+
+#[test]
 fn chat_json_schema_strict_round_trips() {
     let raw = br#"{
         "model": "gpt-4.1",

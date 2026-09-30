@@ -217,6 +217,15 @@ pub struct IrSampling {
     /// Converse `guardrailConfig`.
     /// Chat, Messages, Responses, and Gemini drop.
     pub guardrail: Option<serde_json::Value>,
+    /// Messages request `container` (string id or object). Null and other
+    /// types decode as absent. Chat, Responses, Gemini, and Converse drop.
+    pub container: Option<serde_json::Value>,
+    /// Messages request `context_management` object. Chat, Responses,
+    /// Gemini, and Converse drop.
+    pub context_management: Option<serde_json::Value>,
+    /// Messages request `mcp_servers` array. Chat, Responses, Gemini,
+    /// and Converse drop.
+    pub mcp_servers: Option<serde_json::Value>,
 }
 
 impl IrSampling {

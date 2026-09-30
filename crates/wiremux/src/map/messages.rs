@@ -357,6 +357,18 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         additional_request_fields: None,
         prompt_variables: None,
         guardrail: None,
+        container: value
+            .get("container")
+            .filter(|container| container.is_string() || container.is_object())
+            .cloned(),
+        context_management: value
+            .get("context_management")
+            .filter(|mgmt| mgmt.is_object())
+            .cloned(),
+        mcp_servers: value
+            .get("mcp_servers")
+            .filter(|servers| servers.is_array())
+            .cloned(),
     }
 }
 
@@ -1307,6 +1319,15 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.guardrail.is_some() {
         report.record("sampling.guardrail", LossAction::Drop, "no slot");
+    }
+    if let Some(container) = &s.container {
+        body["container"] = container.clone();
+    }
+    if let Some(mgmt) = &s.context_management {
+        body["context_management"] = mgmt.clone();
+    }
+    if let Some(servers) = &s.mcp_servers {
+        body["mcp_servers"] = servers.clone();
     }
     if let Some(max) = s.max_tokens {
         body["max_tokens"] = json!(max);
