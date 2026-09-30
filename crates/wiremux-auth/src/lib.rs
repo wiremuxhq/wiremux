@@ -122,11 +122,15 @@ impl AnyTokenProvider {
         }
     }
 
-    /// True when a 401 can be retried after [`TokenProvider::mark_stale`].
-    /// Static keys never refresh.
+    /// True when a 401 can be retried after [`TokenProvider::mark_stale`]
+    /// and another `get_token`.
+    ///
+    /// Static keys never refresh. AWS STS session keys are not a bearer
+    /// token: `get_token` always fails, and `mark_stale` only affects
+    /// `get_credentials`.
     #[must_use]
     pub fn can_refresh(&self) -> bool {
-        !matches!(self, Self::Static(_))
+        !matches!(self, Self::Static(_) | Self::AwsSts(_))
     }
 }
 
@@ -450,8 +454,19 @@ expires_unit = "s"
     }
 
     #[test]
-    fn can_refresh_is_false_for_static_only() {
+    fn can_refresh_is_false_without_a_bearer_refresh() {
         assert!(!AnyTokenProvider::from(StaticToken::new("sk")).can_refresh());
+        let sts = AwsStsTokenProvider::new(AwsStsConfig {
+            access_key_id: "AKIDEXAMPLE".into(),
+            secret_access_key: "secret".into(),
+            role_arn: "arn:aws:iam::123456789012:role/demo".into(),
+            role_session_name: "wiremux-test".into(),
+            region: "us-east-1".into(),
+            session_token: None,
+            endpoint: None,
+        })
+        .expect("sts");
+        assert!(!AnyTokenProvider::from(sts).can_refresh());
     }
 
     #[tokio::test]
