@@ -505,6 +505,10 @@ pub enum IrStreamEvent {
     ContextManagement {
         value: serde_json::Value,
     },
+    /// Messages response `stop_sequence`. Other wires omit it.
+    StopSequence {
+        text: String,
+    },
     /// Exclusive buckets: prompt excludes cache
     /// read, completion excludes reasoning. Encoders re-inflate inclusive
     /// wire totals for Chat and Responses.
