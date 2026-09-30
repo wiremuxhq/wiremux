@@ -12,7 +12,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from render_release_extras import DESCRIPTION, render
+from render_release_extras import DESCRIPTION, HOMEBREW_DESC, render
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,7 +59,13 @@ class RenderReleaseExtrasTests(unittest.TestCase):
         self.assertEqual(first, second)
         formula = first["Formula/wiremux.rb"].decode("utf-8")
         self.assertIn("class Wiremux < Formula", formula)
-        self.assertIn('version "0.9.3"', formula)
+        self.assertIn(f'desc "{HOMEBREW_DESC}"', formula)
+        self.assertLess(len(HOMEBREW_DESC), 80)
+        self.assertFalse(HOMEBREW_DESC.startswith("Wiremux"))
+        self.assertFalse(HOMEBREW_DESC.endswith("."))
+        self.assertNotIn('version "', formula)
+        self.assertIn('license any_of: ["MIT", "Apache-2.0"]', formula)
+        self.assertIn("/v0.9.3/", formula)
         self.assertIn("on_macos do", formula)
         self.assertIn("on_intel do", formula)
         self.assertIn("on_arm do", formula)

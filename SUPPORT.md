@@ -33,16 +33,43 @@ a `.intoto.jsonl` build provenance file. The same release includes
 `wiremux-installer.ps1`. Those installers are pinned to that tag and
 check the archive SHA-256 before copying the binary.
 
-Homebrew (`wiremuxhq/homebrew-tap`) and Scoop (`wiremuxhq/scoop-bucket`)
-files are generated on each release. The workflow pushes them when
-`HOMEBREW_TAP_TOKEN` is set. Until those repositories contain the
-current version, `brew` and `scoop` are not install paths.
+Homebrew:
 
-winget and Chocolatey files are on the release too. winget opens a
-pull request when `WINGET_TOKEN` is set, after the first package is
-already in the community repository. Chocolatey pushes when
-`CHOCOLATEY_API_KEY` is set. Neither one is an install path until the
-upstream review accepts the current version.
+```bash
+brew tap wiremuxhq/tap
+brew trust wiremuxhq/tap
+brew install wiremux
+```
+
+Homebrew 6 and later refuse an untrusted tap until `brew trust`.
+The formula lives in
+[wiremuxhq/homebrew-tap](https://github.com/wiremuxhq/homebrew-tap).
+
+Scoop:
+
+```bash
+scoop bucket add wiremux https://github.com/wiremuxhq/scoop-bucket
+scoop install wiremux
+```
+
+`scoop search` does not look in that bucket until it is added.
+The manifest is in
+[wiremuxhq/scoop-bucket](https://github.com/wiremuxhq/scoop-bucket).
+
+Later releases push those two repositories only when
+`HOMEBREW_TAP_TOKEN` is set on this repo. That secret is not set, so
+a release does not update the tap or the bucket by itself.
+
+winget manifests are generated on the release. The first package pull
+request is
+[microsoft/winget-pkgs#444315](https://github.com/microsoft/winget-pkgs/pull/444315).
+`winget install` does not work until that pull request merges.
+Later releases open an update only when `WINGET_TOKEN` is set, and
+only after this first package is in the community repository.
+
+Chocolatey files are on the release. The package is not on the
+community feed. Publishing needs `CHOCOLATEY_API_KEY`, which is not
+set.
 
 Git tags are not GPG-signed. The package signature is the
 `.intoto.jsonl` provenance file next to each archive.
