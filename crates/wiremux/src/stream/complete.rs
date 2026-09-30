@@ -276,6 +276,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut usage = None;
     let mut service_tier = None;
     let mut diagnostics = None;
+    let mut container = None;
     let mut tool_calls = Vec::new();
     let mut citations = Vec::new();
     let mut images = Vec::new();
@@ -309,6 +310,9 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
             IrStreamEvent::Diagnostics { cache_miss_reason } => {
                 diagnostics = Some(cache_miss_reason.clone());
+            }
+            IrStreamEvent::Container { value } => {
+                container = Some(value.clone());
             }
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(super::messages::encode_stop_reason(reason).to_string());
@@ -423,6 +427,9 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     if let Some(reason) = diagnostics {
         out["diagnostics"] = json!({ "cache_miss_reason": reason });
+    }
+    if let Some(value) = container {
+        out["container"] = value;
     }
     out
 }
@@ -1173,6 +1180,11 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
     {
         out.push(IrStreamEvent::Diagnostics {
             cache_miss_reason: reason.clone(),
+        });
+    }
+    if let Some(value) = value.get("container").filter(|v| v.is_object()) {
+        out.push(IrStreamEvent::Container {
+            value: value.clone(),
         });
     }
     if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {

@@ -118,7 +118,9 @@ impl StreamEncoder {
                 Ok(vec![encode_stream_event(self.wire, &ev)?])
             }
             IrStreamEvent::Done => self.finish(),
-            IrStreamEvent::Diagnostics { .. } if !matches!(self.wire, Wire::Messages) => {
+            IrStreamEvent::Diagnostics { .. } | IrStreamEvent::Container { .. }
+                if !matches!(self.wire, Wire::Messages) =>
+            {
                 Ok(Vec::new())
             }
             other => match self.wire {
@@ -390,7 +392,8 @@ impl StreamEncoder {
             | IrStreamEvent::ServiceTier { .. }
             | IrStreamEvent::Metadata { .. }
             | IrStreamEvent::Moderation { .. }
-            | IrStreamEvent::Diagnostics { .. } => {}
+            | IrStreamEvent::Diagnostics { .. }
+            | IrStreamEvent::Container { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 if self.tool_block_open() {
                     self.deferred
@@ -675,7 +678,8 @@ impl StreamEncoder {
             | IrStreamEvent::ServiceTier { .. }
             | IrStreamEvent::Metadata { .. }
             | IrStreamEvent::Moderation { .. }
-            | IrStreamEvent::Diagnostics { .. } => {}
+            | IrStreamEvent::Diagnostics { .. }
+            | IrStreamEvent::Container { .. } => {}
             IrStreamEvent::TextDelta { text } => {
                 out.extend(self.ensure_item(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -1346,7 +1350,8 @@ impl StreamEncoder {
             | IrStreamEvent::ServiceTier { .. }
             | IrStreamEvent::Metadata { .. }
             | IrStreamEvent::Moderation { .. }
-            | IrStreamEvent::Diagnostics { .. } => {}
+            | IrStreamEvent::Diagnostics { .. }
+            | IrStreamEvent::Container { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.extend(self.ensure_converse_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
