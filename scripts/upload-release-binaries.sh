@@ -12,14 +12,18 @@ if [ ! -d "$ASSET_DIR" ]; then
   exit 1
 fi
 
+UPLOAD_POLL_ATTEMPTS="${UPLOAD_POLL_ATTEMPTS:-12}"
+UPLOAD_POLL_SLEEP="${UPLOAD_POLL_SLEEP:-5}"
 found=0
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+attempt=0
+while [ "$attempt" -lt "$UPLOAD_POLL_ATTEMPTS" ]; do
   if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
     found=1
     break
   fi
   echo "WAIT: release ${TAG} is not visible yet"
-  sleep 5
+  sleep "$UPLOAD_POLL_SLEEP"
+  attempt=$((attempt + 1))
 done
 if [ "$found" -ne 1 ]; then
   echo "FAIL: release ${TAG} was not created" >&2

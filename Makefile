@@ -19,6 +19,7 @@ check: ## fmt, clippy, test, deny, public surfaces, trigger lock
 	python3 scripts/test_workflow_triggers.py
 	python3 scripts/test_package_release_binary.py
 	python3 scripts/test_render_release_extras.py
+	python3 scripts/test_upload_release_binaries.py
 	bash scripts/assert-public.sh
 
 public: ## Check launch surfaces in the tree
