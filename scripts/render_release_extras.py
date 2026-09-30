@@ -294,13 +294,17 @@ def winget_manifests(repo: str, version: str, hashes: dict[str, str]) -> dict[st
     filename = archive_filename(target)
     url = asset_url(repo, version, filename)
     digest = hashes[target].upper()
-    version_yaml = f"""PackageIdentifier: Wiremux.Wiremux
+    version_yaml = f"""# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
+
+PackageIdentifier: Wiremux.Wiremux
 PackageVersion: {version}
 DefaultLocale: en-US
 ManifestType: version
-ManifestVersion: 1.10.0
+ManifestVersion: 1.12.0
 """
-    installer_yaml = f"""PackageIdentifier: Wiremux.Wiremux
+    installer_yaml = f"""# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: Wiremux.Wiremux
 PackageVersion: {version}
 InstallerType: zip
 NestedInstallerType: portable
@@ -318,9 +322,11 @@ Installers:
     PackageDependencies:
     - PackageIdentifier: Microsoft.VCRedist.2015+.x64
 ManifestType: installer
-ManifestVersion: 1.10.0
+ManifestVersion: 1.12.0
 """
-    locale_yaml = f"""PackageIdentifier: Wiremux.Wiremux
+    locale_yaml = f"""# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+
+PackageIdentifier: Wiremux.Wiremux
 PackageVersion: {version}
 PackageLocale: en-US
 Publisher: Wiremux
@@ -332,7 +338,7 @@ LicenseUrl: https://github.com/{repo}/blob/v{version}/LICENSE
 ShortDescription: {DESCRIPTION}
 Moniker: wiremux
 ManifestType: defaultLocale
-ManifestVersion: 1.10.0
+ManifestVersion: 1.12.0
 """
     return {
         "winget/Wiremux.Wiremux.yaml": version_yaml,

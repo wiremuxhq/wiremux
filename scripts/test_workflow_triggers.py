@@ -655,6 +655,27 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("duplicate asset names", upload)
         self.assertIn(".intoto.jsonl", text)
 
+    def test_windows_packages_install_current_release(self) -> None:
+        text = (WORKFLOWS / "windows-packages.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", text)
+        self.assertIn("runs-on: windows-latest", text)
+        self.assertIn("timeout-minutes: 20", text)
+        self.assertIn("https://get.scoop.sh", text)
+        self.assertIn("-RunAsAdmin", text)
+        self.assertIn("https://github.com/wiremuxhq/scoop-bucket", text)
+        self.assertIn("scoop install wiremux", text)
+        self.assertIn("scoop uninstall wiremux", text)
+        self.assertIn("choco pack .\\wiremux.nuspec", text)
+        self.assertIn("choco install wiremux --source $dir -y --version $version", text)
+        self.assertIn("choco uninstall wiremux -y", text)
+        self.assertIn("gh release view --repo wiremuxhq/wiremux", text)
+        self.assertNotIn("0.9.3", text)
+        self.assertNotIn("CHOCOLATEY_API_KEY", text)
+        self.assertIn(
+            "step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1",
+            text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
