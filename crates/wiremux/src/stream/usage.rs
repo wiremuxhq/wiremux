@@ -1,4 +1,5 @@
 //! Usage field mapping. Zero cache and audio counts omit those keys on encode.
+//! Messages response `usage.inference_geo` round-trips. Other wires omit it.
 
 use serde_json::{Value, json};
 
@@ -29,6 +30,7 @@ pub(crate) fn from_chat(usage: &Value) -> IrStreamEvent {
         reasoning_tokens: reasoning,
         audio_tokens,
         completion_audio_tokens,
+        inference_geo: None,
     }
 }
 
@@ -44,6 +46,12 @@ pub(super) fn from_anthropic(usage: &Value) -> IrStreamEvent {
         reasoning_tokens: reasoning,
         audio_tokens: 0,
         completion_audio_tokens: 0,
+        inference_geo: usage
+            .get("inference_geo")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|geo| !geo.is_empty())
+            .map(str::to_string),
     }
 }
 
@@ -63,6 +71,7 @@ pub(super) fn from_responses(usage: &Value) -> IrStreamEvent {
         reasoning_tokens: reasoning,
         audio_tokens: 0,
         completion_audio_tokens: 0,
+        inference_geo: None,
     }
 }
 
@@ -91,6 +100,7 @@ pub(super) fn from_gemini(usage: &Value) -> IrStreamEvent {
             "candidatesTokensDetails",
             "candidates_tokens_details",
         ),
+        inference_geo: None,
     }
 }
 
@@ -142,6 +152,7 @@ pub(super) fn encode_anthropic(
     cache_read_tokens: u32,
     cache_write_tokens: u32,
     reasoning_tokens: u32,
+    inference_geo: Option<&str>,
 ) -> Value {
     let mut usage = json!({
         "input_tokens": prompt_tokens,
@@ -155,6 +166,9 @@ pub(super) fn encode_anthropic(
     }
     if reasoning_tokens > 0 {
         usage["output_tokens_details"] = json!({ "thinking_tokens": reasoning_tokens });
+    }
+    if let Some(geo) = inference_geo {
+        usage["inference_geo"] = json!(geo);
     }
     json!({
         "type": "message_delta",
@@ -256,4 +270,129 @@ fn gemini_audio_tokens(usage: &Value, camel: &str, snake: &str) -> u32 {
 
 fn nested_u32(value: &Value, object: &str, key: &str) -> Option<u32> {
     u32_field(value.get(object)?, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_usage_inference_geo_round_trips_and_other_wires_omit_it() {
+        let usage = json!({
+            "input_tokens": 3,
+            "output_tokens": 5,
+            "inference_geo": "us",
+        });
+        let ev = from_anthropic(&usage);
+        let IrStreamEvent::Usage {
+            prompt_tokens,
+            completion_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+            audio_tokens,
+            completion_audio_tokens,
+            inference_geo,
+        } = &ev
+        else {
+            panic!("expected usage, got {ev:?}");
+        };
+        assert_eq!(*prompt_tokens, 3);
+        assert_eq!(*completion_tokens, 5);
+        assert_eq!(inference_geo.as_deref(), Some("us"));
+        let padded = json!({
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "inference_geo": " us ",
+        });
+        let padded_ev = from_anthropic(&padded);
+        let IrStreamEvent::Usage {
+            inference_geo: padded_geo,
+            ..
+        } = &padded_ev
+        else {
+            panic!("expected usage, got {padded_ev:?}");
+        };
+        assert_eq!(
+            padded_geo.as_deref(),
+            Some("us"),
+            "inference_geo must be trimmed, got {padded_geo:?}"
+        );
+
+        let messages = encode_anthropic(
+            *prompt_tokens,
+            *completion_tokens,
+            *cache_read_tokens,
+            *cache_write_tokens,
+            *reasoning_tokens,
+            inference_geo.as_deref(),
+        );
+        assert_eq!(
+            messages
+                .pointer("/usage/inference_geo")
+                .and_then(Value::as_str),
+            Some("us"),
+            "Messages usage must keep inference_geo, got {messages}"
+        );
+
+        let chat = encode_chat(
+            *prompt_tokens,
+            *completion_tokens,
+            *cache_read_tokens,
+            *cache_write_tokens,
+            *reasoning_tokens,
+            *audio_tokens,
+            *completion_audio_tokens,
+        );
+        assert!(
+            chat.pointer("/usage/inference_geo").is_none(),
+            "Chat usage must omit inference_geo, got {chat}"
+        );
+        let responses = encode_responses(
+            *prompt_tokens,
+            *completion_tokens,
+            *cache_read_tokens,
+            *cache_write_tokens,
+            *reasoning_tokens,
+        );
+        assert!(
+            responses.pointer("/response/usage/inference_geo").is_none(),
+            "Responses usage must omit inference_geo, got {responses}"
+        );
+        let gemini = encode_gemini(
+            *prompt_tokens,
+            *completion_tokens,
+            *cache_read_tokens,
+            *reasoning_tokens,
+            *audio_tokens,
+            *completion_audio_tokens,
+        );
+        assert!(
+            gemini.pointer("/usageMetadata/inference_geo").is_none(),
+            "Gemini usage must omit inference_geo, got {gemini}"
+        );
+
+        let blank = json!({
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "inference_geo": "  ",
+        });
+        let blank_ev = from_anthropic(&blank);
+        let IrStreamEvent::Usage {
+            inference_geo: blank_geo,
+            ..
+        } = &blank_ev
+        else {
+            panic!("expected usage, got {blank_ev:?}");
+        };
+        assert!(
+            blank_geo.is_none(),
+            "blank inference_geo must decode as None, got {blank_geo:?}"
+        );
+        let blank_messages = encode_anthropic(1, 2, 0, 0, 0, blank_geo.as_deref());
+        assert!(
+            blank_messages.pointer("/usage/inference_geo").is_none(),
+            "blank inference_geo must be omitted, got {blank_messages}"
+        );
+    }
 }

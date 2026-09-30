@@ -191,6 +191,7 @@ pub(super) fn usage_from_chunk(value: &Value) -> Option<IrStreamEvent> {
         reasoning_tokens: 0,
         audio_tokens: 0,
         completion_audio_tokens: 0,
+        inference_geo: None,
     })
 }
 

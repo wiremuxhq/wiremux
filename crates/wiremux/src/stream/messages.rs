@@ -315,6 +315,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             cache_read_tokens,
             cache_write_tokens,
             reasoning_tokens,
+            inference_geo,
             ..
         } => (
             "message_delta",
@@ -324,6 +325,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 *cache_read_tokens,
                 *cache_write_tokens,
                 *reasoning_tokens,
+                inference_geo.as_deref(),
             ),
         ),
         IrStreamEvent::FinishReason { reason } => (

@@ -504,6 +504,7 @@ pub enum IrStreamEvent {
     /// `completion_tokens_details.audio_tokens` and dest Gemini
     /// `candidatesTokensDetails` modality AUDIO. It is a subset of
     /// completion, not subtracted from `completion_tokens`.
+    /// Messages response `usage.inference_geo`. Other wires omit it.
     Usage {
         prompt_tokens: u32,
         completion_tokens: u32,
@@ -512,6 +513,8 @@ pub enum IrStreamEvent {
         reasoning_tokens: u32,
         audio_tokens: u32,
         completion_audio_tokens: u32,
+        /// Messages response `usage.inference_geo`. Other wires omit it.
+        inference_geo: Option<String>,
     },
     FinishReason {
         reason: String,
