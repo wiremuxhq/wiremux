@@ -48,6 +48,10 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("python3 scripts/test_package_release_binary.py", text)
         self.assertIn("python3 scripts/test_render_release_extras.py", text)
         self.assertIn("python3 scripts/test_upload_release_binaries.py", text)
+        self.assertIn("release-please-config.json", text)
+        self.assertIn("- 'fuzz/**'", text)
+        self.assertIn("github.actor == 'github-actions[bot]'", text)
+        self.assertIn("github.actor != 'github-actions[bot]'", text)
 
     def test_actionlint_is_not_an_install_action_tool(self) -> None:
         text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
@@ -396,6 +400,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn('os=["ubuntu-latest"]', ci)
         self.assertIn('os=["ubuntu-latest","macos-latest","windows-latest"]', ci)
         self.assertIn('[[ "$HEAD_REF" == release-please* ]]', ci)
+        self.assertIn('[ "$ACTOR" = "github-actions[bot]" ]', ci)
         self.assertNotIn("github.event_name == 'push'", ci)
         security = (WORKFLOWS / "security.yml").read_text(encoding="utf-8")
         self.assertIn("name: CodeQL (rust)", security)
