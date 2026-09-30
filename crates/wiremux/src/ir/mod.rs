@@ -205,6 +205,12 @@ pub struct IrSampling {
     pub performance_latency: Option<String>,
     /// Messages request `diagnostics.previous_message_id`. Chat, Responses, Gemini, and Converse drop.
     pub previous_message_id: Option<String>,
+    /// Converse `additionalModelResponseFieldPaths`.
+    /// Chat, Messages, Responses, and Gemini drop.
+    pub response_field_paths: Vec<String>,
+    /// Converse `additionalModelRequestFields`.
+    /// Chat, Messages, Responses, and Gemini drop.
+    pub additional_request_fields: Option<serde_json::Value>,
 }
 
 impl IrSampling {
