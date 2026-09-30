@@ -203,6 +203,47 @@ fn messages_top_k_round_trips_and_chat_drops_it() {
 }
 
 #[test]
+fn messages_inference_geo_round_trips_and_other_dests_drop_it() {
+    let raw = br#"{"model":"claude-haiku-4-5","max_tokens":16,"inference_geo":"us","messages":[{"role":"user","content":"hi"}]}"#;
+    let (ir, _) = decode(Wire::Messages, raw).expect("decode");
+    assert_eq!(ir.sampling.inference_geo.as_deref(), Some("us"));
+    let (messages, _) = encode_value(Wire::Messages, &ir);
+    assert_eq!(messages["inference_geo"], "us", "{messages}");
+    for wire in [
+        Wire::ChatCompletions,
+        Wire::Responses,
+        Wire::Gemini,
+        Wire::Converse,
+    ] {
+        let (body, report) = encode_value(wire, &ir);
+        assert!(
+            body.get("inference_geo").is_none() && !body.to_string().contains("inference_geo"),
+            "{wire:?} must omit inference_geo, got {body}"
+        );
+        assert!(
+            has_action(&report, LossAction::Drop, "inference_geo"),
+            "{wire:?} must Drop sampling.inference_geo, got {report:?}"
+        );
+    }
+
+    for blank in ["", "  "] {
+        let raw = format!(
+            r#"{{"model":"claude-haiku-4-5","max_tokens":16,"inference_geo":"{blank}","messages":[{{"role":"user","content":"hi"}}]}}"#
+        );
+        let (ir, _) = decode(Wire::Messages, raw.as_bytes()).expect("decode");
+        assert!(
+            ir.sampling.inference_geo.is_none(),
+            "blank inference_geo decodes as None"
+        );
+        let (messages, _) = encode_value(Wire::Messages, &ir);
+        assert!(
+            messages.get("inference_geo").is_none(),
+            "blank inference_geo must be omitted, got {messages}"
+        );
+    }
+}
+
+#[test]
 fn chat_json_schema_strict_round_trips() {
     let raw = br#"{
         "model": "gpt-4.1",

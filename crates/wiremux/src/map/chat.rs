@@ -234,6 +234,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         logit_bias: chat_logit_bias(value),
         prediction: chat_object_field(value, "prediction"),
         web_search_options: chat_object_field(value, "web_search_options"),
+        inference_geo: None,
     }
 }
 
@@ -698,6 +699,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.top_k.is_some() {
         report.record("sampling.top_k", LossAction::Drop, "no slot");
+    }
+    if s.inference_geo.is_some() {
+        report.record("sampling.inference_geo", LossAction::Drop, "no slot");
     }
     if let Some(max) = s.max_tokens {
         if max_completion {
