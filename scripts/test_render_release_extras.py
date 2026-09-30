@@ -129,6 +129,21 @@ class RenderReleaseExtrasTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 render("0.9.3", root, "wiremuxhq/wiremux")
 
+    def test_duplicate_sidecar_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_sidecars(root, self.targets, nested=False)
+            nested = root / "nested"
+            nested.mkdir()
+            name = "wiremux-x86_64-pc-windows-msvc.zip.sha256"
+            (nested / name).write_text(
+                f"{digest('windows-other')}  {name[:-len('.sha256')]}\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit) as caught:
+                render("v0.9.3", root, "wiremuxhq/wiremux")
+            self.assertIn("duplicate sidecar", str(caught.exception))
+
     def test_check_and_shell_syntax(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -204,6 +219,54 @@ class RenderReleaseExtrasTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("HOMEBREW_TAP_TOKEN unset", result.stdout)
+
+    def test_push_empty_dir_fails_before_gh(self) -> None:
+        self._assert_push_manifest_missing(write_formula=False)
+
+    def test_push_formula_without_scoop_fails_before_gh(self) -> None:
+        self._assert_push_manifest_missing(write_formula=True)
+
+    def _assert_push_manifest_missing(self, write_formula: bool) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            assets = root / "assets"
+            assets.mkdir()
+            log = root / "gh.log"
+            log.write_text("", encoding="utf-8")
+            stub = bin_dir / "gh"
+            stub.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' CALL \"$@\" >> \"$GH_STUB_LOG\"\n"
+                "exit 99\n",
+                encoding="utf-8",
+            )
+            stub.chmod(0o755)
+            if write_formula:
+                formula = assets / "Formula"
+                formula.mkdir()
+                (formula / "wiremux.rb").write_text(
+                    "class Wiremux < Formula\n",
+                    encoding="utf-8",
+                )
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts/push-package-indexes.sh")],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    "PATH": os.pathsep.join([str(bin_dir), "/bin", "/usr/bin"]),
+                    "TAG": "v0.9.3",
+                    "GH_REPO": "wiremuxhq/wiremux",
+                    "ASSET_DIR": str(assets),
+                    "TOKEN": "dummy",
+                    "GH_STUB_LOG": str(log),
+                },
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("formula or scoop manifest missing", result.stderr)
+            self.assertEqual(log.read_text(encoding="utf-8"), "")
 
 
 if __name__ == "__main__":
