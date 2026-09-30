@@ -43,6 +43,12 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("--test response_maps", text)
         self.assertIn("--test client", text)
 
+    def test_ci_runs_release_script_unit_tests(self) -> None:
+        text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("python3 scripts/test_package_release_binary.py", text)
+        self.assertIn("python3 scripts/test_render_release_extras.py", text)
+        self.assertIn("python3 scripts/test_upload_release_binaries.py", text)
+
     def test_actionlint_is_not_an_install_action_tool(self) -> None:
         text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
         self.assertNotIn("tool: actionlint@", text)

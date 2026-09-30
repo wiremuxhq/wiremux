@@ -136,6 +136,9 @@ jobs:
           !startsWith(github.head_ref, 'release-please')
         run: bash scripts/check-cargo-package.sh
       - run: python3 scripts/test_workflow_triggers.py
+      - run: python3 scripts/test_package_release_binary.py
+      - run: python3 scripts/test_render_release_extras.py
+      - run: python3 scripts/test_upload_release_binaries.py
 
   lint-gate:
     name: Lint
