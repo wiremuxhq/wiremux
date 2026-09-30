@@ -17,6 +17,12 @@ DESCRIPTION = (
     "Wiremux maps Chat Completions, Messages, Responses, Gemini, "
     "and Converse through one IR."
 )
+# Homebrew rejects a desc that starts with the formula name, ends
+# with a period, or is 80 characters or longer.
+HOMEBREW_DESC = (
+    "Maps Chat Completions, Messages, Responses, Gemini, "
+    "and Converse through one IR"
+)
 REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
 HEX_RE = re.compile(r"[0-9a-fA-F]{64}")
@@ -101,10 +107,9 @@ def _os_block(
 def homebrew_formula(repo: str, version: str, hashes: dict[str, str]) -> str:
     lines = [
         "class Wiremux < Formula",
-        f'  desc "{DESCRIPTION}"',
+        f'  desc "{HOMEBREW_DESC}"',
         f'  homepage "https://github.com/{repo}"',
-        f'  version "{version}"',
-        '  license "MIT OR Apache-2.0"',
+        '  license any_of: ["MIT", "Apache-2.0"]',
         "",
     ]
     macos: list[tuple[str, str, str]] = []
