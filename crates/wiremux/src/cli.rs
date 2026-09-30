@@ -479,6 +479,12 @@ fn is_auth_header(name: &str) -> bool {
 
 /// Format status without leaking the token.
 pub fn format_status(status: &TokenStatus) -> String {
+    if status.available && status.detail == "auth_scheme is none" {
+        return format!(
+            "profile: {}\ntoken: not required\n{}",
+            status.id, status.detail
+        );
+    }
     if status.available {
         format!("profile: {}\ntoken: available", status.id)
     } else {
@@ -1081,6 +1087,9 @@ base_url = "http://127.0.0.1:9"
         let status = token_status(&profile);
         assert!(status.available);
         let text = format_status(&status);
+        assert!(text.contains("token: not required"), "{text}");
+        assert!(text.contains("auth_scheme is none"), "{text}");
+        assert!(!text.contains("token: available"), "{text}");
         assert!(!text.contains("http://"));
     }
 

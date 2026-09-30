@@ -56,11 +56,11 @@ also add `wiremux-auth`.
 
 Decode a vendor JSON body into `IrRequest`, then encode another wire.
 The profile supplies vendor quirks. Encode-side loss is typed
-(`preserve` / `degrade` / `drop` / `hard-error`).
-`--dump-loss` prints one line per change:
+(`preserve` / `degrade` / `drop` / `harderror`).
+`wiremux map` prints one stderr line per change:
 
 ```text
-loss.encode: degrade sampling.max_tokens: messages requires max_tokens
+degrade sampling.max_tokens: messages requires max_tokens
 ```
 
 ```rust
@@ -86,7 +86,11 @@ Run the same program from this tree:
 cargo run -p wiremux --example remap --no-default-features
 ```
 
-The CLI prints the encoded body on stdout. Loss lines go to stderr:
+That example prints the encoded JSON. Loss, when there is any, is
+the Debug form of the report on stderr.
+
+`wiremux map` prints the encoded body on stdout and the loss lines
+above on stderr. It has no `--dump-loss` flag.
 
 ```bash
 wiremux map --from chat --to messages request.json
@@ -109,9 +113,15 @@ wiremux profile validate openai
 wiremux auth status openai
 ```
 
-`wiremux auth login` follows the profile `login` engine. Several
-shipped OAuth files use `login = "none"` until a public Wiremux
-client id exists; those exit 2 with a setup hint.
+`wiremux auth login` needs a profile id (`--profile` or the
+positional argument). Omitting it exits 1.
+
+The command follows the profile `login` engine. Shipped
+`openai-codex-oauth` uses `login = "none"` until a public Wiremux
+client id exists. `wiremux auth login --profile openai-codex-oauth`
+exits 2 and prints why (set `pkce` or `device`, and a client id).
+`login = "setup-token"` (shipped Anthropic) prints
+`setup_token_hint` and also exits 2.
 
 Catalog ingest writes user-dir profiles from
 [models.dev](https://models.dev/api.json) (default) or LiteLLM
@@ -126,7 +136,8 @@ Upstream comes from `--profile`.
 wiremux proxy --from chat-completions --profile ollama --dump-loss
 ```
 
-`--dump-loss` prints a `LossReport` on stderr per request.
+`--dump-loss` prints `loss.encode:` plus each loss event on stderr
+per request. `wiremux map` does not take this flag.
 
 ## Host attach
 
