@@ -235,6 +235,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         prediction: chat_object_field(value, "prediction"),
         web_search_options: chat_object_field(value, "web_search_options"),
         inference_geo: None,
+        performance_latency: None,
     }
 }
 
@@ -702,6 +703,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.inference_geo.is_some() {
         report.record("sampling.inference_geo", LossAction::Drop, "no slot");
+    }
+    if s.performance_latency.is_some() {
+        report.record("sampling.performance_latency", LossAction::Drop, "no slot");
     }
     if let Some(max) = s.max_tokens {
         if max_completion {

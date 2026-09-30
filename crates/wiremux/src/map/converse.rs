@@ -31,7 +31,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let mut sampling = decode_sampling(value);
+    let mut sampling = decode_sampling(value, &mut report);
     sampling.tool_choice =
         decode_tool_choice(value.get("toolConfig").and_then(|c| c.get("toolChoice")));
     let tools = value
@@ -316,7 +316,7 @@ fn decode_audio(audio: &Value, report: &mut LossReport) -> Option<IrPart> {
     None
 }
 
-fn decode_sampling(value: &Value) -> IrSampling {
+fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     let mut sampling = IrSampling::default();
     if let Some(cfg) = value.get("inferenceConfig") {
         sampling.max_tokens = cfg
@@ -364,6 +364,24 @@ fn decode_sampling(value: &Value) -> IrSampling {
         }
     }
     sampling.metadata = string_object_field(value, "requestMetadata");
+    if let Some(raw) = value
+        .pointer("/performanceConfig/latency")
+        .and_then(Value::as_str)
+    {
+        let latency = raw.trim();
+        if !latency.is_empty() {
+            if latency.eq_ignore_ascii_case("standard") || latency.eq_ignore_ascii_case("optimized")
+            {
+                sampling.performance_latency = Some(latency.to_ascii_lowercase());
+            } else {
+                report.record(
+                    "sampling.performance_latency",
+                    LossAction::Drop,
+                    "unmapped latency",
+                );
+            }
+        }
+    }
     sampling
 }
 
@@ -807,6 +825,16 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.inference_geo.is_some() {
         report.record("sampling.inference_geo", LossAction::Drop, "no slot");
+    }
+    if let Some(latency) = s.performance_latency.as_deref()
+        && let Some(root) = body.as_object_mut()
+    {
+        let slot = root
+            .entry("performanceConfig")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Some(obj) = slot.as_object_mut() {
+            obj.insert("latency".into(), json!(latency));
+        }
     }
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");

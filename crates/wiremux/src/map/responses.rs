@@ -327,6 +327,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         prediction: None,
         web_search_options: None,
         inference_geo: None,
+        performance_latency: None,
     }
 }
 
@@ -770,6 +771,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.inference_geo.is_some() {
         report.record("sampling.inference_geo", LossAction::Drop, "no slot");
+    }
+    if s.performance_latency.is_some() {
+        report.record("sampling.performance_latency", LossAction::Drop, "no slot");
     }
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
