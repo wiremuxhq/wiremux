@@ -96,6 +96,9 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("apply-release-notes:", workflow)
         self.assertIn("scripts/apply-release-notes.sh", workflow)
         self.assertIn("uses: ./.github/workflows/publish-crates.yml", workflow)
+        self.assertIn("dispatch-release-binaries:", workflow)
+        self.assertIn('gh workflow run "Release binaries"', workflow)
+        self.assertIn("actions: write", workflow)
         self.assertNotIn("crates-io-auth-action", workflow)
         self.assertIn("tag_name", workflow)
 
@@ -580,24 +583,59 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", on_block)
         self.assertNotIn("pull_request:", on_block)
         self.assertIn("x86_64-unknown-linux-gnu", text)
+        self.assertIn("aarch64-unknown-linux-gnu", text)
+        self.assertIn("ubuntu-24.04-arm", text)
         self.assertIn("aarch64-apple-darwin", text)
+        self.assertIn("x86_64-apple-darwin", text)
+        self.assertIn("macos-15-intel", text)
         self.assertIn("x86_64-pc-windows-msvc", text)
         self.assertIn("scripts/package_release_binary.py", text)
         self.assertIn("scripts/upload-release-binaries.sh", text)
+        self.assertIn("scripts/render_release_extras.py", text)
+        self.assertIn("scripts/push-package-indexes.sh", text)
+        self.assertIn("cargo-cyclonedx --version 0.5.9", text)
+        self.assertIn("wiremux-sbom.cdx.json", text)
+        self.assertIn(".intoto.jsonl", text)
+        self.assertIn(
+            "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8",
+            text,
+        )
         self.assertIn("name: Checkout workflow", text)
         self.assertIn("ref: ${{ github.sha }}", text)
         self.assertIn("path: crate", text)
         self.assertIn("working-directory: crate", text)
         self.assertIn("crate/target/release/wiremux", text)
         self.assertIn("contents: write", text)
+        self.assertIn("attestations: write", text)
+        self.assertIn("id-token: write", text)
+        self.assertIn("github.event.created", text)
+        self.assertIn("inputs.tag != ''", text)
+        self.assertIn("HOMEBREW_TAP_TOKEN", text)
+        self.assertIn("WINGET_TOKEN unset", text)
+        self.assertIn("CHOCOLATEY_API_KEY unset", text)
+        self.assertIn("Wiremux.Wiremux", text)
+        self.assertIn("fork-user: SebTardif", text)
+        self.assertIn("continue-on-error: true", text)
+        self.assertIn(
+            "vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e",
+            text,
+        )
         self.assertNotIn("cargo publish", text)
-        self.assertIn("Does not publish", text)
-        self.assertNotIn("HOMEBREW_TAP_TOKEN", text)
-        self.assertNotIn("WINGET_TOKEN", text)
-        self.assertNotIn("CHOCOLATEY_API_KEY", text)
+        self.assertNotIn('TAG="${TAG}"', text)
         header = text.split("\njobs:", 1)[0]
         self.assertIn("contents: read", header)
         self.assertNotIn("contents: write", header)
+        self.assertNotIn("id-token:", header)
+        self.assertNotIn("attestations:", header)
+        push = (ROOT / "scripts" / "push-package-indexes.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("HOMEBREW_TAP_TOKEN unset", push)
+        upload = (ROOT / "scripts" / "upload-release-binaries.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("duplicate asset names", upload)
+        self.assertIn(".intoto.jsonl", text)
 
 
 if __name__ == "__main__":

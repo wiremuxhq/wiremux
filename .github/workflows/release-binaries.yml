@@ -1,5 +1,11 @@
 # Portable CLI archives for a vX.Y.Z GitHub Release.
-# Does not publish Homebrew, winget, Scoop, or Chocolatey.
+# Each archive is attested and uploaded with a .intoto.jsonl asset.
+# The publish job also uploads an SBOM, installers, and generated
+# Homebrew, Scoop, winget, and Chocolatey files.
+# Tap and bucket pushes run only when HOMEBREW_TAP_TOKEN is set.
+# Winget and Chocolatey pushes skip when their secrets are unset.
+# Git tags are not GPG-signed here. A signed-tag force-update must
+# not rebuild: new tag pushes set event.created, updates do not.
 name: Release binaries
 
 on:
@@ -23,8 +29,18 @@ permissions:
 jobs:
   build:
     name: ${{ matrix.name }}
+    # workflow_dispatch is not a push. A new tag has created=true.
+    # inputs.tag covers dispatch. A force-updated tag has created=false.
+    if: >-
+      github.event_name != 'push' ||
+      github.event.created ||
+      inputs.tag != ''
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -32,9 +48,15 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             name: Linux x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: Linux arm64
           - os: macos-14
             target: aarch64-apple-darwin
             name: macOS arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            name: macOS x64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: Windows x64
@@ -80,6 +102,28 @@ jobs:
             --out dist \
             --license crate/LICENSE \
             --license crate/LICENSE-APACHE
+      - name: Attest archive
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        id: attest
+        with:
+          subject-path: "dist/wiremux-${{ matrix.target }}.${{ matrix.target == 'x86_64-pc-windows-msvc' && 'zip' || 'tar.gz' }}"
+      - name: Stage provenance
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET" = "x86_64-pc-windows-msvc" ]; then
+            archive="dist/wiremux-${TARGET}.zip"
+          else
+            archive="dist/wiremux-${TARGET}.tar.gz"
+          fi
+          bundle="$BUNDLE"
+          if command -v cygpath >/dev/null 2>&1; then
+            bundle="$(cygpath -u "$BUNDLE")"
+          fi
+          cp "$bundle" "${archive}.intoto.jsonl"
       - name: Upload archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -90,13 +134,92 @@ jobs:
   publish:
     name: Upload to GitHub Release
     needs: build
+    if: >-
+      github.event_name != 'push' ||
+      github.event.created ||
+      inputs.tag != ''
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
       GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Checkout workflow
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Checkout crate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+          path: crate
+      - name: Download archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wiremux-*
+          path: dist
+          merge-multiple: true
+      - uses: ./.github/actions/rust-ci
+        with:
+          toolchain-file: crate/rust-toolchain.toml
+      - name: Generate SBOM
+        shell: bash
+        working-directory: crate
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -euo pipefail
+          cargo install cargo-cyclonedx --version 0.5.9
+          cargo cyclonedx --format json \
+            --manifest-path crates/wiremux/Cargo.toml \
+            --override-filename wiremux-sbom
+          sbom="$(find crates/wiremux -maxdepth 1 -type f -name 'wiremux-sbom*.json' -print)"
+          count="$(printf '%s\n' "$sbom" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "FAIL: expected one SBOM" >&2
+            exit 1
+          fi
+          cp "$sbom" ../dist/wiremux-sbom.cdx.json
+      - name: Attest SBOM
+        id: attest-sbom
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/wiremux-sbom.cdx.json
+      - name: Stage SBOM provenance
+        shell: bash
+        env:
+          BUNDLE: ${{ steps.attest-sbom.outputs.bundle-path }}
+        run: cp "$BUNDLE" dist/wiremux-sbom.cdx.json.intoto.jsonl
+      - name: Render installers and indexes
+        shell: bash
+        run: python3 scripts/render_release_extras.py --version "$TAG" --assets dist --out dist
+      - name: Upload archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSET_DIR: dist
+        run: bash scripts/upload-release-binaries.sh
+
+  publish-indexes:
+    name: Push Homebrew and Scoop
+    needs: publish
+    if: >-
+      needs.publish.result == 'success' &&
+      github.event.repository.private != true &&
+      (github.event_name != 'push' || github.event.created || inputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
@@ -106,14 +229,110 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Download archives
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: wiremux-*
-          path: dist
-          merge-multiple: true
-      - name: Upload archives
+          ref: ${{ github.sha }}
+      - name: Push formula and bucket
         env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ASSET_DIR: dist
-        run: bash scripts/upload-release-binaries.sh
+        run: |
+          set -euo pipefail
+          if [ -z "$TOKEN" ]; then
+            echo "OK: HOMEBREW_TAP_TOKEN unset; skip Homebrew tap and Scoop bucket"
+            exit 0
+          fi
+          mkdir -p dist
+          gh release download "$TAG" --repo "$GH_REPO" --dir dist \
+            --pattern 'wiremux.rb' --pattern 'wiremux.json'
+          TOKEN="$TOKEN" ASSET_DIR=dist bash scripts/push-package-indexes.sh
+
+  publish-chocolatey:
+    name: Publish Chocolatey
+    needs: publish
+    if: >-
+      needs.publish.result == 'success' &&
+      github.event.repository.private != true &&
+      (github.event_name != 'push' || github.event.created || inputs.tag != '')
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Download Chocolatey package
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p choco-src choco/tools
+          gh release download "$TAG" --repo "$GH_REPO" --dir choco-src \
+            --pattern 'wiremux.nuspec' --pattern 'chocolateyInstall.ps1'
+          mv choco-src/wiremux.nuspec choco/wiremux.nuspec
+          mv choco-src/chocolateyInstall.ps1 choco/tools/chocolateyInstall.ps1
+      - name: Pack
+        shell: pwsh
+        working-directory: choco
+        run: choco pack .\wiremux.nuspec
+      - name: Push
+        continue-on-error: true
+        shell: pwsh
+        working-directory: choco
+        env:
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        run: |
+          if (-not $env:CHOCOLATEY_API_KEY) {
+            Write-Output "OK: CHOCOLATEY_API_KEY unset; skip choco push"
+            exit 0
+          }
+          $nupkg = Get-ChildItem -Filter 'wiremux.*.nupkg' | Select-Object -First 1
+          if (-not $nupkg) {
+            Write-Error "FAIL: nupkg missing"
+            exit 1
+          }
+          choco push $nupkg.FullName --source 'https://push.chocolatey.org/' --api-key $env:CHOCOLATEY_API_KEY
+
+  publish-winget:
+    name: Publish winget
+    needs: publish
+    if: >-
+      needs.publish.result == 'success' &&
+      github.event.repository.private != true &&
+      (github.event_name != 'push' || github.event.created || inputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Skip without token
+        id: gate
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$WINGET_TOKEN" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "OK: WINGET_TOKEN unset; skip winget"
+            exit 0
+          fi
+          echo "present=true" >> "$GITHUB_OUTPUT"
+      - name: Open winget pull request
+        if: steps.gate.outputs.present == 'true'
+        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
+        with:
+          identifier: Wiremux.Wiremux
+          release-tag: ${{ inputs.tag || github.ref_name }}
+          installers-regex: 'wiremux-.*-pc-windows-msvc\.zip$'
+          token: ${{ secrets.WINGET_TOKEN }}
+          fork-user: SebTardif
