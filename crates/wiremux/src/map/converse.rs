@@ -868,6 +868,15 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if let Some(guard) = &s.guardrail {
         body["guardrailConfig"] = guard.clone();
     }
+    if s.container.is_some() {
+        report.record("sampling.container", LossAction::Drop, "no slot");
+    }
+    if s.context_management.is_some() {
+        report.record("sampling.context_management", LossAction::Drop, "no slot");
+    }
+    if s.mcp_servers.is_some() {
+        report.record("sampling.mcp_servers", LossAction::Drop, "no slot");
+    }
     if let Some(latency) = s.performance_latency.as_deref()
         && let Some(root) = body.as_object_mut()
     {

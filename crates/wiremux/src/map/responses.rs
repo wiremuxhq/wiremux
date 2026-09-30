@@ -333,6 +333,9 @@ fn decode_sampling(value: &Value) -> IrSampling {
         additional_request_fields: None,
         prompt_variables: None,
         guardrail: None,
+        container: None,
+        context_management: None,
+        mcp_servers: None,
     }
 }
 
@@ -798,6 +801,15 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.guardrail.is_some() {
         report.record("sampling.guardrail", LossAction::Drop, "no slot");
+    }
+    if s.container.is_some() {
+        report.record("sampling.container", LossAction::Drop, "no slot");
+    }
+    if s.context_management.is_some() {
+        report.record("sampling.context_management", LossAction::Drop, "no slot");
+    }
+    if s.mcp_servers.is_some() {
+        report.record("sampling.mcp_servers", LossAction::Drop, "no slot");
     }
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
