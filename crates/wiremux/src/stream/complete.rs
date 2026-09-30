@@ -278,6 +278,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut diagnostics = None;
     let mut container = None;
     let mut context_management = None;
+    let mut stop_sequence = None;
     let mut tool_calls = Vec::new();
     let mut citations = Vec::new();
     let mut images = Vec::new();
@@ -317,6 +318,9 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::ContextManagement { value } => {
                 context_management = Some(value.clone());
+            }
+            IrStreamEvent::StopSequence { text } => {
+                stop_sequence = Some(text.clone());
             }
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(super::messages::encode_stop_reason(reason).to_string());
@@ -437,6 +441,9 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     if let Some(value) = context_management {
         out["context_management"] = value;
+    }
+    if let Some(text) = stop_sequence {
+        out["stop_sequence"] = json!(text);
     }
     out
 }
@@ -1173,6 +1180,15 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
         .filter(|s| !s.is_empty())
     {
         out.push(IrStreamEvent::RefusalDelta {
+            text: text.to_string(),
+        });
+    }
+    if let Some(text) = value
+        .get("stop_sequence")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::StopSequence {
             text: text.to_string(),
         });
     }

@@ -717,7 +717,8 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         }),
         IrStreamEvent::Diagnostics { .. }
         | IrStreamEvent::Container { .. }
-        | IrStreamEvent::ContextManagement { .. } => {
+        | IrStreamEvent::ContextManagement { .. }
+        | IrStreamEvent::StopSequence { .. } => {
             json!({ "choices": [] })
         }
         IrStreamEvent::Done => {

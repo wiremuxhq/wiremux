@@ -5194,6 +5194,49 @@ fn messages_response_context_management_round_trips_and_other_wires_omit_it() {
 }
 
 #[test]
+fn messages_stop_sequence_round_trips_and_other_wires_omit_it() {
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4",
+        "content": [{ "type": "text", "text": "Hi" }],
+        "stop_reason": "stop_sequence",
+        "stop_sequence": "END"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile())
+        .expect("decode dest Messages complete stop_sequence");
+    let messages = encode_response(Wire::Messages, &events).expect("encode dest Messages complete");
+    assert_eq!(
+        messages.get("stop_sequence").and_then(Value::as_str),
+        Some("END"),
+        "Messages stop_sequence must round-trip, got {messages}"
+    );
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert!(
+        chat.get("stop_sequence").is_none(),
+        "Chat must omit stop_sequence, got {chat}"
+    );
+
+    let mut enc = wiremux::stream::StreamEncoder::new(Wire::Messages);
+    enc.push(IrStreamEvent::StopSequence { text: "END".into() })
+        .expect("push sequence");
+    enc.push(IrStreamEvent::TextDelta { text: "Hi".into() })
+        .expect("push text");
+    let frames = enc.finish().expect("finish");
+    let delta = frames
+        .iter()
+        .find(|frame| frame.event.as_deref() == Some("message_delta"))
+        .expect("message_delta");
+    assert!(
+        delta.data.contains("\"stop_sequence\":\"END\""),
+        "message_delta must keep the stop sequence, got {}",
+        delta.data
+    );
+}
+
+#[test]
 fn dest_chat_complete_service_tier_remaps_dest_messages_usage_service_tier() {
     let body = serde_json::to_vec(&json!({
         "id": "chatcmpl-r67",

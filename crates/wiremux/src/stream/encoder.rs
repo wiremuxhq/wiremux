@@ -51,6 +51,7 @@ pub struct StreamEncoder {
     reasoning_items: HashMap<u32, String>,
     created_at: Option<i64>,
     service_tier: Option<String>,
+    stop_sequence: Option<String>,
     metadata: Option<BTreeMap<String, String>>,
     moderation: Option<(Option<Value>, Option<Value>)>,
     refusal: String,
@@ -92,6 +93,7 @@ impl StreamEncoder {
             reasoning_items: HashMap::new(),
             created_at: None,
             service_tier: None,
+            stop_sequence: None,
             metadata: None,
             moderation: None,
             refusal: String::new(),
@@ -121,6 +123,7 @@ impl StreamEncoder {
             IrStreamEvent::Diagnostics { .. }
             | IrStreamEvent::Container { .. }
             | IrStreamEvent::ContextManagement { .. }
+            | IrStreamEvent::StopSequence { .. }
                 if !matches!(self.wire, Wire::Messages) =>
             {
                 Ok(Vec::new())
@@ -252,15 +255,22 @@ impl StreamEncoder {
         if let IrStreamEvent::ServiceTier { ref tier } = ev {
             self.service_tier = Some(tier.clone());
         }
+        if let IrStreamEvent::StopSequence { ref text } = ev {
+            self.stop_sequence = Some(text.clone());
+        }
         let mut out = Vec::new();
         if !self.started {
-            if matches!(ev, IrStreamEvent::ServiceTier { .. }) {
+            if matches!(
+                ev,
+                IrStreamEvent::ServiceTier { .. } | IrStreamEvent::StopSequence { .. }
+            ) {
                 return Ok(out);
             }
             self.started = true;
             out.push(self.messages_start_frame());
         }
         match ev {
+            IrStreamEvent::StopSequence { .. } => {}
             IrStreamEvent::TextDelta { text } => {
                 if self.tool_block_open() {
                     self.deferred.push(IrStreamEvent::TextDelta { text });
@@ -585,7 +595,10 @@ impl StreamEncoder {
         } else {
             mapped.unwrap_or("end_turn")
         };
-        let mut delta = json!({ "stop_reason": stop, "stop_sequence": null });
+        let mut delta = json!({
+            "stop_reason": stop,
+            "stop_sequence": self.stop_sequence.clone(),
+        });
         if !refusal.is_empty() {
             delta["stop_details"] = json!({
                 "type": "refusal",
@@ -683,7 +696,8 @@ impl StreamEncoder {
             | IrStreamEvent::Moderation { .. }
             | IrStreamEvent::Diagnostics { .. }
             | IrStreamEvent::Container { .. }
-            | IrStreamEvent::ContextManagement { .. } => {}
+            | IrStreamEvent::ContextManagement { .. }
+            | IrStreamEvent::StopSequence { .. } => {}
             IrStreamEvent::TextDelta { text } => {
                 out.extend(self.ensure_item(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
@@ -1356,7 +1370,8 @@ impl StreamEncoder {
             | IrStreamEvent::Moderation { .. }
             | IrStreamEvent::Diagnostics { .. }
             | IrStreamEvent::Container { .. }
-            | IrStreamEvent::ContextManagement { .. } => {}
+            | IrStreamEvent::ContextManagement { .. }
+            | IrStreamEvent::StopSequence { .. } => {}
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.extend(self.ensure_converse_block(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);

@@ -351,6 +351,10 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "container": value
             }),
         ),
+        IrStreamEvent::StopSequence { .. } => (
+            "message_delta",
+            json!({ "type": "message_delta", "delta": {} }),
+        ),
         IrStreamEvent::ContextManagement { value } => (
             "message_delta",
             json!({
