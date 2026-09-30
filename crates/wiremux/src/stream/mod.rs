@@ -978,6 +978,14 @@ mod tests {
         assert!(err.contains("exceeds"), "{err}");
     }
 
+    #[test]
+    fn parse_all_errors_when_joined_data_exceeds_sse_cap() {
+        let half = "a".repeat(MAX_SSE_PENDING / 2);
+        let doc = format!("data: {half}\ndata: {half}\n\n");
+        let err = RawSse::parse_all(&doc).expect_err("joined data over the cap");
+        assert!(err.contains("SSE data exceeds"), "{err}");
+    }
+
     fn profile() -> ResolvedProfile {
         wiremux_auth::parse_profile_str(
             r#"
