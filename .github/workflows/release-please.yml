@@ -167,3 +167,34 @@ jobs:
       - name: Apply curated notes
         continue-on-error: true
         run: bash scripts/apply-release-notes.sh
+
+  # GITHUB_TOKEN tags do not start Release binaries. workflow_dispatch does.
+  dispatch-release-binaries:
+    name: Dispatch release binaries
+    needs: release-please
+    if: >-
+      always() && !failure() && !cancelled() &&
+      needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Dispatch Release binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAG" ]; then
+            echo "FAIL: tag_name is empty" >&2
+            exit 1
+          fi
+          gh workflow run "Release binaries" --repo "$GH_REPO" -f "tag=${TAG}"
+          echo "OK: dispatched Release binaries for ${TAG}"

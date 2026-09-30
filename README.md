@@ -46,6 +46,9 @@ CLI and proxy:
 cargo install wiremux --locked
 ```
 
+GitHub Release archives, provenance, and the other installers are
+described in [`SUPPORT.md`](SUPPORT.md).
+
 Maps-only hosts stop after the first command. TokenProvider hosts
 also add `wiremux-auth`.
 

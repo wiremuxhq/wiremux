@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Upload portable wiremux archives onto an existing GitHub Release.
+# Upload release archives, provenance, installers, and index files.
 set -euo pipefail
 
 echo "PLAN: upload release binaries"
@@ -29,9 +29,28 @@ fi
 assets=()
 while IFS= read -r path; do
   assets+=("$path")
-done < <(find "$ASSET_DIR" -type f \( -name 'wiremux-*' -o -name '*.sha256' \) | sort)
+done < <(find "$ASSET_DIR" -type f ! -name '.DS_Store' | sort)
 if [ "${#assets[@]}" -eq 0 ]; then
   echo "FAIL: no wiremux archives in ${ASSET_DIR}" >&2
+  exit 1
+fi
+
+names="$(for path in "${assets[@]}"; do basename "$path"; done | sort)"
+dups="$(printf '%s\n' "$names" | uniq -d)"
+if [ -n "$dups" ]; then
+  echo "FAIL: duplicate asset names" >&2
+  printf '%s\n' "$dups" >&2
+  exit 1
+fi
+
+has_archive=0
+for path in "${assets[@]}"; do
+  case "$(basename "$path")" in
+    wiremux-*.tar.gz|wiremux-*.zip) has_archive=1 ;;
+  esac
+done
+if [ "$has_archive" -ne 1 ]; then
+  echo "FAIL: no wiremux archive in ${ASSET_DIR}" >&2
   exit 1
 fi
 
