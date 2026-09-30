@@ -198,6 +198,8 @@ pub struct IrSampling {
     /// Dest Chat `web_search_options` object. Dest Responses, dest Gemini,
     /// dest Messages, and dest Converse drop.
     pub web_search_options: Option<serde_json::Value>,
+    /// Messages request `inference_geo`. Chat, Responses, Gemini, and Converse drop.
+    pub inference_geo: Option<String>,
 }
 
 impl IrSampling {

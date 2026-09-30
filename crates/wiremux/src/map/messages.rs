@@ -343,6 +343,9 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         logit_bias: std::collections::BTreeMap::new(),
         prediction: None,
         web_search_options: None,
+        inference_geo: str_field(value, "inference_geo")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
     }
 }
 
@@ -1263,6 +1266,14 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(k) = s.top_k {
         body["top_k"] = json!(k);
+    }
+    if let Some(geo) = s
+        .inference_geo
+        .as_deref()
+        .map(str::trim)
+        .filter(|geo| !geo.is_empty())
+    {
+        body["inference_geo"] = json!(geo);
     }
     if let Some(max) = s.max_tokens {
         body["max_tokens"] = json!(max);

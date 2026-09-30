@@ -805,6 +805,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.top_k.is_some() {
         report.record("sampling.top_k", LossAction::Drop, "no slot");
     }
+    if s.inference_geo.is_some() {
+        report.record("sampling.inference_geo", LossAction::Drop, "no slot");
+    }
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
     }
