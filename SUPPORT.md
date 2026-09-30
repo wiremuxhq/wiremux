@@ -56,16 +56,16 @@ scoop install wiremux
 The manifest is in
 [wiremuxhq/scoop-bucket](https://github.com/wiremuxhq/scoop-bucket).
 
-Later releases push those two repositories only when
-`HOMEBREW_TAP_TOKEN` is set on this repo. That secret is not set, so
-a release does not update the tap or the bucket by itself.
+Later releases push those two repositories when
+`HOMEBREW_TAP_TOKEN` is set. That secret is set on this repo.
 
 winget manifests are generated on the release. The first package pull
 request is
 [microsoft/winget-pkgs#444315](https://github.com/microsoft/winget-pkgs/pull/444315).
 `winget install` does not work until that pull request merges.
-Later releases open an update only when `WINGET_TOKEN` is set, and
-only after this first package is in the community repository.
+`WINGET_TOKEN` is set, so a later release can open an update pull
+request. That update still waits until this first package is in the
+community repository.
 
 Chocolatey files are on the release. The package is not on the
 community feed. Publishing needs `CHOCOLATEY_API_KEY`, which is not
