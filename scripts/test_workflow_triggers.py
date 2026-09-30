@@ -571,6 +571,29 @@ class WorkflowTriggerTests(unittest.TestCase):
         payload = json.loads(dry.stdout.strip().splitlines()[-2])
         self.assertEqual(payload["action"], "create")
 
+    def test_release_binaries_upload_portable_archives(self) -> None:
+        text = (WORKFLOWS / "release-binaries.yml").read_text(encoding="utf-8")
+        on_block = _on_block(text)
+        self.assertIn("push:", on_block)
+        self.assertIn('tags:', on_block)
+        self.assertIn('"v[0-9]+.[0-9]+.[0-9]+"', on_block)
+        self.assertIn("workflow_dispatch:", on_block)
+        self.assertNotIn("pull_request:", on_block)
+        self.assertIn("x86_64-unknown-linux-gnu", text)
+        self.assertIn("aarch64-apple-darwin", text)
+        self.assertIn("x86_64-pc-windows-msvc", text)
+        self.assertIn("scripts/package_release_binary.py", text)
+        self.assertIn("scripts/upload-release-binaries.sh", text)
+        self.assertIn("contents: write", text)
+        self.assertNotIn("cargo publish", text)
+        self.assertIn("Does not publish", text)
+        self.assertNotIn("HOMEBREW_TAP_TOKEN", text)
+        self.assertNotIn("WINGET_TOKEN", text)
+        self.assertNotIn("CHOCOLATEY_API_KEY", text)
+        header = text.split("\njobs:", 1)[0]
+        self.assertIn("contents: read", header)
+        self.assertNotIn("contents: write", header)
+
 
 if __name__ == "__main__":
     unittest.main()

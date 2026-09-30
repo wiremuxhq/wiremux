@@ -22,5 +22,13 @@ report form in [`SECURITY.md`](SECURITY.md).
 
 The supported install is Cargo. See the Install section in
 [`README.md`](README.md). `cargo install wiremux --locked` installs
-the CLI. Homebrew, winget, Scoop, and Chocolatey packages are not
-published.
+the CLI.
+
+A `vX.Y.Z` GitHub Release also gets portable archives from
+[Release binaries](.github/workflows/release-binaries.yml): Linux x64,
+macOS Apple silicon, and Windows x64. Each archive has the `wiremux`
+binary at the root and a `.sha256` sidecar.
+
+Homebrew, winget, Scoop, and Chocolatey packages are not published.
+Those indexes still need a release binary, which the archives are.
+They are not formulas or manifests.
