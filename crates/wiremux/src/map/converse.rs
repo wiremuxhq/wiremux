@@ -399,6 +399,16 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     {
         sampling.additional_request_fields = Some(fields.clone());
     }
+    if let Some(vars) = value.get("promptVariables")
+        && vars.is_object()
+    {
+        sampling.prompt_variables = Some(vars.clone());
+    }
+    if let Some(guard) = value.get("guardrailConfig")
+        && guard.is_object()
+    {
+        sampling.guardrail = Some(guard.clone());
+    }
     sampling
 }
 
@@ -851,6 +861,12 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(fields) = &s.additional_request_fields {
         body["additionalModelRequestFields"] = fields.clone();
+    }
+    if let Some(vars) = &s.prompt_variables {
+        body["promptVariables"] = vars.clone();
+    }
+    if let Some(guard) = &s.guardrail {
+        body["guardrailConfig"] = guard.clone();
     }
     if let Some(latency) = s.performance_latency.as_deref()
         && let Some(root) = body.as_object_mut()

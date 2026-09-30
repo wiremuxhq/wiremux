@@ -211,6 +211,12 @@ pub struct IrSampling {
     /// Converse `additionalModelRequestFields`.
     /// Chat, Messages, Responses, and Gemini drop.
     pub additional_request_fields: Option<serde_json::Value>,
+    /// Converse `promptVariables`.
+    /// Chat, Messages, Responses, and Gemini drop.
+    pub prompt_variables: Option<serde_json::Value>,
+    /// Converse `guardrailConfig`.
+    /// Chat, Messages, Responses, and Gemini drop.
+    pub guardrail: Option<serde_json::Value>,
 }
 
 impl IrSampling {

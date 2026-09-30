@@ -522,6 +522,93 @@ fn converse_additional_request_fields_round_trip_and_other_dests_drop_them() {
 }
 
 #[test]
+fn converse_prompt_variables_and_guardrail_round_trip_and_other_dests_drop_them() {
+    let raw = br#"{
+        "modelId": "amazon.nova-lite-v1:0",
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+        "promptVariables": {"genre": {"text": "pop"}},
+        "guardrailConfig": {
+            "guardrailIdentifier": "g",
+            "guardrailVersion": "1",
+            "trace": "enabled"
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Converse, raw).expect("decode");
+    assert_eq!(
+        ir.sampling.prompt_variables,
+        Some(json!({"genre": {"text": "pop"}}))
+    );
+    assert_eq!(
+        ir.sampling.guardrail,
+        Some(json!({
+            "guardrailIdentifier": "g",
+            "guardrailVersion": "1",
+            "trace": "enabled"
+        }))
+    );
+    let (converse, _) = encode_value(Wire::Converse, &ir);
+    assert_eq!(
+        converse.get("promptVariables"),
+        Some(&json!({"genre": {"text": "pop"}})),
+        "{converse}"
+    );
+    assert_eq!(
+        converse.get("guardrailConfig"),
+        Some(&json!({
+            "guardrailIdentifier": "g",
+            "guardrailVersion": "1",
+            "trace": "enabled"
+        })),
+        "{converse}"
+    );
+    for wire in [
+        Wire::ChatCompletions,
+        Wire::Messages,
+        Wire::Responses,
+        Wire::Gemini,
+    ] {
+        let (body, report) = encode_value(wire, &ir);
+        let text = body.to_string();
+        assert!(
+            body.get("promptVariables").is_none()
+                && body.get("guardrailConfig").is_none()
+                && !text.contains("promptVariables")
+                && !text.contains("guardrailConfig")
+                && !text.contains("prompt_variables")
+                && !text.contains("guardrail")
+                && !text.contains("pop"),
+            "{wire:?} must omit promptVariables and guardrailConfig, got {body}"
+        );
+        assert!(
+            has_action(&report, LossAction::Drop, "prompt_variables"),
+            "{wire:?} must Drop sampling.prompt_variables, got {report:?}"
+        );
+        assert!(
+            has_action(&report, LossAction::Drop, "guardrail"),
+            "{wire:?} must Drop sampling.guardrail, got {report:?}"
+        );
+    }
+
+    let string_vars = br#"{
+        "modelId": "amazon.nova-lite-v1:0",
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+        "promptVariables": "pop"
+    }"#;
+    let (ir, _) = decode(Wire::Converse, string_vars).expect("decode");
+    assert!(
+        ir.sampling.prompt_variables.is_none(),
+        "JSON string is not stored"
+    );
+    let (converse, _) = encode_value(Wire::Converse, &ir);
+    assert!(
+        converse.get("promptVariables").is_none()
+            && !converse.to_string().contains("promptVariables")
+            && !converse.to_string().contains("pop"),
+        "JSON string must omit promptVariables, got {converse}"
+    );
+}
+
+#[test]
 fn chat_json_schema_strict_round_trips() {
     let raw = br#"{
         "model": "gpt-4.1",
