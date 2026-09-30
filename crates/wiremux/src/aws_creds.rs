@@ -360,7 +360,7 @@ fn sso_portal_base(region: &str) -> String {
 async fn creds_from_ecs() -> Result<Option<AwsCredentials>, AwsSignError> {
     let uri = if let Some(full) = env_nonempty("AWS_CONTAINER_CREDENTIALS_FULL_URI") {
         let parsed = Url::parse(&full)
-            .map_err(|err| auth_err(format!("AWS_CONTAINER_CREDENTIALS_FULL_URI: {err}")))?;
+            .map_err(|_| auth_err("AWS_CONTAINER_CREDENTIALS_FULL_URI is not an absolute URL"))?;
         if !ecs_full_uri_allowed(&parsed) {
             return Err(auth_err(
                 "AWS_CONTAINER_CREDENTIALS_FULL_URI must be loopback, 169.254.170.2, or 169.254.170.23",
@@ -867,15 +867,19 @@ async fn http_send(
     for (name, value) in headers {
         req = req.header(*name, *value);
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|err| auth_err(format!("aws credential request {url}: {err}")))?;
+    let resp = req.send().await.map_err(|_| {
+        auth_err(format!(
+            "aws credential request failed via {}",
+            wiremux_auth::redact_url_origin(url)
+        ))
+    })?;
     let status = resp.status().as_u16();
-    let body = resp
-        .text()
-        .await
-        .map_err(|err| auth_err(format!("aws credential body {url}: {err}")))?;
+    let body = resp.text().await.map_err(|_| {
+        auth_err(format!(
+            "aws credential body failed via {}",
+            wiremux_auth::redact_url_origin(url)
+        ))
+    })?;
     Ok((status, body))
 }
 
@@ -1368,6 +1372,23 @@ mod tests {
             err.to_string().contains("302"),
             "expected ECS HTTP 302, got {err}"
         );
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn ecs_credential_error_redacts_secret_path() {
+        let home = IsolatedHome::with_extra_envs(extra_aws_envs());
+        clear_aws_credential_cache();
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        home.set_env(
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            "http://127.0.0.1:1/secret-ecs-token?sig=abc",
+        );
+        let err = resolve_aws_credentials().await.expect_err("closed port");
+        let text = err.to_string();
+        assert!(text.contains("http://127.0.0.1:1"), "{text}");
+        assert!(!text.contains("secret-ecs-token"), "{text}");
+        assert!(!text.contains("sig="), "{text}");
         let _ = home;
     }
 }
