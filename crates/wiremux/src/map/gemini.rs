@@ -354,6 +354,8 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         previous_message_id: None,
         response_field_paths: Vec::new(),
         additional_request_fields: None,
+        prompt_variables: None,
+        guardrail: None,
     }
 }
 
@@ -862,6 +864,12 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             LossAction::Drop,
             "no slot",
         );
+    }
+    if s.prompt_variables.is_some() {
+        report.record("sampling.prompt_variables", LossAction::Drop, "no slot");
+    }
+    if s.guardrail.is_some() {
+        report.record("sampling.guardrail", LossAction::Drop, "no slot");
     }
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
