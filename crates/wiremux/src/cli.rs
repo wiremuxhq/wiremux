@@ -444,7 +444,7 @@ pub fn token_status(profile: &ResolvedProfile) -> TokenStatus {
         .http
         .headers
         .iter()
-        .any(|(k, v)| is_auth_header(k) && !v.trim().is_empty())
+        .any(|(k, v)| is_profile_auth_header(profile, k) && !v.trim().is_empty())
     {
         return TokenStatus {
             id: profile.id.clone(),
@@ -473,8 +473,8 @@ pub fn token_status(profile: &ResolvedProfile) -> TokenStatus {
     }
 }
 
-fn is_auth_header(name: &str) -> bool {
-    name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("x-api-key")
+fn is_profile_auth_header(profile: &ResolvedProfile, name: &str) -> bool {
+    crate::headers::is_profile_auth_header(profile, name)
 }
 
 /// Format status without leaking the token.
@@ -570,7 +570,7 @@ pub async fn proxy_token(
         .http
         .headers
         .iter()
-        .find(|(k, v)| is_auth_header(k) && !v.trim().is_empty())
+        .find(|(k, v)| is_profile_auth_header(profile, k) && !v.trim().is_empty())
     {
         let token = value
             .strip_prefix("Bearer ")
@@ -603,7 +603,7 @@ pub fn upstream_url(profile: &ResolvedProfile) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremux_auth::{IsolatedHome, parse_profile_str};
+    use wiremux_auth::{AnyTokenProvider, IsolatedHome, StaticToken, parse_profile_str};
 
     #[test]
     fn redact_printed_url_keeps_origin_only() {
@@ -1070,6 +1070,30 @@ base_url = "http://127.0.0.1:9"
         let text = format_status(&status);
         assert!(text.contains("unavailable"), "{text}");
         assert!(text.contains("[headers]"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn goog_api_key_header_is_the_credential() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "goog"
+wire = "gemini"
+base_url = "http://127.0.0.1"
+auth_scheme = "header:x-goog-api-key"
+access_env = ["GEMINI_API_KEY"]
+[headers]
+x-goog-api-key = "goog-secret"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile);
+        assert!(status.available, "{}", status.detail);
+        assert_eq!(status.detail, "header credential present");
+        assert!(!format_status(&status).contains("goog-secret"));
+        let provider = AnyTokenProvider::from(StaticToken::new("env-secret"));
+        let token = proxy_token(&profile, &provider).await.expect("token");
+        assert_eq!(token.as_deref(), Some("goog-secret"));
     }
 
     #[test]

@@ -90,7 +90,7 @@ pub(crate) fn apply_profile_headers(
     req
 }
 
-fn is_profile_auth_header(profile: &ResolvedProfile, name: &str) -> bool {
+pub(crate) fn is_profile_auth_header(profile: &ResolvedProfile, name: &str) -> bool {
     if name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("x-api-key") {
         return true;
     }
