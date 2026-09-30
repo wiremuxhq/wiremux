@@ -241,7 +241,7 @@ const CLIENTS: &[Wire] = &[
 #[test]
 fn grammar_matrix_upstream_goldens_to_each_client() {
     for (name, upstream) in GOLDENS {
-        let frames = RawSse::parse_all(&golden(name));
+        let frames = RawSse::parse_all(&golden(name)).expect("parse golden SSE");
         assert!(!frames.is_empty(), "{name} parsed no frames");
         for client in CLIENTS {
             let mapped = remap(*upstream, *client, &frames);
@@ -274,7 +274,8 @@ fn messages_grammar_has_start_blocks_and_one_stop() {
     let frames = remap(
         Wire::ChatCompletions,
         Wire::Messages,
-        &RawSse::parse_all(&golden("chat_tool_call_deltas.sse")),
+        &RawSse::parse_all(&golden("chat_tool_call_deltas.sse"))
+            .expect("parse chat tool call deltas"),
     );
     check_messages(&frames);
 }
@@ -284,7 +285,8 @@ fn responses_grammar_one_created_one_completed() {
     let frames = remap(
         Wire::Responses,
         Wire::Responses,
-        &RawSse::parse_all(&golden("responses_usage_with_cache.sse")),
+        &RawSse::parse_all(&golden("responses_usage_with_cache.sse"))
+            .expect("parse responses usage golden"),
     );
     check_responses(&frames);
 }
@@ -294,7 +296,8 @@ fn chat_grammar_distinct_tool_indexes() {
     let frames = remap(
         Wire::ChatCompletions,
         Wire::ChatCompletions,
-        &RawSse::parse_all(&golden("chat_tool_call_deltas.sse")),
+        &RawSse::parse_all(&golden("chat_tool_call_deltas.sse"))
+            .expect("parse chat tool call deltas"),
     );
     check_chat(&frames);
 }

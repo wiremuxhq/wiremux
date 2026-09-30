@@ -77,7 +77,7 @@ fn decode_all(
     profile: &ResolvedProfile,
 ) -> Result<Vec<IrStreamEvent>, MapError> {
     let mut out = Vec::new();
-    for raw in RawSse::parse_all(text) {
+    for raw in RawSse::parse_all(text).expect("parse SSE document") {
         out.extend(decode_stream_events(wire, &raw, profile)?);
     }
     Ok(out)

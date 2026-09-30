@@ -219,9 +219,11 @@ is terminal on `message_stop` or a `message_delta` with `stop_reason`.
 Responses is terminal on `response.completed`, `response.incomplete`,
 or `response.failed`. Gemini is terminal on `finishReason`. Converse
 is terminal when a frame decodes to `FinishReason`. An empty frame
-list is not terminal. `StreamEncoder::finish()` is for a stream the
-caller already knows completed. Do not call it just because the
-socket closed.
+list is not terminal. `RawSse::parse_all` returns an error when a
+line or `data:` payload exceeds the SSE size cap. It does not turn
+that document into an empty frame list. `StreamEncoder::finish()` is
+for a stream the caller already knows completed. Do not call it just
+because the socket closed.
 
 `ClientError::Transient` carries `TransientKind` (`Connect`,
 `Timeout`, `Reset`, `Http`). Hosts call `is_connect()` /
