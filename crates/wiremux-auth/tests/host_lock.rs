@@ -27,4 +27,19 @@ fn cargo_toml_aligns_keyring_reqwest_toml() {
         manifest.contains("\"aws_lc_rs\""),
         "jsonwebtoken must keep aws_lc_rs on net, got:\n{manifest}"
     );
+    assert!(
+        manifest.contains("jsonwebtoken = { version = \"11\""),
+        "jsonwebtoken must be 11.x, got:\n{manifest}"
+    );
+    assert!(
+        !manifest.contains("rust_crypto"),
+        "jsonwebtoken must not enable rust_crypto, got:\n{manifest}"
+    );
+    assert!(
+        manifest
+            .lines()
+            .filter(|line| line.contains("jsonwebtoken"))
+            .all(|line| !line.contains("version = \"10\"")),
+        "jsonwebtoken line must not pin version 10, got:\n{manifest}"
+    );
 }
