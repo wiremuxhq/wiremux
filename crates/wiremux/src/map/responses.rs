@@ -329,6 +329,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         inference_geo: None,
         performance_latency: None,
         previous_message_id: None,
+        response_field_paths: Vec::new(),
     }
 }
 
@@ -778,6 +779,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.previous_message_id.is_some() {
         report.record("sampling.previous_message_id", LossAction::Drop, "no slot");
+    }
+    if !s.response_field_paths.is_empty() {
+        report.record("sampling.response_field_paths", LossAction::Drop, "no slot");
     }
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");

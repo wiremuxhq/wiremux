@@ -382,6 +382,18 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             }
         }
     }
+    if let Some(paths) = value
+        .get("additionalModelResponseFieldPaths")
+        .and_then(Value::as_array)
+    {
+        sampling.response_field_paths = paths
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
     sampling
 }
 
@@ -828,6 +840,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.previous_message_id.is_some() {
         report.record("sampling.previous_message_id", LossAction::Drop, "no slot");
+    }
+    if !s.response_field_paths.is_empty() {
+        body["additionalModelResponseFieldPaths"] = json!(s.response_field_paths);
     }
     if let Some(latency) = s.performance_latency.as_deref()
         && let Some(root) = body.as_object_mut()

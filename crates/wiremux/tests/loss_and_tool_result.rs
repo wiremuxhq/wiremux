@@ -384,6 +384,89 @@ fn converse_performance_latency_round_trips_and_other_dests_drop_it() {
 }
 
 #[test]
+fn converse_response_field_paths_round_trip_and_other_dests_drop_them() {
+    let raw = br#"{
+        "modelId": "amazon.nova-lite-v1:0",
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+        "additionalModelResponseFieldPaths": ["/amazon-bedrock-invocationMetrics"]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, raw).expect("decode");
+    assert_eq!(
+        ir.sampling.response_field_paths,
+        vec!["/amazon-bedrock-invocationMetrics".to_string()]
+    );
+    let (converse, _) = encode_value(Wire::Converse, &ir);
+    let paths = converse
+        .get("additionalModelResponseFieldPaths")
+        .and_then(Value::as_array)
+        .expect("additionalModelResponseFieldPaths");
+    assert_eq!(paths.len(), 1, "{converse}");
+    assert_eq!(
+        paths[0].as_str(),
+        Some("/amazon-bedrock-invocationMetrics"),
+        "{converse}"
+    );
+    for wire in [
+        Wire::ChatCompletions,
+        Wire::Messages,
+        Wire::Responses,
+        Wire::Gemini,
+    ] {
+        let (body, report) = encode_value(wire, &ir);
+        assert!(
+            body.get("additionalModelResponseFieldPaths").is_none()
+                && !body
+                    .to_string()
+                    .contains("additionalModelResponseFieldPaths")
+                && !body.to_string().contains("response_field_paths")
+                && !body
+                    .to_string()
+                    .contains("amazon-bedrock-invocationMetrics"),
+            "{wire:?} must omit additionalModelResponseFieldPaths, got {body}"
+        );
+        assert!(
+            has_action(&report, LossAction::Drop, "response_field_paths"),
+            "{wire:?} must Drop sampling.response_field_paths, got {report:?}"
+        );
+    }
+
+    let blank = br#"{
+        "modelId": "amazon.nova-lite-v1:0",
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+        "additionalModelResponseFieldPaths": ["  "]
+    }"#;
+    let (ir, report) = decode(Wire::Converse, blank).expect("decode");
+    assert!(
+        ir.sampling.response_field_paths.is_empty(),
+        "blank path decodes as empty"
+    );
+    assert!(
+        !has_action(&report, LossAction::Drop, "response_field_paths"),
+        "blank path must not Drop, got {report:?}"
+    );
+    let (converse, _) = encode_value(Wire::Converse, &ir);
+    assert!(
+        converse.get("additionalModelResponseFieldPaths").is_none(),
+        "blank path must omit additionalModelResponseFieldPaths, got {converse}"
+    );
+
+    let missing = br#"{
+        "modelId": "amazon.nova-lite-v1:0",
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, missing).expect("decode");
+    assert!(
+        ir.sampling.response_field_paths.is_empty(),
+        "missing array stays empty"
+    );
+    let (converse, _) = encode_value(Wire::Converse, &ir);
+    assert!(
+        converse.get("additionalModelResponseFieldPaths").is_none(),
+        "missing array must omit additionalModelResponseFieldPaths, got {converse}"
+    );
+}
+
+#[test]
 fn chat_json_schema_strict_round_trips() {
     let raw = br#"{
         "model": "gpt-4.1",

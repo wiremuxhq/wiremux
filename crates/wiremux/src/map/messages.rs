@@ -353,6 +353,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        response_field_paths: Vec::new(),
     }
 }
 
@@ -1287,6 +1288,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.performance_latency.is_some() {
         report.record("sampling.performance_latency", LossAction::Drop, "no slot");
+    }
+    if !s.response_field_paths.is_empty() {
+        report.record("sampling.response_field_paths", LossAction::Drop, "no slot");
     }
     if let Some(max) = s.max_tokens {
         body["max_tokens"] = json!(max);
