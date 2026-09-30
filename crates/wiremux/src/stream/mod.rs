@@ -34,7 +34,6 @@ pub struct RawSse {
 impl RawSse {
     /// Parse a document of SSE frames. Comments and blank lines are skipped.
     /// A line or data payload over the SSE cap is an error, not an empty list.
-    #[must_use]
     pub fn parse_all(text: &str) -> Result<Vec<Self>, String> {
         let mut reader = sse::SseFrameReader::new();
         let mut out = reader.feed(text.as_bytes())?;
