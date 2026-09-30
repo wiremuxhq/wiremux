@@ -62,8 +62,8 @@ and the crates.io publish job (OIDC trusted publishing, no long-lived
 token).
 
 Optional curated GitHub Release notes. Do not put them on `main`
-and do not open a PR for them (that would start CI). Push a
-one-file branch named after the version, then merge the release PR:
+and do not open a PR for them (that would start CI). A maintainer
+may push a one-file branch named after the version:
 
 ```bash
 # tag v0.2.2 -> branch release-note-0.2.2
@@ -74,6 +74,11 @@ git add RELEASE_NOTES.md
 git commit -s -m "docs: notes for 0.2.2"
 git push -u origin release-note-0.2.2
 ```
+
+Do not merge the release-please pull request as part of this recipe.
+A maintainer merges that pull request when the notes are ready.
+That merge tags the release and publishes the crates. See
+[GOVERNANCE.md](GOVERNANCE.md) Releases.
 
 The Apply release notes workflow copies that file onto the Release
 page and deletes the branch. No cleanup PR. A later
