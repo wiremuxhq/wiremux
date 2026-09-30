@@ -263,6 +263,7 @@ fn usage_does_not_invent_cache_tokens() {
         reasoning_tokens: 0,
         audio_tokens: 0,
         completion_audio_tokens: 0,
+        inference_geo: None,
     };
     for wire in [Wire::ChatCompletions, Wire::Messages, Wire::Responses] {
         let raw = encode_stream_event(wire, &ev).expect("encode usage");
@@ -349,6 +350,7 @@ fn usage_cache_token_fields_are_accurate() {
         reasoning_tokens: 3,
         audio_tokens: 0,
         completion_audio_tokens: 0,
+        inference_geo: None,
     };
 
     let chat_json: Value = serde_json::from_str(
@@ -586,6 +588,7 @@ wire = "gemini"
             reasoning_tokens: 5,
             audio_tokens: 0,
             completion_audio_tokens: 0,
+            inference_geo: None,
         },
     )
     .expect("encode usage");
@@ -7860,6 +7863,7 @@ fn stream_encoder_chat_to_messages_emits_grammar() {
                 reasoning_tokens: 0,
                 audio_tokens: 0,
                 completion_audio_tokens: 0,
+                inference_geo: None,
             },
             IrStreamEvent::Done,
         ],
@@ -7928,6 +7932,7 @@ fn stream_encoder_chat_to_responses_one_created_one_completed() {
                 reasoning_tokens: 0,
                 audio_tokens: 0,
                 completion_audio_tokens: 0,
+                inference_geo: None,
             },
             IrStreamEvent::Done,
         ],

@@ -30,6 +30,8 @@ pub struct StreamEncoder {
     open: Option<(u32, BlockKind)>,
     finish: Option<String>,
     usage: Option<(u32, u32, u32, u32, u32, u32, u32)>,
+    /// Messages response `usage.inference_geo`, kept off Chat and Responses usage.
+    usage_inference_geo: Option<String>,
     used_tool: HashSet<u32>,
     saw_custom_tool: bool,
     next_tool: u32,
@@ -73,6 +75,7 @@ impl StreamEncoder {
             open: None,
             finish: None,
             usage: None,
+            usage_inference_geo: None,
             used_tool: HashSet::new(),
             saw_custom_tool: false,
             next_tool: 0,
@@ -420,7 +423,9 @@ impl StreamEncoder {
                 reasoning_tokens,
                 audio_tokens,
                 completion_audio_tokens,
+                inference_geo,
             } => {
+                self.usage_inference_geo = inference_geo;
                 self.usage = Some((
                     prompt_tokens,
                     completion_tokens,
@@ -582,7 +587,8 @@ impl StreamEncoder {
             "delta": delta
         });
         if let Some((p, c, cr, cw, r, _, _)) = self.usage {
-            let usage = usage::encode_anthropic(p, c, cr, cw, r);
+            let usage =
+                usage::encode_anthropic(p, c, cr, cw, r, self.usage_inference_geo.as_deref());
             if let Some(u) = usage.get("usage") {
                 data["usage"] = u.clone();
             }
@@ -903,6 +909,7 @@ impl StreamEncoder {
                 reasoning_tokens,
                 audio_tokens,
                 completion_audio_tokens,
+                inference_geo: _,
             } => {
                 self.usage = Some((
                     prompt_tokens,
@@ -1189,6 +1196,7 @@ impl StreamEncoder {
                 reasoning_tokens,
                 audio_tokens,
                 completion_audio_tokens,
+                inference_geo: _,
             } => {
                 self.usage = Some((
                     prompt_tokens,
@@ -1798,6 +1806,7 @@ mod tests {
             reasoning_tokens: 3,
             audio_tokens: 0,
             completion_audio_tokens: 0,
+            inference_geo: None,
         })
         .expect("push dest Chat leftover usage");
         let frames = enc.finish().expect("finish usage");

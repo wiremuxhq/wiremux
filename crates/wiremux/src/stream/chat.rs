@@ -702,6 +702,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             reasoning_tokens,
             audio_tokens,
             completion_audio_tokens,
+            inference_geo: _,
         } => usage::encode_chat(
             *prompt_tokens,
             *completion_tokens,

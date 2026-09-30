@@ -93,6 +93,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 reasoning_tokens,
                 audio_tokens,
                 completion_audio_tokens,
+                inference_geo: _,
             } => {
                 usage = Some((
                     *prompt_tokens,
@@ -316,6 +317,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 reasoning_tokens,
                 audio_tokens,
                 completion_audio_tokens: _,
+                inference_geo,
             } => {
                 usage = Some((
                     *prompt_tokens,
@@ -324,6 +326,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     *cache_write_tokens,
                     *reasoning_tokens,
                     *audio_tokens,
+                    inference_geo.clone(),
                 ));
             }
             IrStreamEvent::ToolCallStart { id, name, .. } => {
@@ -392,13 +395,14 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             out["stop_reason"] = json!("refusal");
         }
     }
-    if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens, _)) = usage {
+    if let Some((prompt, completion, cache_read, cache_write, reasoning_tokens, _, geo)) = usage {
         let encoded = super::usage::encode_anthropic(
             prompt,
             completion,
             cache_read,
             cache_write,
             reasoning_tokens,
+            geo.as_deref(),
         );
         if let Some(u) = encoded.get("usage") {
             out["usage"] = u.clone();
@@ -671,6 +675,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 reasoning_tokens,
                 audio_tokens,
                 completion_audio_tokens: _,
+                inference_geo: _,
             } => {
                 usage = Some((
                     *prompt_tokens,
@@ -1762,6 +1767,7 @@ mod tests {
             reasoning_tokens: 3,
             audio_tokens: 0,
             completion_audio_tokens: 0,
+            inference_geo: None,
         }];
         let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses");
         assert_eq!(
