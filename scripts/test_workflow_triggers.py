@@ -633,7 +633,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("CHOCOLATEY_API_KEY unset", text)
         self.assertIn("Wiremux.Wiremux", text)
         self.assertIn("fork-user: SebTardif", text)
-        self.assertIn("continue-on-error: true", text)
+        self.assertNotIn("continue-on-error:", text)
         self.assertIn(
             "vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e",
             text,
