@@ -46,6 +46,7 @@ jobs:
           filters: |
             crates:
               - 'crates/**'
+              - 'fuzz/**'
               - 'presets/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -63,6 +64,7 @@ jobs:
               - '.github/actions/**'
               - '.github/zizmor.yml'
               - '.github/actionlint.yaml'
+              - 'release-please-config.json'
 
   # Check name `Stealth` is required by main-branch-protection.
   # The body asserts public surfaces, not the old Not ready stub.
@@ -114,7 +116,7 @@ jobs:
       - name: Full clippy
         if: >-
           github.event_name != 'pull_request' ||
-          !startsWith(github.head_ref, 'release-please')
+          (!startsWith(github.head_ref, 'release-please') || github.event.pull_request.user.login != 'github-actions[bot]')
         run: |
           set -euo pipefail
           cargo clippy --locked --workspace --all-targets -- -D warnings
@@ -122,20 +124,24 @@ jobs:
       - name: Rustdoc
         if: >-
           github.event_name != 'pull_request' ||
-          !startsWith(github.head_ref, 'release-please')
+          (!startsWith(github.head_ref, 'release-please') || github.event.pull_request.user.login != 'github-actions[bot]')
         run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --workspace
       - name: Release-please check
         if: >-
           github.event_name == 'pull_request' &&
-          startsWith(github.head_ref, 'release-please')
+          startsWith(github.head_ref, 'release-please') &&
+          github.event.pull_request.user.login == 'github-actions[bot]'
         run: cargo check --locked --workspace --all-targets
       - run: cargo deny check
       - name: Cargo package
         if: >-
           github.event_name != 'pull_request' ||
-          !startsWith(github.head_ref, 'release-please')
+          (!startsWith(github.head_ref, 'release-please') || github.event.pull_request.user.login != 'github-actions[bot]')
         run: bash scripts/check-cargo-package.sh
       - run: python3 scripts/test_workflow_triggers.py
+      - run: python3 scripts/test_package_release_binary.py
+      - run: python3 scripts/test_render_release_extras.py
+      - run: python3 scripts/test_upload_release_binaries.py
 
   lint-gate:
     name: Lint
@@ -187,6 +193,10 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: zizmor@1.16.0
+      - run: python3 scripts/test_workflow_triggers.py
+      - run: python3 scripts/test_package_release_binary.py
+      - run: python3 scripts/test_render_release_extras.py
+      - run: python3 scripts/test_upload_release_binaries.py
       - run: zizmor --min-severity=high .github/workflows .github/actions
 
   workflows-gate:
@@ -239,9 +249,11 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
+          ACTOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "pull_request" ] && [[ "$HEAD_REF" == release-please* ]]; then
+          # Only the release-please bot skips macOS and Windows.
+          if [ "$EVENT_NAME" = "pull_request" ] && [[ "$HEAD_REF" == release-please* ]] && [ "$ACTOR" = "github-actions[bot]" ]; then
             echo 'os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
           else
             echo 'os=["ubuntu-latest","macos-latest","windows-latest"]' >> "$GITHUB_OUTPUT"
@@ -279,7 +291,7 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         if: >-
           github.event_name != 'pull_request' ||
-          !startsWith(github.head_ref, 'release-please')
+          (!startsWith(github.head_ref, 'release-please') || github.event.pull_request.user.login != 'github-actions[bot]')
         with:
           tool: cargo-nextest@0.9.140
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -288,7 +300,7 @@ jobs:
       - name: Unit and integration tests
         if: >-
           github.event_name != 'pull_request' ||
-          !startsWith(github.head_ref, 'release-please')
+          (!startsWith(github.head_ref, 'release-please') || github.event.pull_request.user.login != 'github-actions[bot]')
         shell: bash
         run: |
           set -euo pipefail
@@ -303,18 +315,19 @@ jobs:
       - name: Doc tests
         if: >-
           github.event_name != 'pull_request' ||
-          !startsWith(github.head_ref, 'release-please')
+          (!startsWith(github.head_ref, 'release-please') || github.event.pull_request.user.login != 'github-actions[bot]')
         run: cargo test --locked --workspace --doc
       - name: Release-please check
         if: >-
           github.event_name == 'pull_request' &&
-          startsWith(github.head_ref, 'release-please')
+          startsWith(github.head_ref, 'release-please') &&
+          github.event.pull_request.user.login == 'github-actions[bot]'
         run: cargo check --locked --workspace --all-targets
       - name: Test summary
         if: >-
           always() &&
           (github.event_name != 'pull_request' ||
-           !startsWith(github.head_ref, 'release-please'))
+           (!startsWith(github.head_ref, 'release-please') || github.event.pull_request.user.login != 'github-actions[bot]'))
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5 # v2.6
         with:
           paths: target/ci-test/junit/*.xml
