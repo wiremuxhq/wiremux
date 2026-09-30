@@ -238,6 +238,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         performance_latency: None,
         previous_message_id: None,
         response_field_paths: Vec::new(),
+        additional_request_fields: None,
     }
 }
 
@@ -714,6 +715,13 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if !s.response_field_paths.is_empty() {
         report.record("sampling.response_field_paths", LossAction::Drop, "no slot");
+    }
+    if s.additional_request_fields.is_some() {
+        report.record(
+            "sampling.additional_request_fields",
+            LossAction::Drop,
+            "no slot",
+        );
     }
     if let Some(max) = s.max_tokens {
         if max_completion {

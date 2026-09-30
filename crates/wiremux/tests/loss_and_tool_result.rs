@@ -467,6 +467,61 @@ fn converse_response_field_paths_round_trip_and_other_dests_drop_them() {
 }
 
 #[test]
+fn converse_additional_request_fields_round_trip_and_other_dests_drop_them() {
+    let raw = br#"{
+        "modelId": "amazon.nova-lite-v1:0",
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+        "additionalModelRequestFields": {"top_k": 10}
+    }"#;
+    let (ir, _) = decode(Wire::Converse, raw).expect("decode");
+    assert_eq!(
+        ir.sampling.additional_request_fields,
+        Some(json!({"top_k": 10}))
+    );
+    let (converse, _) = encode_value(Wire::Converse, &ir);
+    assert_eq!(
+        converse.get("additionalModelRequestFields"),
+        Some(&json!({"top_k": 10})),
+        "{converse}"
+    );
+    for wire in [
+        Wire::ChatCompletions,
+        Wire::Messages,
+        Wire::Responses,
+        Wire::Gemini,
+    ] {
+        let (body, report) = encode_value(wire, &ir);
+        assert!(
+            body.get("additionalModelRequestFields").is_none()
+                && !body.to_string().contains("additionalModelRequestFields")
+                && !body.to_string().contains("additional_request_fields")
+                && !body.to_string().contains("top_k"),
+            "{wire:?} must omit additionalModelRequestFields, got {body}"
+        );
+        assert!(
+            has_action(&report, LossAction::Drop, "additional_request_fields"),
+            "{wire:?} must Drop sampling.additional_request_fields, got {report:?}"
+        );
+    }
+
+    let null_fields = br#"{
+        "modelId": "amazon.nova-lite-v1:0",
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+        "additionalModelRequestFields": null
+    }"#;
+    let (ir, _) = decode(Wire::Converse, null_fields).expect("decode");
+    assert!(
+        ir.sampling.additional_request_fields.is_none(),
+        "JSON null decodes as None"
+    );
+    let (converse, _) = encode_value(Wire::Converse, &ir);
+    assert!(
+        converse.get("additionalModelRequestFields").is_none(),
+        "JSON null must omit additionalModelRequestFields, got {converse}"
+    );
+}
+
+#[test]
 fn chat_json_schema_strict_round_trips() {
     let raw = br#"{
         "model": "gpt-4.1",

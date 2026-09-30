@@ -208,6 +208,9 @@ pub struct IrSampling {
     /// Converse `additionalModelResponseFieldPaths`.
     /// Chat, Messages, Responses, and Gemini drop.
     pub response_field_paths: Vec<String>,
+    /// Converse `additionalModelRequestFields`.
+    /// Chat, Messages, Responses, and Gemini drop.
+    pub additional_request_fields: Option<serde_json::Value>,
 }
 
 impl IrSampling {

@@ -394,6 +394,11 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .map(str::to_string)
             .collect();
     }
+    if let Some(fields) = value.get("additionalModelRequestFields")
+        && !fields.is_null()
+    {
+        sampling.additional_request_fields = Some(fields.clone());
+    }
     sampling
 }
 
@@ -843,6 +848,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if !s.response_field_paths.is_empty() {
         body["additionalModelResponseFieldPaths"] = json!(s.response_field_paths);
+    }
+    if let Some(fields) = &s.additional_request_fields {
+        body["additionalModelRequestFields"] = fields.clone();
     }
     if let Some(latency) = s.performance_latency.as_deref()
         && let Some(root) = body.as_object_mut()
