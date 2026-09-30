@@ -84,6 +84,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     {
         return Ok(Some(IrStreamEvent::FinishReason {
             reason: stop.to_string(),
+            vendor: None,
         }));
     }
     if let Some(usage) = value.pointer("/metadata/usage") {
@@ -172,7 +173,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
             "contentBlockDelta": { "delta": { "toolUse": { "input": delta } } }
         })),
         IrStreamEvent::ToolCallEnd => Ok(json!({ "contentBlockStop": {} })),
-        IrStreamEvent::FinishReason { reason } => Ok(json!({
+        IrStreamEvent::FinishReason { reason, .. } => Ok(json!({
             "messageStop": { "stopReason": finish_reason(reason) }
         })),
         IrStreamEvent::Usage {
@@ -253,7 +254,7 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
                     stop = "tool_use";
                 }
             }
-            IrStreamEvent::FinishReason { reason } => stop = finish_reason(reason),
+            IrStreamEvent::FinishReason { reason, .. } => stop = finish_reason(reason),
             IrStreamEvent::ServiceTier { tier } => {
                 if let Some((mapped, _)) = crate::map::converse_service_tier(tier) {
                     service_tier = Some(mapped);
@@ -454,6 +455,7 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
     if let Some(reason) = value.get("stopReason").and_then(Value::as_str) {
         out.push(IrStreamEvent::FinishReason {
             reason: reason.to_string(),
+            vendor: None,
         });
     }
     if let Some(tier) = service_tier_from(value) {
@@ -662,6 +664,7 @@ mod tests {
     fn converse_encode_finish_maps_chat_stop_and_tool_calls() {
         let stop = encode(&IrStreamEvent::FinishReason {
             reason: "stop".into(),
+            vendor: None,
         })
         .expect("encode stop");
         assert_eq!(
@@ -672,6 +675,7 @@ mod tests {
         );
         let tools = encode(&IrStreamEvent::FinishReason {
             reason: "tool_calls".into(),
+            vendor: None,
         })
         .expect("encode tool_calls");
         assert_eq!(
@@ -694,6 +698,7 @@ mod tests {
     fn converse_encode_finish_maps_content_filter() {
         let stop = encode(&IrStreamEvent::FinishReason {
             reason: "content_filter".into(),
+            vendor: None,
         })
         .expect("encode content_filter");
         assert_eq!(
@@ -704,6 +709,7 @@ mod tests {
         );
         let complete = encode_complete(&[IrStreamEvent::FinishReason {
             reason: "content_filter".into(),
+            vendor: None,
         }])
         .expect("complete");
         assert_eq!(

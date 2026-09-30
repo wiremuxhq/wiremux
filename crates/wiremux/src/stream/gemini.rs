@@ -21,6 +21,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     {
         return Ok(Some(IrStreamEvent::FinishReason {
             reason: map_block(reason),
+            vendor: Some(reason.to_string()),
         }));
     }
 
@@ -160,6 +161,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     {
         return Ok(Some(IrStreamEvent::FinishReason {
             reason: map_finish(reason, candidate_has_function_call(candidate)),
+            vendor: Some(reason.to_string()),
         }));
     }
 
@@ -375,7 +377,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             *audio_tokens,
             *completion_audio_tokens,
         ),
-        IrStreamEvent::FinishReason { reason } => json!({
+        IrStreamEvent::FinishReason { reason, .. } => json!({
             "candidates": [{ "finishReason": encode_finish(reason) }]
         }),
         IrStreamEvent::Diagnostics { .. }

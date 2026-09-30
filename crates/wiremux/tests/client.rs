@@ -430,7 +430,7 @@ async fn send_chat_complete_text_finish_usage() {
     assert!(
         events
             .iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")),
         "{events:?}"
     );
     assert!(

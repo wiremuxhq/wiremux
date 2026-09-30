@@ -313,6 +313,7 @@ fn converse_finish_reason_is_one_message_stop() {
     let early = enc
         .push(IrStreamEvent::FinishReason {
             reason: "tool_use".into(),
+            vendor: None,
         })
         .expect("push finish");
     assert!(

@@ -124,7 +124,7 @@ fn anthropic_tool_use_and_thinking_golden() {
 
     assert!(
         events.iter().any(
-            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "tool_calls")
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "tool_calls")
         ),
         "message_delta stop_reason must become FinishReason, got {events:?}"
     );
@@ -160,7 +160,7 @@ fn chat_tool_call_delta_golden() {
 
     assert!(
         events.iter().any(
-            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "tool_calls")
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "tool_calls")
         ),
         "finish_reason tool_calls missing: {events:?}"
     );
@@ -804,7 +804,7 @@ fn gemini_unknown_finish_reason_is_preserved() {
         .expect("event");
     match ev {
         IrStreamEvent::TextDelta { .. } => {}
-        IrStreamEvent::FinishReason { ref reason } => {
+        IrStreamEvent::FinishReason { ref reason, .. } => {
             assert_ne!(
                 reason, "stop",
                 "unknown finishReason must not collapse to stop"
@@ -817,7 +817,7 @@ fn gemini_unknown_finish_reason_is_preserved() {
     assert!(
         all.iter().any(|ev| matches!(
             ev,
-            IrStreamEvent::FinishReason { reason } if reason == "FUTURE_REASON"
+            IrStreamEvent::FinishReason { reason, .. } if reason == "FUTURE_REASON"
         )),
         "fan-out must preserve FUTURE_REASON, got {all:?}"
     );
@@ -831,7 +831,7 @@ fn gemini_unknown_finish_reason_is_preserved() {
     assert!(
         stopped.iter().any(|ev| matches!(
             ev,
-            IrStreamEvent::FinishReason { reason } if reason == "stop"
+            IrStreamEvent::FinishReason { reason, .. } if reason == "stop"
         )),
         "STOP stays stop, got {stopped:?}"
     );
@@ -844,7 +844,7 @@ fn gemini_unknown_finish_reason_is_preserved() {
     assert!(
         tool_stop.iter().any(|ev| matches!(
             ev,
-            IrStreamEvent::FinishReason { reason } if reason == "tool_calls"
+            IrStreamEvent::FinishReason { reason, .. } if reason == "tool_calls"
         )),
         "STOP with a function call stays tool_calls, got {tool_stop:?}"
     );
@@ -932,7 +932,7 @@ fn gemini_last_chunk_parts_keep_finish_and_usage() {
     );
     assert!(
         all.iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")),
         "same-chunk finishReason must stay, got {all:?}"
     );
     assert!(
@@ -959,7 +959,7 @@ fn gemini_safety_finish_reasons_are_content_filter() {
             .expect("decode")
             .expect("event");
         assert!(
-            matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "content_filter"),
+            matches!(ev, IrStreamEvent::FinishReason { ref reason, .. } if reason == "content_filter"),
             "{reason} must be content_filter, got {ev:?}"
         );
     }
@@ -973,9 +973,13 @@ fn gemini_safety_finish_reasons_are_content_filter() {
     assert!(
         matches!(
             ev,
-            IrStreamEvent::FinishReason { ref reason } if reason == "malformed_function_call"
+            IrStreamEvent::FinishReason {
+                ref reason,
+                vendor: Some(ref vendor),
+                ..
+            } if reason == "malformed_function_call" && vendor == "MALFORMED_FUNCTION_CALL"
         ),
-        "MALFORMED_FUNCTION_CALL must not be tool_calls, got {ev:?}"
+        "MALFORMED_FUNCTION_CALL must keep the vendor token, got {ev:?}"
     );
 }
 
@@ -3562,7 +3566,7 @@ fn gemini_stream_image_inline_data_becomes_image_delta() {
     assert!(
         events
             .iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")),
         "image chunk with finishReason must still finish, got {events:?}"
     );
 
@@ -5861,15 +5865,15 @@ fn responses_failed_keeps_last_error_message() {
     let events =
         decode_stream_events(Wire::Responses, &empty, &responses_profile()).expect("empty");
     assert!(
-        events
-            .iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "failed")),
+        events.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "failed")
+        ),
         "empty last_error stays a failed finish, got {events:?}"
     );
     assert!(
         !events
             .iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")),
         "empty failure must not be stop, got {events:?}"
     );
 }
@@ -6091,7 +6095,7 @@ fn chat_singular_keeps_audio_and_image_only_chunks() {
     assert!(
         finished_events
             .iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")),
         "plural decode must keep the finish, got {finished_events:?}"
     );
 }
@@ -6656,7 +6660,7 @@ fn chat_eos_finish_reason_is_stop() {
         .expect("decode")
         .expect("event");
     assert!(
-        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "stop"),
+        matches!(ev, IrStreamEvent::FinishReason { ref reason, .. } if reason == "stop"),
         "eos must be stop, got {ev:?}"
     );
 }
@@ -6915,13 +6919,13 @@ fn message_delta_stop_reason_wins_over_usage() {
         .expect("decode combined message_delta")
         .expect("event");
     assert!(
-        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "tool_calls"),
+        matches!(ev, IrStreamEvent::FinishReason { ref reason, .. } if reason == "tool_calls"),
         "stop_reason must not be dropped for usage, got {ev:?}"
     );
     let all = decode_stream_events(Wire::Messages, &both, &messages_profile()).expect("events");
     assert!(
         all.iter().any(
-            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "tool_calls")
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "tool_calls")
         ),
         "finish must stay, got {all:?}"
     );
@@ -7486,13 +7490,13 @@ fn chat_same_chunk_finish_and_usage_fans_out() {
         .expect("1:1")
         .expect("event");
     assert!(
-        matches!(first, IrStreamEvent::FinishReason { ref reason } if reason == "stop"),
+        matches!(first, IrStreamEvent::FinishReason { ref reason, .. } if reason == "stop"),
         "1:1 stays FinishReason, got {first:?}"
     );
     let all = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("fan-out");
     assert!(
         all.iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")),
         "finish must stay, got {all:?}"
     );
     assert!(
@@ -7532,7 +7536,7 @@ fn chat_tool_delta_same_chunk_finish_and_usage() {
     );
     assert!(
         all.iter().any(
-            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "tool_calls")
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "tool_calls")
         ),
         "same-chunk finish_reason must stay, got {all:?}"
     );
@@ -7573,7 +7577,7 @@ fn responses_completed_fans_protocol_finish_and_usage() {
     );
     assert!(
         all.iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")),
         "completed status must become FinishReason stop, got {all:?}"
     );
     assert!(
@@ -7597,8 +7601,9 @@ fn responses_incomplete_fans_finish_usage_and_protocol() {
     };
     let all = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("fan-out");
     assert!(
-        all.iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "length")),
+        all.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "length")
+        ),
         "incomplete status must become FinishReason length, got {all:?}"
     );
     assert!(
@@ -7631,12 +7636,13 @@ fn responses_completed_failed_status_is_not_stop() {
     let all = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("fan-out");
     assert!(
         !all.iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")),
         "failed status must not map to stop, got {all:?}"
     );
     assert!(
-        all.iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "failed")),
+        all.iter().any(
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "failed")
+        ),
         "failed status must stay failed, got {all:?}"
     );
     assert!(
@@ -7663,7 +7669,7 @@ fn messages_max_tokens_encodes_chat_length() {
         .expect("decode Messages")
         .expect("event");
     assert!(
-        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "max_tokens"),
+        matches!(ev, IrStreamEvent::FinishReason { ref reason, .. } if reason == "max_tokens"),
         "Messages decode IR stays max_tokens, got {ev:?}"
     );
     let encoded = encode_stream_event(Wire::ChatCompletions, &ev).expect("encode Chat");
@@ -7686,7 +7692,7 @@ fn chat_length_encodes_messages_max_tokens() {
         .expect("decode Chat")
         .expect("event");
     assert!(
-        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "length"),
+        matches!(ev, IrStreamEvent::FinishReason { ref reason, .. } if reason == "length"),
         "Chat decode IR stays length, got {ev:?}"
     );
     let encoded = encode_stream_event(Wire::Messages, &ev).expect("encode Messages");
@@ -7709,7 +7715,7 @@ fn chat_length_encodes_gemini_MAX_TOKENS() {
         .expect("decode Chat")
         .expect("event");
     assert!(
-        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "length"),
+        matches!(ev, IrStreamEvent::FinishReason { ref reason, .. } if reason == "length"),
         "Chat decode IR stays length, got {ev:?}"
     );
     let encoded = encode_stream_event(Wire::Gemini, &ev).expect("encode Gemini");
@@ -7749,6 +7755,7 @@ fn responses_stop_encodes_completed_status() {
         Wire::Responses,
         &IrStreamEvent::FinishReason {
             reason: "stop".into(),
+            vendor: None,
         },
     )
     .expect("encode stop");
@@ -7776,6 +7783,7 @@ fn responses_length_encodes_incomplete() {
         Wire::Responses,
         &IrStreamEvent::FinishReason {
             reason: "length".into(),
+            vendor: None,
         },
     )
     .expect("encode length");
@@ -7804,6 +7812,7 @@ fn responses_max_tokens_encodes_incomplete() {
         Wire::Responses,
         &IrStreamEvent::FinishReason {
             reason: "max_tokens".into(),
+            vendor: None,
         },
     )
     .expect("encode max_tokens");
@@ -7854,13 +7863,13 @@ fn dest_responses_stream_incomplete_content_filter_stays_ir() {
         .expect("decode dest Responses incomplete")
         .expect("event");
     assert!(
-        matches!(ev, IrStreamEvent::FinishReason { ref reason } if reason == "content_filter"),
+        matches!(ev, IrStreamEvent::FinishReason { ref reason, .. } if reason == "content_filter"),
         "dest Responses incomplete_details.reason=content_filter must stay IR content_filter, got {ev:?}"
     );
     let all = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("events");
     assert!(
         all.iter().any(
-            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "content_filter")
+            |ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "content_filter")
         ),
         "dest Responses stream decode must keep IR content_filter, got {all:?}"
     );
@@ -7938,7 +7947,7 @@ fn gemini_stop_with_function_call_is_tool_calls() {
     assert!(
         all.iter().any(|ev| matches!(
             ev,
-            IrStreamEvent::FinishReason { reason } if reason == "tool_calls"
+            IrStreamEvent::FinishReason { reason, .. } if reason == "tool_calls"
         )),
         "STOP + functionCall must be tool_calls, got {all:?}"
     );
@@ -7954,7 +7963,7 @@ fn gemini_stop_text_only_is_stop() {
     let all = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("events");
     assert!(
         all.iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")),
         "text-only STOP must stay stop, got {all:?}"
     );
 }
@@ -8036,6 +8045,7 @@ fn stream_encoder_chat_to_messages_emits_grammar() {
             },
             IrStreamEvent::FinishReason {
                 reason: "tool_calls".into(),
+                vendor: None,
             },
             IrStreamEvent::Usage {
                 prompt_tokens: 3,
@@ -8105,6 +8115,7 @@ fn stream_encoder_chat_to_responses_one_created_one_completed() {
             },
             IrStreamEvent::FinishReason {
                 reason: "tool_calls".into(),
+                vendor: None,
             },
             IrStreamEvent::Usage {
                 prompt_tokens: 3,

@@ -88,6 +88,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str) {
                 Ok(Some(IrStreamEvent::FinishReason {
                     reason: map_stop_reason(reason).to_string(),
+                    vendor: None,
                 }))
             } else if let Some(text) = stop_details_explanation(value) {
                 Ok(Some(IrStreamEvent::RefusalDelta { text }))
@@ -328,7 +329,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 inference_geo.as_deref(),
             ),
         ),
-        IrStreamEvent::FinishReason { reason } => (
+        IrStreamEvent::FinishReason { reason, .. } => (
             "message_delta",
             json!({
                 "type": "message_delta",
