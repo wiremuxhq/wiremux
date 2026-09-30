@@ -5149,6 +5149,51 @@ fn messages_response_container_round_trips_and_other_wires_omit_it() {
 }
 
 #[test]
+fn messages_response_context_management_round_trips_and_other_wires_omit_it() {
+    let managed = json!({ "applied_edits": [] });
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4",
+        "content": [{ "type": "text", "text": "Hi" }],
+        "stop_reason": "end_turn",
+        "context_management": managed
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile())
+        .expect("decode dest Messages complete context_management");
+    let messages = encode_response(Wire::Messages, &events).expect("encode dest Messages complete");
+    assert_eq!(
+        messages.get("context_management"),
+        Some(&managed),
+        "Messages context_management must round-trip, got {messages}"
+    );
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert!(
+        chat.get("context_management").is_none(),
+        "Chat must omit context_management, got {chat}"
+    );
+
+    let blank = serde_json::to_vec(&json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4",
+        "content": [{ "type": "text", "text": "Hi" }],
+        "context_management": null
+    }))
+    .expect("json");
+    let events =
+        decode_response(Wire::Messages, &blank, &messages_profile()).expect("decode null context");
+    let messages = encode_response(Wire::Messages, &events).expect("encode blank");
+    assert!(
+        messages.get("context_management").is_none(),
+        "null context_management must be omitted, got {messages}"
+    );
+}
+
+#[test]
 fn dest_chat_complete_service_tier_remaps_dest_messages_usage_service_tier() {
     let body = serde_json::to_vec(&json!({
         "id": "chatcmpl-r67",

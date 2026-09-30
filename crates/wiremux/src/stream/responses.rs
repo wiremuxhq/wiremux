@@ -684,7 +684,9 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "response": { "status": "completed" }
             }),
         ),
-        IrStreamEvent::Diagnostics { .. } | IrStreamEvent::Container { .. } => (
+        IrStreamEvent::Diagnostics { .. }
+        | IrStreamEvent::Container { .. }
+        | IrStreamEvent::ContextManagement { .. } => (
             "response.created",
             json!({
                 "type": "response.created",

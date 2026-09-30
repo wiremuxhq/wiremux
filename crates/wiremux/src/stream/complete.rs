@@ -277,6 +277,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut service_tier = None;
     let mut diagnostics = None;
     let mut container = None;
+    let mut context_management = None;
     let mut tool_calls = Vec::new();
     let mut citations = Vec::new();
     let mut images = Vec::new();
@@ -313,6 +314,9 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::Container { value } => {
                 container = Some(value.clone());
+            }
+            IrStreamEvent::ContextManagement { value } => {
+                context_management = Some(value.clone());
             }
             IrStreamEvent::FinishReason { reason } => {
                 finish = Some(super::messages::encode_stop_reason(reason).to_string());
@@ -430,6 +434,9 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     if let Some(value) = container {
         out["container"] = value;
+    }
+    if let Some(value) = context_management {
+        out["context_management"] = value;
     }
     out
 }
@@ -1185,6 +1192,11 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
     if let Some(value) = value.get("container").filter(|v| v.is_object()) {
         out.push(IrStreamEvent::Container {
             value: value.clone(),
+        });
+    }
+    if let Some(managed) = value.get("context_management").filter(|v| v.is_object()) {
+        out.push(IrStreamEvent::ContextManagement {
+            value: managed.clone(),
         });
     }
     if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
