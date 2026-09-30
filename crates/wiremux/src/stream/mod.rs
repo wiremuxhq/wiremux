@@ -33,14 +33,15 @@ pub struct RawSse {
 
 impl RawSse {
     /// Parse a document of SSE frames. Comments and blank lines are skipped.
+    /// A line or data payload over the SSE cap is an error, not an empty list.
     #[must_use]
-    pub fn parse_all(text: &str) -> Vec<Self> {
+    pub fn parse_all(text: &str) -> Result<Vec<Self>, String> {
         let mut reader = sse::SseFrameReader::new();
-        let mut out = reader.feed(text.as_bytes()).unwrap_or_default();
-        if let Some(last) = reader.drain() {
+        let mut out = reader.feed(text.as_bytes())?;
+        if let Some(last) = reader.finish()? {
             out.push(last);
         }
-        out
+        Ok(out)
     }
 }
 
@@ -958,12 +959,24 @@ mod tests {
     fn parse_all_splits_frames_and_skips_comments() {
         let frames = RawSse::parse_all(
             ": keep-alive\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\ndata: [DONE]\n\n",
-        );
+        )
+        .expect("parse short SSE document");
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].event.as_deref(), Some("ping"));
         assert_eq!(frames[0].data, r#"{"type":"ping"}"#);
         assert_eq!(frames[1].event, None);
         assert_eq!(frames[1].data, "[DONE]");
+    }
+
+    #[test]
+    fn parse_all_errors_when_line_exceeds_sse_cap() {
+        let frames = RawSse::parse_all("data: hi\n\n").expect("parse one SSE frame");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].data, "hi");
+
+        let oversized = "a".repeat(MAX_SSE_PENDING + 1);
+        let err = RawSse::parse_all(&oversized).expect_err("oversized SSE line");
+        assert!(err.contains("exceeds"), "{err}");
     }
 
     fn profile() -> ResolvedProfile {
