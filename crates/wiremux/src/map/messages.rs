@@ -347,6 +347,12 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
         performance_latency: None,
+        previous_message_id: value
+            .pointer("/diagnostics/previous_message_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     }
 }
 
@@ -1275,6 +1281,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         .filter(|geo| !geo.is_empty())
     {
         body["inference_geo"] = json!(geo);
+    }
+    if let Some(id) = s.previous_message_id.as_deref() {
+        body["diagnostics"]["previous_message_id"] = json!(id);
     }
     if s.performance_latency.is_some() {
         report.record("sampling.performance_latency", LossAction::Drop, "no slot");
