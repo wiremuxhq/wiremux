@@ -59,7 +59,10 @@ pub enum ClientError {
         /// Redacted on Display.
         message: String,
     },
-    /// HTTP 429. `retry_after` is seconds when `Retry-After` is numeric.
+    /// Vendor rate limit: HTTP 429, or an event-stream exception whose
+    /// type says the call was throttled. `retry_after` is seconds when
+    /// `Retry-After` is numeric. `status` is the HTTP status the vendor
+    /// sent, which is not always 429 for an event-stream throttle.
     RateLimit {
         /// HTTP status when the vendor responded.
         status: Option<u16>,
@@ -1340,6 +1343,27 @@ fn vision_from_show(value: &Value) -> Option<bool> {
 mod tests {
     use super::*;
     use wiremux_auth::parse_profile_str;
+
+    #[test]
+    fn eventstream_throttle_is_rate_limit_with_caller_status() {
+        let err = classify_aws_exception_type(
+            200,
+            "ThrottlingException",
+            "slow down",
+            "eventstream exception ThrottlingException: slow down",
+        );
+        match err {
+            ClientError::RateLimit {
+                status,
+                retry_after,
+                ..
+            } => {
+                assert_eq!(status, Some(200));
+                assert_eq!(retry_after, None);
+            }
+            other => panic!("expected RateLimit, got {other:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn converse_error_body_keeps_status_when_no_frame() {
