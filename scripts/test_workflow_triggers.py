@@ -50,8 +50,15 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("python3 scripts/test_upload_release_binaries.py", text)
         self.assertIn("release-please-config.json", text)
         self.assertIn("- 'fuzz/**'", text)
-        self.assertIn("github.actor == 'github-actions[bot]'", text)
-        self.assertIn("github.actor != 'github-actions[bot]'", text)
+        self.assertIn(
+            "github.event.pull_request.user.login == 'github-actions[bot]'",
+            text,
+        )
+        self.assertIn(
+            "github.event.pull_request.user.login != 'github-actions[bot]'",
+            text,
+        )
+        self.assertNotIn("github.actor == 'github-actions[bot]'", text)
 
     def test_actionlint_is_not_an_install_action_tool(self) -> None:
         text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
