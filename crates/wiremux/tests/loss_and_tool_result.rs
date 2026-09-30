@@ -244,6 +244,101 @@ fn messages_inference_geo_round_trips_and_other_dests_drop_it() {
 }
 
 #[test]
+fn converse_performance_latency_round_trips_and_other_dests_drop_it() {
+    let raw = br#"{
+        "modelId": "amazon.nova-lite-v1:0",
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+        "performanceConfig": {"latency": "optimized"}
+    }"#;
+    let (ir, _) = decode(Wire::Converse, raw).expect("decode");
+    assert_eq!(
+        ir.sampling.performance_latency.as_deref(),
+        Some("optimized")
+    );
+    let (converse, _) = encode_value(Wire::Converse, &ir);
+    assert_eq!(
+        converse
+            .pointer("/performanceConfig/latency")
+            .and_then(Value::as_str),
+        Some("optimized"),
+        "{converse}"
+    );
+    for wire in [
+        Wire::ChatCompletions,
+        Wire::Messages,
+        Wire::Responses,
+        Wire::Gemini,
+    ] {
+        let (body, report) = encode_value(wire, &ir);
+        assert!(
+            body.get("performanceConfig").is_none()
+                && !body.to_string().contains("performanceConfig")
+                && !body.to_string().contains("performance_latency"),
+            "{wire:?} must omit performanceConfig, got {body}"
+        );
+        assert!(
+            has_action(&report, LossAction::Drop, "performance_latency"),
+            "{wire:?} must Drop sampling.performance_latency, got {report:?}"
+        );
+    }
+
+    let mixed = br#"{
+        "modelId": "amazon.nova-lite-v1:0",
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+        "performanceConfig": {"latency": "  STANDARD  "}
+    }"#;
+    let (ir, _) = decode(Wire::Converse, mixed).expect("decode");
+    assert_eq!(ir.sampling.performance_latency.as_deref(), Some("standard"));
+    let (converse, _) = encode_value(Wire::Converse, &ir);
+    assert_eq!(
+        converse
+            .pointer("/performanceConfig/latency")
+            .and_then(Value::as_str),
+        Some("standard"),
+        "{converse}"
+    );
+
+    let turbo = br#"{
+        "modelId": "amazon.nova-lite-v1:0",
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+        "performanceConfig": {"latency": "turbo"}
+    }"#;
+    let (ir, decode_report) = decode(Wire::Converse, turbo).expect("decode");
+    assert!(
+        ir.sampling.performance_latency.is_none(),
+        "unmapped latency decodes as None"
+    );
+    assert!(
+        decode_report.events.iter().any(|event| {
+            event.action == LossAction::Drop
+                && event.path.contains("performance_latency")
+                && event.detail.contains("unmapped latency")
+        }),
+        "decode must Drop unmapped latency, got {decode_report:?}"
+    );
+    let (converse, _) = encode_value(Wire::Converse, &ir);
+    assert!(
+        converse.get("performanceConfig").is_none(),
+        "unmapped latency must omit performanceConfig, got {converse}"
+    );
+
+    for blank in ["", "  "] {
+        let raw = format!(
+            r#"{{"modelId":"amazon.nova-lite-v1:0","messages":[{{"role":"user","content":[{{"text":"hi"}}]}}],"performanceConfig":{{"latency":"{blank}"}}}}"#
+        );
+        let (ir, report) = decode(Wire::Converse, raw.as_bytes()).expect("decode");
+        assert!(
+            ir.sampling.performance_latency.is_none(),
+            "blank latency decodes as None"
+        );
+        assert!(
+            !has_action(&report, LossAction::Drop, "performance_latency"),
+            "blank latency must not Drop, got {report:?}"
+        );
+    }
+}
+
+#[test]
 fn chat_json_schema_strict_round_trips() {
     let raw = br#"{
         "model": "gpt-4.1",

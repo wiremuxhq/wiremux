@@ -346,6 +346,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         inference_geo: str_field(value, "inference_geo")
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
+        performance_latency: None,
     }
 }
 
@@ -1274,6 +1275,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         .filter(|geo| !geo.is_empty())
     {
         body["inference_geo"] = json!(geo);
+    }
+    if s.performance_latency.is_some() {
+        report.record("sampling.performance_latency", LossAction::Drop, "no slot");
     }
     if let Some(max) = s.max_tokens {
         body["max_tokens"] = json!(max);

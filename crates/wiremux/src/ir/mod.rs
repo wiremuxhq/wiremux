@@ -200,6 +200,9 @@ pub struct IrSampling {
     pub web_search_options: Option<serde_json::Value>,
     /// Messages request `inference_geo`. Chat, Responses, Gemini, and Converse drop.
     pub inference_geo: Option<String>,
+    /// Converse `performanceConfig.latency` (`standard` or `optimized`).
+    /// Chat, Messages, Responses, and Gemini drop.
+    pub performance_latency: Option<String>,
 }
 
 impl IrSampling {
