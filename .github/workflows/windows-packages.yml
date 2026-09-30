@@ -1,0 +1,83 @@
+name: Windows packages
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-packages.yml"
+      - "scripts/render_release_extras.py"
+      - "scripts/test_render_release_extras.py"
+  workflow_dispatch:
+
+concurrency:
+  group: windows-packages-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  scoop:
+    name: Scoop install
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Install from the Scoop bucket
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+          Invoke-Expression "& { $(Invoke-RestMethod -Uri https://get.scoop.sh) } -RunAsAdmin"
+          $shim = Join-Path $env:USERPROFILE 'scoop\shims'
+          $env:Path = "$shim;" + $env:Path
+          $tag = gh release view --repo wiremuxhq/wiremux --json tagName --jq .tagName
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') { throw "bad release tag $tag" }
+          $version = $tag.Substring(1)
+          $manifest = Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/wiremuxhq/scoop-bucket/main/bucket/wiremux.json'
+          if ($manifest.version -ne $version) {
+            throw "bucket $($manifest.version) != release $version"
+          }
+          scoop bucket add wiremux https://github.com/wiremuxhq/scoop-bucket
+          scoop install wiremux
+          $got = (wiremux --version).Trim()
+          if ($got -ne "wiremux $version") { throw "got [$got] want wiremux $version" }
+          Write-Output "OK: scoop $got"
+          scoop uninstall wiremux
+
+  chocolatey:
+    name: Chocolatey install
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+      - name: Pack and install the release package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = gh release view --repo wiremuxhq/wiremux --json tagName --jq .tagName
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') { throw "bad release tag $tag" }
+          $version = $tag.Substring(1)
+          $dir = Join-Path $env:RUNNER_TEMP 'choco-pkg'
+          $tools = Join-Path $dir 'tools'
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+          gh release download $tag --repo wiremuxhq/wiremux --dir $dir --pattern wiremux.nuspec --pattern chocolateyInstall.ps1 --clobber
+          Move-Item -Force (Join-Path $dir 'chocolateyInstall.ps1') (Join-Path $tools 'chocolateyInstall.ps1')
+          Push-Location $dir
+          choco pack .\wiremux.nuspec
+          choco install wiremux --source $dir -y --version $version
+          Pop-Location
+          $env:Path = 'C:\ProgramData\chocolatey\bin;' + $env:Path
+          $got = (& wiremux --version | Out-String).Trim()
+          if ($got -ne "wiremux $version") { throw "got [$got] want wiremux $version" }
+          Write-Output "OK: choco $got"
+          choco uninstall wiremux -y

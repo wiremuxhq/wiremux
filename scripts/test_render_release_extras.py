@@ -79,10 +79,27 @@ class RenderReleaseExtrasTests(unittest.TestCase):
         self.assertNotIn("arm64", scoop)
         self.assertIn(self.targets["x86_64-pc-windows-msvc"], scoop)
         installer = first["winget/Wiremux.Wiremux.installer.yaml"].decode("utf-8")
+        self.assertTrue(
+            installer.startswith(
+                "# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json\n"
+            )
+        )
+        self.assertIn("ManifestVersion: 1.12.0", installer)
+        self.assertNotIn("ManifestVersion: 1.10.0", installer)
         self.assertIn("RelativeFilePath: wiremux.exe", installer)
         self.assertIn(self.targets["x86_64-pc-windows-msvc"].upper(), installer)
         self.assertIn("Microsoft.VCRedist.2015+.x64", installer)
         self.assertIn("PackageIdentifier: Wiremux.Wiremux", installer)
+        locale = first["winget/Wiremux.Wiremux.locale.en-US.yaml"].decode("utf-8")
+        version_yaml = first["winget/Wiremux.Wiremux.yaml"].decode("utf-8")
+        self.assertIn(
+            "winget-manifest.defaultLocale.1.12.0.schema.json",
+            locale.splitlines()[0],
+        )
+        self.assertIn(
+            "winget-manifest.version.1.12.0.schema.json",
+            version_yaml.splitlines()[0],
+        )
         shell = first["wiremux-installer.sh"].decode("utf-8")
         self.assertIn(self.targets["aarch64-apple-darwin"], shell)
         self.assertIn('version="0.9.3"', shell)
