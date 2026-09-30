@@ -5100,6 +5100,55 @@ fn messages_cache_miss_reason_round_trips_and_other_wires_omit_it() {
 }
 
 #[test]
+fn messages_response_container_round_trips_and_other_wires_omit_it() {
+    let container = json!({
+        "id": "container_1",
+        "expires_at": "2019-12-27T18:11:19.117Z",
+        "skills": [{ "skill_id": "pdf", "type": "anthropic", "version": "latest" }]
+    });
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4",
+        "content": [{ "type": "text", "text": "Hi" }],
+        "stop_reason": "end_turn",
+        "container": container
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile())
+        .expect("decode dest Messages complete container");
+    let messages = encode_response(Wire::Messages, &events).expect("encode dest Messages complete");
+    assert_eq!(
+        messages.get("container"),
+        Some(&container),
+        "Messages container must round-trip, got {messages}"
+    );
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert!(
+        chat.get("container").is_none(),
+        "Chat must omit container, got {chat}"
+    );
+
+    let blank = serde_json::to_vec(&json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4",
+        "content": [{ "type": "text", "text": "Hi" }],
+        "container": null
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &blank, &messages_profile())
+        .expect("decode null container");
+    let messages = encode_response(Wire::Messages, &events).expect("encode blank");
+    assert!(
+        messages.get("container").is_none(),
+        "null container must be omitted, got {messages}"
+    );
+}
+
+#[test]
 fn dest_chat_complete_service_tier_remaps_dest_messages_usage_service_tier() {
     let body = serde_json::to_vec(&json!({
         "id": "chatcmpl-r67",

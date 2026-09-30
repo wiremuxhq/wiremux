@@ -497,6 +497,10 @@ pub enum IrStreamEvent {
     Diagnostics {
         cache_miss_reason: serde_json::Value,
     },
+    /// Messages response `container`. Other wires omit it.
+    Container {
+        value: serde_json::Value,
+    },
     /// Exclusive buckets: prompt excludes cache
     /// read, completion excludes reasoning. Encoders re-inflate inclusive
     /// wire totals for Chat and Responses.

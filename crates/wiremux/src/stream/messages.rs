@@ -343,6 +343,14 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "diagnostics": { "cache_miss_reason": cache_miss_reason }
             }),
         ),
+        IrStreamEvent::Container { value } => (
+            "message_delta",
+            json!({
+                "type": "message_delta",
+                "delta": {},
+                "container": value
+            }),
+        ),
         IrStreamEvent::Done => ("message_stop", json!({ "type": "message_stop" })),
         IrStreamEvent::Protocol { .. } | IrStreamEvent::Unknown { .. } => {
             return Err(MapError::Invalid(
