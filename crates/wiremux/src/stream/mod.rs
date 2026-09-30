@@ -366,6 +366,7 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
     {
         out.push(IrStreamEvent::FinishReason {
             reason: gemini::map_finish(reason, gemini_value_has_function_call(value)),
+            vendor: Some(reason.to_string()),
         });
     }
     if let Some(ev) = gemini::service_tier_from_chunk(value) {
@@ -389,8 +390,11 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
 pub(crate) const INCOMPLETE_STREAM_MESSAGE: &str = "upstream stream ended before a terminal event";
 
 /// Upstream frame that ends a stream. An empty body is not terminal.
-#[cfg(any(feature = "client", feature = "proxy"))]
-pub(crate) fn frame_is_terminal(wire: Wire, raw: &RawSse, profile: &ResolvedProfile) -> bool {
+///
+/// Maps-only hosts call this on each SSE frame. EOF after content is a
+/// failure unless one frame was terminal. [`StreamEncoder::finish`] is
+/// for a stream the caller already knows completed.
+pub fn frame_is_terminal(wire: Wire, raw: &RawSse, profile: &ResolvedProfile) -> bool {
     match wire {
         Wire::ChatCompletions => chat_frame_is_terminal(raw),
         Wire::Messages => messages_frame_is_terminal(raw),
@@ -405,7 +409,14 @@ pub(crate) fn frame_is_terminal(wire: Wire, raw: &RawSse, profile: &ResolvedProf
     }
 }
 
-#[cfg(any(feature = "client", feature = "proxy"))]
+/// True when any frame is terminal. An empty slice is not.
+#[must_use]
+pub fn stream_has_terminal(wire: Wire, frames: &[RawSse], profile: &ResolvedProfile) -> bool {
+    frames
+        .iter()
+        .any(|raw| frame_is_terminal(wire, raw, profile))
+}
+
 fn chat_frame_is_terminal(raw: &RawSse) -> bool {
     if raw.event.as_deref() == Some("[DONE]") || raw.data.trim() == "[DONE]" {
         return true;
@@ -426,7 +437,6 @@ fn chat_frame_is_terminal(raw: &RawSse) -> bool {
         })
 }
 
-#[cfg(any(feature = "client", feature = "proxy"))]
 fn messages_frame_is_terminal(raw: &RawSse) -> bool {
     let name = frame_event_name(Wire::Messages, raw);
     if name == "message_stop" {
@@ -444,7 +454,6 @@ fn messages_frame_is_terminal(raw: &RawSse) -> bool {
         .is_some_and(|reason| !reason.is_empty())
 }
 
-#[cfg(any(feature = "client", feature = "proxy"))]
 fn responses_frame_is_terminal(raw: &RawSse) -> bool {
     matches!(
         frame_event_name(Wire::Responses, raw).as_str(),
@@ -452,7 +461,6 @@ fn responses_frame_is_terminal(raw: &RawSse) -> bool {
     )
 }
 
-#[cfg(any(feature = "client", feature = "proxy"))]
 fn gemini_frame_is_terminal(raw: &RawSse) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(&raw.data) else {
         return false;
@@ -956,6 +964,74 @@ mod tests {
         assert_eq!(frames[0].data, r#"{"type":"ping"}"#);
         assert_eq!(frames[1].event, None);
         assert_eq!(frames[1].data, "[DONE]");
+    }
+
+    fn profile() -> ResolvedProfile {
+        wiremux_auth::parse_profile_str(
+            r#"
+schema_version = 1
+id = "t"
+wire = "chat-completions"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("profile")
+    }
+
+    fn frame(event: Option<&str>, data: &str) -> RawSse {
+        RawSse {
+            event: event.map(str::to_string),
+            data: data.to_string(),
+        }
+    }
+
+    #[test]
+    fn chat_tool_stream_without_done_is_not_terminal() {
+        let profile = profile();
+        let frames = [frame(
+            None,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"a","arguments":""}}]}}]}"#,
+        )];
+        assert!(!stream_has_terminal(Wire::ChatCompletions, &[], &profile));
+        assert!(!frame_is_terminal(
+            Wire::ChatCompletions,
+            &frames[0],
+            &profile
+        ));
+        assert!(!stream_has_terminal(
+            Wire::ChatCompletions,
+            &frames,
+            &profile
+        ));
+        let done = frame(None, "[DONE]");
+        assert!(frame_is_terminal(Wire::ChatCompletions, &done, &profile));
+        assert!(stream_has_terminal(
+            Wire::ChatCompletions,
+            &[frames[0].clone(), done],
+            &profile
+        ));
+    }
+
+    #[test]
+    fn messages_content_block_stop_is_not_terminal() {
+        let profile = profile();
+        let stop_block = frame(
+            Some("content_block_stop"),
+            r#"{"type":"content_block_stop","index":0}"#,
+        );
+        assert!(!frame_is_terminal(Wire::Messages, &stop_block, &profile));
+        let message_stop = frame(Some("message_stop"), r#"{"type":"message_stop"}"#);
+        assert!(frame_is_terminal(Wire::Messages, &message_stop, &profile));
+    }
+
+    #[test]
+    fn wrapped_complete_json_with_finish_reason_is_terminal() {
+        let profile = profile();
+        let body = frame(
+            None,
+            r#"{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}"#,
+        );
+        assert!(frame_is_terminal(Wire::ChatCompletions, &body, &profile));
     }
 
     #[test]

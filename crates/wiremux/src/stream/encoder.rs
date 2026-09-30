@@ -368,7 +368,7 @@ impl StreamEncoder {
                 }
             }
             IrStreamEvent::ToolCallEnd => {}
-            IrStreamEvent::FinishReason { reason } => {
+            IrStreamEvent::FinishReason { reason, .. } => {
                 self.finish = Some(reason);
             }
             IrStreamEvent::RefusalDelta { text } => {
@@ -925,7 +925,7 @@ impl StreamEncoder {
             IrStreamEvent::ToolCallEnd => {
                 out.extend(self.close_item());
             }
-            IrStreamEvent::FinishReason { reason } => {
+            IrStreamEvent::FinishReason { reason, .. } => {
                 self.finish = Some(reason);
             }
             IrStreamEvent::Usage {
@@ -1212,7 +1212,7 @@ impl StreamEncoder {
                     .to_string(),
                 });
             }
-            IrStreamEvent::FinishReason { reason } => {
+            IrStreamEvent::FinishReason { reason, .. } => {
                 self.finish = Some(reason);
             }
             IrStreamEvent::Usage {
@@ -1337,7 +1337,7 @@ impl StreamEncoder {
             IrStreamEvent::ToolCallEnd => {
                 out.extend(self.close_converse());
             }
-            IrStreamEvent::FinishReason { reason } => {
+            IrStreamEvent::FinishReason { reason, .. } => {
                 self.finish = Some(reason);
             }
             IrStreamEvent::ImageDelta { media_type, data } => {
@@ -1419,7 +1419,10 @@ impl StreamEncoder {
         let reason = self.finish.take().unwrap_or_else(|| "end_turn".into());
         out.push(encode_stream_event(
             Wire::Converse,
-            &IrStreamEvent::FinishReason { reason },
+            &IrStreamEvent::FinishReason {
+                reason,
+                vendor: None,
+            },
         )?);
         Ok(out)
     }
@@ -1773,6 +1776,7 @@ mod tests {
         let mut enc = StreamEncoder::new(Wire::Responses);
         enc.push(IrStreamEvent::FinishReason {
             reason: "content_filter".into(),
+            vendor: None,
         })
         .expect("push content_filter");
         let frames = enc.finish().expect("finish content_filter");
@@ -1805,6 +1809,7 @@ mod tests {
         let mut enc = StreamEncoder::new(Wire::Responses);
         enc.push(IrStreamEvent::FinishReason {
             reason: "length".into(),
+            vendor: None,
         })
         .expect("push length");
         let frames = enc.finish().expect("finish length");
@@ -1980,6 +1985,7 @@ mod tests {
         filtered
             .push(IrStreamEvent::FinishReason {
                 reason: "content_filter".into(),
+                vendor: None,
             })
             .expect("filter");
         let filtered_body = filtered
@@ -2112,6 +2118,7 @@ mod tests {
         tools
             .push(IrStreamEvent::FinishReason {
                 reason: "stop".into(),
+                vendor: None,
             })
             .expect("push stop");
         let frames = tools.finish().expect("finish");
@@ -2125,6 +2132,7 @@ mod tests {
         plain
             .push(IrStreamEvent::FinishReason {
                 reason: "stop".into(),
+                vendor: None,
             })
             .expect("push stop");
         let plain_frames = plain.finish().expect("finish plain");
@@ -2146,6 +2154,7 @@ mod tests {
         filtered
             .push(IrStreamEvent::FinishReason {
                 reason: "content_filter".into(),
+                vendor: None,
             })
             .expect("push filter");
         let filtered_frames = filtered.finish().expect("finish filter");
@@ -2180,6 +2189,7 @@ mod tests {
             .expect("push args");
             enc.push(IrStreamEvent::FinishReason {
                 reason: reason.into(),
+                vendor: None,
             })
             .expect("push finish");
             let frames = enc.finish().expect("finish");
@@ -2200,6 +2210,7 @@ mod tests {
         .expect("push tool");
         end.push(IrStreamEvent::FinishReason {
             reason: "end_turn".into(),
+            vendor: None,
         })
         .expect("push end_turn");
         let frames = end.finish().expect("finish");
@@ -2235,6 +2246,7 @@ mod tests {
         tools
             .push(IrStreamEvent::FinishReason {
                 reason: "stop".into(),
+                vendor: None,
             })
             .expect("push stop");
         let frames = tools.finish().expect("finish");
@@ -2255,6 +2267,7 @@ mod tests {
         filtered
             .push(IrStreamEvent::FinishReason {
                 reason: "content_filter".into(),
+                vendor: None,
             })
             .expect("push filter");
         let filtered_frames = filtered.finish().expect("finish filter");
@@ -2271,6 +2284,7 @@ mod tests {
         assert!(
             stop.push(IrStreamEvent::FinishReason {
                 reason: "stop".into(),
+                vendor: None
             })
             .expect("push stop")
             .is_empty()
@@ -2287,6 +2301,7 @@ mod tests {
             tools
                 .push(IrStreamEvent::FinishReason {
                     reason: "tool_calls".into(),
+                    vendor: None
                 })
                 .expect("push tool_calls")
                 .is_empty()
@@ -2303,6 +2318,7 @@ mod tests {
             filtered
                 .push(IrStreamEvent::FinishReason {
                     reason: "content_filter".into(),
+                    vendor: None
                 })
                 .expect("push content_filter")
                 .is_empty()

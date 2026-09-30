@@ -532,8 +532,13 @@ pub enum IrStreamEvent {
         /// Messages response `usage.inference_geo`. Other wires omit it.
         inference_geo: Option<String>,
     },
+    /// Mapped stop reason. `vendor` is the original Gemini token when the
+    /// mapped word is not that token (`MALFORMED_FUNCTION_CALL`, `SAFETY`).
+    /// Other wires leave `vendor` empty. Unknown Gemini `finishReason`
+    /// values stay in `reason` and are not rewritten to `stop`.
     FinishReason {
         reason: String,
+        vendor: Option<String>,
     },
     Protocol {
         item_type: String,

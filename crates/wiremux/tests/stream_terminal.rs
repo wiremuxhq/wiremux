@@ -42,6 +42,7 @@ fn responses_completed_repeats_resp_wiremux() {
         .expect("text");
     enc.push(IrStreamEvent::FinishReason {
         reason: "stop".into(),
+        vendor: None,
     })
     .expect("finish reason");
     let done = enc.finish().expect("finish");

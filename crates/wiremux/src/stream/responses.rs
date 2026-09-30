@@ -145,6 +145,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             {
                 return Ok(Some(IrStreamEvent::FinishReason {
                     reason: "cancelled".into(),
+                    vendor: None,
                 }));
             }
             if let Some(usage) = value.pointer("/response/usage") {
@@ -163,10 +164,12 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             }
             Ok(Some(IrStreamEvent::FinishReason {
                 reason: "failed".into(),
+                vendor: None,
             }))
         }
         "response.incomplete" => Ok(Some(IrStreamEvent::FinishReason {
             reason: decode_incomplete_reason(value, "incomplete"),
+            vendor: None,
         })),
         other => Ok(Some(protocol(other, value))),
     }
@@ -378,7 +381,10 @@ pub(super) fn decode_terminal_events(name: &str, value: &Value) -> Option<Vec<Ir
         }
     }
     if let Some(reason) = terminal_finish_reason(name, value) {
-        out.push(IrStreamEvent::FinishReason { reason });
+        out.push(IrStreamEvent::FinishReason {
+            reason,
+            vendor: None,
+        });
     }
     if let Some(usage) = value.pointer("/response/usage").filter(|v| v.is_object()) {
         out.push(usage::from_responses(usage));
@@ -622,7 +628,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 *reasoning_tokens,
             ),
         ),
-        IrStreamEvent::FinishReason { reason } => {
+        IrStreamEvent::FinishReason { reason, .. } => {
             let (event, status) = match reason.as_str() {
                 "failed" => ("response.failed", "failed"),
                 "incomplete" | "length" | "max_tokens" | "content_filter" => {

@@ -129,7 +129,7 @@ fn chat_complete_message_content_finish_usage() {
     assert!(
         events
             .iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")),
         "finish_reason=stop missing: {events:?}"
     );
     assert!(
@@ -636,7 +636,8 @@ fn gemini_unknown_finish_reason_is_preserved_on_complete() {
     assert!(
         events.iter().any(|ev| matches!(
             ev,
-            IrStreamEvent::FinishReason { reason } if reason == "FUTURE_REASON"
+            IrStreamEvent::FinishReason { reason, vendor, .. }
+                if reason == "FUTURE_REASON" && vendor.as_deref() == Some("FUTURE_REASON")
         )),
         "complete FUTURE_REASON must not become stop, got {events:?}"
     );
@@ -661,7 +662,7 @@ fn gemini_unknown_finish_reason_is_preserved_on_complete() {
     assert!(
         events
             .iter()
-            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "stop")),
+            .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")),
         "STOP stays stop, got {events:?}"
     );
     assert!(
@@ -679,10 +680,12 @@ fn gemini_prompt_feedback_block_reason_is_content_filter() {
     let events = decode_response(Wire::Gemini, &body, &gemini_profile())
         .expect("blocked complete must decode");
     assert!(
-        events.iter().any(
-            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "content_filter")
-        ),
-        "complete promptFeedback.blockReason=SAFETY must be content_filter: {events:?}"
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::FinishReason { reason, vendor, .. }
+                if reason == "content_filter" && vendor.as_deref() == Some("SAFETY")
+        )),
+        "complete promptFeedback.blockReason=SAFETY must keep SAFETY: {events:?}"
     );
 
     let raw = RawSse {
@@ -692,10 +695,12 @@ fn gemini_prompt_feedback_block_reason_is_content_filter() {
     let streamed = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
         .expect("blocked chunk must decode");
     assert!(
-        streamed.iter().any(
-            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "content_filter")
-        ),
-        "stream promptFeedback.blockReason=SAFETY must be content_filter: {streamed:?}"
+        streamed.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::FinishReason { reason, vendor, .. }
+                if reason == "content_filter" && vendor.as_deref() == Some("SAFETY")
+        )),
+        "stream promptFeedback.blockReason=SAFETY must keep SAFETY: {streamed:?}"
     );
 
     let unknown = serde_json::to_vec(&json!({
@@ -705,10 +710,13 @@ fn gemini_prompt_feedback_block_reason_is_content_filter() {
     let events = decode_response(Wire::Gemini, &unknown, &gemini_profile())
         .expect("unknown blockReason must decode");
     assert!(
-        events.iter().any(
-            |ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == "content_filter")
-        ),
-        "unknown blockReason must be content_filter, not stop: {events:?}"
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::FinishReason { reason, vendor, .. }
+                if reason == "content_filter"
+                    && vendor.as_deref() == Some("NOT_A_KNOWN_REASON")
+        )),
+        "unknown blockReason must keep the vendor token, got {events:?}"
     );
 }
 
@@ -956,6 +964,7 @@ fn responses_complete_length_is_incomplete() {
 fn dest_responses_complete_content_filter_is_incomplete() {
     let events = [IrStreamEvent::FinishReason {
         reason: "content_filter".into(),
+        vendor: None,
     }];
     let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses");
     assert_eq!(
@@ -1146,6 +1155,7 @@ fn converse_complete_tool_calls_finish_stays_tool_use() {
         IrStreamEvent::ToolCallEnd,
         IrStreamEvent::FinishReason {
             reason: "tool_calls".into(),
+            vendor: None,
         },
     ];
     let mapped = encode_response(Wire::Converse, &events).expect("encode");
@@ -1167,6 +1177,7 @@ fn converse_complete_keeps_stop_sequence_and_guardrail() {
         Wire::Converse,
         &[IrStreamEvent::FinishReason {
             reason: "stop_sequence".into(),
+            vendor: None,
         }],
     )
     .expect("encode stop_sequence");
@@ -1179,6 +1190,7 @@ fn converse_complete_keeps_stop_sequence_and_guardrail() {
         Wire::Converse,
         &[IrStreamEvent::FinishReason {
             reason: "guardrail_intervened".into(),
+            vendor: None,
         }],
     )
     .expect("encode guardrail");
@@ -1205,6 +1217,7 @@ fn converse_complete_non_json_tool_input_stays_string() {
         IrStreamEvent::ToolCallEnd,
         IrStreamEvent::FinishReason {
             reason: "tool_calls".into(),
+            vendor: None,
         },
     ];
     let mapped = encode_response(Wire::Converse, &events).expect("encode");

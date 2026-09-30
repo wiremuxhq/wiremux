@@ -82,7 +82,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::Moderation { input, output } => {
                 moderation = Some((input.clone(), output.clone()));
             }
-            IrStreamEvent::FinishReason { reason } => {
+            IrStreamEvent::FinishReason { reason, .. } => {
                 finish = Some(reason.clone());
             }
             IrStreamEvent::Usage {
@@ -322,7 +322,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::StopSequence { text } => {
                 stop_sequence = Some(text.clone());
             }
-            IrStreamEvent::FinishReason { reason } => {
+            IrStreamEvent::FinishReason { reason, .. } => {
                 finish = Some(super::messages::encode_stop_reason(reason).to_string());
             }
             IrStreamEvent::Usage {
@@ -506,7 +506,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::ReasoningSignature { signature } => {
                 reasoning_signature = Some(signature.clone());
             }
-            IrStreamEvent::FinishReason { reason } => {
+            IrStreamEvent::FinishReason { reason, .. } => {
                 finish = Some(super::gemini::encode_finish(reason).to_string());
             }
             IrStreamEvent::Usage {
@@ -692,7 +692,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::Moderation { input, output } => {
                 moderation = Some((input.clone(), output.clone()));
             }
-            IrStreamEvent::FinishReason { reason } => {
+            IrStreamEvent::FinishReason { reason, .. } => {
                 finish = Some(reason.clone());
             }
             IrStreamEvent::Usage {
@@ -936,7 +936,7 @@ fn record_preserved_gemini_finish(
     }
     let preserved = events
         .iter()
-        .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason } if reason == vendor));
+        .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == vendor));
     if preserved {
         report.record(
             "candidates[0].finishReason",
@@ -1057,6 +1057,7 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
         {
             out.push(IrStreamEvent::FinishReason {
                 reason: super::chat::map_finish(reason).to_string(),
+                vendor: None,
             });
         }
     }
@@ -1195,6 +1196,7 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
     if let Some(reason) = value.get("stop_reason").and_then(Value::as_str) {
         out.push(IrStreamEvent::FinishReason {
             reason: super::messages::map_stop_reason(reason).to_string(),
+            vendor: None,
         });
     }
     if let Some(reason) = value
@@ -1591,6 +1593,7 @@ mod tests {
             },
             IrStreamEvent::FinishReason {
                 reason: "failed".into(),
+                vendor: None,
             },
         ];
         let mapped = encode_response(Wire::ChatCompletions, &events).expect("encode");
@@ -1618,6 +1621,7 @@ mod tests {
             },
             IrStreamEvent::FinishReason {
                 reason: "end_turn".into(),
+                vendor: None,
             },
         ];
         let mapped = encode_response(Wire::ChatCompletions, &end).expect("encode end_turn");
@@ -1638,6 +1642,7 @@ mod tests {
             },
             IrStreamEvent::FinishReason {
                 reason: "stop".into(),
+                vendor: None,
             },
         ];
         let mapped = encode_response(Wire::ChatCompletions, &stop).expect("encode stop");

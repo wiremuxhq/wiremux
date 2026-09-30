@@ -108,6 +108,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         .filter(|s| !s.is_empty())
         .map(|reason| IrStreamEvent::FinishReason {
             reason: map_finish(reason).to_string(),
+            vendor: None,
         });
     let usage = value
         .get("usage")
@@ -248,6 +249,7 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     {
         out.push(IrStreamEvent::FinishReason {
             reason: map_finish(reason).to_string(),
+            vendor: None,
         });
     }
     if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
@@ -712,7 +714,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             *audio_tokens,
             *completion_audio_tokens,
         ),
-        IrStreamEvent::FinishReason { reason } => json!({
+        IrStreamEvent::FinishReason { reason, .. } => json!({
             "choices": [{ "index": 0, "delta": {}, "finish_reason": encode_finish(reason) }]
         }),
         IrStreamEvent::Diagnostics { .. }

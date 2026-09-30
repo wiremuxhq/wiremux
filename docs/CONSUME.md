@@ -133,6 +133,18 @@ Gemini is `wire = "gemini"` in wiremux. The host adapter calls
 `decode` / `encode` on `IrRequest`. It does not keep a second Gemini
 map.
 
+Gemini finish and block reasons decode to `IrStreamEvent::FinishReason`.
+`reason` is the mapped word. `vendor` is the original token.
+
+| Vendor token | `reason` | Notes |
+|--------------|----------|-------|
+| `STOP` | `stop` or `tool_calls` | `tool_calls` when the candidate has a function call |
+| `MAX_TOKENS` | `max_tokens` | |
+| `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_SAFETY`, `LANGUAGE`, `OTHER` | `content_filter` | `vendor` keeps the token |
+| `MALFORMED_FUNCTION_CALL` | `malformed_function_call` | Not a successful stop. The host decides whether the turn fails |
+| any other `finishReason` | the vendor string | Not rewritten to `stop` |
+| unknown `promptFeedback.blockReason` | `content_filter` | `vendor` is the unseen token, not only `content_filter` |
+
 Host thinking slots and `LossReport`:
 
 | IR | Messages | Gemini | Responses | Chat Completions |
@@ -198,6 +210,18 @@ instead of copying catalog names by hand. The list is the same table
 `default-features = false` stays maps-only. Hosts that want POST/SSE
 without clap or the `proxy` stack enable feature `client` on crate
 `wiremux` only.
+
+Maps-only hosts that read SSE themselves call `stream_has_terminal`
+(or `frame_is_terminal` per frame) after the HTTP body ends. EOF
+after content is a failure unless one frame was terminal. Chat is
+terminal on `data: [DONE]` or a non-empty `finish_reason`. Messages
+is terminal on `message_stop` or a `message_delta` with `stop_reason`.
+Responses is terminal on `response.completed`, `response.incomplete`,
+or `response.failed`. Gemini is terminal on `finishReason`. Converse
+is terminal when a frame decodes to `FinishReason`. An empty frame
+list is not terminal. `StreamEncoder::finish()` is for a stream the
+caller already knows completed. Do not call it just because the
+socket closed.
 
 `ClientError::Transient` carries `TransientKind` (`Connect`,
 `Timeout`, `Reset`, `Http`). Hosts call `is_connect()` /
