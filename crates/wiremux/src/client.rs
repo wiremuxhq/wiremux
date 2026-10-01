@@ -941,7 +941,7 @@ fn classify_sse_wrapped_error(data: &str, status: u16) -> Option<ClientError> {
     let nested = value.get("error").filter(|v| v.is_object());
     let source = nested.unwrap_or(&value);
     let code = json_error_code(source);
-    let code_name = json_error_code_name(source);
+    let code_name = json_error_name(source);
     let message = error_message(data);
     let retry_after = nested
         .and_then(json_retry_after)
@@ -1004,7 +1004,7 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
             return Some(classify_error_payload(
                 Some(status),
                 code,
-                error_obj.and_then(json_error_code_name).as_deref(),
+                error_obj.and_then(json_error_name).as_deref(),
                 &message,
                 body,
                 retry_after,
@@ -1119,6 +1119,7 @@ fn is_retryable_server_code(name: &str) -> bool {
             | "request_timeout"
             | "server_is_overloaded"
             | "server_overloaded"
+            | "api_error"
     )
 }
 
@@ -1137,6 +1138,20 @@ fn json_error_code_name(error: &Value) -> Option<String> {
         return None;
     }
     Some(name.to_string())
+}
+
+/// Anthropic puts the class in `error.type` (`api_error`). The literal
+/// `error` is the Responses event name, not a class.
+fn json_error_type_name(error: &Value) -> Option<String> {
+    let name = error.get("type")?.as_str()?.trim();
+    if name.is_empty() || name == "error" || name.parse::<i64>().is_ok() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+fn json_error_name(error: &Value) -> Option<String> {
+    json_error_code_name(error).or_else(|| json_error_type_name(error))
 }
 
 fn is_transient_code(code: i64) -> bool {
