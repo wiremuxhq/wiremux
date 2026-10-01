@@ -53,7 +53,9 @@ push_repo() {
     return 0
   fi
   git -C "$dir" commit -s -m "$message"
-  git -C "$dir" -c "http.extraheader=AUTHORIZATION: bearer ${TOKEN}" push origin HEAD:main
+  # setup-git already authenticates this token. A second Authorization
+  # header makes GitHub reject the push as invalid credentials.
+  git -C "$dir" push origin HEAD:main
   echo "OK: pushed ${repo}"
 }
 
