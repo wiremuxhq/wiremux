@@ -245,7 +245,8 @@ Responses event that is not on the allowlist and carries no new text,
 arguments, code, command, or image bytes is skipped.
 `response.queued` and `response.compaction.compacting` are that kind
 of frame. The same unknown event still fails when it carries `delta`,
-`arguments`, `code`, `command`, `text`, or `partial_image_b64`.
+`arguments`, `code`, `command`, `text`, `partial_image_b64`, or
+`output` (shell output).
 Passthrough still forwards that frame as an unknown event. Gemini
 is terminal on a non-empty `finishReason`,
 or on a non-empty `promptFeedback.blockReason` when that frame has no

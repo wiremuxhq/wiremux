@@ -909,6 +909,7 @@ fn responses_unknown_carries_payload(data: &str) -> bool {
         "input",
         "refusal",
         "partial_image_b64",
+        "output",
     ];
     KEYS.iter()
         .any(|key| obj.get(*key).is_some_and(responses_payload_value_present))
@@ -1445,6 +1446,10 @@ base_url = "http://127.0.0.1"
             (
                 "response.shell_call_output_content.delta",
                 r#"{"type":"response.shell_call_output_content.delta","delta":{"stdout":"ok","stderr":""}}"#,
+            ),
+            (
+                "response.shell_call_output_content.done",
+                r#"{"type":"response.shell_call_output_content.done","output":[{"stdout":"ok","stderr":""}]}"#,
             ),
         ];
         for (event, data) in payload {
