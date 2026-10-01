@@ -4,7 +4,7 @@ use serde_json::json;
 use wiremux::{
     IrStreamEvent, LossAction, RawSse, ResolvedProfile, StreamEncoder, Wire, decode_response,
     decode_response_with_loss, decode_stream_events, encode_response, encode_response_with_model,
-    parse_profile_str,
+    frame_is_terminal, parse_profile_str, stream_has_terminal,
 };
 
 fn chat_profile() -> ResolvedProfile {
@@ -718,6 +718,59 @@ fn gemini_prompt_feedback_block_reason_is_content_filter() {
         )),
         "unknown blockReason must keep the vendor token, got {events:?}"
     );
+}
+
+#[test]
+fn gemini_block_reason_without_finish_reason_is_terminal() {
+    let profile = gemini_profile();
+    let safety = [RawSse {
+        event: None,
+        data: r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#.into(),
+    }];
+    assert!(
+        frame_is_terminal(Wire::Gemini, &safety[0], &profile),
+        "decode already finished on blockReason; the frame must be terminal"
+    );
+    assert!(
+        stream_has_terminal(Wire::Gemini, &safety, &profile),
+        "a one-frame blocked prompt must be a complete stream"
+    );
+
+    let empty_reason = [RawSse {
+        event: None,
+        data: r#"{"promptFeedback":{"blockReason":""}}"#.into(),
+    }];
+    assert!(!frame_is_terminal(Wire::Gemini, &empty_reason[0], &profile));
+    assert!(!stream_has_terminal(Wire::Gemini, &empty_reason, &profile));
+
+    let missing = [RawSse {
+        event: None,
+        data: r#"{"promptFeedback":{}}"#.into(),
+    }];
+    assert!(!frame_is_terminal(Wire::Gemini, &missing[0], &profile));
+    assert!(!stream_has_terminal(Wire::Gemini, &missing, &profile));
+
+    let stopped = [RawSse {
+        event: None,
+        data: r#"{"candidates":[{"finishReason":"STOP"}]}"#.into(),
+    }];
+    assert!(frame_is_terminal(Wire::Gemini, &stopped[0], &profile));
+    assert!(stream_has_terminal(Wire::Gemini, &stopped, &profile));
+
+    let unfinished_candidate = [RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"promptFeedback":{"blockReason":"SAFETY"}}"#.into(),
+    }];
+    assert!(frame_is_terminal(
+        Wire::Gemini,
+        &unfinished_candidate[0],
+        &profile
+    ));
+    assert!(stream_has_terminal(
+        Wire::Gemini,
+        &unfinished_candidate,
+        &profile
+    ));
 }
 
 #[test]

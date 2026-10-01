@@ -465,8 +465,16 @@ fn gemini_frame_is_terminal(raw: &RawSse) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(&raw.data) else {
         return false;
     };
-    value
+    if value
         .pointer("/candidates/0/finishReason")
+        .and_then(Value::as_str)
+        .is_some_and(|reason| !reason.is_empty())
+    {
+        return true;
+    }
+    // A blocked prompt finishes without a candidate finishReason.
+    value
+        .pointer("/promptFeedback/blockReason")
         .and_then(Value::as_str)
         .is_some_and(|reason| !reason.is_empty())
 }
