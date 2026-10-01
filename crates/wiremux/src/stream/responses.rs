@@ -20,7 +20,9 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             }
             Ok(None)
         }
-        "response.reasoning_summary_text.delta" | "response.reasoning.delta" => {
+        "response.reasoning_summary_text.delta"
+        | "response.reasoning.delta"
+        | "response.reasoning_text.delta" => {
             nonempty_delta(value, |text| IrStreamEvent::ReasoningDelta { text })
         }
         "response.refusal.delta" => {
@@ -171,13 +173,18 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             reason: decode_incomplete_reason(value, "incomplete"),
             vendor: None,
         })),
-        // The done event repeats text the matching delta already delivered.
+        // These bracket a part, or repeat text the matching delta already delivered.
         "response.output_text.done"
         | "response.content_part.done"
         | "response.function_call_arguments.done"
         | "response.refusal.done"
         | "response.audio.done"
-        | "response.audio.transcript.done" => Ok(None),
+        | "response.audio.transcript.done"
+        | "response.reasoning_summary_part.added"
+        | "response.reasoning_summary_part.done"
+        | "response.reasoning_summary_text.done"
+        | "response.reasoning_text.done"
+        | "response.custom_tool_call_input.done" => Ok(None),
         "error" => {
             let message = str_field(value, "message").filter(|text| !text.is_empty());
             let code = str_field(value, "code").filter(|text| !text.is_empty());
