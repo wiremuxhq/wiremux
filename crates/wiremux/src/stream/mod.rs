@@ -1248,6 +1248,62 @@ base_url = "http://127.0.0.1"
         }
     }
 
+    #[test]
+    fn responses_hosted_tool_progress_is_protocol() {
+        let profile = wiremux_auth::parse_profile_str(
+            r#"
+schema_version = 1
+id = "t"
+wire = "responses"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("profile");
+        let names = [
+            "response.web_search_call.in_progress",
+            "response.web_search_call.searching",
+            "response.web_search_call.completed",
+            "response.file_search_call.in_progress",
+            "response.file_search_call.searching",
+            "response.file_search_call.completed",
+            "response.code_interpreter_call.in_progress",
+            "response.code_interpreter_call.interpreting",
+            "response.code_interpreter_call.completed",
+            "response.code_interpreter_call_code.delta",
+            "response.code_interpreter_call_code.done",
+            "response.image_generation_call.in_progress",
+            "response.image_generation_call.generating",
+            "response.image_generation_call.partial_image",
+            "response.image_generation_call.completed",
+            "response.mcp_call.in_progress",
+            "response.mcp_call.completed",
+            "response.mcp_call.failed",
+            "response.mcp_call_arguments.delta",
+            "response.mcp_call_arguments.done",
+            "response.mcp_list_tools.in_progress",
+            "response.mcp_list_tools.completed",
+            "response.mcp_list_tools.failed",
+        ];
+        for event in names {
+            let events = decode_stream_events(
+                Wire::Responses,
+                &frame(
+                    Some(event),
+                    &format!(r#"{{"type":"{event}","item_id":"id_1"}}"#),
+                ),
+                &profile,
+            )
+            .unwrap_or_else(|err| panic!("{event} must not abort the stream, got {err}"));
+            assert!(
+                events.iter().any(|ev| matches!(
+                    ev,
+                    IrStreamEvent::Protocol { item_type, .. } if item_type == event
+                )),
+                "{event} must stay protocol, got {events:?}"
+            );
+        }
+    }
+
     #[cfg(any(feature = "client", feature = "proxy"))]
     #[test]
     fn sse_wrapped_error_message_ignores_error_when_choices_present() {
