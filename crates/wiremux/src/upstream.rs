@@ -27,6 +27,9 @@ pub fn upstream_url_for_model(
     } else {
         path.to_string()
     };
+    if path.contains("{model}") {
+        return Err("request has no model and the profile path still contains {model}".to_string());
+    }
     if stream
         && matches!(profile.dialect.wire, Some(Wire::Gemini))
         && path.ends_with(":generateContent")
