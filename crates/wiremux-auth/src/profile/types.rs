@@ -221,6 +221,8 @@ impl Wire {
                 "response.mcp_list_tools.in_progress",
                 "response.mcp_list_tools.completed",
                 "response.mcp_list_tools.failed",
+                "response.queued",
+                "response.compaction.compacting",
             ],
             Self::Gemini => &["chunk"],
             Self::Converse => &[

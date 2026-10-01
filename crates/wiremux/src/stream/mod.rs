@@ -1304,6 +1304,43 @@ base_url = "http://127.0.0.1"
         }
     }
 
+    #[test]
+    fn responses_queued_and_compaction_do_not_abort() {
+        let profile = wiremux_auth::parse_profile_str(
+            r#"
+schema_version = 1
+id = "t"
+wire = "responses"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("profile");
+        for event in ["response.queued", "response.compaction.compacting"] {
+            let events = decode_stream_events(
+                Wire::Responses,
+                &frame(
+                    Some(event),
+                    &format!(r#"{{"type":"{event}","response":{{"id":"resp_1"}}}}"#),
+                ),
+                &profile,
+            )
+            .unwrap_or_else(|err| panic!("{event} must not abort the stream, got {err}"));
+            assert!(
+                events.iter().any(|ev| matches!(
+                    ev,
+                    IrStreamEvent::Protocol { item_type, .. } if item_type == event
+                )),
+                "{event} must stay protocol, got {events:?}"
+            );
+            assert!(
+                events
+                    .iter()
+                    .all(|ev| !matches!(ev, IrStreamEvent::TextDelta { .. })),
+                "{event} must not become text, got {events:?}"
+            );
+        }
+    }
+
     #[cfg(any(feature = "client", feature = "proxy"))]
     #[test]
     fn sse_wrapped_error_message_ignores_error_when_choices_present() {
