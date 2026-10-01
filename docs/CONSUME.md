@@ -230,10 +230,14 @@ and `response.custom_tool_call_input.done`.
 `response.reasoning_text.delta` is reasoning text, same as
 `response.reasoning.delta`. Built-in tool progress
 (`web_search_call`, `file_search_call`, `code_interpreter_call`,
-`image_generation_call`, and `mcp_call`) stays a protocol event
-instead of failing the stream. `response.queued` and
-`response.compaction.compacting` stay protocol events for the same
-reason. Gemini
+`image_generation_call`, and `mcp_call` status frames) stays a
+protocol event instead of failing the stream. On `hard-error`, a
+Responses event that is not on the allowlist and carries no new text,
+arguments, code, command, or image bytes is skipped.
+`response.queued` and `response.compaction.compacting` are that kind
+of frame. The same unknown event still fails when it carries `delta`,
+`arguments`, `code`, `command`, `text`, or `partial_image_b64`.
+Passthrough still forwards that frame as an unknown event. Gemini
 is terminal on a non-empty `finishReason`,
 or on a non-empty `promptFeedback.blockReason` when that frame has no
 candidate `finishReason`. Converse is terminal when a frame decodes to
