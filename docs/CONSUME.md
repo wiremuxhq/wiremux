@@ -228,7 +228,10 @@ for `response.reasoning_summary_part.added`,
 `response.reasoning_summary_text.done`, `response.reasoning_text.done`,
 and `response.custom_tool_call_input.done`.
 `response.reasoning_text.delta` is reasoning text, same as
-`response.reasoning.delta`. Gemini
+`response.reasoning.delta`. Built-in tool progress
+(`web_search_call`, `file_search_call`, `code_interpreter_call`,
+`image_generation_call`, and `mcp_call`) stays a protocol event
+instead of failing the stream. Gemini
 is terminal on a non-empty `finishReason`,
 or on a non-empty `promptFeedback.blockReason` when that frame has no
 candidate `finishReason`. Converse is terminal when a frame decodes to
