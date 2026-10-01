@@ -372,8 +372,8 @@ mod tests {
             "must stay NotFound, got {text}"
         );
         assert!(
-            text.contains("did you mean") && text.contains("anthropic"),
-            "near-miss must suggest a shipped id, got {text}"
+            text.contains("did you mean `anthropic-oauth`"),
+            "near-miss must suggest anthropic-oauth, got {text}"
         );
     }
 
