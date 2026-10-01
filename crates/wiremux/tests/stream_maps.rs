@@ -5876,6 +5876,22 @@ fn responses_failed_keeps_last_error_message() {
             .any(|ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")),
         "empty failure must not be stop, got {events:?}"
     );
+
+    let code_only = RawSse {
+        event: Some("response.failed".into()),
+        data: json!({
+            "type": "response.failed",
+            "response": { "status": "failed", "last_error": { "code": "server_error", "message": "" } }
+        })
+        .to_string(),
+    };
+    let err = decode_stream_events(Wire::Responses, &code_only, &responses_profile())
+        .expect_err("code without a message is still a failure");
+    let text = err.to_string();
+    assert!(
+        text.contains("server_error"),
+        "last_error.code must survive an empty message, got {text}"
+    );
 }
 
 #[test]

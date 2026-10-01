@@ -8,6 +8,18 @@ use crate::map::MapError;
 use super::usage;
 use super::{MAX_TOOL_CALL_INDEX, RawSse, check_index, protocol, str_field};
 
+fn last_error_code(last: &Value) -> Option<String> {
+    let code = last.get("code")?;
+    if let Some(text) = code.as_str() {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        return Some(text.to_string());
+    }
+    code.as_i64().map(|n| n.to_string())
+}
+
 pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     check_responses_indexes(value)?;
     match name {
@@ -157,12 +169,20 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             }
         }
         "response.failed" => {
-            if let Some(message) = value
-                .pointer("/response/last_error/message")
+            let last = value.pointer("/response/last_error");
+            let message = last
+                .and_then(|err| err.get("message"))
                 .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-            {
-                return Err(MapError::Invalid(message.to_string()));
+                .filter(|text| !text.is_empty());
+            let code = last.and_then(last_error_code);
+            if message.is_some() || code.is_some() {
+                let detail = match (code, message) {
+                    (Some(code), Some(message)) => format!("{code}: {message}"),
+                    (None, Some(message)) => message.to_string(),
+                    (Some(code), None) => code,
+                    (None, None) => "vendor error".to_string(),
+                };
+                return Err(MapError::Invalid(detail));
             }
             Ok(Some(IrStreamEvent::FinishReason {
                 reason: "failed".into(),

@@ -219,6 +219,15 @@ is terminal on `message_stop` or a `message_delta` with `stop_reason`.
 Responses is terminal on `response.completed`, `response.incomplete`,
 or `response.failed`. A Responses `error` event fails the stream with
 the vendor message. Text already received in that read is kept.
+`server_error`, `internal_error`, `connection_failed`,
+`request_timeout`, `server_is_overloaded`, and `server_overloaded`
+are `ClientError::Transient` with `TransientKind::Http`.
+`slow_down` and `rate_limit_exceeded` are `ClientError::RateLimit`.
+`insufficient_quota` stays `ClientError::Vendor`. An auth message
+stays `ClientError::Auth`, and a `model_not_found` message stays
+`ClientError::NotFound`. `response.failed` uses `last_error.code`
+and `last_error.message` the same way. A code or a message does not
+finish as `failed`. A failed frame with neither does.
 `response.output_text.done`, `response.content_part.done`,
 `response.function_call_arguments.done`, `response.refusal.done`,
 `response.audio.done`, and `response.audio.transcript.done` are
