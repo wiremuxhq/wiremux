@@ -649,6 +649,8 @@ class WorkflowTriggerTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("HOMEBREW_TAP_TOKEN unset", push)
+        self.assertIn("gh auth setup-git", push)
+        self.assertNotIn("http.extraheader", push)
         upload = (ROOT / "scripts" / "upload-release-binaries.sh").read_text(
             encoding="utf-8"
         )
