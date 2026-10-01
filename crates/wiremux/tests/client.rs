@@ -725,15 +725,164 @@ async fn stream_responses_error_event_keeps_vendor_message() {
     let _ = handle.join();
     assert!(saw_text, "text before the error event must be delivered");
     match first_err {
-        Some(ClientError::Vendor { message, .. } | ClientError::Transient { message, .. }) => {
+        Some(ClientError::Transient {
+            kind: TransientKind::Http,
+            message,
+            ..
+        }) => {
             assert!(message.contains("The server had an error"), "{message}");
             assert!(!message.contains("unknown stream event"), "{message}");
         }
         Some(ClientError::Map(err)) => {
             panic!("Responses error event must not be Map: {err}")
         }
-        Some(other) => panic!("expected Vendor or Transient, got {other:?}"),
-        None => panic!("expected Vendor or Transient, got empty success"),
+        Some(other) => panic!("expected Transient Http, got {other:?}"),
+        None => panic!("expected Transient Http, got empty success"),
+    }
+}
+
+async fn drive_responses_sse(sse: &str) -> (bool, Option<ClientError>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let body = sse.to_string();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let _ = read_http_request(&mut stream);
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+    let client = responses_client_for(&format!("http://{addr}"), "sk-test");
+    let mut stream = std::pin::pin!(client.stream(simple_ir("gpt-4o")));
+    let mut saw_text = false;
+    let mut first_err = None;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(IrStreamEvent::TextDelta { text }) if text == "Hi" => saw_text = true,
+            Ok(_) => {}
+            Err(err) => {
+                first_err = Some(err);
+                break;
+            }
+        }
+    }
+    let _ = handle.join();
+    (saw_text, first_err)
+}
+
+#[tokio::test]
+async fn stream_responses_retryable_codes_use_client_variants() {
+    let (saw_text, err) = drive_responses_sse(concat!(
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"last_error\":{\"code\":\"server_error\",\"message\":\"The server had an error\"}}}\n\n",
+    ))
+    .await;
+    assert!(saw_text, "text before response.failed must be delivered");
+    match err {
+        Some(ClientError::Transient {
+            kind: TransientKind::Http,
+            message,
+            ..
+        }) => assert!(message.contains("The server had an error"), "{message}"),
+        other => panic!("response.failed server_error must be Transient, got {other:?}"),
+    }
+
+    for code in [
+        "internal_error",
+        "connection_failed",
+        "request_timeout",
+        "server_is_overloaded",
+        "server_overloaded",
+    ] {
+        let sse = format!(
+            "event: error\ndata: {{\"type\":\"error\",\"code\":\"{code}\",\"message\":\"boom\"}}\n\n"
+        );
+        match drive_responses_sse(&sse).await.1 {
+            Some(ClientError::Transient {
+                kind: TransientKind::Http,
+                message,
+                ..
+            }) => assert!(message.contains("boom"), "{code}: {message}"),
+            other => panic!("{code} must be Transient Http, got {other:?}"),
+        }
+    }
+
+    let slow = drive_responses_sse(
+        "event: error\ndata: {\"type\":\"error\",\"code\":\"slow_down\",\"message\":\"Slow down.\"}\n\n",
+    )
+    .await
+    .1;
+    match slow {
+        Some(ClientError::RateLimit { message, .. }) => {
+            assert!(message.contains("Slow down."), "{message}");
+        }
+        other => panic!("slow_down must be RateLimit, got {other:?}"),
+    }
+
+    let limited = drive_responses_sse(
+        "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"last_error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"please wait\"}}}\n\n",
+    )
+    .await
+    .1;
+    match limited {
+        Some(ClientError::RateLimit { message, .. }) => {
+            assert!(message.contains("please wait"), "{message}");
+            assert!(
+                !message.to_ascii_lowercase().contains("rate limit"),
+                "{message}"
+            );
+        }
+        other => panic!("rate_limit_exceeded must be RateLimit, got {other:?}"),
+    }
+
+    let quota = drive_responses_sse(
+        "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"last_error\":{\"code\":\"insufficient_quota\",\"message\":\"no quota\"}}}\n\n",
+    )
+    .await
+    .1;
+    match quota {
+        Some(ClientError::Vendor { message, .. }) => {
+            assert!(message.contains("no quota"), "{message}")
+        }
+        other => panic!("insufficient_quota must be Vendor, got {other:?}"),
+    }
+
+    let auth = drive_responses_sse(
+        "event: error\ndata: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"incorrect api key\"}\n\n",
+    )
+    .await
+    .1;
+    assert!(
+        matches!(auth, Some(ClientError::Auth { .. })),
+        "auth message stays Auth, got {auth:?}"
+    );
+
+    let missing = drive_responses_sse(
+        "event: error\ndata: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"model_not_found\"}\n\n",
+    )
+    .await
+    .1;
+    assert!(
+        matches!(missing, Some(ClientError::NotFound { .. })),
+        "model_not_found stays NotFound, got {missing:?}"
+    );
+
+    let numeric = drive_responses_sse(
+        "event: error\ndata: {\"type\":\"error\",\"code\":500,\"message\":\"nope\"}\n\n",
+    )
+    .await
+    .1;
+    match numeric {
+        Some(ClientError::Transient {
+            kind: TransientKind::Http,
+            message,
+            ..
+        }) => assert!(message.contains("nope"), "{message}"),
+        other => panic!("numeric 500 must stay Transient Http, got {other:?}"),
     }
 }
 

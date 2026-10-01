@@ -627,6 +627,11 @@ impl LiveStream {
             if let Some(err) = classify_sse_wrapped_error(&raw.data, self.http_status) {
                 return Err(err);
             }
+            if raw.event.as_deref() == Some("response.failed")
+                && let Some(err) = classify_responses_failed(&raw.data, self.http_status)
+            {
+                return Err(err);
+            }
             let events = self.decoder.decode(self.wire, &raw, &self.profile)?;
             for ev in events {
                 self.pending.extend(self.assembler.push(ev));
@@ -914,7 +919,7 @@ fn classify_aws_exception_type(
     if ty.contains("internal") || ty.contains("serviceunavailable") || ty.contains("timeout") {
         return transient(Some(status), full.to_string(), TransientKind::Http);
     }
-    classify_error_payload(Some(status), None, message, full, None)
+    classify_error_payload(Some(status), None, None, message, full, None)
 }
 
 fn classify_empty_stream(status: u16, body: &str) -> ClientError {
@@ -936,6 +941,7 @@ fn classify_sse_wrapped_error(data: &str, status: u16) -> Option<ClientError> {
     let nested = value.get("error").filter(|v| v.is_object());
     let source = nested.unwrap_or(&value);
     let code = json_error_code(source);
+    let code_name = json_error_code_name(source);
     let message = error_message(data);
     let retry_after = nested
         .and_then(json_retry_after)
@@ -943,9 +949,44 @@ fn classify_sse_wrapped_error(data: &str, status: u16) -> Option<ClientError> {
     Some(classify_error_payload(
         Some(status),
         code,
+        code_name.as_deref(),
         &message,
         data,
         retry_after,
+    ))
+}
+
+/// `response.failed` is not an `{error:{...}}` envelope. A `last_error`
+/// code or message still uses the same classifier. Neither field means
+/// the frame can finish as `failed`.
+fn classify_responses_failed(data: &str, status: u16) -> Option<ClientError> {
+    let value: Value = serde_json::from_str(data).ok()?;
+    let last = value.pointer("/response/last_error")?;
+    let code = json_error_code(last);
+    let code_name = json_error_code_name(last);
+    let message = last
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if code.is_none() && code_name.is_none() && message.is_empty() {
+        return None;
+    }
+    let shown = if message.is_empty() {
+        code_name
+            .clone()
+            .or_else(|| code.map(|n| n.to_string()))
+            .unwrap_or_default()
+    } else {
+        message.to_string()
+    };
+    Some(classify_error_payload(
+        Some(status),
+        code,
+        code_name.as_deref(),
+        &shown,
+        data,
+        None,
     ))
 }
 
@@ -963,6 +1004,7 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
             return Some(classify_error_payload(
                 Some(status),
                 code,
+                error_obj.and_then(json_error_code_name).as_deref(),
                 &message,
                 body,
                 retry_after,
@@ -1023,6 +1065,7 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
 fn classify_error_payload(
     status: Option<u16>,
     code: Option<i64>,
+    code_name: Option<&str>,
     message: &str,
     body: &str,
     retry_after: Option<u64>,
@@ -1039,7 +1082,11 @@ fn classify_error_payload(
             message: message.to_string(),
         };
     }
-    if code == Some(429) || looks_like_rate_limit(message) || looks_like_rate_limit(body) {
+    if code == Some(429)
+        || code_name.is_some_and(is_rate_limit_code)
+        || looks_like_rate_limit(message)
+        || looks_like_rate_limit(body)
+    {
         return ClientError::RateLimit {
             status,
             retry_after,
@@ -1047,6 +1094,7 @@ fn classify_error_payload(
         };
     }
     if code.is_some_and(is_transient_code)
+        || code_name.is_some_and(is_retryable_server_code)
         || looks_like_overload(body)
         || looks_like_overload(message)
     {
@@ -1058,11 +1106,37 @@ fn classify_error_payload(
     }
 }
 
+fn is_rate_limit_code(name: &str) -> bool {
+    matches!(name, "slow_down" | "rate_limit_exceeded")
+}
+
+fn is_retryable_server_code(name: &str) -> bool {
+    matches!(
+        name,
+        "server_error"
+            | "internal_error"
+            | "connection_failed"
+            | "request_timeout"
+            | "server_is_overloaded"
+            | "server_overloaded"
+    )
+}
+
 fn json_error_code(error: &Value) -> Option<i64> {
     let code = error.get("code")?;
     code.as_i64()
         .or_else(|| code.as_u64().and_then(|n| i64::try_from(n).ok()))
         .or_else(|| code.as_str()?.parse().ok())
+}
+
+/// Non-numeric `code` strings (`server_error`). Numeric strings stay
+/// on [`json_error_code`].
+fn json_error_code_name(error: &Value) -> Option<String> {
+    let name = error.get("code")?.as_str()?.trim();
+    if name.is_empty() || name.parse::<i64>().is_ok() {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 fn is_transient_code(code: i64) -> bool {
