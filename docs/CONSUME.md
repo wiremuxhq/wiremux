@@ -222,7 +222,13 @@ the vendor message. Text already received in that read is kept.
 `response.output_text.done`, `response.content_part.done`,
 `response.function_call_arguments.done`, `response.refusal.done`,
 `response.audio.done`, and `response.audio.transcript.done` are
-recognized and do not repeat the matching delta. Gemini
+recognized and do not repeat the matching delta. The same is true
+for `response.reasoning_summary_part.added`,
+`response.reasoning_summary_part.done`,
+`response.reasoning_summary_text.done`, `response.reasoning_text.done`,
+and `response.custom_tool_call_input.done`.
+`response.reasoning_text.delta` is reasoning text, same as
+`response.reasoning.delta`. Gemini
 is terminal on a non-empty `finishReason`,
 or on a non-empty `promptFeedback.blockReason` when that frame has no
 candidate `finishReason`. Converse is terminal when a frame decodes to

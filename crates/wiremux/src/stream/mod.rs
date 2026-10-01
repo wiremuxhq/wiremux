@@ -1193,6 +1193,61 @@ base_url = "http://127.0.0.1"
         }
     }
 
+    #[test]
+    fn responses_reasoning_and_custom_tool_events_keep_deltas() {
+        let profile = wiremux_auth::parse_profile_str(
+            r#"
+schema_version = 1
+id = "t"
+wire = "responses"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("profile");
+        let think = decode_stream_events(
+            Wire::Responses,
+            &frame(
+                Some("response.reasoning_text.delta"),
+                r#"{"type":"response.reasoning_text.delta","delta":"think"}"#,
+            ),
+            &profile,
+        )
+        .expect("reasoning text delta is a normal event");
+        assert!(
+            think.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::ReasoningDelta { text } if text == "think"
+            )),
+            "{think:?}"
+        );
+        let quiet = [
+            "response.reasoning_summary_part.added",
+            "response.reasoning_summary_part.done",
+            "response.reasoning_summary_text.done",
+            "response.reasoning_text.done",
+            "response.custom_tool_call_input.done",
+        ];
+        for event in quiet {
+            let events = decode_stream_events(
+                Wire::Responses,
+                &frame(
+                    Some(event),
+                    &format!(r#"{{"type":"{event}","text":"full","input":"full"}}"#),
+                ),
+                &profile,
+            )
+            .unwrap_or_else(|err| panic!("{event} follows a delta we already accept, got {err}"));
+            assert!(
+                events.iter().all(|ev| !matches!(
+                    ev,
+                    IrStreamEvent::ReasoningDelta { .. }
+                        | IrStreamEvent::CustomToolCallInputDelta { .. }
+                )),
+                "{event} must not repeat the delta, got {events:?}"
+            );
+        }
+    }
+
     #[cfg(any(feature = "client", feature = "proxy"))]
     #[test]
     fn sse_wrapped_error_message_ignores_error_when_choices_present() {
