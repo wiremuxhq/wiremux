@@ -69,6 +69,22 @@ chat_path = "/v1/messages"
         .expect("client")
 }
 
+fn responses_client_for(base: &str, token: &str) -> WireClient {
+    let profile = parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "mock-responses"
+wire = "responses"
+auth_scheme = "bearer"
+base_url = "{base}"
+chat_path = "/v1/responses"
+"#
+    ))
+    .expect("responses profile");
+    WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new(token)))
+        .expect("client")
+}
+
 fn converse_client_for(base: &str) -> WireClient {
     let profile = parse_profile_str(&format!(
         r#"
@@ -666,6 +682,58 @@ async fn stream_error_after_ping_is_classified() {
         Some(ClientError::Map(err)) => panic!("mid-stream Anthropic error must not be Map: {err}"),
         Some(other) => panic!("expected Transient or Vendor, got {other:?}"),
         None => panic!("expected Transient or Vendor, got empty success"),
+    }
+}
+
+#[tokio::test]
+async fn stream_responses_error_event_keeps_vendor_message() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let req = read_http_request(&mut stream);
+        let sse = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n",
+            "event: error\n",
+            "data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"The server had an error\",\"param\":null}\n\n",
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+            sse.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        req
+    });
+    let client = responses_client_for(&format!("http://{addr}"), "sk-test");
+    let mut stream = std::pin::pin!(client.stream(simple_ir("gpt-4o")));
+    let mut saw_text = false;
+    let mut first_err = None;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(IrStreamEvent::TextDelta { text }) => {
+                assert_eq!(text, "Hi");
+                saw_text = true;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                first_err = Some(err);
+                break;
+            }
+        }
+    }
+    let _ = handle.join();
+    assert!(saw_text, "text before the error event must be delivered");
+    match first_err {
+        Some(ClientError::Vendor { message, .. } | ClientError::Transient { message, .. }) => {
+            assert!(message.contains("The server had an error"), "{message}");
+            assert!(!message.contains("unknown stream event"), "{message}");
+        }
+        Some(ClientError::Map(err)) => {
+            panic!("Responses error event must not be Map: {err}")
+        }
+        Some(other) => panic!("expected Vendor or Transient, got {other:?}"),
+        None => panic!("expected Vendor or Transient, got empty success"),
     }
 }
 

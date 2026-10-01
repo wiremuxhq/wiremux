@@ -217,7 +217,13 @@ after content is a failure unless one frame was terminal. Chat is
 terminal on `data: [DONE]` or a non-empty `finish_reason`. Messages
 is terminal on `message_stop` or a `message_delta` with `stop_reason`.
 Responses is terminal on `response.completed`, `response.incomplete`,
-or `response.failed`. Gemini is terminal on a non-empty `finishReason`,
+or `response.failed`. A Responses `error` event fails the stream with
+the vendor message. Text already received in that read is kept.
+`response.output_text.done`, `response.content_part.done`,
+`response.function_call_arguments.done`, `response.refusal.done`,
+`response.audio.done`, and `response.audio.transcript.done` are
+recognized and do not repeat the matching delta. Gemini
+is terminal on a non-empty `finishReason`,
 or on a non-empty `promptFeedback.blockReason` when that frame has no
 candidate `finishReason`. Converse is terminal when a frame decodes to
 `FinishReason`. An empty frame list is not terminal. `RawSse::parse_all`
