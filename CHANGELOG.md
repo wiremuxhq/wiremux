@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.10.0](https://github.com/wiremuxhq/wiremux/compare/v0.9.3...v0.10.0) (2026-10-01)
+
+
+### Features
+
+* expose stream completion and Gemini vendor finish tokens ([d170f1c](https://github.com/wiremuxhq/wiremux/commit/d170f1caa04053d2d01ddf3e1171cb489a91e761)), closes [#385](https://github.com/wiremuxhq/wiremux/issues/385) [#386](https://github.com/wiremuxhq/wiremux/issues/386)
+* expose stream completion and Gemini vendor finish tokens ([#388](https://github.com/wiremuxhq/wiremux/issues/388)) ([d170f1c](https://github.com/wiremuxhq/wiremux/commit/d170f1caa04053d2d01ddf3e1171cb489a91e761))
+* overwrite the proxy model and forward Messages betas ([#360](https://github.com/wiremuxhq/wiremux/issues/360)) ([765bdfd](https://github.com/wiremuxhq/wiremux/commit/765bdfdb93ac597f5de0da3e85b98fe0eb775785)), closes [#349](https://github.com/wiremuxhq/wiremux/issues/349) [#350](https://github.com/wiremuxhq/wiremux/issues/350) [#351](https://github.com/wiremuxhq/wiremux/issues/351) [#352](https://github.com/wiremuxhq/wiremux/issues/352)
+* print a mapped request with wiremux map ([#359](https://github.com/wiremuxhq/wiremux/issues/359)) ([86f6f07](https://github.com/wiremuxhq/wiremux/commit/86f6f0799385a0f3b248bfa5d753cd58f693d482)), closes [#348](https://github.com/wiremuxhq/wiremux/issues/348)
+
+
+### Bug Fixes
+
+* do not retry AWS STS through a bearer token ([8d9b939](https://github.com/wiremuxhq/wiremux/commit/8d9b939bd28358893f72c32c4519d9d15c5a2786))
+* do not retry AWS STS through a bearer token ([#382](https://github.com/wiremuxhq/wiremux/issues/382)) ([8d9b939](https://github.com/wiremuxhq/wiremux/commit/8d9b939bd28358893f72c32c4519d9d15c5a2786))
+* keep Messages cache_miss_reason ([#370](https://github.com/wiremuxhq/wiremux/issues/370)) ([f56e632](https://github.com/wiremuxhq/wiremux/commit/f56e6323f60b038e48194635b557dd64082482e5))
+* keep Messages response container ([#371](https://github.com/wiremuxhq/wiremux/issues/371)) ([a171984](https://github.com/wiremuxhq/wiremux/commit/a171984dad7886bec64964d889901d918cdb1e4f))
+* keep Messages response context_management ([#372](https://github.com/wiremuxhq/wiremux/issues/372)) ([f837a9e](https://github.com/wiremuxhq/wiremux/commit/f837a9e2e594d9fec7e035bb23fe50bc91edd71c))
+* keep Messages stop_sequence ([#373](https://github.com/wiremuxhq/wiremux/issues/373)) ([d242765](https://github.com/wiremuxhq/wiremux/commit/d24276511d8c4e628597be4e7a9251bc5b00fcfb))
+* keep Messages usage inference_geo ([#369](https://github.com/wiremuxhq/wiremux/issues/369)) ([81adb3e](https://github.com/wiremuxhq/wiremux/commit/81adb3e1716c27afa41690dd79d8478e2e9fb671))
+* keep tool-result images and label real loss ([#358](https://github.com/wiremuxhq/wiremux/issues/358)) ([4654391](https://github.com/wiremuxhq/wiremux/commit/46543911cdddac351bf1c3e208a45ae09742866a))
+* redact AWS credential fetch URLs in errors ([f84c30f](https://github.com/wiremuxhq/wiremux/commit/f84c30fa9da3ad0f95dc90e521ccb856a8072240))
+* redact AWS credential fetch URLs in errors ([#384](https://github.com/wiremuxhq/wiremux/issues/384)) ([f84c30f](https://github.com/wiremuxhq/wiremux/commit/f84c30fa9da3ad0f95dc90e521ccb856a8072240))
+* reject incomplete streams and stamp dest frame identity ([#357](https://github.com/wiremuxhq/wiremux/issues/357)) ([e284171](https://github.com/wiremuxhq/wiremux/commit/e2841710aa802e5ebe010c12a801f3e92e8e39e2))
+* return SSE size-cap errors from parse_all ([#394](https://github.com/wiremuxhq/wiremux/issues/394)) ([c4d3e4f](https://github.com/wiremuxhq/wiremux/commit/c4d3e4f9e522d3803343b90171cb2065ae34fd4d))
+* round-trip Converse extra request fields ([#366](https://github.com/wiremuxhq/wiremux/issues/366)) ([5e8aeb2](https://github.com/wiremuxhq/wiremux/commit/5e8aeb2b908f720080089bc4bef3eb12c1a2a351))
+* round-trip Converse performance latency ([#364](https://github.com/wiremuxhq/wiremux/issues/364)) ([6b40708](https://github.com/wiremuxhq/wiremux/commit/6b4070843886d70dd7239560271eb03ea3a12c16))
+* round-trip Converse prompt variables and guardrail ([#367](https://github.com/wiremuxhq/wiremux/issues/367)) ([6159ef7](https://github.com/wiremuxhq/wiremux/commit/6159ef76c17680ce8fff5ad6823bcc4fb04ab24e))
+* round-trip Messages container, context, and MCP servers ([#368](https://github.com/wiremuxhq/wiremux/issues/368)) ([b049b17](https://github.com/wiremuxhq/wiremux/commit/b049b178c4dda2165aa5b194fedfde75d262803a))
+* round-trip Messages inference_geo ([#363](https://github.com/wiremuxhq/wiremux/issues/363)) ([2b00d6b](https://github.com/wiremuxhq/wiremux/commit/2b00d6bb5dada6e4b6869bb13c537deced97db2a))
+* round-trip Messages previous_message_id ([#365](https://github.com/wiremuxhq/wiremux/issues/365)) ([a17249b](https://github.com/wiremuxhq/wiremux/commit/a17249b3d6da73892aa48641aa60b98545b4d9ab))
+* say when auth status needs no token ([459f100](https://github.com/wiremuxhq/wiremux/commit/459f100ff3512f0ecdaa6f42ac592d5cba076a13))
+* say when auth status needs no token ([#379](https://github.com/wiremuxhq/wiremux/issues/379)) ([459f100](https://github.com/wiremuxhq/wiremux/commit/459f100ff3512f0ecdaa6f42ac592d5cba076a13))
+* send profile auth headers verbatim and keep a failed save sticky ([#355](https://github.com/wiremuxhq/wiremux/issues/355)) ([4f0d5df](https://github.com/wiremuxhq/wiremux/commit/4f0d5df115321aca1ea788fbf13749d53e2acaac)), closes [#346](https://github.com/wiremuxhq/wiremux/issues/346) [#347](https://github.com/wiremuxhq/wiremux/issues/347)
+* treat the profile auth header as the credential ([0aa6438](https://github.com/wiremuxhq/wiremux/commit/0aa6438943ee40d778c0bc9aaf386d1b4ab1af20))
+* treat the profile auth header as the credential ([#383](https://github.com/wiremuxhq/wiremux/issues/383)) ([0aa6438](https://github.com/wiremuxhq/wiremux/commit/0aa6438943ee40d778c0bc9aaf386d1b4ab1af20))
+
 ## [0.9.3](https://github.com/wiremuxhq/wiremux/compare/v0.9.2...v0.9.3) (2026-09-28)
 
 
