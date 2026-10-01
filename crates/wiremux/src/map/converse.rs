@@ -934,6 +934,10 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.previous_response_id.is_some() {
         report.record("sampling.previous_response_id", LossAction::Drop, "no slot");
     }
+    if s.stream.is_some() {
+        // Streaming is the /converse-stream URL, not a JSON field.
+        report.record("sampling.stream", LossAction::Drop, "no slot");
+    }
     if s.cache.enabled {
         report.record("sampling.cache", LossAction::Drop, "no slot");
     }
