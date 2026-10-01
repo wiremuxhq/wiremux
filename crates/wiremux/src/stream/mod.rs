@@ -1141,6 +1141,58 @@ base_url = "http://127.0.0.1"
         );
     }
 
+    #[test]
+    fn responses_done_events_do_not_fail_or_repeat_deltas() {
+        let profile = wiremux_auth::parse_profile_str(
+            r#"
+schema_version = 1
+id = "t"
+wire = "responses"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("profile");
+        let cases = [
+            (
+                "response.output_text.done",
+                r#"{"type":"response.output_text.done","text":"Hi"}"#,
+            ),
+            (
+                "response.content_part.done",
+                r#"{"type":"response.content_part.done"}"#,
+            ),
+            (
+                "response.function_call_arguments.done",
+                r#"{"type":"response.function_call_arguments.done","arguments":"{}"}"#,
+            ),
+            (
+                "response.refusal.done",
+                r#"{"type":"response.refusal.done","refusal":"no"}"#,
+            ),
+            ("response.audio.done", r#"{"type":"response.audio.done"}"#),
+            (
+                "response.audio.transcript.done",
+                r#"{"type":"response.audio.transcript.done","transcript":"Hi"}"#,
+            ),
+        ];
+        for (event, data) in cases {
+            let raw = frame(Some(event), data);
+            let events = decode_stream_events(Wire::Responses, &raw, &profile)
+                .unwrap_or_else(|err| panic!("{event} is part of a normal stream, got {err}"));
+            assert!(
+                events.iter().all(|ev| !matches!(
+                    ev,
+                    IrStreamEvent::TextDelta { .. }
+                        | IrStreamEvent::RefusalDelta { .. }
+                        | IrStreamEvent::ToolCallArgDelta { .. }
+                        | IrStreamEvent::AudioDelta { .. }
+                        | IrStreamEvent::AudioTranscriptDelta { .. }
+                )),
+                "{event} must not repeat the delta, got {events:?}"
+            );
+        }
+    }
+
     #[cfg(any(feature = "client", feature = "proxy"))]
     #[test]
     fn sse_wrapped_error_message_ignores_error_when_choices_present() {

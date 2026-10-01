@@ -171,6 +171,13 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             reason: decode_incomplete_reason(value, "incomplete"),
             vendor: None,
         })),
+        // The done event repeats text the matching delta already delivered.
+        "response.output_text.done"
+        | "response.content_part.done"
+        | "response.function_call_arguments.done"
+        | "response.refusal.done"
+        | "response.audio.done"
+        | "response.audio.transcript.done" => Ok(None),
         "error" => {
             let message = str_field(value, "message").filter(|text| !text.is_empty());
             let code = str_field(value, "code").filter(|text| !text.is_empty());
