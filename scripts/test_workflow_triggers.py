@@ -39,7 +39,7 @@ class WorkflowTriggerTests(unittest.TestCase):
 
     def test_ci_covers_client_and_maps_only_response_maps(self) -> None:
         text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
-        self.assertIn("--features client", text)
+        self.assertIn("--features client --lib", text)
         self.assertIn("--test response_maps", text)
         self.assertIn("--test client", text)
 
