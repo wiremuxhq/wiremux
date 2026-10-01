@@ -216,6 +216,9 @@ Maps-only hosts that read SSE themselves call `stream_has_terminal`
 after content is a failure unless one frame was terminal. Chat is
 terminal on `data: [DONE]` or a non-empty `finish_reason`. Messages
 is terminal on `message_stop` or a `message_delta` with `stop_reason`.
+A Messages citation with a URL becomes an annotation. A document
+citation such as `char_location` has no URL and stays a protocol
+event, so the cited text is not dropped.
 Responses is terminal on `response.completed`, `response.incomplete`,
 or `response.failed`. A Responses `error` event fails the stream with
 the vendor message. Text already received in that read is kept.

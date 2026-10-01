@@ -73,6 +73,10 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                     let citation = delta.get("citation").unwrap_or(delta);
                     match annotation_from_messages_citation(citation) {
                         Some(annotation) => Ok(Some(IrStreamEvent::AnnotationAdded { annotation })),
+                        // A document citation has no URL. Dropping it loses cited_text.
+                        None if citation.get("type").and_then(Value::as_str).is_some() => {
+                            Ok(Some(protocol(name, value)))
+                        }
                         None => Ok(None),
                     }
                 }

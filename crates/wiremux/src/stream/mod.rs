@@ -1541,4 +1541,38 @@ base_url = "http://127.0.0.1"
             .expect_err("index over cap");
         assert!(err.to_string().contains("exceeds cap"), "{err}");
     }
+
+    #[test]
+    fn messages_document_citation_is_not_dropped() {
+        let profile = wiremux_auth::parse_profile_str(
+            r#"
+schema_version = 1
+id = "t"
+wire = "messages"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("profile");
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"The grass is green.","document_index":0,"document_title":"My Document","start_char_index":0,"end_char_index":20}}}"#;
+        let events = decode_stream_events(
+            Wire::Messages,
+            &frame(Some("content_block_delta"), data),
+            &profile,
+        )
+        .expect("char_location");
+        assert!(
+            events.iter().any(|ev| match ev {
+                IrStreamEvent::Protocol { payload, .. } =>
+                    payload.to_string().contains("The grass is green."),
+                IrStreamEvent::AnnotationAdded { annotation } => {
+                    annotation.to_string().contains("The grass is green.")
+                        && !annotation
+                            .to_string()
+                            .contains("web_search_result_location")
+                }
+                _ => false,
+            }),
+            "document citation must be kept, got {events:?}"
+        );
+    }
 }
