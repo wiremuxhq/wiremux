@@ -632,6 +632,41 @@ fn stream_true_survives_chat_messages_responses() {
 }
 
 #[test]
+fn gemini_drops_chat_stream_flag() {
+    let chat_req = br#"{
+        "model": "gemini-2.0-flash",
+        "stream": false,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, chat_req).expect("decode");
+    assert_eq!(ir.sampling.stream, Some(false));
+    let (bytes, loss) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("stream").is_none(),
+        "Gemini has no JSON stream field, got {body}"
+    );
+    assert!(
+        loss.events
+            .iter()
+            .any(|event| { event.path == "sampling.stream" && event.action == LossAction::Drop }),
+        "dropped stream must be on the loss report, got {loss:?}"
+    );
+
+    let (ir, _) = decode(
+        Wire::ChatCompletions,
+        br#"{"model":"gemini-2.0-flash","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+    )
+    .expect("decode stream true");
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode stream true");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("stream").is_none(),
+        "stream true must not become a Gemini JSON field, got {body}"
+    );
+}
+
+#[test]
 fn gemini_request_round_trip_text_and_function() {
     let req = br#"{
         "model": "gemini-2.5-flash",

@@ -1056,8 +1056,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.cache.enabled {
         report.record("sampling.cache", LossAction::Drop, "no slot");
     }
-    if let Some(stream) = s.stream {
-        body["stream"] = json!(stream);
+    if s.stream.is_some() {
+        // Streaming is the :streamGenerateContent URL, not a JSON field.
+        report.record("sampling.stream", LossAction::Drop, "no slot");
     }
     let used_max_as_budget = s.thinking_budget.is_none() && s.max_reasoning_tokens.is_some();
     if s.max_reasoning_tokens.is_some() && !used_max_as_budget {
