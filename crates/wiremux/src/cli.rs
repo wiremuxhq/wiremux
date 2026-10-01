@@ -814,6 +814,40 @@ base_url = "https://generativelanguage.googleapis.com"
     }
 
     #[test]
+    fn missing_model_does_not_call_the_placeholder() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "g"
+wire = "gemini"
+base_url = "https://generativelanguage.googleapis.com"
+"#,
+        )
+        .expect("parse");
+        for model in [None, Some("")] {
+            let err = upstream_url_for_model(&profile, model, false)
+                .expect_err("placeholder must not be a url");
+            assert!(
+                err.contains("{model}"),
+                "missing model must name the placeholder, got {err}"
+            );
+        }
+        let fixed = parse_profile_str(
+            r#"
+schema_version = 1
+id = "c"
+wire = "chat-completions"
+base_url = "https://example.invalid"
+chat_path = "/v1/chat/completions"
+"#,
+        )
+        .expect("parse fixed");
+        let url = upstream_url_for_model(&fixed, None, false).expect("fixed path");
+        assert!(url.ends_with("/v1/chat/completions"), "{url}");
+        assert!(!url.contains("{model}"), "{url}");
+    }
+
+    #[test]
     fn model_segment_encodes_slash_query_and_fragment() {
         let profile = parse_profile_str(
             r#"
