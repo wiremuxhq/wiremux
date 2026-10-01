@@ -721,7 +721,11 @@ impl MappedStream {
         }
     }
 
-    fn push_frames(&mut self, frames: Vec<RawSse>) -> Result<Vec<RawSse>, String> {
+    /// Encoded frames, then an error from a later frame in this batch.
+    ///
+    /// Earlier frames stay in the `Vec` so a vendor `error` event does
+    /// not drop text that arrived in the same read.
+    fn push_frames(&mut self, frames: Vec<RawSse>) -> (Vec<RawSse>, Option<String>) {
         let mut out = Vec::new();
         for raw in frames {
             self.saw_frame = true;
@@ -729,24 +733,23 @@ impl MappedStream {
                 self.saw_terminal = true;
             }
             if let Some(msg) = sse_wrapped_error_message(&raw.data) {
-                return Err(msg);
+                return (out, Some(msg));
             }
-            let events = self
-                .decoder
-                .decode(self.target, &raw, &self.profile)
-                .map_err(|err| format!("decode stream: {err}"))?;
+            let events = match self.decoder.decode(self.target, &raw, &self.profile) {
+                Ok(events) => events,
+                Err(err) => return (out, Some(format!("decode stream: {err}"))),
+            };
             for ev in events.into_iter().flat_map(|ev| self.assembler.push(ev)) {
                 if !event_has_slot(self.from, &ev) {
                     continue;
                 }
-                out.extend(
-                    self.encoder
-                        .push(ev)
-                        .map_err(|err| format!("encode stream: {err}"))?,
-                );
+                match self.encoder.push(ev) {
+                    Ok(frames) => out.extend(frames),
+                    Err(err) => return (out, Some(format!("encode stream: {err}"))),
+                }
             }
         }
-        Ok(out)
+        (out, None)
     }
 
     fn take_assembler_tail(&mut self) -> Result<Vec<RawSse>, String> {
@@ -874,15 +877,17 @@ async fn emit_mapped(
     mapped: &mut MappedStream,
     frames: Vec<RawSse>,
 ) -> bool {
-    match mapped.push_frames(frames) {
-        Ok(out) => send_frames(state, tx, out).await,
-        Err(err) => {
-            let _ = tx
-                .send(Ok(Frame::data(dest_error_bytes(state.from, err))))
-                .await;
-            false
-        }
+    let (out, err) = mapped.push_frames(frames);
+    if !send_frames(state, tx, out).await {
+        return false;
     }
+    if let Some(err) = err {
+        let _ = tx
+            .send(Ok(Frame::data(dest_error_bytes(state.from, err))))
+            .await;
+        return false;
+    }
+    true
 }
 
 async fn send_frames(
@@ -913,19 +918,16 @@ fn map_sse_bytes(
     let mut reader = UpstreamFrames::for_wire(target);
     let mut mapped = MappedStream::new(from, target, profile.clone(), model.to_string());
     let mut out = Vec::new();
-    let push_one = |mapped: &mut MappedStream, frames: Vec<RawSse>, out: &mut Vec<u8>| match mapped
-        .push_frames(frames)
-    {
-        Ok(encoded) => {
-            for frame in encoded {
-                out.extend(dest_frame_bytes(from, &frame));
-            }
-            Ok(())
+    let push_one = |mapped: &mut MappedStream, frames: Vec<RawSse>, out: &mut Vec<u8>| {
+        let (encoded, err) = mapped.push_frames(frames);
+        for frame in encoded {
+            out.extend(dest_frame_bytes(from, &frame));
         }
-        Err(err) => {
+        if let Some(err) = err {
             out.extend(dest_error_bytes(from, err));
-            Err(())
+            return Err(());
         }
+        Ok(())
     };
     match reader.feed(bytes) {
         Ok((frames, terminal)) => {
@@ -1566,5 +1568,29 @@ mod tests {
             "incomplete chat SSE must not become a successful finish, got {text}"
         );
         assert!(!text.contains("[DONE]"), "{text}");
+    }
+
+    #[test]
+    fn responses_error_after_text_reaches_chat() {
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"resp\"\nwire = \"responses\"\n")
+                .expect("profile");
+        let sse = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n",
+            "event: error\n",
+            "data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"The server had an error\",\"param\":null}\n\n",
+        );
+        let bytes = super::map_sse_bytes(
+            wiremux_auth::Wire::ChatCompletions,
+            wiremux_auth::Wire::Responses,
+            &profile,
+            "gpt-4o",
+            sse.as_bytes(),
+        );
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(text.contains("Hi"), "{text}");
+        assert!(text.contains("The server had an error"), "{text}");
+        assert!(!text.contains("unknown stream event"), "{text}");
     }
 }

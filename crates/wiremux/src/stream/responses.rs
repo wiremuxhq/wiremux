@@ -171,6 +171,17 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             reason: decode_incomplete_reason(value, "incomplete"),
             vendor: None,
         })),
+        "error" => {
+            let message = str_field(value, "message").filter(|text| !text.is_empty());
+            let code = str_field(value, "code").filter(|text| !text.is_empty());
+            let detail = match (code, message) {
+                (Some(code), Some(message)) => format!("{code}: {message}"),
+                (None, Some(message)) => message,
+                (Some(code), None) => code,
+                (None, None) => "vendor error".to_string(),
+            };
+            Err(MapError::Invalid(detail))
+        }
         other => Ok(Some(protocol(other, value))),
     }
 }

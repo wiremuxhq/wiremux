@@ -894,17 +894,27 @@ pub(crate) fn sse_wrapped_error_message(data: &str) -> Option<String> {
     if value.get("choices").is_some() || value.get("delta").is_some() {
         return None;
     }
-    let error = value.get("error").filter(|v| v.is_object())?;
+    // Responses `event: error` is a flat object. Other wires nest `error`.
+    let error = if let Some(error) = value.get("error").filter(|v| v.is_object()) {
+        error
+    } else if value.get("type").and_then(Value::as_str) == Some("error") {
+        &value
+    } else {
+        return None;
+    };
     let message = error
         .get("message")
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty());
     let code = ["type", "code", "status"].iter().find_map(|key| {
-        error
+        let text = error
             .get(*key)
             .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
-            .map(str::to_string)
+            .filter(|text| !text.is_empty())?;
+        if *key == "type" && text == "error" {
+            return None;
+        }
+        Some(text.to_string())
     });
     match (code, message) {
         (Some(code), Some(message)) => Some(format!("{code}: {message}")),
@@ -1091,6 +1101,44 @@ base_url = "http://127.0.0.1"
             r#"{"error":{"message":"upstream failed","type":"server_error"}}"#,
         );
         assert_eq!(msg.as_deref(), Some("server_error: upstream failed"));
+    }
+
+    #[cfg(any(feature = "client", feature = "proxy"))]
+    #[test]
+    fn sse_wrapped_error_message_reads_responses_error_event() {
+        let raw = r#"{"type":"error","code":"server_error","message":"The server had an error","param":null}"#;
+        assert_eq!(
+            sse_wrapped_error_message(raw).as_deref(),
+            Some("server_error: The server had an error")
+        );
+    }
+
+    #[test]
+    fn responses_error_event_keeps_vendor_message() {
+        let profile = wiremux_auth::parse_profile_str(
+            r#"
+schema_version = 1
+id = "t"
+wire = "responses"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("profile");
+        let raw = frame(
+            Some("error"),
+            r#"{"type":"error","code":"server_error","message":"The server had an error","param":null}"#,
+        );
+        let err = decode_stream_event(Wire::Responses, &raw, &profile)
+            .expect_err("responses error event");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("The server had an error"),
+            "vendor message must survive, got {msg}"
+        );
+        assert!(
+            !msg.contains("unknown stream event"),
+            "error is a known Responses event, got {msg}"
+        );
     }
 
     #[cfg(any(feature = "client", feature = "proxy"))]

@@ -586,6 +586,7 @@ impl WireClient {
             saw_terminal: false,
             leftover: Vec::new(),
             http_status: status,
+            stop_error: None,
         })
     }
 }
@@ -612,6 +613,8 @@ struct LiveStream {
     saw_terminal: bool,
     leftover: Vec<u8>,
     http_status: u16,
+    /// Boxed so `StreamPhase::Live` stays no larger than `Start`.
+    stop_error: Option<Box<ClientError>>,
 }
 
 impl LiveStream {
@@ -653,6 +656,9 @@ async fn pull_live(
         if let Some(ev) = live.pending.pop_front() {
             return Some((Ok(ev), StreamPhase::Live(live)));
         }
+        if let Some(err) = live.stop_error.take() {
+            return Some((Err(*err), StreamPhase::Done));
+        }
         if live.eof {
             if live.saw_frame && !live.saw_terminal {
                 return Some((
@@ -674,13 +680,10 @@ async fn pull_live(
                 match live.reader.feed(&chunk) {
                     Ok((frames, terminal)) => {
                         if let Err(err) = live.push_frames(frames) {
-                            return Some((Err(err), StreamPhase::Done));
-                        }
-                        if let Some(err) = terminal {
-                            return Some((
-                                Err(classify_feed_err(err, live.http_status)),
-                                StreamPhase::Done,
-                            ));
+                            live.stop_error = Some(Box::new(err));
+                        } else if let Some(err) = terminal {
+                            live.stop_error =
+                                Some(Box::new(classify_feed_err(err, live.http_status)));
                         }
                     }
                     Err(err) => {
@@ -698,7 +701,7 @@ async fn pull_live(
                 match live.reader.finish() {
                     Ok(Some(last)) => {
                         if let Err(err) = live.push_frames(vec![last]) {
-                            return Some((Err(err), StreamPhase::Done));
+                            live.stop_error = Some(Box::new(err));
                         }
                     }
                     Ok(None) => {}
@@ -930,15 +933,19 @@ fn classify_empty_stream(status: u16, body: &str) -> ClientError {
 fn classify_sse_wrapped_error(data: &str, status: u16) -> Option<ClientError> {
     sse_wrapped_error_message(data)?;
     let value: Value = serde_json::from_str(data).ok()?;
-    let error = value.get("error").filter(|v| v.is_object())?;
-    let code = json_error_code(error);
+    let nested = value.get("error").filter(|v| v.is_object());
+    let source = nested.unwrap_or(&value);
+    let code = json_error_code(source);
     let message = error_message(data);
+    let retry_after = nested
+        .and_then(json_retry_after)
+        .or_else(|| json_retry_after(&value));
     Some(classify_error_payload(
         Some(status),
         code,
         &message,
         data,
-        json_retry_after(error),
+        retry_after,
     ))
 }
 
@@ -1385,6 +1392,7 @@ mod tests {
             saw_terminal: false,
             leftover: Vec::new(),
             http_status: 401,
+            stop_error: None,
         };
         let (result, _) = pull_live(live).await.expect("one result");
         match result {

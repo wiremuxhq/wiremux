@@ -185,6 +185,7 @@ impl Wire {
                 "response.completed",
                 "response.failed",
                 "response.incomplete",
+                "error",
             ],
             Self::Gemini => &["chunk"],
             Self::Converse => &[
