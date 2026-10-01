@@ -130,7 +130,7 @@ pub fn decode_stream_event(
 
     let name = frame_event_name(wire, raw);
     if !profile.dialect.stream_events.iter().any(|ev| ev == &name) {
-        return unknown_event(profile, &name, &raw.data);
+        return unknown_event(wire, profile, &name, &raw.data);
     }
 
     if name == "[DONE]" || raw.data.trim() == "[DONE]" {
@@ -859,17 +859,26 @@ pub(crate) fn frame_event_name(wire: Wire, raw: &RawSse) -> String {
 }
 
 fn unknown_event(
+    wire: Wire,
     profile: &ResolvedProfile,
     name: &str,
     data: &str,
 ) -> Result<Option<IrStreamEvent>, MapError> {
     match profile.dialect.stream_unknown_policy {
-        StreamUnknownPolicy::HardError => Err(MapError::HardError {
-            path: name.to_string(),
-            detail: format!(
-                "unknown stream event `{name}` (stream_unknown_policy = hard-error|passthrough, or add `{name}` to stream_events)"
-            ),
-        }),
+        StreamUnknownPolicy::HardError => {
+            // A Responses status frame repeats ids. Skip it. A nonempty
+            // delta, arguments, code, command, text, or image is the only
+            // copy of that content, so it still fails.
+            if wire == Wire::Responses && !responses_unknown_carries_payload(data) {
+                return Ok(None);
+            }
+            Err(MapError::HardError {
+                path: name.to_string(),
+                detail: format!(
+                    "unknown stream event `{name}` (stream_unknown_policy = hard-error|passthrough, or add `{name}` to stream_events)"
+                ),
+            })
+        }
         StreamUnknownPolicy::Passthrough => {
             let raw =
                 serde_json::from_str(data).unwrap_or_else(|_| Value::String(data.to_string()));
@@ -878,6 +887,39 @@ fn unknown_event(
                 raw,
             }))
         }
+    }
+}
+
+/// Top-level payload only. `response.queued` nests a full Response
+/// under `response`; walking that object would treat the snapshot as
+/// new text.
+fn responses_unknown_carries_payload(data: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(data) else {
+        return true;
+    };
+    let Some(obj) = value.as_object() else {
+        return value.as_str().is_some_and(|text| !text.trim().is_empty());
+    };
+    const KEYS: &[&str] = &[
+        "delta",
+        "arguments",
+        "code",
+        "command",
+        "text",
+        "input",
+        "refusal",
+        "partial_image_b64",
+    ];
+    KEYS.iter()
+        .any(|key| obj.get(*key).is_some_and(responses_payload_value_present))
+}
+
+fn responses_payload_value_present(value: &Value) -> bool {
+    match value {
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => items.iter().any(responses_payload_value_present),
+        Value::Object(map) => map.values().any(responses_payload_value_present),
+        _ => false,
     }
 }
 
@@ -1269,17 +1311,12 @@ base_url = "http://127.0.0.1"
             "response.code_interpreter_call.in_progress",
             "response.code_interpreter_call.interpreting",
             "response.code_interpreter_call.completed",
-            "response.code_interpreter_call_code.delta",
-            "response.code_interpreter_call_code.done",
             "response.image_generation_call.in_progress",
             "response.image_generation_call.generating",
-            "response.image_generation_call.partial_image",
             "response.image_generation_call.completed",
             "response.mcp_call.in_progress",
             "response.mcp_call.completed",
             "response.mcp_call.failed",
-            "response.mcp_call_arguments.delta",
-            "response.mcp_call_arguments.done",
             "response.mcp_list_tools.in_progress",
             "response.mcp_list_tools.completed",
             "response.mcp_list_tools.failed",
@@ -1302,6 +1339,152 @@ base_url = "http://127.0.0.1"
                 "{event} must stay protocol, got {events:?}"
             );
         }
+    }
+
+    #[test]
+    fn responses_status_only_unknown_is_skipped_on_hard_error() {
+        let profile =
+            wiremux_auth::parse_profile_str(include_str!("../../../../presets/openai-codex.toml"))
+                .expect("openai-codex");
+        let text = decode_stream_events(
+            Wire::Responses,
+            &frame(
+                Some("response.output_text.delta"),
+                r#"{"type":"response.output_text.delta","delta":"Hi"}"#,
+            ),
+            &profile,
+        )
+        .expect("text delta");
+        assert!(
+            text.iter()
+                .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
+            "text delta must be kept, got {text:?}"
+        );
+        let quiet = [
+            (
+                "response.queued",
+                r#"{"type":"response.queued","response":{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"already sent"}]}]}}"#,
+            ),
+            (
+                "response.compaction.compacting",
+                r#"{"type":"response.compaction.compacting","sequence_number":0,"output_index":0,"item_id":"item_1"}"#,
+            ),
+            (
+                "response.shell_call_command.added",
+                r#"{"type":"response.shell_call_command.added","item_id":"sh_1","sequence_number":1}"#,
+            ),
+        ];
+        for (event, data) in quiet {
+            let events = decode_stream_events(Wire::Responses, &frame(Some(event), data), &profile)
+                .unwrap_or_else(|err| panic!("{event} is status only, got {err}"));
+            assert!(
+                events.is_empty(),
+                "{event} must not emit text or a second delta, got {events:?}"
+            );
+        }
+        let searching = decode_stream_events(
+            Wire::Responses,
+            &frame(
+                Some("response.web_search_call.searching"),
+                r#"{"type":"response.web_search_call.searching","item_id":"ws_1"}"#,
+            ),
+            &profile,
+        )
+        .expect("searching");
+        assert!(
+            searching
+                .iter()
+                .all(|ev| !matches!(ev, IrStreamEvent::TextDelta { .. })),
+            "searching must not become text, got {searching:?}"
+        );
+        let completed = decode_stream_events(
+            Wire::Responses,
+            &frame(
+                Some("response.completed"),
+                r#"{"type":"response.completed","response":{"id":"resp_1","status":"completed"}}"#,
+            ),
+            &profile,
+        )
+        .expect("completed");
+        assert!(
+            completed
+                .iter()
+                .all(|ev| !matches!(ev, IrStreamEvent::TextDelta { .. })),
+            "completed must not repeat the text delta, got {completed:?}"
+        );
+
+        let payload = [
+            (
+                "response.mcp_call_arguments.delta",
+                r#"{"type":"response.mcp_call_arguments.delta","delta":"{"}"#,
+            ),
+            (
+                "response.mcp_call_arguments.done",
+                r#"{"type":"response.mcp_call_arguments.done","arguments":"{}"}"#,
+            ),
+            (
+                "response.code_interpreter_call_code.delta",
+                r#"{"type":"response.code_interpreter_call_code.delta","delta":"print(1)"}"#,
+            ),
+            (
+                "response.code_interpreter_call_code.done",
+                r#"{"type":"response.code_interpreter_call_code.done","code":"print(1)"}"#,
+            ),
+            (
+                "response.image_generation_call.partial_image",
+                r#"{"type":"response.image_generation_call.partial_image","partial_image_b64":"abcd"}"#,
+            ),
+            (
+                "response.shell_call_command.delta",
+                r#"{"type":"response.shell_call_command.delta","delta":"ls"}"#,
+            ),
+            (
+                "response.shell_call_command.added",
+                r#"{"type":"response.shell_call_command.added","command":"ls"}"#,
+            ),
+            (
+                "response.shell_call_output_content.delta",
+                r#"{"type":"response.shell_call_output_content.delta","delta":{"stdout":"ok","stderr":""}}"#,
+            ),
+        ];
+        for (event, data) in payload {
+            let err = decode_stream_events(Wire::Responses, &frame(Some(event), data), &profile)
+                .expect_err(event);
+            let crate::map::MapError::HardError { detail, .. } = err else {
+                panic!("{event} must stay a hard-error, got {err}");
+            };
+            assert!(
+                detail.contains(event),
+                "{event} detail must name the event, got {detail}"
+            );
+        }
+
+        let pass = wiremux_auth::parse_profile_str(
+            r#"
+schema_version = 1
+id = "t"
+wire = "responses"
+stream_unknown_policy = "passthrough"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("passthrough");
+        let events = decode_stream_events(
+            Wire::Responses,
+            &frame(
+                Some("response.queued"),
+                r#"{"type":"response.queued","sequence_number":1}"#,
+            ),
+            &pass,
+        )
+        .expect("passthrough queued");
+        assert!(
+            events.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::Unknown { event, .. } if event == "response.queued"
+            )),
+            "passthrough must forward queued, got {events:?}"
+        );
     }
 
     #[cfg(any(feature = "client", feature = "proxy"))]
