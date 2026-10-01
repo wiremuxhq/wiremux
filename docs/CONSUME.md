@@ -222,6 +222,7 @@ the vendor message. Text already received in that read is kept.
 `server_error`, `internal_error`, `connection_failed`,
 `request_timeout`, `server_is_overloaded`, and `server_overloaded`
 are `ClientError::Transient` with `TransientKind::Http`.
+A Messages `api_error` is that same transient error.
 `slow_down` and `rate_limit_exceeded` are `ClientError::RateLimit`.
 `insufficient_quota` stays `ClientError::Vendor`. An auth message
 stays `ClientError::Auth`, and a `model_not_found` message stays
