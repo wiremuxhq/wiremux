@@ -667,6 +667,45 @@ fn gemini_drops_chat_stream_flag() {
 }
 
 #[test]
+fn converse_drops_chat_stream_flag() {
+    let chat_req = br#"{
+        "model": "amazon.nova-lite-v1:0",
+        "stream": false,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, chat_req).expect("decode");
+    assert_eq!(ir.sampling.stream, Some(false));
+    let (bytes, loss) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("stream").is_none(),
+        "Converse has no JSON stream field, got {body}"
+    );
+    assert!(
+        loss.events
+            .iter()
+            .any(|event| { event.path == "sampling.stream" && event.action == LossAction::Drop }),
+        "dropped stream must be on the loss report, got {loss:?}"
+    );
+
+    let (ir, _) = decode(
+        Wire::ChatCompletions,
+        br#"{"model":"amazon.nova-lite-v1:0","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+    )
+    .expect("decode stream true");
+    let (bytes, loss) =
+        encode(Wire::Converse, &ir, &converse_profile()).expect("encode stream true");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(body.get("stream").is_none(), "got {body}");
+    assert!(
+        loss.events
+            .iter()
+            .any(|event| { event.path == "sampling.stream" && event.action == LossAction::Drop }),
+        "stream true must be a recorded drop, got {loss:?}"
+    );
+}
+
+#[test]
 fn gemini_request_round_trip_text_and_function() {
     let req = br#"{
         "model": "gemini-2.5-flash",
