@@ -218,7 +218,8 @@ terminal on `data: [DONE]` or a non-empty `finish_reason`. Messages
 is terminal on `message_stop` or a `message_delta` with `stop_reason`.
 A Messages citation with a URL becomes an annotation. A document
 citation such as `char_location` has no URL and stays a protocol
-event, so the cited text is not dropped.
+event, so the cited text is not dropped. The proxy sends that frame
+on when the destination is Messages, and does not send it to Chat.
 Responses is terminal on `response.completed`, `response.incomplete`,
 or `response.failed`. A Responses `error` event fails the stream with
 the vendor message. Text already received in that read is kept.

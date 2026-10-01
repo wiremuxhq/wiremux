@@ -767,16 +767,33 @@ impl ToolCallAssembler {
 
 /// Whether this IR event has a slot on `wire` SSE.
 ///
-/// Protocol is never a slot. Names are dialect-specific (`chunk` is
-/// Chat and Gemini), so a Chat Protocol must not re-emit on Gemini.
+/// Protocol names are dialect-specific (`chunk` is Chat and Gemini), so
+/// a Chat Protocol must not re-emit on Gemini. A Messages protocol frame
+/// is a same-wire event, such as a document citation, and stays on Messages.
 #[cfg(feature = "proxy")]
 #[must_use]
 pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
     match ev {
-        IrStreamEvent::Protocol { .. } => false,
+        IrStreamEvent::Protocol { item_type, .. } => {
+            wire == Wire::Messages && messages_protocol_reemits(item_type)
+        }
         IrStreamEvent::Unknown { .. } => matches!(wire, Wire::Messages | Wire::Responses),
         _ => true,
     }
+}
+
+#[cfg(feature = "proxy")]
+fn messages_protocol_reemits(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "message_start"
+            | "content_block_start"
+            | "content_block_delta"
+            | "content_block_stop"
+            | "message_delta"
+            | "message_stop"
+            | "ping"
+    )
 }
 
 /// Encode one IR event into the target dialect's SSE shape.

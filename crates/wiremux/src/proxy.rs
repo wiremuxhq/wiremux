@@ -1166,6 +1166,48 @@ mod tests {
         host_is_loopback, is_json_content_type, read_capped_body, same_wire_success_is_json,
     };
 
+    #[test]
+    fn messages_document_citation_reaches_messages_not_chat() {
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"m\"\nwire = \"messages\"\n")
+                .expect("profile");
+        let sse = concat!(
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"citations_delta\",\"citation\":{\"type\":\"char_location\",\"cited_text\":\"The grass is green.\",\"document_index\":0,\"document_title\":\"My Document\",\"start_char_index\":0,\"end_char_index\":20}}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let same = super::map_sse_bytes(
+            wiremux_auth::Wire::Messages,
+            wiremux_auth::Wire::Messages,
+            &profile,
+            "claude",
+            sse.as_bytes(),
+        );
+        let same_text = String::from_utf8(same).expect("utf8");
+        assert!(
+            same_text.contains("The grass is green."),
+            "same-wire proxy must keep the document citation, got {same_text}"
+        );
+        assert!(
+            same_text.contains("char_location"),
+            "citation type must survive, got {same_text}"
+        );
+
+        let chat = super::map_sse_bytes(
+            wiremux_auth::Wire::ChatCompletions,
+            wiremux_auth::Wire::Messages,
+            &profile,
+            "gpt-4o",
+            sse.as_bytes(),
+        );
+        let chat_text = String::from_utf8(chat).expect("utf8");
+        assert!(
+            !chat_text.contains("char_location") && !chat_text.contains("content_block_delta"),
+            "Chat must not receive a Messages protocol frame, got {chat_text}"
+        );
+    }
+
     #[tokio::test]
     async fn capped_body_stops_when_the_next_chunk_crosses_the_cap() {
         use bytes::Bytes;
