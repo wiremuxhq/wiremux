@@ -2854,7 +2854,12 @@ access_env = "WIREMUX_TEST_ACCESS"
     fn provider_from_profile_requires_oauth() {
         let profile = parse_profile_str("schema_version = 1\nid = \"no-oauth\"\n").unwrap();
         let err = provider_from_profile(&profile).unwrap_err();
-        assert!(err.to_string().contains("[oauth]"));
+        match err {
+            AuthError::MissingField(ref field) => {
+                assert_eq!(field, "profile `no-oauth` has no [oauth] table");
+            }
+            other => panic!("expected MissingField, got {other}"),
+        }
     }
 
     #[tokio::test]

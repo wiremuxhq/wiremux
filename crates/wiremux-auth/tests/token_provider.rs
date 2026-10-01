@@ -5,7 +5,9 @@ use wiremux_auth::device_flow::{
     device_poll_timeout,
 };
 use wiremux_auth::pkce::generate_pkce;
-use wiremux_auth::{AnyTokenProvider, IsolatedHome, StaticToken, TokenProvider, parse_profile_str};
+use wiremux_auth::{
+    AnyTokenProvider, AuthError, IsolatedHome, StaticToken, TokenProvider, parse_profile_str,
+};
 
 #[tokio::test]
 async fn static_token_via_any_provider() {
@@ -39,7 +41,12 @@ fn device_poll_caps() {
 fn provider_from_profile_requires_oauth_table() {
     let profile = parse_profile_str("schema_version = 1\nid = \"x\"\n").unwrap();
     let err = wiremux_auth::provider_from_profile(&profile).unwrap_err();
-    assert!(err.to_string().contains("[oauth]"));
+    match err {
+        AuthError::MissingField(ref field) => {
+            assert_eq!(field, "profile `x` has no [oauth] table");
+        }
+        other => panic!("expected MissingField, got {other}"),
+    }
 }
 
 #[test]
@@ -61,14 +68,19 @@ access_env = "WIREMUX_TEST_MISSING_ACCESS"
     let err = wiremux_auth::provider_from_profile(&profile)
         .expect_err("missing file and unset env must fail");
     let msg = err.to_string();
-    let names_path_and_env = (msg.contains(&creds_unix)
-        || msg.contains(creds.to_string_lossy().as_ref()))
-        && msg.contains("access_env=WIREMUX_TEST_MISSING_ACCESS");
-    let names_tried_stores =
-        msg.contains("tried creds_path=") && msg.contains("access_env=WIREMUX_TEST_MISSING_ACCESS");
     assert!(
-        names_path_and_env || names_tried_stores,
-        "missing creds must name configured path and access_env=WIREMUX_TEST_MISSING_ACCESS, got {msg}"
+        matches!(err, AuthError::TokenProvider(_)),
+        "expected TokenProvider, got {msg}"
+    );
+    let names_configured_path = msg.contains(&format!("creds_path={creds_unix}"))
+        || msg.contains(&format!("creds_path={}", creds.to_string_lossy()));
+    assert!(
+        names_configured_path,
+        "missing creds must include the configured path, got {msg}"
+    );
+    assert!(
+        msg.contains("access_env=WIREMUX_TEST_MISSING_ACCESS"),
+        "missing creds must name access_env, got {msg}"
     );
 }
 
@@ -87,13 +99,11 @@ creds_path = "~/ok/../escaped.json"
     .expect("test profile");
     let err = wiremux_auth::provider_from_profile(&profile)
         .expect_err("parent-dir creds_path must fail closed");
-    let msg = err.to_string();
     assert!(
-        msg.contains("oauth.creds_path"),
-        "error must name oauth.creds_path, got {msg}"
-    );
-    assert!(
-        msg.to_ascii_lowercase().contains("home"),
-        "error must say path must stay under home, got {msg}"
+        matches!(
+            err,
+            AuthError::TokenProvider(ref msg) if msg == "oauth.creds_path must stay under home"
+        ),
+        "expected the home-escape error, got {err}"
     );
 }

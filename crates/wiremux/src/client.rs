@@ -1471,11 +1471,19 @@ wire = "messages"
             },
         )
         .expect_err("near-miss id");
-        let text = err.to_string();
-        assert!(
-            text.contains("did you mean") && text.contains("anthropic"),
-            "profile_err must keep the catalog suggestion, got {text}"
-        );
+        match err {
+            ClientError::NotFound {
+                status,
+                ref message,
+            } => {
+                assert_eq!(status, None);
+                assert!(
+                    message.contains("did you mean `anthropic-oauth`"),
+                    "profile_err must suggest anthropic-oauth, got {message}"
+                );
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
     }
 
     #[test]

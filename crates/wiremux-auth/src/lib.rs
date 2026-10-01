@@ -423,8 +423,8 @@ expires_unit = "s"
             .expect_err("near-miss id must fail");
         let display = err.to_string();
         assert!(
-            display.contains("did you mean") && display.contains("anthropic"),
-            "token_for_profile must keep the catalog suggestion, got {display}"
+            display.contains("did you mean `anthropic-oauth`"),
+            "token_for_profile must suggest anthropic-oauth, got {display}"
         );
         assert!(
             !display.contains("path also works"),
