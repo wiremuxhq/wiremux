@@ -210,6 +210,17 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
                 raw: part.clone(),
             });
         }
+        if part.get("executableCode").is_some() || part.get("codeExecutionResult").is_some() {
+            let type_name = if part.get("executableCode").is_some() {
+                "executableCode"
+            } else {
+                "codeExecutionResult"
+            };
+            text_parts.push(IrPart::Raw {
+                type_name: type_name.into(),
+                raw: part.clone(),
+            });
+        }
     }
     flush_parts(role, &mut text_parts, items);
 }
@@ -791,7 +802,11 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 }));
             }
             IrPart::Raw { raw, .. } => {
-                if raw.get("fileData").is_some() || raw.get("fileUri").is_some() {
+                if raw.get("fileData").is_some()
+                    || raw.get("fileUri").is_some()
+                    || raw.get("executableCode").is_some()
+                    || raw.get("codeExecutionResult").is_some()
+                {
                     out.push(raw.clone());
                 } else {
                     report.record(

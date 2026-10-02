@@ -6879,6 +6879,43 @@ fn gemini_fileData_part_round_trips_as_raw() {
 }
 
 #[test]
+fn gemini_code_execution_parts_round_trip() {
+    let req = br#"{
+        "contents": [{
+            "role": "model",
+            "parts": [
+                {"executableCode": {"language": "PYTHON", "code": "print(1)"}},
+                {"codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "1\n"}}
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/executableCode/code")
+            .and_then(Value::as_str),
+        Some("print(1)"),
+        "Gemini executableCode must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/1/codeExecutionResult/output")
+            .and_then(Value::as_str),
+        Some("1\n"),
+        "Gemini codeExecutionResult must round-trip, got {body}"
+    );
+
+    let (_, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.action == LossAction::Drop && event.path == "part.raw"),
+        "Chat must record a drop for Gemini code execution parts, got {report:?}"
+    );
+}
+
+#[test]
 #[allow(non_snake_case)]
 fn gemini_fileData_encode_messages_does_not_leak() {
     let req = br#"{
