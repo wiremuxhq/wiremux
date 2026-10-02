@@ -402,6 +402,263 @@ fn messages_drops_codex_cache_and_tier_gemini_emits_service_tier() {
 }
 
 #[test]
+fn responses_round_trips_truncation_tool_cap_background_and_conversation() {
+    let req = br#"{
+        "model": "gpt-5",
+        "truncation": "auto",
+        "max_tool_calls": 3,
+        "background": false,
+        "conversation": "conv_1",
+        "context_management": [{"type": "compaction", "compact_threshold": 1000}],
+        "input": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode responses");
+    assert_eq!(ir.sampling.truncation.as_deref(), Some("auto"));
+    assert_eq!(ir.sampling.max_tool_calls, Some(3));
+    assert_eq!(ir.sampling.background, Some(false));
+    assert_eq!(
+        ir.sampling.conversation.as_ref().and_then(Value::as_str),
+        Some("conv_1")
+    );
+    let compaction = ir
+        .sampling
+        .responses_context_management
+        .as_ref()
+        .expect("responses context_management array");
+    assert_eq!(compaction[0]["type"], "compaction");
+    assert_eq!(compaction[0]["compact_threshold"].as_u64(), Some(1000));
+    assert!(
+        ir.sampling.context_management.is_none(),
+        "Responses array must not land on the Messages object field"
+    );
+
+    let (bytes, report) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(body["truncation"], "auto");
+    assert_eq!(body["max_tool_calls"].as_u64(), Some(3));
+    assert_eq!(body["background"], false);
+    assert_eq!(body["conversation"], "conv_1");
+    assert_eq!(body["context_management"][0]["type"], "compaction");
+    assert_eq!(
+        body["context_management"][0]["compact_threshold"].as_u64(),
+        Some(1000)
+    );
+    for path in [
+        "sampling.truncation",
+        "sampling.max_tool_calls",
+        "sampling.background",
+        "sampling.conversation",
+        "sampling.responses_context_management",
+    ] {
+        assert!(
+            !loss_dropped(&report, path),
+            "{path} must not Drop, got {report:?}"
+        );
+    }
+
+    let object_req = br#"{
+        "model": "gpt-5",
+        "conversation": {"id": "conv_1"},
+        "input": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (object_ir, _) = decode(Wire::Responses, object_req).expect("decode object conversation");
+    assert_eq!(
+        object_ir
+            .sampling
+            .conversation
+            .as_ref()
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_str),
+        Some("conv_1")
+    );
+    let (object_bytes, _) =
+        encode(Wire::Responses, &object_ir, &hard_error_profile()).expect("encode object");
+    let object_body: Value = serde_json::from_slice(&object_bytes).expect("json");
+    assert_eq!(object_body["conversation"]["id"], "conv_1");
+
+    let echoed = br#"{
+        "model": "gpt-5",
+        "truncation": "FUTURE_TRUNCATION",
+        "max_tool_calls": 0,
+        "background": true,
+        "context_management": [],
+        "input": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (echoed_ir, _) = decode(Wire::Responses, echoed).expect("decode echoed");
+    assert_eq!(
+        echoed_ir.sampling.truncation.as_deref(),
+        Some("FUTURE_TRUNCATION")
+    );
+    assert_eq!(echoed_ir.sampling.max_tool_calls, Some(0));
+    assert_eq!(echoed_ir.sampling.background, Some(true));
+    assert_eq!(
+        echoed_ir
+            .sampling
+            .responses_context_management
+            .as_ref()
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0)
+    );
+    let (echoed_bytes, _) =
+        encode(Wire::Responses, &echoed_ir, &hard_error_profile()).expect("encode echoed");
+    let echoed_body: Value = serde_json::from_slice(&echoed_bytes).expect("json");
+    assert_eq!(echoed_body["truncation"], "FUTURE_TRUNCATION");
+    assert_eq!(echoed_body["max_tool_calls"].as_u64(), Some(0));
+    assert_eq!(echoed_body["background"], true);
+    assert_eq!(
+        echoed_body["context_management"].as_array().map(Vec::len),
+        Some(0)
+    );
+
+    let ignored = br#"{
+        "model": "gpt-5",
+        "truncation": " ",
+        "max_tool_calls": -1,
+        "conversation": 4,
+        "context_management": {"edits": []},
+        "input": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ignored_ir, _) = decode(Wire::Responses, ignored).expect("decode ignored");
+    assert!(ignored_ir.sampling.truncation.is_none());
+    assert!(ignored_ir.sampling.max_tool_calls.is_none());
+    assert!(ignored_ir.sampling.conversation.is_none());
+    assert!(ignored_ir.sampling.responses_context_management.is_none());
+    assert!(ignored_ir.sampling.context_management.is_none());
+}
+
+#[test]
+fn other_wires_drop_responses_request_fields() {
+    let ir = user_ir(IrSampling::patch(|sampling| {
+        sampling.truncation = Some("auto".into());
+        sampling.max_tool_calls = Some(3);
+        sampling.background = Some(false);
+        sampling.conversation = Some(serde_json::json!("conv_1"));
+        sampling.responses_context_management =
+            Some(serde_json::json!([{"type": "compaction", "compact_threshold": 1000}]));
+    }));
+    let wires = [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Messages, messages_profile()),
+        (Wire::Gemini, gemini_profile()),
+        (Wire::Converse, converse_profile()),
+    ];
+    for (wire, profile) in wires {
+        let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        for key in [
+            "truncation",
+            "max_tool_calls",
+            "background",
+            "conversation",
+            "context_management",
+        ] {
+            assert!(
+                !json_has_key(&body, key),
+                "{wire:?} must not emit {key}, got {body}"
+            );
+        }
+        for path in [
+            "sampling.truncation",
+            "sampling.max_tool_calls",
+            "sampling.background",
+            "sampling.conversation",
+            "sampling.responses_context_management",
+        ] {
+            assert!(
+                loss_dropped(&report, path),
+                "{wire:?} {path} drop missing, got {report:?}"
+            );
+        }
+    }
+
+    let split = user_ir(IrSampling::patch(|sampling| {
+        sampling.context_management =
+            Some(serde_json::json!({"edits": [{"type": "clear_tool_uses"}]}));
+        sampling.responses_context_management =
+            Some(serde_json::json!([{"type": "compaction", "compact_threshold": 1000}]));
+    }));
+    let (msg_bytes, msg_report) =
+        encode(Wire::Messages, &split, &messages_profile()).expect("encode messages");
+    let msg: Value = serde_json::from_slice(&msg_bytes).expect("json");
+    assert_eq!(
+        msg["context_management"]["edits"][0]["type"],
+        "clear_tool_uses"
+    );
+    assert!(
+        !loss_dropped(&msg_report, "sampling.context_management"),
+        "Messages object must stay, got {msg_report:?}"
+    );
+    assert!(
+        loss_dropped(&msg_report, "sampling.responses_context_management"),
+        "Messages must Drop the Responses array, got {msg_report:?}"
+    );
+
+    let (resp_bytes, resp_report) =
+        encode(Wire::Responses, &split, &hard_error_profile()).expect("encode responses");
+    let resp: Value = serde_json::from_slice(&resp_bytes).expect("json");
+    assert_eq!(resp["context_management"][0]["type"], "compaction");
+    assert!(resp["context_management"].get("edits").is_none());
+    assert!(
+        loss_dropped(&resp_report, "sampling.context_management"),
+        "Responses must Drop the Messages object, got {resp_report:?}"
+    );
+    assert!(
+        !loss_dropped(&resp_report, "sampling.responses_context_management"),
+        "Responses array must not Drop, got {resp_report:?}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &split, &chat_profile()).expect("encode chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    assert!(!json_has_key(&chat, "context_management"));
+    assert!(loss_dropped(&chat_report, "sampling.context_management"));
+    assert!(loss_dropped(
+        &chat_report,
+        "sampling.responses_context_management"
+    ));
+
+    let plain = user_ir(IrSampling::default());
+    let (plain_bytes, plain_report) =
+        encode(Wire::Responses, &plain, &hard_error_profile()).expect("encode plain");
+    let plain_body: Value = serde_json::from_slice(&plain_bytes).expect("json");
+    for key in [
+        "truncation",
+        "max_tool_calls",
+        "background",
+        "conversation",
+        "context_management",
+    ] {
+        assert!(
+            plain_body.get(key).is_none(),
+            "absent Responses field must not be invented: {key}"
+        );
+    }
+    for path in [
+        "sampling.truncation",
+        "sampling.max_tool_calls",
+        "sampling.background",
+        "sampling.conversation",
+        "sampling.responses_context_management",
+    ] {
+        assert!(
+            !loss_dropped(&plain_report, path),
+            "absent {path} must not Drop, got {plain_report:?}"
+        );
+    }
+}
+
+fn json_has_key(value: &Value, key: &str) -> bool {
+    match value {
+        Value::Object(map) => {
+            map.contains_key(key) || map.values().any(|child| json_has_key(child, key))
+        }
+        Value::Array(items) => items.iter().any(|child| json_has_key(child, key)),
+        _ => false,
+    }
+}
+
+#[test]
 fn developer_degrades_to_system_on_messages() {
     let bytes = golden("developer_chat.json");
     let (ir, _loss) = decode(Wire::ChatCompletions, &bytes).expect("decode Chat");

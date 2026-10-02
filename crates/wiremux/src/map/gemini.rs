@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use super::tools::PreparedTool;
 use super::{
     MapError, audio_format_from_mime, audio_mime_from_format, bool_field, document_ref_source,
-    drop_dest_chat_sampling_extras, f32_field, i64_field, is_audio_media_type, is_pdf_media_type,
-    stop_values, str_field, u32_field,
+    drop_dest_chat_sampling_extras, drop_responses_request_fields, f32_field, i64_field,
+    is_audio_media_type, is_pdf_media_type, stop_values, str_field, u32_field,
 };
 use crate::ir::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
@@ -466,6 +466,11 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .get("labels")
             .filter(|labels| labels.is_object())
             .cloned(),
+        truncation: None,
+        max_tool_calls: None,
+        background: None,
+        conversation: None,
+        responses_context_management: None,
     }
 }
 
@@ -1044,6 +1049,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.context_management.is_some() {
         report.record("sampling.context_management", LossAction::Drop, "no slot");
     }
+    drop_responses_request_fields(s, report);
     if s.mcp_servers.is_some() {
         report.record("sampling.mcp_servers", LossAction::Drop, "no slot");
     }

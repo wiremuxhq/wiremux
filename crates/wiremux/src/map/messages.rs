@@ -5,9 +5,9 @@ use serde_json::{Value, json};
 use super::tools::{PreparedTool, decode_tool};
 use super::{
     MapError, bool_field, drop_dest_chat_sampling_extras, drop_dest_logprobs,
-    drop_dest_n_and_penalties, drop_dest_output_modalities, drop_dest_top_logprobs, f32_field,
-    messages_raw_passthrough, off_dialect_raw_path, stop_values, str_field, u32_field,
-    value_as_string,
+    drop_dest_n_and_penalties, drop_dest_output_modalities, drop_dest_top_logprobs,
+    drop_responses_request_fields, f32_field, messages_raw_passthrough, off_dialect_raw_path,
+    stop_values, str_field, u32_field, value_as_string,
 };
 use crate::ir::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
@@ -379,6 +379,11 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         cached_content: None,
         safety_settings: None,
         request_labels: None,
+        truncation: None,
+        max_tool_calls: None,
+        background: None,
+        conversation: None,
+        responses_context_management: None,
     }
 }
 
@@ -1350,6 +1355,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if let Some(mgmt) = &s.context_management {
         body["context_management"] = mgmt.clone();
     }
+    drop_responses_request_fields(s, report);
     if let Some(servers) = &s.mcp_servers {
         body["mcp_servers"] = servers.clone();
     }

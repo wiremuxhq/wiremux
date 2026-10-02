@@ -347,6 +347,31 @@ fn drop_dest_n_and_penalties(s: &IrSampling, report: &mut LossReport) {
     }
 }
 
+fn drop_responses_request_fields(s: &IrSampling, report: &mut LossReport) {
+    if s.truncation
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty())
+    {
+        report.record("sampling.truncation", LossAction::Drop, "no slot");
+    }
+    if s.max_tool_calls.is_some() {
+        report.record("sampling.max_tool_calls", LossAction::Drop, "no slot");
+    }
+    if s.background.is_some() {
+        report.record("sampling.background", LossAction::Drop, "no slot");
+    }
+    if s.conversation.is_some() {
+        report.record("sampling.conversation", LossAction::Drop, "no slot");
+    }
+    if s.responses_context_management.is_some() {
+        report.record(
+            "sampling.responses_context_management",
+            LossAction::Drop,
+            "no slot",
+        );
+    }
+}
+
 fn drop_dest_output_modalities(s: &IrSampling, report: &mut LossReport) {
     if !s.output_modalities.is_empty() {
         report.record("sampling.output_modalities", LossAction::Drop, "no slot");

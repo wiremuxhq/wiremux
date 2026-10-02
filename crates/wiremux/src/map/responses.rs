@@ -346,6 +346,27 @@ fn decode_sampling(value: &Value) -> IrSampling {
         cached_content: None,
         safety_settings: None,
         request_labels: None,
+        truncation: str_field(value, "truncation").filter(|text| !text.trim().is_empty()),
+        max_tool_calls: u32_field(value, "max_tool_calls"),
+        background: bool_field(value, "background"),
+        conversation: responses_conversation(value),
+        responses_context_management: value
+            .get("context_management")
+            .filter(|mgmt| mgmt.is_array())
+            .cloned(),
+    }
+}
+
+fn responses_conversation(value: &Value) -> Option<Value> {
+    let conversation = value.get("conversation")?;
+    if conversation
+        .as_str()
+        .is_some_and(|text| !text.trim().is_empty())
+        || conversation.is_object()
+    {
+        Some(conversation.clone())
+    } else {
+        None
     }
 }
 
@@ -816,6 +837,53 @@ fn encode_tool(tool: &PreparedTool) -> Value {
     }
 }
 
+fn encode_responses_request_fields(s: &IrSampling, body: &mut Value, report: &mut LossReport) {
+    if let Some(truncation) = s
+        .truncation
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        body["truncation"] = json!(truncation);
+        report.record(
+            "sampling.truncation",
+            LossAction::Preserve,
+            "responses truncation",
+        );
+    }
+    if let Some(max) = s.max_tool_calls {
+        body["max_tool_calls"] = json!(max);
+        report.record(
+            "sampling.max_tool_calls",
+            LossAction::Preserve,
+            "responses max_tool_calls",
+        );
+    }
+    if let Some(background) = s.background {
+        body["background"] = json!(background);
+        report.record(
+            "sampling.background",
+            LossAction::Preserve,
+            "responses background",
+        );
+    }
+    if let Some(conversation) = &s.conversation {
+        body["conversation"] = conversation.clone();
+        report.record(
+            "sampling.conversation",
+            LossAction::Preserve,
+            "responses conversation",
+        );
+    }
+    if let Some(mgmt) = &s.responses_context_management {
+        body["context_management"] = mgmt.clone();
+        report.record(
+            "sampling.responses_context_management",
+            LossAction::Preserve,
+            "responses context_management",
+        );
+    }
+}
+
 fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     let s = &ir.sampling;
     if let Some(t) = s.temperature {
@@ -858,6 +926,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.context_management.is_some() {
         report.record("sampling.context_management", LossAction::Drop, "no slot");
     }
+    encode_responses_request_fields(s, body, report);
     if s.mcp_servers.is_some() {
         report.record("sampling.mcp_servers", LossAction::Drop, "no slot");
     }

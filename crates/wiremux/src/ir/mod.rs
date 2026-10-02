@@ -260,6 +260,23 @@ pub struct IrSampling {
     /// Gemini request-root `labels` object.
     /// Chat, Messages, Responses, and Converse drop.
     pub request_labels: Option<serde_json::Value>,
+    /// Responses request `truncation` (`auto`, `disabled`, or a vendor
+    /// token). Empty is absent. Chat, Messages, Gemini, and Converse drop.
+    pub truncation: Option<String>,
+    /// Responses request `max_tool_calls`. `0` is a real cap.
+    /// Chat, Messages, Gemini, and Converse drop.
+    pub max_tool_calls: Option<u32>,
+    /// Responses request `background`. `false` is explicit foreground and
+    /// is preserved. Chat, Messages, Gemini, and Converse drop.
+    pub background: Option<bool>,
+    /// Responses request `conversation`: a non-empty string id or an
+    /// object. Numbers, arrays, null, and empty strings are absent.
+    /// Chat, Messages, Gemini, and Converse drop.
+    pub conversation: Option<serde_json::Value>,
+    /// Responses request `context_management` array (compaction).
+    /// Distinct from the Messages `context_management` object.
+    /// Chat, Messages, Gemini, and Converse drop.
+    pub responses_context_management: Option<serde_json::Value>,
 }
 
 impl IrSampling {
