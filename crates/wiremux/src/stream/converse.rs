@@ -213,7 +213,8 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta }
-            | IrStreamEvent::AudioTranscriptDelta { text: delta } => text.push_str(delta),
+            | IrStreamEvent::AudioTranscriptDelta { text: delta }
+            | IrStreamEvent::RefusalDelta { text: delta } => text.push_str(delta),
             IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
             IrStreamEvent::ReasoningSignature { signature } => {
                 reasoning_signature = Some(signature.clone());
@@ -236,14 +237,16 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
             IrStreamEvent::AnnotationAdded { annotation } => {
                 citations.push(citation_from_annotation(annotation));
             }
-            IrStreamEvent::ToolCallStart { id, name, .. } => {
+            IrStreamEvent::ToolCallStart { id, name, .. }
+            | IrStreamEvent::CustomToolCallStart { id, name, .. } => {
                 flush_text(&mut text, &mut content);
                 if let Some((id, name, args)) = current_tool.take() {
                     content.push(tool_use(&id, &name, &args));
                 }
                 current_tool = Some((id.clone(), name.clone(), String::new()));
             }
-            IrStreamEvent::ToolCallArgDelta { delta, .. } => {
+            IrStreamEvent::ToolCallArgDelta { delta, .. }
+            | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
                 if let Some((_, _, args)) = current_tool.as_mut() {
                     args.push_str(delta);
                 }

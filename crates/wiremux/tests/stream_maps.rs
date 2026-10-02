@@ -494,6 +494,102 @@ fn chat_top_level_cached_tokens_alias_is_read() {
 }
 
 #[test]
+fn gemini_finish_message_is_refusal_beside_finish_reason() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"finishReason":"SAFETY","finishMessage":"blocked by safety"}]}"#
+            .into(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode Gemini finishMessage");
+    assert!(
+        events.iter().any(|ev| {
+            matches!(ev, IrStreamEvent::RefusalDelta { text } if text == "blocked by safety")
+        }),
+        "Gemini finishMessage must be RefusalDelta, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|ev| {
+            matches!(
+                ev,
+                IrStreamEvent::FinishReason { reason, vendor }
+                    if reason == "content_filter" && vendor.as_deref() == Some("SAFETY")
+            )
+        }),
+        "Gemini finishReason SAFETY must stay content_filter, got {events:?}"
+    );
+
+    let chat = encode_all(Wire::ChatCompletions, &events);
+    let chat_bodies = sse_json_frames(&chat);
+    assert_eq!(
+        chat_bodies.iter().find_map(|body| {
+            body.pointer("/choices/0/delta/refusal")
+                .and_then(Value::as_str)
+        }),
+        Some("blocked by safety"),
+        "Gemini finishMessage remapped to Chat must write delta.refusal, got {chat:?}"
+    );
+
+    let gemini = encode_all(Wire::Gemini, &events);
+    let gemini_bodies = sse_json_frames(&gemini);
+    assert_eq!(
+        gemini_bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/finishMessage")
+                .and_then(Value::as_str)
+        }),
+        Some("blocked by safety"),
+        "dest Gemini must write candidates[].finishMessage, not a text part, got {gemini:?}"
+    );
+    assert!(
+        gemini_bodies.iter().all(|body| {
+            body.pointer("/candidates/0/content/parts/0/text")
+                .and_then(Value::as_str)
+                != Some("blocked by safety")
+        }),
+        "dest Gemini must not fold finishMessage into generated text, got {gemini:?}"
+    );
+
+    let body = json!({
+        "candidates": [{
+            "finishReason": "SAFETY",
+            "finishMessage": "blocked by safety"
+        }]
+    });
+    let complete = decode_response(Wire::Gemini, body.to_string().as_bytes(), &gemini_profile())
+        .expect("decode complete finishMessage");
+    assert!(
+        complete.iter().any(|ev| {
+            matches!(ev, IrStreamEvent::RefusalDelta { text } if text == "blocked by safety")
+        }),
+        "complete Gemini finishMessage must be RefusalDelta, got {complete:?}"
+    );
+    let encoded = encode_response(Wire::Gemini, &complete).expect("encode complete");
+    assert_eq!(
+        encoded
+            .pointer("/candidates/0/finishMessage")
+            .and_then(Value::as_str),
+        Some("blocked by safety"),
+        "dest Gemini complete must write finishMessage, got {encoded}"
+    );
+}
+
+#[test]
+fn gemini_empty_finish_message_is_not_a_refusal() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"finishReason":"STOP","finishMessage":""}]}"#.into(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode empty finishMessage");
+    assert!(
+        events
+            .iter()
+            .all(|ev| !matches!(ev, IrStreamEvent::RefusalDelta { .. })),
+        "empty finishMessage must not invent a refusal, got {events:?}"
+    );
+}
+
+#[test]
 fn gemini_error_chunk_is_hard_error() {
     let raw = RawSse {
         event: None,

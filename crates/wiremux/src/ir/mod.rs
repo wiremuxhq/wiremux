@@ -408,8 +408,9 @@ pub enum IrStreamEvent {
     },
     /// Dest Chat `delta.refusal` / `message.refusal`, dest Responses
     /// `response.refusal.delta` / output content `{ "type": "refusal" }`,
-    /// dest Messages complete `stop_details.explanation`, and dest Messages
-    /// STREAM `message_delta.delta.stop_details.explanation`.
+    /// dest Messages complete `stop_details.explanation`, dest Messages
+    /// STREAM `message_delta.delta.stop_details.explanation`, and dest
+    /// Gemini `candidates[].finishMessage`.
     RefusalDelta {
         text: String,
     },

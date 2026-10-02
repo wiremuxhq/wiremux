@@ -345,13 +345,15 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     inference_geo.clone(),
                 ));
             }
-            IrStreamEvent::ToolCallStart { id, name, .. } => {
+            IrStreamEvent::ToolCallStart { id, name, .. }
+            | IrStreamEvent::CustomToolCallStart { id, name, .. } => {
                 if let Some((id, name, args)) = current.take() {
                     tool_calls.push(messages_tool_use_value(&id, &name, &args));
                 }
                 current = Some((id.clone(), name.clone(), String::new()));
             }
-            IrStreamEvent::ToolCallArgDelta { delta, .. } => {
+            IrStreamEvent::ToolCallArgDelta { delta, .. }
+            | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
                 if let Some((_, _, args)) = current.as_mut() {
                     args.push_str(delta);
                 }
@@ -459,6 +461,7 @@ fn messages_tool_use_value(id: &str, name: &str, args: &str) -> Value {
 
 fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut text = String::new();
+    let mut refusal = String::new();
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
     let mut finish = None;
@@ -474,6 +477,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
         match ev {
             IrStreamEvent::TextDelta { text: delta }
             | IrStreamEvent::AudioTranscriptDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::RefusalDelta { text: delta } => refusal.push_str(delta),
             IrStreamEvent::AnnotationAdded { annotation } => {
                 let idx = grounding_chunks.len();
                 grounding_chunks.push(super::gemini::grounding_chunk_from_annotation(annotation));
@@ -527,13 +531,15 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     *completion_audio_tokens,
                 ));
             }
-            IrStreamEvent::ToolCallStart { id, name, .. } => {
+            IrStreamEvent::ToolCallStart { id, name, .. }
+            | IrStreamEvent::CustomToolCallStart { id, name, .. } => {
                 if let Some((id, name, args)) = current.take() {
                     tool_calls.push(gemini_function_call_value(&id, &name, &args));
                 }
                 current = Some((id.clone(), name.clone(), String::new()));
             }
-            IrStreamEvent::ToolCallArgDelta { delta, .. } => {
+            IrStreamEvent::ToolCallArgDelta { delta, .. }
+            | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
                 if let Some((_, _, args)) = current.as_mut() {
                     args.push_str(delta);
                 }
@@ -577,6 +583,9 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     });
     if let Some(reason) = finish {
         candidate["finishReason"] = json!(reason);
+    }
+    if !refusal.is_empty() {
+        candidate["finishMessage"] = json!(refusal);
     }
     if !grounding_chunks.is_empty() {
         candidate["groundingMetadata"] = json!({
@@ -1742,6 +1751,86 @@ mod tests {
                 .and_then(Value::as_str),
             Some("https://example.com"),
             "dest Gemini complete encode must write groundingChunks.web.uri, got {mapped}"
+        );
+    }
+
+    #[test]
+    fn dest_converse_complete_refusal_is_assistant_text() {
+        let events = [IrStreamEvent::RefusalDelta {
+            text: "nope".into(),
+        }];
+        let mapped = encode_response(Wire::Converse, &events).expect("encode dest Converse");
+        assert_eq!(
+            mapped
+                .pointer("/output/message/content/0/text")
+                .and_then(Value::as_str),
+            Some("nope"),
+            "dest Converse complete must keep a refusal as assistant text, got {mapped}"
+        );
+    }
+
+    #[test]
+    fn dest_complete_custom_tool_uses_the_stream_slot() {
+        let events = [
+            IrStreamEvent::CustomToolCallStart {
+                id: "call_a".into(),
+                name: "calc".into(),
+                index: 0,
+            },
+            IrStreamEvent::CustomToolCallInputDelta {
+                delta: "{\"n\":1}".into(),
+                index: 0,
+            },
+        ];
+        let converse = encode_response(Wire::Converse, &events).expect("encode dest Converse");
+        assert_eq!(
+            converse
+                .pointer("/output/message/content/0/toolUse/name")
+                .and_then(Value::as_str),
+            Some("calc"),
+            "dest Converse complete must write toolUse, got {converse}"
+        );
+        assert_eq!(
+            converse
+                .pointer("/output/message/content/0/toolUse/input/n")
+                .and_then(Value::as_i64),
+            Some(1),
+            "dest Converse complete must keep custom tool input, got {converse}"
+        );
+
+        let messages = encode_response(Wire::Messages, &events).expect("encode dest Messages");
+        assert_eq!(
+            messages.pointer("/content/0/type").and_then(Value::as_str),
+            Some("tool_use"),
+            "dest Messages complete must write tool_use, got {messages}"
+        );
+        assert_eq!(
+            messages.pointer("/content/0/name").and_then(Value::as_str),
+            Some("calc"),
+            "dest Messages complete must keep the custom tool name, got {messages}"
+        );
+        assert_eq!(
+            messages
+                .pointer("/content/0/input/n")
+                .and_then(Value::as_i64),
+            Some(1),
+            "dest Messages complete must keep custom tool input, got {messages}"
+        );
+
+        let gemini = encode_response(Wire::Gemini, &events).expect("encode dest Gemini");
+        assert_eq!(
+            gemini
+                .pointer("/candidates/0/content/parts/0/functionCall/name")
+                .and_then(Value::as_str),
+            Some("calc"),
+            "dest Gemini complete must write functionCall, got {gemini}"
+        );
+        assert_eq!(
+            gemini
+                .pointer("/candidates/0/content/parts/0/functionCall/args/n")
+                .and_then(Value::as_i64),
+            Some(1),
+            "dest Gemini complete must keep custom tool args, got {gemini}"
         );
     }
 

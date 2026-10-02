@@ -165,6 +165,16 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         }));
     }
 
+    if let Some(text) = candidate
+        .get("finishMessage")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(Some(IrStreamEvent::RefusalDelta {
+            text: text.to_string(),
+        }));
+    }
+
     if let Some(ev) = usage_from_chunk(value) {
         return Ok(Some(ev));
     }
@@ -254,12 +264,13 @@ fn map_block(reason: &str) -> String {
 
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     let data = match ev {
-        IrStreamEvent::TextDelta { text }
-        | IrStreamEvent::RefusalDelta { text }
-        | IrStreamEvent::AudioTranscriptDelta { text } => json!({
+        IrStreamEvent::TextDelta { text } | IrStreamEvent::AudioTranscriptDelta { text } => json!({
             "candidates": [{
                 "content": { "role": "model", "parts": [{ "text": text }] }
             }]
+        }),
+        IrStreamEvent::RefusalDelta { text } => json!({
+            "candidates": [{ "finishMessage": text }]
         }),
         IrStreamEvent::ReasoningDelta { text } => json!({
             "candidates": [{
