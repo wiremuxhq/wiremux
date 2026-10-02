@@ -256,6 +256,9 @@ pub struct IrSampling {
     /// Gemini request-root `safetySettings` array.
     /// Chat, Messages, Responses, and Converse drop.
     pub safety_settings: Option<serde_json::Value>,
+    /// Gemini request-root `labels` object.
+    /// Chat, Messages, Responses, and Converse drop.
+    pub request_labels: Option<serde_json::Value>,
 }
 
 impl IrSampling {

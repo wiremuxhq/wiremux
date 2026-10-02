@@ -462,6 +462,10 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .get("safetySettings")
             .filter(|settings| settings.is_array())
             .cloned(),
+        request_labels: value
+            .get("labels")
+            .filter(|labels| labels.is_object())
+            .cloned(),
     }
 }
 
@@ -1187,6 +1191,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(settings) = s.safety_settings.as_ref().filter(|value| value.is_array()) {
         body["safetySettings"] = settings.clone();
+    }
+    if let Some(labels) = s.request_labels.as_ref().filter(|value| value.is_object()) {
+        body["labels"] = labels.clone();
     }
     if let Some(store) = s.store {
         body["store"] = json!(store);
