@@ -677,6 +677,7 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                                 "type": "input_audio",
                                 "input_audio": { "data": data, "format": format }
                             }),
+                            IrPart::Text(text) => json!({"type": text_ty, "text": text}),
                             _ => raw.clone(),
                         }
                     } else {
