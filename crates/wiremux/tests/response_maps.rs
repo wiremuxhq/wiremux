@@ -1265,6 +1265,36 @@ fn converse_complete_round_trip_text() {
 }
 
 #[test]
+fn converse_complete_round_trips_additional_model_response_fields() {
+    let fields = json!({
+        "amazon-bedrock-invocationMetrics": { "firstByteLatency": 12 }
+    });
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{ "text": "pong" }]
+            }
+        },
+        "stopReason": "end_turn",
+        "additionalModelResponseFields": fields
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile()).expect("decode");
+    let mapped = encode_response(Wire::Converse, &events).expect("encode");
+    assert_eq!(
+        mapped.get("additionalModelResponseFields"),
+        Some(&fields),
+        "extra model fields missing: {mapped}"
+    );
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode chat");
+    assert!(
+        chat.get("additionalModelResponseFields").is_none(),
+        "Chat must not gain Converse extra fields: {chat}"
+    );
+}
+
+#[test]
 fn converse_complete_tool_calls_finish_stays_tool_use() {
     let events = [
         IrStreamEvent::ToolCallStart {
