@@ -5871,6 +5871,48 @@ fn gemini_cached_content_round_trip() {
 }
 
 #[test]
+fn gemini_safety_settings_round_trip() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "safetySettings": [{
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "threshold": "BLOCK_LOW_AND_ABOVE"
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/safetySettings/0/threshold")
+            .and_then(Value::as_str),
+        Some("BLOCK_LOW_AND_ABOVE"),
+        "Gemini safetySettings must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/safetySettings/0/category")
+            .and_then(Value::as_str),
+        Some("HARM_CATEGORY_HARASSMENT"),
+        "safety category must round-trip, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.safety_settings"),
+        "Gemini keeps safetySettings, got {report:?}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    assert!(
+        loss_dropped(&chat_report, "sampling.safety_settings"),
+        "Chat has no safetySettings slot, got {chat_report:?}"
+    );
+    assert!(
+        !chat.to_string().contains("BLOCK_LOW_AND_ABOVE"),
+        "Chat must not emit the Gemini threshold, got {chat}"
+    );
+}
+
+#[test]
 fn dest_gemini_frequency_penalty_reaches_chat() {
     let req = br#"{
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
