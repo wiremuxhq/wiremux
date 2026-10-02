@@ -1616,3 +1616,72 @@ fn responses_hosted_search_and_encrypted_reasoning_round_trip() {
         "encrypted reasoning must not be duplicated, got {events:?}"
     );
 }
+
+#[test]
+fn responses_complete_round_trips_search_mcp_list_and_approval() {
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-4.1",
+        "output": [
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "encrypted_content": "enc-xyz",
+                "summary": [{ "type": "summary_text", "text": "Search first" }]
+            },
+            {
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed",
+                "action": { "query": "wiremux" }
+            },
+            {
+                "type": "mcp_list_tools",
+                "id": "mcpl_1",
+                "server_label": "dmcp",
+                "tools": [{ "name": "roll", "input_schema": { "type": "object" } }]
+            },
+            {
+                "type": "mcp_approval_request",
+                "id": "mcpr_1",
+                "name": "roll",
+                "server_label": "dmcp",
+                "arguments": "{\"n\":1}"
+            }
+        ]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile()).expect("decode");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode");
+    let output = mapped
+        .get("output")
+        .and_then(|value| value.as_array())
+        .expect("output");
+    let has = |kind: &str, id: &str| {
+        output.iter().any(|item| {
+            item.get("type").and_then(|value| value.as_str()) == Some(kind)
+                && item.get("id").and_then(|value| value.as_str()) == Some(id)
+        })
+    };
+    assert!(
+        has("web_search_call", "ws_1"),
+        "search call missing: {output:?}"
+    );
+    assert!(
+        has("mcp_list_tools", "mcpl_1"),
+        "tool list missing: {output:?}"
+    );
+    assert!(
+        has("mcp_approval_request", "mcpr_1"),
+        "approval request missing: {output:?}"
+    );
+    assert!(
+        output.iter().any(|item| {
+            item.get("type").and_then(|value| value.as_str()) == Some("reasoning")
+                && item
+                    .get("encrypted_content")
+                    .and_then(|value| value.as_str())
+                    == Some("enc-xyz")
+        }),
+        "encrypted reasoning missing: {output:?}"
+    );
+}

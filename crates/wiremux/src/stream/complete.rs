@@ -743,6 +743,8 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut metadata = None;
     let mut moderation = None;
     let mut tool_calls = Vec::new();
+    let mut replay_items = Vec::new();
+    let mut saw_reasoning_item = false;
     let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
         match ev {
@@ -823,6 +825,16 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     tool_calls.push(responses_tool_call_value(&id, &name, &args, custom));
                 }
             }
+            IrStreamEvent::Protocol { item_type, payload }
+                if payload.get("type").and_then(Value::as_str) == Some(item_type.as_str())
+                    && item_type != "chunk"
+                    && item_type != "output_image" =>
+            {
+                if item_type == "reasoning" {
+                    saw_reasoning_item = true;
+                }
+                replay_items.push(payload.clone());
+            }
             _ => {}
         }
     }
@@ -831,7 +843,8 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
 
     let mut output = Vec::new();
-    if !reasoning.is_empty() || reasoning_signature.is_some() {
+    output.extend(replay_items);
+    if !saw_reasoning_item && (!reasoning.is_empty() || reasoning_signature.is_some()) {
         let mut item = json!({ "type": "reasoning" });
         if !reasoning.is_empty() {
             item["summary"] = json!([{ "type": "summary_text", "text": reasoning }]);
