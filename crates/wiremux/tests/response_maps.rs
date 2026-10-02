@@ -1035,6 +1035,25 @@ fn messages_complete_from_chat_events() {
 }
 
 #[test]
+fn gemini_complete_round_trips_response_id() {
+    let body = serde_json::to_vec(&json!({
+        "responseId": "gemini-real",
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "pong" }] },
+            "finishReason": "STOP"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile()).expect("decode");
+    let mapped = encode_response(Wire::Gemini, &events).expect("encode");
+    assert_eq!(
+        mapped.get("responseId").and_then(|value| value.as_str()),
+        Some("gemini-real"),
+        "Gemini response id replaced: {mapped}"
+    );
+}
+
+#[test]
 fn gemini_complete_from_chat_events() {
     let body = serde_json::to_vec(&json!({
         "choices": [{

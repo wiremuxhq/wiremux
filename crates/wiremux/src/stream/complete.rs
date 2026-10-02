@@ -503,6 +503,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut media_parts = Vec::new();
     let mut logprobs_content = Vec::new();
     let mut service_tier = None;
+    let mut gemini_response_id = None;
     let mut current: Option<(String, String, String, Option<String>)> = None;
     for ev in events {
         match ev {
@@ -621,6 +622,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     service_tier = Some(mapped);
                 }
             }
+            IrStreamEvent::Protocol { item_type, payload } if item_type == "gemini_response_id" => {
+                if let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty()) {
+                    gemini_response_id = Some(text.to_string());
+                }
+            }
             _ => {}
         }
     }
@@ -680,7 +686,9 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
 
     let mut out = json!({
         "candidates": [candidate],
-        "responseId": "gemini-wiremux",
+        "responseId": gemini_response_id
+            .as_deref()
+            .unwrap_or("gemini-wiremux"),
     });
     if !model.is_empty() {
         out["modelVersion"] = json!(model);

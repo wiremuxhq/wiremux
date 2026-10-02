@@ -7932,6 +7932,35 @@ fn responses_stream_keeps_response_id() {
 }
 
 #[test]
+fn gemini_stream_keeps_response_id() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "responseId": "gemini-real",
+            "candidates": [{
+                "content": { "role": "model", "parts": [{ "text": "pong" }] }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("decode");
+    let mut enc = StreamEncoder::new(Wire::Gemini).with_model("gemini-2.5-flash");
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push"));
+    }
+    assert!(!frames.is_empty(), "no frames");
+    for frame in &frames {
+        let value: Value = serde_json::from_str(&frame.data).expect("json");
+        assert_eq!(
+            value.get("responseId").and_then(|id| id.as_str()),
+            Some("gemini-real"),
+            "responseId missing: {value}"
+        );
+    }
+}
+
+#[test]
 fn chat_stream_custom_tool_call_decodes() {
     let raw = RawSse {
         event: None,

@@ -53,6 +53,7 @@ pub struct StreamEncoder {
     chat_completion_id: Option<String>,
     messages_id: Option<String>,
     responses_id: Option<String>,
+    gemini_response_id: Option<String>,
     service_tier: Option<String>,
     stop_sequence: Option<String>,
     metadata: Option<BTreeMap<String, String>>,
@@ -98,6 +99,7 @@ impl StreamEncoder {
             chat_completion_id: None,
             messages_id: None,
             responses_id: None,
+            gemini_response_id: None,
             service_tier: None,
             stop_sequence: None,
             metadata: None,
@@ -143,6 +145,14 @@ impl StreamEncoder {
                     && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())
                 {
                     self.responses_id = Some(text.to_string());
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload } if item_type == "gemini_response_id" => {
+                if self.wire == Wire::Gemini
+                    && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())
+                {
+                    self.gemini_response_id = Some(text.to_string());
                 }
                 Ok(Vec::new())
             }
@@ -194,7 +204,24 @@ impl StreamEncoder {
     }
 
     fn attach_dest_model(&self, frame: RawSse) -> RawSse {
-        self.attach_dest_model_key(frame, "modelVersion")
+        let frame = self.attach_dest_model_key(frame, "modelVersion");
+        let Some(id) = self.gemini_response_id.as_deref() else {
+            return frame;
+        };
+        if frame.data.trim() == "[DONE]" {
+            return frame;
+        }
+        let Ok(mut value) = serde_json::from_str::<Value>(&frame.data) else {
+            return frame;
+        };
+        let Value::Object(obj) = &mut value else {
+            return frame;
+        };
+        obj.insert("responseId".into(), json!(id));
+        RawSse {
+            event: frame.event,
+            data: value.to_string(),
+        }
     }
 
     fn attach_chat_dest_model(&self, frame: RawSse) -> RawSse {
