@@ -50,6 +50,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut logprobs_content = Vec::new();
     let mut created = None;
     let mut service_tier = None;
+    let mut system_fingerprint = None;
     let mut metadata = None;
     let mut moderation = None;
     let mut current: Option<(String, String, String, bool)> = None;
@@ -78,6 +79,11 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::Created { unix } => created = Some(*unix),
             IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
+            IrStreamEvent::Protocol { item_type, payload } if item_type == "system_fingerprint" => {
+                if let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty()) {
+                    system_fingerprint = Some(text.to_string());
+                }
+            }
             IrStreamEvent::Metadata { metadata: meta } => metadata = Some(meta.clone()),
             IrStreamEvent::Moderation { input, output } => {
                 moderation = Some((input.clone(), output.clone()));
@@ -194,6 +200,9 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     if let Some(tier) = service_tier {
         out["service_tier"] = json!(tier);
+    }
+    if let Some(fingerprint) = system_fingerprint {
+        out["system_fingerprint"] = json!(fingerprint);
     }
     if let Some(meta) = metadata.filter(|m| !m.is_empty()) {
         out["metadata"] = json!(meta);
@@ -1073,6 +1082,9 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
         out.push(IrStreamEvent::ServiceTier {
             tier: tier.to_string(),
         });
+    }
+    if let Some(ev) = super::chat::system_fingerprint_event(value) {
+        out.push(ev);
     }
     if let Some(unix) = value.get("created").and_then(Value::as_i64) {
         out.push(IrStreamEvent::Created { unix });

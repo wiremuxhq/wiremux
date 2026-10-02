@@ -149,6 +149,47 @@ fn chat_complete_message_content_finish_usage() {
 }
 
 #[test]
+fn chat_complete_round_trips_system_fingerprint() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": { "role": "assistant", "content": "hello" },
+            "finish_reason": "stop"
+        }],
+        "system_fingerprint": "fp_abc"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile()).expect("decode");
+    let mapped = encode_response(Wire::ChatCompletions, &events).expect("encode");
+    assert_eq!(
+        mapped
+            .get("system_fingerprint")
+            .and_then(|value| value.as_str()),
+        Some("fp_abc"),
+        "fingerprint missing: {mapped}"
+    );
+    let messages = encode_response(Wire::Messages, &events).expect("encode messages");
+    assert!(
+        messages.get("system_fingerprint").is_none(),
+        "Messages gained a Chat fingerprint: {messages}"
+    );
+
+    let blank = serde_json::to_vec(&json!({
+        "choices": [{
+            "message": { "role": "assistant", "content": "hello" },
+            "finish_reason": "stop"
+        }],
+        "system_fingerprint": " "
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &blank, &chat_profile()).expect("decode");
+    let mapped = encode_response(Wire::ChatCompletions, &events).expect("encode");
+    assert!(
+        mapped.get("system_fingerprint").is_none(),
+        "blank fingerprint must stay absent: {mapped}"
+    );
+}
+
+#[test]
 fn chat_complete_message_tool_calls() {
     let body = serde_json::to_vec(&json!({
         "choices": [{
