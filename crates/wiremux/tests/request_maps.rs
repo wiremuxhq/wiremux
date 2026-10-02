@@ -5557,6 +5557,47 @@ fn gemini_part_media_resolution_round_trip() {
 }
 
 #[test]
+fn gemini_image_config_round_trip() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "draw a kite"}]}],
+        "generationConfig": {
+            "imageConfig": {"aspectRatio": "16:9", "imageSize": "2K"}
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/imageConfig/aspectRatio")
+            .and_then(Value::as_str),
+        Some("16:9"),
+        "Gemini imageConfig.aspectRatio must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/generationConfig/imageConfig/imageSize")
+            .and_then(Value::as_str),
+        Some("2K"),
+        "Gemini imageConfig.imageSize must round-trip, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.image_config"),
+        "Gemini has imageConfig and must not Drop, got {report:?}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    assert!(
+        loss_dropped(&chat_report, "sampling.image_config"),
+        "Chat has no imageConfig slot, got {chat_report:?}"
+    );
+    assert!(
+        !chat.to_string().contains("16:9"),
+        "Chat must not emit imageConfig, got {chat}"
+    );
+}
+
+#[test]
 fn dest_gemini_frequency_penalty_reaches_chat() {
     let req = br#"{
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],

@@ -231,6 +231,9 @@ pub struct IrSampling {
     /// `MEDIA_RESOLUTION_HIGH`). Chat, Messages, Responses, and
     /// Converse drop.
     pub media_resolution: Option<String>,
+    /// Gemini `generationConfig.imageConfig` (`aspectRatio`, `imageSize`).
+    /// Chat, Messages, Responses, and Converse drop.
+    pub image_config: Option<serde_json::Value>,
 }
 
 impl IrSampling {

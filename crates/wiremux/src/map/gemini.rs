@@ -429,6 +429,10 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         media_resolution: str_field(cfg, "mediaResolution")
             .map(|level| level.trim().to_string())
             .filter(|level| !level.is_empty()),
+        image_config: cfg
+            .get("imageConfig")
+            .filter(|value| value.is_object())
+            .cloned(),
     }
 }
 
@@ -945,6 +949,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         .filter(|level| !level.is_empty())
     {
         cfg["mediaResolution"] = json!(level);
+    }
+    if let Some(config) = s.image_config.as_ref().filter(|value| value.is_object()) {
+        cfg["imageConfig"] = config.clone();
     }
     if s.inference_geo.is_some() {
         report.record("sampling.inference_geo", LossAction::Drop, "no slot");
