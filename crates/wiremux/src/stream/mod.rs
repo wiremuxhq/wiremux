@@ -802,7 +802,8 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
         IrStreamEvent::Protocol { item_type, payload } => {
             (wire == Wire::Messages
                 && (messages_protocol_reemits(item_type) || item_type == "messages_id"))
-                || (wire == Wire::Responses && responses_output_item(item_type, payload))
+                || (wire == Wire::Responses
+                    && (item_type == "responses_id" || responses_output_item(item_type, payload)))
                 || (wire == Wire::ChatCompletions
                     && (item_type == "system_fingerprint" || item_type == "chat_completion_id"))
         }
