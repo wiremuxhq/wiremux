@@ -276,6 +276,18 @@ fn decode_stream_events_seq(
         }
         .filter(|v| v.is_object());
         let mut out = Vec::new();
+        if name == "message_start"
+            && matches!(first, IrStreamEvent::Usage { .. })
+            && let Some(id) = value
+                .pointer("/message/id")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+        {
+            out.push(IrStreamEvent::Protocol {
+                item_type: "messages_id".into(),
+                payload: serde_json::json!(id),
+            });
+        }
         if let Some(usage) = usage
             && let Some(tier) = messages::service_tier_from_usage(usage)
         {
@@ -788,7 +800,8 @@ impl ToolCallAssembler {
 pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
     match ev {
         IrStreamEvent::Protocol { item_type, payload } => {
-            (wire == Wire::Messages && messages_protocol_reemits(item_type))
+            (wire == Wire::Messages
+                && (messages_protocol_reemits(item_type) || item_type == "messages_id"))
                 || (wire == Wire::Responses && responses_output_item(item_type, payload))
                 || (wire == Wire::ChatCompletions
                     && (item_type == "system_fingerprint" || item_type == "chat_completion_id"))
