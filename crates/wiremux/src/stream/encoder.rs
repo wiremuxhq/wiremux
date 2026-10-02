@@ -50,6 +50,7 @@ pub struct StreamEncoder {
     refusal_items: HashMap<u32, String>,
     reasoning_items: HashMap<u32, String>,
     created_at: Option<i64>,
+    chat_completion_id: Option<String>,
     service_tier: Option<String>,
     stop_sequence: Option<String>,
     metadata: Option<BTreeMap<String, String>>,
@@ -92,6 +93,7 @@ impl StreamEncoder {
             refusal_items: HashMap::new(),
             reasoning_items: HashMap::new(),
             created_at: None,
+            chat_completion_id: None,
             service_tier: None,
             stop_sequence: None,
             metadata: None,
@@ -116,6 +118,14 @@ impl StreamEncoder {
             return Ok(Vec::new());
         }
         match ev {
+            IrStreamEvent::Protocol { item_type, payload }
+                if self.wire == Wire::ChatCompletions && item_type == "chat_completion_id" =>
+            {
+                if let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty()) {
+                    self.chat_completion_id = Some(text.to_string());
+                }
+                Ok(Vec::new())
+            }
             IrStreamEvent::Protocol { .. } | IrStreamEvent::Unknown { .. } => {
                 Ok(vec![encode_stream_event(self.wire, &ev)?])
             }
@@ -177,7 +187,14 @@ impl StreamEncoder {
         let Value::Object(obj) = &mut value else {
             return frame;
         };
-        obj.insert("id".into(), json!("chatcmpl-wiremux"));
+        obj.insert(
+            "id".into(),
+            json!(
+                self.chat_completion_id
+                    .as_deref()
+                    .unwrap_or("chatcmpl-wiremux")
+            ),
+        );
         obj.insert("object".into(), json!("chat.completion.chunk"));
         // Fixed clock when the stream never carried Created.
         obj.insert(

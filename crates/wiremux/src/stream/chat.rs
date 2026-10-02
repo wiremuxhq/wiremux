@@ -137,7 +137,12 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     let choices = value.get("choices").and_then(Value::as_array);
     let empty_choices = choices.map(|c| c.is_empty()).unwrap_or(true);
     if empty_choices && let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
-        return Ok(vec![usage::from_chat(usage)]);
+        let mut out = Vec::new();
+        if let Some(ev) = completion_id_event(value) {
+            out.push(ev);
+        }
+        out.push(usage::from_chat(usage));
+        return Ok(out);
     }
 
     let Some(choice) = choices.and_then(|c| c.first()) else {
@@ -152,6 +157,9 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     };
 
     let mut out = Vec::new();
+    if let Some(ev) = completion_id_event(value) {
+        out.push(ev);
+    }
     if let Some(tier) = value
         .get("service_tier")
         .and_then(Value::as_str)
@@ -582,6 +590,17 @@ fn decode_tool_call(call: &Value, chunk: &Value) -> IrStreamEvent {
         Some(delta) => IrStreamEvent::ToolCallArgDelta { delta, index },
         None => keep(),
     }
+}
+
+pub(super) fn completion_id_event(value: &Value) -> Option<IrStreamEvent> {
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())?;
+    Some(IrStreamEvent::Protocol {
+        item_type: "chat_completion_id".into(),
+        payload: json!(id),
+    })
 }
 
 pub(super) fn system_fingerprint_event(value: &Value) -> Option<IrStreamEvent> {

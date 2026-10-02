@@ -7819,6 +7819,34 @@ fn chat_stream_system_fingerprint_round_trips() {
 }
 
 #[test]
+fn chat_stream_keeps_completion_id() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "id": "chatcmpl-real",
+            "choices": [{ "index": 0, "delta": { "content": "hi" } }]
+        })
+        .to_string(),
+    };
+    let events =
+        decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("decode");
+    let mut enc = StreamEncoder::new(Wire::ChatCompletions);
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push"));
+    }
+    assert!(!frames.is_empty(), "no frames");
+    for frame in &frames {
+        let value: Value = serde_json::from_str(&frame.data).expect("json");
+        assert_eq!(
+            value.get("id").and_then(|id| id.as_str()),
+            Some("chatcmpl-real"),
+            "chunk id replaced: {value}"
+        );
+    }
+}
+
+#[test]
 fn chat_stream_custom_tool_call_decodes() {
     let raw = RawSse {
         event: None,
