@@ -384,6 +384,17 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         background: None,
         conversation: None,
         responses_context_management: None,
+        messages_thinking: messages_native_thinking(value),
+    }
+}
+
+fn messages_native_thinking(value: &Value) -> Option<Value> {
+    let thinking = value.get("thinking")?;
+    let kind = thinking.get("type").and_then(Value::as_str)?.trim();
+    if kind == "adaptive" || kind == "between_tools" {
+        Some(thinking.clone())
+    } else {
+        None
     }
 }
 
@@ -404,9 +415,10 @@ fn decode_thinking(value: &Value, report: &mut LossReport) -> (Option<bool>, Opt
     let Some(thinking) = value.get("thinking") else {
         return (None, None);
     };
-    match thinking.get("type").and_then(Value::as_str) {
+    match thinking.get("type").and_then(Value::as_str).map(str::trim) {
         Some("disabled") => (Some(false), None),
         Some("enabled") => (Some(true), u32_field(thinking, "budget_tokens")),
+        Some("adaptive") | Some("between_tools") => (None, None),
         _ => {
             report.record("sampling.thinking", LossAction::Drop, "unknown thinking");
             (None, None)
@@ -1484,6 +1496,69 @@ const MESSAGES_DEFAULT_COMPLETION_TOKENS: u32 = 4096;
 const MESSAGES_DEFAULT_THINKING_BUDGET: u32 = 10240;
 
 fn encode_thinking(s: &IrSampling, body: &mut Value, report: &mut LossReport) {
+    if let Some(native) = s.messages_thinking.as_ref().filter(|thinking| {
+        thinking
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| {
+                let kind = kind.trim();
+                kind == "adaptive" || kind == "between_tools"
+            })
+    }) {
+        body["thinking"] = native.clone();
+        report.record(
+            "sampling.messages_thinking",
+            LossAction::Preserve,
+            "messages thinking",
+        );
+        if s.include_thoughts.is_some() {
+            report.record(
+                "sampling.include_thoughts",
+                LossAction::Drop,
+                "native thinking object",
+            );
+        }
+        if s.max_reasoning_tokens.is_some() {
+            report.record(
+                "sampling.max_reasoning_tokens",
+                LossAction::Drop,
+                "native thinking object",
+            );
+        }
+        if s.thinking_budget.is_some() {
+            report.record(
+                "sampling.thinking_budget",
+                LossAction::Drop,
+                "native thinking object",
+            );
+        }
+        if s.reasoning_effort
+            .as_deref()
+            .is_some_and(|effort| !effort.trim().is_empty())
+        {
+            if s.include_thoughts == Some(false) {
+                report.record(
+                    "sampling.reasoning_effort",
+                    LossAction::Drop,
+                    "thinking disabled",
+                );
+            } else {
+                report.record(
+                    "sampling.reasoning_effort",
+                    LossAction::Preserve,
+                    "messages output_config.effort",
+                );
+            }
+        }
+        return;
+    }
+    if s.messages_thinking.is_some() {
+        report.record(
+            "sampling.messages_thinking",
+            LossAction::Drop,
+            "not adaptive or between_tools",
+        );
+    }
     let effort = s
         .reasoning_effort
         .as_deref()
@@ -1590,7 +1665,7 @@ fn omit_sampling_rejected_by_thinking(s: &IrSampling, body: &mut Value, report: 
     let thinking_on = body
         .pointer("/thinking/type")
         .and_then(Value::as_str)
-        .is_some_and(|kind| kind == "enabled" || kind == "adaptive");
+        .is_some_and(|kind| kind == "enabled");
     if !thinking_on {
         return;
     }

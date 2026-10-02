@@ -3608,24 +3608,134 @@ fn messages_decode_unknown_thinking_array_drops() {
 }
 
 #[test]
-fn messages_decode_unknown_thinking_adaptive_drops() {
-    let req = br#"{
+fn messages_round_trips_adaptive_and_between_tools_thinking() {
+    let adaptive = br#"{
         "model": "claude-haiku-4-5-20251001",
-        "thinking": { "type": "adaptive" },
+        "thinking": { "type": "adaptive", "display": "summarized" },
+        "output_config": { "effort": "high" },
+        "max_tokens": 1024,
+        "temperature": 0.2,
+        "tool_choice": { "type": "any" },
         "messages": [{"role": "user", "content": "hi"}]
     }"#;
-    let (ir, report) = decode(Wire::Messages, req).expect("decode");
+    let (ir, report) = decode(Wire::Messages, adaptive).expect("decode");
     assert_eq!(ir.sampling.include_thoughts, None);
     assert_eq!(ir.sampling.max_reasoning_tokens, None);
-    assert!(
-        loss_dropped(&report, "sampling.thinking"),
-        "adaptive thinking must Drop, got {report:?}"
+    assert_eq!(
+        ir.sampling.messages_thinking,
+        Some(serde_json::json!({"type": "adaptive", "display": "summarized"}))
     );
+    assert!(
+        !loss_dropped(&report, "sampling.thinking"),
+        "adaptive thinking must stay, got {report:?}"
+    );
+    let (bytes, encode_report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("thinking"),
+        Some(&serde_json::json!({"type": "adaptive", "display": "summarized"}))
+    );
+    assert_eq!(body.get("temperature"), Some(&serde_json::json!(0.2)));
+    assert_eq!(
+        body.pointer("/output_config/effort")
+            .and_then(Value::as_str),
+        Some("high")
+    );
+    assert!(
+        !loss_dropped(&encode_report, "sampling.reasoning_effort"),
+        "effort must stay beside adaptive thinking, got {encode_report:?}"
+    );
+    assert_eq!(
+        body.pointer("/tool_choice/type").and_then(Value::as_str),
+        Some("any")
+    );
+    assert!(
+        !loss_dropped(&encode_report, "sampling.messages_thinking"),
+        "encode dropped adaptive thinking, got {encode_report:?}"
+    );
+
+    let between = br#"{
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": { "type": "between_tools" },
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, report) = decode(Wire::Messages, between).expect("decode");
+    assert_eq!(
+        ir.sampling.messages_thinking,
+        Some(serde_json::json!({"type": "between_tools"}))
+    );
+    assert!(!loss_dropped(&report, "sampling.thinking"), "{report:?}");
     let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("thinking"),
+        Some(&serde_json::json!({"type": "between_tools"}))
+    );
+
+    let omitted = br#"{
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": { "type": "adaptive", "display": "omitted" },
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, omitted).expect("decode");
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/thinking/display").and_then(Value::as_str),
+        Some("omitted")
+    );
+
+    let future = br#"{
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": { "type": "FUTURE_THINKING" },
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, report) = decode(Wire::Messages, future).expect("decode");
+    assert_eq!(ir.sampling.messages_thinking, None);
     assert!(
-        body.get("thinking").is_none(),
-        "must not invent adaptive thinking on re-encode, got {body}"
+        loss_dropped(&report, "sampling.thinking"),
+        "unknown thinking type must Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn other_wires_drop_messages_native_thinking() {
+    let ir = user_ir(IrSampling::patch(|sampling| {
+        sampling.messages_thinking =
+            Some(serde_json::json!({"type": "adaptive", "display": "summarized"}));
+    }));
+    let wires = [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Responses, hard_error_profile()),
+        (Wire::Gemini, gemini_profile()),
+        (Wire::Converse, converse_profile()),
+    ];
+    for (wire, profile) in wires {
+        let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(
+            !text.contains("adaptive") && !text.contains("between_tools"),
+            "{wire:?} emitted native thinking, got {body}"
+        );
+        assert!(
+            loss_dropped(&report, "sampling.messages_thinking"),
+            "{wire:?} drop missing, got {report:?}"
+        );
+    }
+
+    let (bytes, report) = encode(
+        Wire::Messages,
+        &user_ir(IrSampling::default()),
+        &messages_profile(),
+    )
+    .expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(body.get("thinking").is_none(), "invented thinking: {body}");
+    assert!(
+        !loss_dropped(&report, "sampling.messages_thinking"),
+        "default must not Drop messages thinking, got {report:?}"
     );
 }
 
