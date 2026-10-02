@@ -37,10 +37,16 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                 index: content_block_index(block)?,
             }));
         }
-        if let Some(citation) = delta.get("citation")
-            && let Some(annotation) = annotation_from_converse_citation(citation)
-        {
-            return Ok(Some(IrStreamEvent::AnnotationAdded { annotation }));
+        if let Some(citation) = delta.get("citation") {
+            if let Some(annotation) = annotation_from_converse_citation(citation) {
+                return Ok(Some(IrStreamEvent::AnnotationAdded { annotation }));
+            }
+            // A document citation has no web URL. The Unknown bucket
+            // is not a Converse slot, so the proxy would drop it.
+            return Ok(Some(IrStreamEvent::Protocol {
+                item_type: "converse_frame".into(),
+                payload: value.clone(),
+            }));
         }
     }
     if let Some(start) = value.get("contentBlockStart")
@@ -280,6 +286,11 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
                 ));
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "converse_citation" && payload.is_object() =>
+            {
+                citations.push(payload.clone());
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if converse_passthrough(item_type) && !payload.is_null() =>
             {
                 passthrough.push((item_type.clone(), payload.clone()));
@@ -435,6 +446,11 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
             for citation in citations {
                 if let Some(annotation) = annotation_from_converse_citation(citation) {
                     out.push(IrStreamEvent::AnnotationAdded { annotation });
+                } else if citation.is_object() {
+                    out.push(IrStreamEvent::Protocol {
+                        item_type: "converse_citation".into(),
+                        payload: citation.clone(),
+                    });
                 }
             }
         }

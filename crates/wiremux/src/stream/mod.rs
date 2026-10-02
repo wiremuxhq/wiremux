@@ -820,7 +820,12 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                 || (wire == Wire::Converse
                     && matches!(
                         item_type.as_str(),
-                        "additionalModelResponseFields" | "metrics" | "trace" | "performanceConfig"
+                        "additionalModelResponseFields"
+                            | "metrics"
+                            | "trace"
+                            | "performanceConfig"
+                            | "converse_frame"
+                            | "converse_citation"
                     ))
         }
         IrStreamEvent::Unknown { .. } => matches!(wire, Wire::Messages | Wire::Responses),
@@ -852,6 +857,24 @@ pub fn encode_stream_event(wire: Wire, ev: &IrStreamEvent) -> Result<RawSse, Map
             }
             if wire == Wire::ChatCompletions && item_type == "system_fingerprint" {
                 return chat::encode(ev);
+            }
+            if wire == Wire::Converse && item_type == "converse_frame" {
+                return Ok(RawSse {
+                    event: None,
+                    data: payload.to_string(),
+                });
+            }
+            if wire == Wire::Converse && item_type == "converse_citation" {
+                return Ok(RawSse {
+                    event: None,
+                    data: serde_json::json!({
+                        "contentBlockDelta": {
+                            "contentBlockIndex": 0,
+                            "delta": { "citation": payload }
+                        }
+                    })
+                    .to_string(),
+                });
             }
             Ok(encode_named(item_type, payload))
         }
@@ -1630,6 +1653,23 @@ base_url = "http://127.0.0.1"
             payload: serde_json::json!({"type": "web_search_call", "id": "ws_1"}),
         };
         assert!(event_has_slot(Wire::Responses, &ev));
+    }
+
+    #[cfg(feature = "proxy")]
+    #[test]
+    fn event_has_slot_keeps_converse_document_frame() {
+        let ev = IrStreamEvent::Protocol {
+            item_type: "converse_frame".into(),
+            payload: serde_json::json!({ "contentBlockDelta": {} }),
+        };
+        assert!(event_has_slot(Wire::Converse, &ev));
+        assert!(!event_has_slot(Wire::ChatCompletions, &ev));
+        let citation = IrStreamEvent::Protocol {
+            item_type: "converse_citation".into(),
+            payload: serde_json::json!({ "location": { "documentChar": { "documentIndex": 0 } } }),
+        };
+        assert!(event_has_slot(Wire::Converse, &citation));
+        assert!(!event_has_slot(Wire::Messages, &citation));
     }
 
     #[test]

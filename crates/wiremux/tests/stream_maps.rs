@@ -6097,6 +6097,42 @@ fn dest_converse_complete_citations_content_text_remaps_dest_chat_content() {
 }
 
 #[test]
+fn converse_complete_keeps_document_citation() {
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "citationsContent": {
+                        "content": [{ "text": "The grass is green." }],
+                        "citations": [{
+                            "title": "My Document",
+                            "sourceContent": [{ "text": "The grass is green." }],
+                            "location": {
+                                "documentChar": {
+                                    "documentIndex": 0,
+                                    "start": 0,
+                                    "end": 20
+                                }
+                            }
+                        }]
+                    }
+                }]
+            }
+        },
+        "stopReason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile()).expect("decode");
+    let encoded = encode_response(Wire::Converse, &events).expect("encode");
+    assert_eq!(
+        encoded.pointer("/output/message/content/0/citationsContent/citations/0/location/documentChar/documentIndex"),
+        Some(&json!(0)),
+        "document citation missing: {encoded}"
+    );
+}
+
+#[test]
 fn dest_converse_complete_citations_content_does_not_duplicate_sibling_text() {
     let body = serde_json::to_vec(&json!({
         "output": {
@@ -7997,6 +8033,58 @@ fn converse_stream_keeps_metrics_and_trace() {
             .and_then(|value| value.as_str()),
         Some("NONE"),
         "trace missing: {metadata}"
+    );
+}
+
+#[test]
+fn converse_stream_keeps_document_citation() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "contentBlockDelta": {
+                "contentBlockIndex": 0,
+                "delta": {
+                    "citation": {
+                        "title": "My Document",
+                        "sourceContent": [{ "text": "The grass is green." }],
+                        "location": {
+                            "documentChar": {
+                                "documentIndex": 0,
+                                "start": 0,
+                                "end": 20
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Converse, &raw, &converse_profile()).expect("decode");
+    let mut enc = StreamEncoder::new(Wire::Converse);
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push"));
+    }
+    assert!(
+        frames.iter().any(|frame| frame.event.is_none()),
+        "citation must stay an unnamed Converse frame, got {frames:?}"
+    );
+    let citation = frames
+        .iter()
+        .filter(|frame| frame.event.is_none())
+        .filter_map(|frame| serde_json::from_str::<Value>(&frame.data).ok())
+        .find(|value| value.pointer("/contentBlockDelta/delta/citation").is_some())
+        .expect("citation frame");
+    assert_eq!(
+        citation.pointer("/contentBlockDelta/delta/citation/sourceContent/0/text"),
+        Some(&json!("The grass is green.")),
+        "document citation missing: {citation}"
+    );
+    assert_eq!(
+        citation.pointer("/contentBlockDelta/delta/citation/location/documentChar/documentIndex"),
+        Some(&json!(0)),
+        "document index missing: {citation}"
     );
 }
 

@@ -168,6 +168,12 @@ impl StreamEncoder {
                 self.converse_passthrough.push((item_type, payload));
                 Ok(Vec::new())
             }
+            IrStreamEvent::Protocol { item_type, .. }
+                if matches!(item_type.as_str(), "converse_frame" | "converse_citation")
+                    && self.wire != Wire::Converse =>
+            {
+                Ok(Vec::new())
+            }
             IrStreamEvent::Protocol { .. } | IrStreamEvent::Unknown { .. } => {
                 Ok(vec![encode_stream_event(self.wire, &ev)?])
             }
