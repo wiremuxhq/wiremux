@@ -52,6 +52,7 @@ pub struct StreamEncoder {
     created_at: Option<i64>,
     chat_completion_id: Option<String>,
     messages_id: Option<String>,
+    responses_id: Option<String>,
     service_tier: Option<String>,
     stop_sequence: Option<String>,
     metadata: Option<BTreeMap<String, String>>,
@@ -96,6 +97,7 @@ impl StreamEncoder {
             created_at: None,
             chat_completion_id: None,
             messages_id: None,
+            responses_id: None,
             service_tier: None,
             stop_sequence: None,
             metadata: None,
@@ -133,6 +135,14 @@ impl StreamEncoder {
                     && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())
                 {
                     self.messages_id = Some(text.to_string());
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload } if item_type == "responses_id" => {
+                if self.wire == Wire::Responses
+                    && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())
+                {
+                    self.responses_id = Some(text.to_string());
                 }
                 Ok(Vec::new())
             }
@@ -698,7 +708,10 @@ impl StreamEncoder {
             )
         {
             self.started = true;
-            let mut created = json!({ "id": "resp_wiremux", "status": "in_progress" });
+            let mut created = json!({
+                "id": self.responses_id.as_deref().unwrap_or("resp_wiremux"),
+                "status": "in_progress"
+            });
             if !self.model.is_empty() {
                 created["model"] = json!(self.model);
             }
@@ -1153,7 +1166,7 @@ impl StreamEncoder {
             _ => ("response.completed", "completed"),
         };
         let mut response = json!({
-            "id": "resp_wiremux",
+            "id": self.responses_id.as_deref().unwrap_or("resp_wiremux"),
             "object": "response",
             "status": status
         });

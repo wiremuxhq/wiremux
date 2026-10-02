@@ -388,6 +388,17 @@ pub(super) fn image_delta_from_output_image(part: &Value) -> Option<IrStreamEven
 
 fn response_slot_events(value: &Value) -> Vec<IrStreamEvent> {
     let mut out = Vec::new();
+    if let Some(id) = value
+        .pointer("/response/id")
+        .or_else(|| value.get("id"))
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "responses_id".into(),
+            payload: json!(id),
+        });
+    }
     if let Some(ev) = super::complete::created_event(value) {
         out.push(ev);
     }

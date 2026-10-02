@@ -7882,6 +7882,56 @@ fn messages_stream_keeps_message_id_when_usage_is_present() {
 }
 
 #[test]
+fn responses_stream_keeps_response_id() {
+    let raw = RawSse {
+        event: Some("response.created".into()),
+        data: json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp_real",
+                "object": "response",
+                "created_at": 1700000001,
+                "status": "in_progress"
+            }
+        })
+        .to_string(),
+    };
+    let mut events =
+        decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("decode");
+    events.push(IrStreamEvent::TextDelta { text: "hi".into() });
+    let mut enc = StreamEncoder::new(Wire::Responses).with_model("gpt-4.1");
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push"));
+    }
+    frames.extend(enc.finish().expect("finish"));
+    let created = frames
+        .iter()
+        .find(|frame| frame.event.as_deref() == Some("response.created"))
+        .expect("created");
+    let created_body: Value = serde_json::from_str(&created.data).expect("json");
+    assert_eq!(
+        created_body
+            .pointer("/response/id")
+            .and_then(|id| id.as_str()),
+        Some("resp_real"),
+        "created id replaced: {created_body}"
+    );
+    let completed = frames
+        .iter()
+        .find(|frame| frame.event.as_deref() == Some("response.completed"))
+        .expect("completed");
+    let completed_body: Value = serde_json::from_str(&completed.data).expect("json");
+    assert_eq!(
+        completed_body
+            .pointer("/response/id")
+            .and_then(|id| id.as_str()),
+        Some("resp_real"),
+        "completed id replaced: {completed_body}"
+    );
+}
+
+#[test]
 fn chat_stream_custom_tool_call_decodes() {
     let raw = RawSse {
         event: None,
