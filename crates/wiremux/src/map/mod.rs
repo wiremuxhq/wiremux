@@ -336,6 +336,9 @@ fn drop_dest_n_and_penalties(s: &IrSampling, report: &mut LossReport) {
     if s.multi_speaker_speech.is_some() {
         report.record("sampling.multi_speaker_speech", LossAction::Drop, "no slot");
     }
+    if s.cached_content.is_some() {
+        report.record("sampling.cached_content", LossAction::Drop, "no slot");
+    }
 }
 
 fn drop_dest_output_modalities(s: &IrSampling, report: &mut LossReport) {

@@ -251,6 +251,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         affective_dialog: None,
         enhanced_civic_answers: None,
         multi_speaker_speech: None,
+        cached_content: None,
     }
 }
 
@@ -768,6 +769,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.multi_speaker_speech.is_some() {
         report.record("sampling.multi_speaker_speech", LossAction::Drop, "no slot");
+    }
+    if s.cached_content.is_some() {
+        report.record("sampling.cached_content", LossAction::Drop, "no slot");
     }
     if s.inference_geo.is_some() {
         report.record("sampling.inference_geo", LossAction::Drop, "no slot");
