@@ -54,6 +54,7 @@ pub struct StreamEncoder {
     messages_id: Option<String>,
     messages_container: Option<Value>,
     messages_container_written: bool,
+    messages_context_management: Option<Value>,
     responses_id: Option<String>,
     gemini_response_id: Option<String>,
     converse_passthrough: Vec<(String, Value)>,
@@ -103,6 +104,7 @@ impl StreamEncoder {
             messages_id: None,
             messages_container: None,
             messages_container_written: false,
+            messages_context_management: None,
             responses_id: None,
             gemini_response_id: None,
             converse_passthrough: Vec::new(),
@@ -350,6 +352,9 @@ impl StreamEncoder {
         if let IrStreamEvent::Container { ref value } = ev {
             self.messages_container = Some(value.clone());
         }
+        if let IrStreamEvent::ContextManagement { ref value } = ev {
+            self.messages_context_management = Some(value.clone());
+        }
         let mut out = Vec::new();
         if !self.started {
             if matches!(
@@ -357,6 +362,7 @@ impl StreamEncoder {
                 IrStreamEvent::ServiceTier { .. }
                     | IrStreamEvent::StopSequence { .. }
                     | IrStreamEvent::Container { .. }
+                    | IrStreamEvent::ContextManagement { .. }
             ) {
                 return Ok(out);
             }
@@ -720,6 +726,9 @@ impl StreamEncoder {
             && let Some(container) = &self.messages_container
         {
             data["container"] = container.clone();
+        }
+        if let Some(managed) = &self.messages_context_management {
+            data["context_management"] = managed.clone();
         }
         out.push(named("message_delta", data));
         out.push(named("message_stop", json!({ "type": "message_stop" })));

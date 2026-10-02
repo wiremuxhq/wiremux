@@ -329,6 +329,17 @@ fn decode_stream_events_seq(
                 text: text.to_string(),
             });
         }
+        if name == "message_delta"
+            && matches!(
+                first,
+                IrStreamEvent::FinishReason { .. } | IrStreamEvent::Usage { .. }
+            )
+            && let Some(managed) = value.get("context_management").filter(|v| v.is_object())
+        {
+            out.push(IrStreamEvent::ContextManagement {
+                value: managed.clone(),
+            });
+        }
         out.push(first);
         if add_delta_usage && let Some(usage) = usage {
             out.push(usage::from_anthropic(usage));
