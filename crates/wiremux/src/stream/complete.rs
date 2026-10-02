@@ -51,6 +51,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut created = None;
     let mut service_tier = None;
     let mut system_fingerprint = None;
+    let mut chat_completion_id = None;
     let mut metadata = None;
     let mut moderation = None;
     let mut current: Option<(String, String, String, bool)> = None;
@@ -79,9 +80,13 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::Created { unix } => created = Some(*unix),
             IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
-            IrStreamEvent::Protocol { item_type, payload } if item_type == "system_fingerprint" => {
+            IrStreamEvent::Protocol { item_type, payload } => {
                 if let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty()) {
-                    system_fingerprint = Some(text.to_string());
+                    if item_type == "system_fingerprint" {
+                        system_fingerprint = Some(text.to_string());
+                    } else if item_type == "chat_completion_id" {
+                        chat_completion_id = Some(text.to_string());
+                    }
                 }
             }
             IrStreamEvent::Metadata { metadata: meta } => metadata = Some(meta.clone()),
@@ -188,7 +193,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
 
     let mut out = json!({
-        "id": "chatcmpl-wiremux",
+        "id": chat_completion_id.as_deref().unwrap_or("chatcmpl-wiremux"),
         "object": "chat.completion",
         "choices": [choice],
     });
@@ -1085,6 +1090,16 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     }
     if let Some(ev) = super::chat::system_fingerprint_event(value) {
         out.push(ev);
+    }
+    if let Some(id) = value
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "chat_completion_id".into(),
+            payload: json!(id),
+        });
     }
     if let Some(unix) = value.get("created").and_then(Value::as_i64) {
         out.push(IrStreamEvent::Created { unix });
