@@ -319,6 +319,16 @@ fn decode_stream_events_seq(
                 });
             }
         }
+        if add_delta_usage
+            && let Some(text) = value
+                .pointer("/delta/stop_sequence")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+        {
+            out.push(IrStreamEvent::StopSequence {
+                text: text.to_string(),
+            });
+        }
         out.push(first);
         if add_delta_usage && let Some(usage) = usage {
             out.push(usage::from_anthropic(usage));
