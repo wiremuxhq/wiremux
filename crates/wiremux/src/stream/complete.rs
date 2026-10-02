@@ -473,7 +473,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut media_parts = Vec::new();
     let mut logprobs_content = Vec::new();
     let mut service_tier = None;
-    let mut current: Option<(String, String, String)> = None;
+    let mut current: Option<(String, String, String, Option<String>)> = None;
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta }
@@ -535,22 +535,55 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     *completion_audio_tokens,
                 ));
             }
-            IrStreamEvent::ToolCallStart { id, name, .. }
-            | IrStreamEvent::CustomToolCallStart { id, name, .. } => {
-                if let Some((id, name, args)) = current.take() {
-                    tool_calls.push(gemini_function_call_value(&id, &name, &args));
+            IrStreamEvent::ToolCallStart {
+                id,
+                name,
+                thought_signature,
+                ..
+            } => {
+                if let Some((id, name, args, signature)) = current.take() {
+                    tool_calls.push(gemini_function_call_value(
+                        &id,
+                        &name,
+                        &args,
+                        signature.as_deref(),
+                    ));
                 }
-                current = Some((id.clone(), name.clone(), String::new()));
+                current = Some((
+                    id.clone(),
+                    name.clone(),
+                    String::new(),
+                    thought_signature
+                        .as_deref()
+                        .filter(|sig| !sig.is_empty())
+                        .map(str::to_string),
+                ));
+            }
+            IrStreamEvent::CustomToolCallStart { id, name, .. } => {
+                if let Some((id, name, args, signature)) = current.take() {
+                    tool_calls.push(gemini_function_call_value(
+                        &id,
+                        &name,
+                        &args,
+                        signature.as_deref(),
+                    ));
+                }
+                current = Some((id.clone(), name.clone(), String::new(), None));
             }
             IrStreamEvent::ToolCallArgDelta { delta, .. }
             | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
-                if let Some((_, _, args)) = current.as_mut() {
+                if let Some((_, _, args, _)) = current.as_mut() {
                     args.push_str(delta);
                 }
             }
             IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args)) = current.take() {
-                    tool_calls.push(gemini_function_call_value(&id, &name, &args));
+                if let Some((id, name, args, signature)) = current.take() {
+                    tool_calls.push(gemini_function_call_value(
+                        &id,
+                        &name,
+                        &args,
+                        signature.as_deref(),
+                    ));
                 }
             }
             IrStreamEvent::ServiceTier { tier } => {
@@ -561,8 +594,13 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             _ => {}
         }
     }
-    if let Some((id, name, args)) = current.take() {
-        tool_calls.push(gemini_function_call_value(&id, &name, &args));
+    if let Some((id, name, args, signature)) = current.take() {
+        tool_calls.push(gemini_function_call_value(
+            &id,
+            &name,
+            &args,
+            signature.as_deref(),
+        ));
     }
 
     let mut parts = Vec::new();
@@ -651,7 +689,12 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     out
 }
 
-fn gemini_function_call_value(id: &str, name: &str, args: &str) -> Value {
+fn gemini_function_call_value(
+    id: &str,
+    name: &str,
+    args: &str,
+    thought_signature: Option<&str>,
+) -> Value {
     let n = if name.is_empty() { id } else { name };
     let mut function_call = json!({
         "name": n,
@@ -660,7 +703,11 @@ fn gemini_function_call_value(id: &str, name: &str, args: &str) -> Value {
     if !id.is_empty() {
         function_call["id"] = json!(id);
     }
-    json!({ "functionCall": function_call })
+    let mut part = json!({ "functionCall": function_call });
+    if let Some(sig) = thought_signature.filter(|sig| !sig.is_empty()) {
+        part["thoughtSignature"] = json!(sig);
+    }
+    part
 }
 
 fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
@@ -690,7 +737,9 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 reasoning_signature = Some(signature.clone());
             }
             IrStreamEvent::AnnotationAdded { annotation } => {
-                annotations.push(annotation.clone());
+                annotations.push(super::responses::annotation_without_segment_text(
+                    annotation,
+                ));
             }
             IrStreamEvent::AudioDelta { data } => audio_data.push_str(data),
             IrStreamEvent::ImageDelta { media_type, data } => {

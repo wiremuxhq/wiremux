@@ -311,11 +311,15 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         }
         IrStreamEvent::CustomToolCallStart { id, name, .. } => {
             let n = if name.is_empty() { id } else { name };
+            let mut function_call = json!({ "name": n, "args": {} });
+            if !id.is_empty() {
+                function_call["id"] = json!(id);
+            }
             json!({
                 "candidates": [{
                     "content": {
                         "role": "model",
-                        "parts": [{ "functionCall": { "name": n, "args": {} } }]
+                        "parts": [{ "functionCall": function_call }]
                     }
                 }]
             })
@@ -562,6 +566,13 @@ pub(super) fn apply_grounding_support(
             support.pointer("/segment/startIndex"),
             support.pointer("/segment/endIndex"),
         );
+        if let Some(text) = support
+            .pointer("/segment/text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            annotation["segment_text"] = json!(text);
+        }
         break;
     }
 }
@@ -599,13 +610,21 @@ pub(super) fn annotation_from_grounding_chunk(chunk: &Value) -> Option<Value> {
 }
 
 pub(super) fn grounding_support_from_annotation(annotation: &Value, chunk_index: usize) -> Value {
-    json!({
+    let mut support = json!({
         "segment": {
             "startIndex": annotation.get("start_index").cloned().unwrap_or(json!(0)),
             "endIndex": annotation.get("end_index").cloned().unwrap_or(json!(0))
         },
         "groundingChunkIndices": [chunk_index]
-    })
+    });
+    if let Some(text) = annotation
+        .get("segment_text")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        support["segment"]["text"] = json!(text);
+    }
+    support
 }
 
 pub(super) fn grounding_chunk_from_annotation(annotation: &Value) -> Value {
@@ -621,7 +640,25 @@ pub(super) fn finish_token(reason: &str, vendor: Option<&str>) -> String {
     if let Some(token) = vendor.filter(|token| is_gemini_finish_token(token)) {
         return (*token).to_string();
     }
+    // Unknown candidate finishReason stays on both fields. A blockReason
+    // is mapped to content_filter and must still encode as SAFETY.
+    if let Some(token) = vendor.filter(|token| *token == reason && !is_mapped_finish_reason(reason))
+    {
+        return (*token).to_string();
+    }
     encode_finish(reason).to_string()
+}
+
+fn is_mapped_finish_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "stop"
+            | "max_tokens"
+            | "length"
+            | "content_filter"
+            | "tool_calls"
+            | "malformed_function_call"
+    )
 }
 
 fn is_gemini_finish_token(token: &str) -> bool {
