@@ -510,6 +510,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut logprobs_content = Vec::new();
     let mut service_tier = None;
     let mut gemini_response_id = None;
+    let mut safety_ratings = None;
     let mut current: Option<(String, String, String, Option<String>)> = None;
     for ev in events {
         match ev {
@@ -633,6 +634,12 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     gemini_response_id = Some(text.to_string());
                 }
             }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_safety_ratings"
+                    && payload.as_array().is_some_and(|items| !items.is_empty()) =>
+            {
+                safety_ratings = Some(payload.clone());
+            }
             _ => {}
         }
     }
@@ -667,6 +674,9 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     });
     if let Some(reason) = finish {
         candidate["finishReason"] = json!(reason);
+    }
+    if let Some(ratings) = safety_ratings {
+        candidate["safetyRatings"] = ratings;
     }
     if !refusal.is_empty() {
         candidate["finishMessage"] = json!(refusal);

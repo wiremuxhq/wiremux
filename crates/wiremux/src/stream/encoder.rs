@@ -58,6 +58,7 @@ pub struct StreamEncoder {
     messages_cache_miss: Option<Value>,
     responses_id: Option<String>,
     gemini_response_id: Option<String>,
+    gemini_safety_ratings: Option<Value>,
     converse_passthrough: Vec<(String, Value)>,
     service_tier: Option<String>,
     stop_sequence: Option<String>,
@@ -109,6 +110,7 @@ impl StreamEncoder {
             messages_cache_miss: None,
             responses_id: None,
             gemini_response_id: None,
+            gemini_safety_ratings: None,
             converse_passthrough: Vec::new(),
             service_tier: None,
             stop_sequence: None,
@@ -163,6 +165,16 @@ impl StreamEncoder {
                     && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())
                 {
                     self.gemini_response_id = Some(text.to_string());
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_safety_ratings" =>
+            {
+                if self.wire == Wire::Gemini
+                    && payload.as_array().is_some_and(|items| !items.is_empty())
+                {
+                    self.gemini_safety_ratings = Some(payload);
                 }
                 Ok(Vec::new())
             }
@@ -231,19 +243,29 @@ impl StreamEncoder {
 
     fn attach_dest_model(&self, frame: RawSse) -> RawSse {
         let frame = self.attach_dest_model_key(frame, "modelVersion");
-        let Some(id) = self.gemini_response_id.as_deref() else {
-            return frame;
-        };
         if frame.data.trim() == "[DONE]" {
+            return frame;
+        }
+        if self.gemini_response_id.is_none() && self.gemini_safety_ratings.is_none() {
             return frame;
         }
         let Ok(mut value) = serde_json::from_str::<Value>(&frame.data) else {
             return frame;
         };
-        let Value::Object(obj) = &mut value else {
-            return frame;
-        };
-        obj.insert("responseId".into(), json!(id));
+        if let Some(id) = self.gemini_response_id.as_deref()
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert("responseId".into(), json!(id));
+        }
+        if self.gemini_safety_ratings.is_some()
+            && value.pointer("/candidates/0/finishReason").is_some()
+            && let Some(ratings) = &self.gemini_safety_ratings
+            && let Some(candidate) = value
+                .pointer_mut("/candidates/0")
+                .and_then(Value::as_object_mut)
+        {
+            candidate.insert("safetyRatings".into(), ratings.clone());
+        }
         RawSse {
             event: frame.event,
             data: value.to_string(),
