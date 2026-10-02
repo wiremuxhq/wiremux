@@ -506,12 +506,19 @@ pub(super) fn first_citation_annotation(candidate: &Value) -> Option<Value> {
 
 pub(super) fn citation_annotations(candidate: &Value) -> impl Iterator<Item = Value> + '_ {
     CITATION_LIST_POINTERS.iter().flat_map(|pointer| {
+        let from_url_context = *pointer == "/urlContextMetadata/urlMetadata";
         candidate
             .pointer(pointer)
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(annotation_from_citation)
+            .filter_map(move |cite| {
+                let mut annotation = annotation_from_citation(cite)?;
+                if from_url_context {
+                    annotation["url_context"] = json!(true);
+                }
+                Some(annotation)
+            })
     })
 }
 

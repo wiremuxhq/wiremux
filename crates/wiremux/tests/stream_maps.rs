@@ -1828,6 +1828,35 @@ fn dest_gemini_complete_url_context_metadata_remaps_dest_chat_url_citation() {
 }
 
 #[test]
+fn gemini_complete_keeps_url_context_metadata() {
+    let metadata = json!({
+        "urlMetadata": [{
+            "retrievedUrl": "https://example.com/doc",
+            "title": "Doc"
+        }]
+    });
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "Hi" }] },
+            "urlContextMetadata": metadata,
+            "finishReason": "STOP"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile()).expect("decode");
+    let encoded = encode_response(Wire::Gemini, &events).expect("encode");
+    assert_eq!(
+        encoded.pointer("/candidates/0/urlContextMetadata"),
+        Some(&metadata),
+        "url context missing: {encoded}"
+    );
+    assert!(
+        encoded.pointer("/candidates/0/groundingMetadata").is_none(),
+        "url context must not become grounding: {encoded}"
+    );
+}
+
+#[test]
 fn dest_gemini_complete_citation_sources_remaps_dest_chat_url_citation() {
     let body = serde_json::to_vec(&json!({
         "candidates": [{

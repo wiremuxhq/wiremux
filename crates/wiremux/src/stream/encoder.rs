@@ -59,6 +59,7 @@ pub struct StreamEncoder {
     responses_id: Option<String>,
     gemini_response_id: Option<String>,
     gemini_safety_ratings: Option<Value>,
+    gemini_url_context: Option<Value>,
     converse_passthrough: Vec<(String, Value)>,
     service_tier: Option<String>,
     stop_sequence: Option<String>,
@@ -111,6 +112,7 @@ impl StreamEncoder {
             responses_id: None,
             gemini_response_id: None,
             gemini_safety_ratings: None,
+            gemini_url_context: None,
             converse_passthrough: Vec::new(),
             service_tier: None,
             stop_sequence: None,
@@ -168,6 +170,12 @@ impl StreamEncoder {
                 }
                 Ok(Vec::new())
             }
+            IrStreamEvent::Protocol { item_type, payload } if item_type == "gemini_url_context" => {
+                if self.wire == Wire::Gemini && payload.is_object() {
+                    self.gemini_url_context = Some(payload);
+                }
+                Ok(Vec::new())
+            }
             IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "gemini_safety_ratings" =>
             {
@@ -209,6 +217,12 @@ impl StreamEncoder {
             IrStreamEvent::SearchEntryPoint { .. } if !matches!(self.wire, Wire::Gemini) => {
                 Ok(Vec::new())
             }
+            IrStreamEvent::AnnotationAdded { annotation }
+                if self.wire == Wire::Gemini
+                    && annotation.get("url_context").and_then(Value::as_bool) == Some(true) =>
+            {
+                Ok(Vec::new())
+            }
             other => match self.wire {
                 Wire::Messages => self.push_messages(other),
                 Wire::Responses => self.push_responses(other),
@@ -246,7 +260,10 @@ impl StreamEncoder {
         if frame.data.trim() == "[DONE]" {
             return frame;
         }
-        if self.gemini_response_id.is_none() && self.gemini_safety_ratings.is_none() {
+        if self.gemini_response_id.is_none()
+            && self.gemini_safety_ratings.is_none()
+            && self.gemini_url_context.is_none()
+        {
             return frame;
         }
         let Ok(mut value) = serde_json::from_str::<Value>(&frame.data) else {
@@ -265,6 +282,15 @@ impl StreamEncoder {
                 .and_then(Value::as_object_mut)
         {
             candidate.insert("safetyRatings".into(), ratings.clone());
+        }
+        if self.gemini_url_context.is_some()
+            && value.pointer("/candidates/0/finishReason").is_some()
+            && let Some(metadata) = &self.gemini_url_context
+            && let Some(candidate) = value
+                .pointer_mut("/candidates/0")
+                .and_then(Value::as_object_mut)
+        {
+            candidate.insert("urlContextMetadata".into(), metadata.clone());
         }
         RawSse {
             event: frame.event,
