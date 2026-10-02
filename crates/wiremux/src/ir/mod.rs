@@ -234,6 +234,18 @@ pub struct IrSampling {
     /// Gemini `generationConfig.imageConfig` (`aspectRatio`, `imageSize`).
     /// Chat, Messages, Responses, and Converse drop.
     pub image_config: Option<serde_json::Value>,
+    /// Gemini `generationConfig.audioTranscriptionConfig`.
+    /// Chat, Messages, Responses, and Converse drop.
+    pub audio_transcription_config: Option<serde_json::Value>,
+    /// Gemini `generationConfig.translationConfig`.
+    /// Chat, Messages, Responses, and Converse drop.
+    pub translation_config: Option<serde_json::Value>,
+    /// Gemini `generationConfig.enableAffectiveDialog`.
+    /// Chat, Messages, Responses, and Converse drop.
+    pub affective_dialog: Option<bool>,
+    /// Gemini `generationConfig.enableEnhancedCivicAnswers`.
+    /// Chat, Messages, Responses, and Converse drop.
+    pub enhanced_civic_answers: Option<bool>,
 }
 
 impl IrSampling {

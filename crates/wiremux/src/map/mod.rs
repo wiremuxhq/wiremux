@@ -313,6 +313,26 @@ fn drop_dest_n_and_penalties(s: &IrSampling, report: &mut LossReport) {
     if s.image_config.is_some() {
         report.record("sampling.image_config", LossAction::Drop, "no slot");
     }
+    if s.audio_transcription_config.is_some() {
+        report.record(
+            "sampling.audio_transcription_config",
+            LossAction::Drop,
+            "no slot",
+        );
+    }
+    if s.translation_config.is_some() {
+        report.record("sampling.translation_config", LossAction::Drop, "no slot");
+    }
+    if s.affective_dialog.is_some() {
+        report.record("sampling.affective_dialog", LossAction::Drop, "no slot");
+    }
+    if s.enhanced_civic_answers.is_some() {
+        report.record(
+            "sampling.enhanced_civic_answers",
+            LossAction::Drop,
+            "no slot",
+        );
+    }
 }
 
 fn drop_dest_output_modalities(s: &IrSampling, report: &mut LossReport) {

@@ -5665,6 +5665,75 @@ fn gemini_audio_transcript_and_speech_metadata_round_trip() {
 }
 
 #[test]
+fn gemini_generation_sidecars_round_trip() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "audioTranscriptionConfig": {"languageCodes": ["en"], "diarization": true},
+            "translationConfig": {"targetLanguageCode": "fr"},
+            "enableAffectiveDialog": true,
+            "enableEnhancedCivicAnswers": true
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/audioTranscriptionConfig/languageCodes/0")
+            .and_then(Value::as_str),
+        Some("en"),
+        "audioTranscriptionConfig must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/generationConfig/audioTranscriptionConfig/diarization")
+            .and_then(Value::as_bool),
+        Some(true),
+        "diarization must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/generationConfig/translationConfig/targetLanguageCode")
+            .and_then(Value::as_str),
+        Some("fr"),
+        "translationConfig must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/generationConfig/enableAffectiveDialog")
+            .and_then(Value::as_bool),
+        Some(true),
+        "enableAffectiveDialog must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/generationConfig/enableEnhancedCivicAnswers")
+            .and_then(Value::as_bool),
+        Some(true),
+        "enableEnhancedCivicAnswers must round-trip, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.audio_transcription_config"),
+        "Gemini keeps audioTranscriptionConfig, got {report:?}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    let rendered = chat.to_string();
+    assert!(
+        loss_dropped(&chat_report, "sampling.audio_transcription_config")
+            && loss_dropped(&chat_report, "sampling.translation_config")
+            && loss_dropped(&chat_report, "sampling.affective_dialog")
+            && loss_dropped(&chat_report, "sampling.enhanced_civic_answers"),
+        "Chat must record the Gemini-only drops, got {chat_report:?}"
+    );
+    assert!(
+        !rendered.contains("diarization")
+            && !rendered.contains("targetLanguageCode")
+            && !rendered.contains("enableAffectiveDialog")
+            && !rendered.contains("enableEnhancedCivicAnswers"),
+        "Chat must not emit these Gemini fields, got {chat}"
+    );
+}
+
+#[test]
 fn dest_gemini_frequency_penalty_reaches_chat() {
     let req = br#"{
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
