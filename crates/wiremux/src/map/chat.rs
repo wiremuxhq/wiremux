@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use super::tools::{PreparedTool, decode_tool};
 use super::{
     MapError, bool_field, decode_input_audio_part, decode_openai_file_part,
-    drop_responses_request_fields, f32_field, i64_field, stop_values, str_field,
-    string_object_field, u32_field, value_as_string,
+    drop_messages_native_thinking, drop_responses_request_fields, f32_field, i64_field,
+    stop_values, str_field, string_object_field, u32_field, value_as_string,
 };
 use crate::ir::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
@@ -260,6 +260,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         background: None,
         conversation: None,
         responses_context_management: None,
+        messages_thinking: None,
     }
 }
 
@@ -819,6 +820,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         report.record("sampling.context_management", LossAction::Drop, "no slot");
     }
     drop_responses_request_fields(s, report);
+    drop_messages_native_thinking(s, report);
     if s.mcp_servers.is_some() {
         report.record("sampling.mcp_servers", LossAction::Drop, "no slot");
     }

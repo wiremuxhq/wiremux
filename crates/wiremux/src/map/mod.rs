@@ -372,6 +372,12 @@ fn drop_responses_request_fields(s: &IrSampling, report: &mut LossReport) {
     }
 }
 
+fn drop_messages_native_thinking(s: &IrSampling, report: &mut LossReport) {
+    if s.messages_thinking.is_some() {
+        report.record("sampling.messages_thinking", LossAction::Drop, "no slot");
+    }
+}
+
 fn drop_dest_output_modalities(s: &IrSampling, report: &mut LossReport) {
     if !s.output_modalities.is_empty() {
         report.record("sampling.output_modalities", LossAction::Drop, "no slot");

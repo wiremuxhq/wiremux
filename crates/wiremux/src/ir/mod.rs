@@ -277,6 +277,11 @@ pub struct IrSampling {
     /// Distinct from the Messages `context_management` object.
     /// Chat, Messages, Gemini, and Converse drop.
     pub responses_context_management: Option<serde_json::Value>,
+    /// Messages request `thinking` when `type` is `adaptive` or
+    /// `between_tools`, including `display`. `enabled` and `disabled`
+    /// stay on `include_thoughts`. Chat, Responses, Gemini, and
+    /// Converse drop.
+    pub messages_thinking: Option<serde_json::Value>,
 }
 
 impl IrSampling {

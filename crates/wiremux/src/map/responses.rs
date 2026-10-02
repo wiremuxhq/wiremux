@@ -7,8 +7,9 @@ use super::tools::{PreparedTool, decode_tool, qualify_call_name, split_namespace
 use super::{
     MapError, bool_field, decode_input_audio_part, decode_openai_file_part,
     drop_dest_chat_logit_bias, drop_dest_logprobs, drop_dest_n_and_penalties,
-    drop_dest_output_modalities, f32_field, off_dialect_raw_path, responses_raw_passthrough,
-    stop_values, str_field, string_object_field, u32_field, value_as_string,
+    drop_dest_output_modalities, drop_messages_native_thinking, f32_field, off_dialect_raw_path,
+    responses_raw_passthrough, stop_values, str_field, string_object_field, u32_field,
+    value_as_string,
 };
 use crate::ir::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
@@ -354,6 +355,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
             .get("context_management")
             .filter(|mgmt| mgmt.is_array())
             .cloned(),
+        messages_thinking: None,
     }
 }
 
@@ -1092,6 +1094,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.thinking_budget.is_some() {
         report.record("sampling.thinking_budget", LossAction::Drop, "no slot");
     }
+    drop_messages_native_thinking(s, report);
     drop_dest_n_and_penalties(s, report);
     drop_dest_output_modalities(s, report);
     drop_dest_logprobs(s, report);

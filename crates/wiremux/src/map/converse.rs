@@ -8,6 +8,7 @@ use super::drop_dest_logprobs;
 use super::drop_dest_n_and_penalties;
 use super::drop_dest_output_modalities;
 use super::drop_dest_top_logprobs;
+use super::drop_messages_native_thinking;
 use super::drop_responses_request_fields;
 use super::str_field;
 use super::string_object_field;
@@ -894,6 +895,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         report.record("sampling.context_management", LossAction::Drop, "no slot");
     }
     drop_responses_request_fields(s, report);
+    drop_messages_native_thinking(s, report);
     if s.mcp_servers.is_some() {
         report.record("sampling.mcp_servers", LossAction::Drop, "no slot");
     }
