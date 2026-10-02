@@ -4880,26 +4880,26 @@ fn messages_complete_image_block_keeps_preceding_text() {
 }
 
 #[test]
-fn messages_stream_redacted_thinking_matches_complete() {
+fn messages_stream_redacted_thinking_round_trips() {
     let raw = RawSse {
         event: Some("content_block_start".into()),
         data: json!({
             "type": "content_block_start",
-            "index": 0,
+            "index": 2,
             "content_block": { "type": "redacted_thinking", "data": "enc_x" }
         })
         .to_string(),
     };
     let events = decode_stream_events(Wire::Messages, &raw, &messages_profile()).expect("redacted");
-    assert!(
-        events.iter().any(|ev| matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, payload }
-                if item_type == "redacted_thinking"
-                    && payload.get("data").and_then(Value::as_str) == Some("enc_x")
-                    && payload.get("type").and_then(Value::as_str) == Some("redacted_thinking")
-        )),
-        "stream redacted_thinking must match complete Protocol, got {events:?}"
+    let encoded =
+        encode_stream_event(Wire::Messages, events.first().expect("event")).expect("encode");
+    assert_eq!(encoded.event.as_deref(), Some("content_block_start"));
+    let data: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(data.get("index").and_then(|value| value.as_u64()), Some(2));
+    assert_eq!(
+        data.pointer("/content_block/data")
+            .and_then(|value| value.as_str()),
+        Some("enc_x")
     );
 
     let empty = RawSse {
