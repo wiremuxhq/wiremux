@@ -420,6 +420,61 @@ pub(crate) fn converse_image_format(media_type: &str) -> Option<&'static str> {
     }
 }
 
+/// Inline bytes Gemini `functionResponse.parts` can carry.
+pub(super) struct FunctionResponseInline {
+    pub mime: String,
+    pub data: String,
+    pub display_name: Option<String>,
+}
+
+fn function_response_mime_allowed(mime: &str) -> bool {
+    let mime = mime.to_ascii_lowercase();
+    mime.starts_with("image/") || is_pdf_media_type(&mime) || mime == "text/plain"
+}
+
+/// Image bytes inside a function result, including a Gemini part that
+/// kept `displayName` as raw `inlineData`.
+pub(super) fn function_response_image(part: &IrPart) -> Option<(String, String)> {
+    let inline = function_response_inline(part)?;
+    inline
+        .mime
+        .to_ascii_lowercase()
+        .starts_with("image/")
+        .then_some((inline.mime, inline.data))
+}
+
+pub(super) fn function_response_inline(part: &IrPart) -> Option<FunctionResponseInline> {
+    let (mime, data, name) = match part {
+        IrPart::ImageBase64 { media_type, data } => (media_type.clone(), data.clone(), None),
+        IrPart::ImageUrl(url) => {
+            let (mime, data) = split_data_url(url)?;
+            (mime.to_string(), data.to_string(), None)
+        }
+        IrPart::Document {
+            source: IrDocumentSource::Base64(data),
+            media_type,
+            name,
+        } => (media_type.clone(), data.clone(), name.clone()),
+        IrPart::Raw { raw, .. } => {
+            let inline = raw.get("inlineData")?;
+            (
+                str_field(inline, "mimeType")?,
+                str_field(inline, "data")?,
+                str_field(inline, "displayName"),
+            )
+        }
+        _ => return None,
+    };
+    if data.is_empty() || !function_response_mime_allowed(&mime) {
+        return None;
+    }
+    Some(FunctionResponseInline {
+        mime,
+        data,
+        display_name: name.filter(|item| !item.is_empty()),
+    })
+}
+
 fn converse_image_format_from_url(url: &str) -> &'static str {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let ext = path

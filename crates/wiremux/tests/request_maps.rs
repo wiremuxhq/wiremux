@@ -6916,6 +6916,91 @@ fn gemini_code_execution_parts_round_trip() {
 }
 
 #[test]
+fn gemini_function_response_parts_round_trip() {
+    let req = br#"{
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "functionResponse": {
+                    "name": "get_image",
+                    "response": {"image_ref": {"$ref": "instrument.jpg"}},
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "image/jpeg",
+                                "displayName": "instrument.jpg",
+                                "data": "aaaa"
+                            }
+                        },
+                        {
+                            "inlineData": {
+                                "mimeType": "application/pdf",
+                                "displayName": "notes.pdf",
+                                "data": "bbbb"
+                            }
+                        }
+                    ]
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let fr = body
+        .pointer("/contents/0/parts/0/functionResponse")
+        .unwrap_or_else(|| panic!("missing functionResponse, got {body}"));
+    assert_eq!(
+        fr.pointer("/response/image_ref/$ref")
+            .and_then(Value::as_str),
+        Some("instrument.jpg"),
+        "response object must stay, got {body}"
+    );
+    let parts = fr["parts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("functionResponse.parts dropped, got {body} report {report:?}"));
+    assert_eq!(parts.len(), 2, "{body}");
+    assert_eq!(
+        parts[0].pointer("/inlineData/data").and_then(Value::as_str),
+        Some("aaaa"),
+        "{body}"
+    );
+    assert_eq!(
+        parts[0]
+            .pointer("/inlineData/displayName")
+            .and_then(Value::as_str),
+        Some("instrument.jpg"),
+        "{body}"
+    );
+    assert_eq!(
+        parts[0]
+            .pointer("/inlineData/mimeType")
+            .and_then(Value::as_str),
+        Some("image/jpeg"),
+        "{body}"
+    );
+    assert_eq!(
+        parts[1].pointer("/inlineData/data").and_then(Value::as_str),
+        Some("bbbb"),
+        "{body}"
+    );
+    assert_eq!(
+        parts[1]
+            .pointer("/inlineData/displayName")
+            .and_then(Value::as_str),
+        Some("notes.pdf"),
+        "{body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| event.action == LossAction::Drop && event.path.contains("image")),
+        "image bytes have a functionResponse.parts slot, got {report:?}"
+    );
+}
+
+#[test]
 #[allow(non_snake_case)]
 fn gemini_fileData_encode_messages_does_not_leak() {
     let req = br#"{

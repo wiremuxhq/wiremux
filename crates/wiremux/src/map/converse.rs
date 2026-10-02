@@ -603,6 +603,20 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                                 content.push(block);
                             }
                         }
+                        IrPart::Raw { .. } => {
+                            if let Some((media_type, data)) = super::function_response_image(part) {
+                                if let Some(block) = encode_image_bytes(&media_type, &data, report)
+                                {
+                                    content.push(block);
+                                }
+                            } else {
+                                report.record(
+                                    format!("items[{idx}].part"),
+                                    LossAction::Drop,
+                                    "no slot",
+                                );
+                            }
+                        }
                         _ => {
                             report.record(format!("items[{idx}].part"), LossAction::Drop, "no slot")
                         }

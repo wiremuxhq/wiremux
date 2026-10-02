@@ -724,6 +724,21 @@ fn encode_function_output(
                 }));
                 kept_image = true;
             }
+            IrPart::Raw { .. } => {
+                if let Some((media_type, data)) = super::function_response_image(part) {
+                    content.push(json!({
+                        "type": "input_image",
+                        "image_url": format!("data:{media_type};base64,{data}")
+                    }));
+                    kept_image = true;
+                } else {
+                    report.record(
+                        format!("items[{idx}].part"),
+                        LossAction::Drop,
+                        "function_call_output has no slot",
+                    );
+                }
+            }
             _ => report.record(
                 format!("items[{idx}].part"),
                 LossAction::Drop,
