@@ -7788,6 +7788,37 @@ fn chat_id_then_name_assembles_one_start() {
 }
 
 #[test]
+fn chat_stream_system_fingerprint_round_trips() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "choices": [{ "index": 0, "delta": { "content": "hi" } }],
+            "system_fingerprint": "fp_abc"
+        })
+        .to_string(),
+    };
+    let events =
+        decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("decode");
+    let fingerprint = events.iter().find(|ev| {
+        matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "system_fingerprint"
+                    && payload.as_str() == Some("fp_abc")
+        )
+    });
+    assert!(fingerprint.is_some(), "fingerprint missing: {events:?}");
+    let encoded = encode_stream_event(Wire::ChatCompletions, fingerprint.unwrap()).expect("encode");
+    let data: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(
+        data.get("system_fingerprint")
+            .and_then(|value| value.as_str()),
+        Some("fp_abc")
+    );
+    assert!(encoded.event.is_none(), "Chat chunks have no event name");
+}
+
+#[test]
 fn chat_stream_custom_tool_call_decodes() {
     let raw = RawSse {
         event: None,

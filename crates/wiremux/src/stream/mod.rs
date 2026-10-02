@@ -790,6 +790,7 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
         IrStreamEvent::Protocol { item_type, payload } => {
             (wire == Wire::Messages && messages_protocol_reemits(item_type))
                 || (wire == Wire::Responses && responses_output_item(item_type, payload))
+                || (wire == Wire::ChatCompletions && item_type == "system_fingerprint")
         }
         IrStreamEvent::Unknown { .. } => matches!(wire, Wire::Messages | Wire::Responses),
         _ => true,
@@ -817,6 +818,9 @@ pub fn encode_stream_event(wire: Wire, ev: &IrStreamEvent) -> Result<RawSse, Map
         IrStreamEvent::Protocol { item_type, payload } => {
             if wire == Wire::Responses && responses_output_item(item_type, payload) {
                 return Ok(responses_output_item_frame(payload));
+            }
+            if wire == Wire::ChatCompletions && item_type == "system_fingerprint" {
+                return chat::encode(ev);
             }
             Ok(encode_named(item_type, payload))
         }

@@ -22,6 +22,9 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         if let Some(ev) = super::complete::moderation_event(value) {
             return Ok(Some(ev));
         }
+        if let Some(ev) = system_fingerprint_event(value) {
+            return Ok(Some(ev));
+        }
         return Ok(None);
     };
 
@@ -157,6 +160,9 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
         out.push(IrStreamEvent::ServiceTier {
             tier: tier.to_string(),
         });
+    }
+    if let Some(ev) = system_fingerprint_event(value) {
+        out.push(ev);
     }
     if let Some(unix) = value.get("created").and_then(Value::as_i64) {
         out.push(IrStreamEvent::Created { unix });
@@ -578,6 +584,17 @@ fn decode_tool_call(call: &Value, chunk: &Value) -> IrStreamEvent {
     }
 }
 
+pub(super) fn system_fingerprint_event(value: &Value) -> Option<IrStreamEvent> {
+    let fingerprint = value
+        .get("system_fingerprint")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())?;
+    Some(IrStreamEvent::Protocol {
+        item_type: "system_fingerprint".into(),
+        payload: json!(fingerprint),
+    })
+}
+
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     let data = match ev {
         IrStreamEvent::TextDelta { text } => json!({
@@ -729,6 +746,15 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 event: None,
                 data: "[DONE]".into(),
             });
+        }
+        IrStreamEvent::Protocol { item_type, payload }
+            if item_type == "system_fingerprint"
+                && payload.as_str().is_some_and(|text| !text.trim().is_empty()) =>
+        {
+            json!({
+                "system_fingerprint": payload.as_str().unwrap_or_default(),
+                "choices": []
+            })
         }
         IrStreamEvent::Protocol { .. } | IrStreamEvent::Unknown { .. } => {
             return Err(MapError::Invalid(
