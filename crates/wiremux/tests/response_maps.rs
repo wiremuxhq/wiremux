@@ -823,6 +823,48 @@ fn messages_complete_redacted_thinking_is_protocol() {
 }
 
 #[test]
+fn messages_complete_round_trips_redacted_thinking_and_extra_blocks() {
+    let body = serde_json::to_vec(&json!({
+        "model": "claude-haiku-4-5-20251001",
+        "content": [
+            { "type": "redacted_thinking", "data": "enc" },
+            { "type": "text", "text": "hi" },
+            { "type": "server_tool_use", "id": "srv_1", "name": "web_search" }
+        ]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile()).expect("decode");
+    let mapped = encode_response(Wire::Messages, &events).expect("encode");
+    let content = mapped
+        .get("content")
+        .and_then(|value| value.as_array())
+        .expect("content");
+    let pos = |kind: &str| {
+        content
+            .iter()
+            .position(|block| block.get("type").and_then(|value| value.as_str()) == Some(kind))
+    };
+    let redacted = pos("redacted_thinking").expect("redacted_thinking missing");
+    let text = pos("text").expect("text missing");
+    let tool = pos("server_tool_use").expect("server_tool_use missing");
+    assert!(
+        redacted < text,
+        "redacted thinking must stay before text: {content:?}"
+    );
+    assert!(text < tool, "server tool must stay after text: {content:?}");
+    assert_eq!(
+        content[redacted]
+            .get("data")
+            .and_then(|value| value.as_str()),
+        Some("enc")
+    );
+    assert_eq!(
+        content[tool].get("id").and_then(|value| value.as_str()),
+        Some("srv_1")
+    );
+}
+
+#[test]
 fn messages_complete_encodes_chat_completion() {
     let body = serde_json::to_vec(&json!({
         "id": "msg_json",
