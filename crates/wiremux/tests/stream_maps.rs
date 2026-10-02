@@ -5674,6 +5674,48 @@ fn messages_stop_sequence_round_trips_and_other_wires_omit_it() {
 }
 
 #[test]
+fn messages_stream_keeps_stop_sequence_on_message_delta() {
+    let raw = RawSse {
+        event: Some("message_delta".into()),
+        data: json!({
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": "stop_sequence",
+                "stop_sequence": "END"
+            },
+            "usage": { "output_tokens": 4 }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Messages, &raw, &messages_profile()).expect("decode");
+    let mut enc = StreamEncoder::new(Wire::Messages).with_model("claude-haiku-4-5");
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push"));
+    }
+    frames.extend(enc.finish().expect("finish"));
+    let delta = frames
+        .iter()
+        .find(|frame| frame.event.as_deref() == Some("message_delta"))
+        .expect("message_delta");
+    let value: Value = serde_json::from_str(&delta.data).expect("json");
+    assert_eq!(
+        value
+            .pointer("/delta/stop_sequence")
+            .and_then(|text| text.as_str()),
+        Some("END"),
+        "stop sequence missing: {value}"
+    );
+    assert_eq!(
+        value
+            .pointer("/delta/stop_reason")
+            .and_then(|text| text.as_str()),
+        Some("stop_sequence"),
+        "stop reason missing: {value}"
+    );
+}
+
+#[test]
 fn dest_chat_complete_service_tier_remaps_dest_messages_usage_service_tier() {
     let body = serde_json::to_vec(&json!({
         "id": "chatcmpl-r67",
