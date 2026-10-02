@@ -166,7 +166,14 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
             continue;
         }
         if let Some(text) = part.get("text").and_then(Value::as_str) {
-            text_parts.push(IrPart::Text(text.to_string()));
+            if super::part_has_media_hint(part) {
+                text_parts.push(IrPart::Raw {
+                    type_name: "text".into(),
+                    raw: part.clone(),
+                });
+            } else {
+                text_parts.push(IrPart::Text(text.to_string()));
+            }
         }
         if let Some(inline) = part.get("inlineData") {
             if super::part_has_media_hint(part) {
@@ -884,6 +891,9 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                     || raw.get("codeExecutionResult").is_some()
                     || raw.get("toolCall").is_some()
                     || raw.get("toolResponse").is_some()
+                    || raw.get("audioTranscription").is_some()
+                    || raw.get("speechMetadata").is_some()
+                    || raw.get("partMetadata").is_some()
                 {
                     out.push(raw.clone());
                 } else {

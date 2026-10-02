@@ -453,6 +453,9 @@ pub(super) fn part_has_media_hint(part: &Value) -> bool {
     part.get("mediaResolution").is_some()
         || part.get("mediaProcessing").is_some()
         || part.get("videoMetadata").is_some()
+        || part.get("audioTranscription").is_some()
+        || part.get("speechMetadata").is_some()
+        || part.get("partMetadata").is_some()
 }
 
 /// Bytes-only view of a Gemini part kept whole so `mediaResolution`,
@@ -487,6 +490,9 @@ pub(super) fn plain_media_part(part: &IrPart) -> Option<IrPart> {
             media_type: media,
             data,
         });
+    }
+    if let Some(text) = raw.get("text").and_then(Value::as_str) {
+        return Some(IrPart::Text(text.to_string()));
     }
     let file = raw.get("fileData")?;
     let media = str_field(file, "mimeType").unwrap_or_default();

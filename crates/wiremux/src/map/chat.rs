@@ -624,6 +624,7 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                         "type": "input_audio",
                         "input_audio": { "data": data, "format": format }
                     }),
+                    IrPart::Text(text) => json!({"type": "text", "text": text}),
                     _ => unreachable!("plain media"),
                 },
                 IrPart::Thinking { .. } => unreachable!("filtered"),

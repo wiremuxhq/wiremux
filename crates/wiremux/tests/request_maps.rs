@@ -5598,6 +5598,73 @@ fn gemini_image_config_round_trip() {
 }
 
 #[test]
+fn gemini_audio_transcript_and_speech_metadata_round_trip() {
+    let req = br#"{
+        "contents": [{
+            "role": "user",
+            "parts": [
+                {
+                    "inlineData": {"mimeType": "audio/wav", "data": "cccc"},
+                    "audioTranscription": {"text": "hello there", "speakerLabel": "spk_1"}
+                },
+                {
+                    "text": "Good morning",
+                    "speechMetadata": {"speaker": "Host", "style": "cheerful"}
+                }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/audioTranscription/speakerLabel")
+            .and_then(Value::as_str),
+        Some("spk_1"),
+        "audio transcript must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/inlineData/data")
+            .and_then(Value::as_str),
+        Some("cccc"),
+        "audio bytes must stay, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/1/speechMetadata/speaker")
+            .and_then(Value::as_str),
+        Some("Host"),
+        "speechMetadata must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/1/text")
+            .and_then(Value::as_str),
+        Some("Good morning"),
+        "spoken text must stay, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "part.media_hint"),
+        "Gemini keeps these part fields, got {report:?}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    let rendered = chat.to_string();
+    assert!(
+        rendered.contains("cccc") && rendered.contains("Good morning"),
+        "Chat must keep the audio bytes and the text, got {chat}"
+    );
+    assert!(
+        loss_dropped(&chat_report, "part.media_hint"),
+        "Chat must record the sidecar drop, got {chat_report:?}"
+    );
+    assert!(
+        !rendered.contains("spk_1") && !rendered.contains("speechMetadata"),
+        "Chat must not leak Gemini speech fields, got {chat}"
+    );
+}
+
+#[test]
 fn dest_gemini_frequency_penalty_reaches_chat() {
     let req = br#"{
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
