@@ -8141,6 +8141,62 @@ fn gemini_stream_keeps_response_id() {
 }
 
 #[test]
+fn gemini_stream_keeps_safety_ratings() {
+    let ratings = json!([
+        { "category": "HARM_CATEGORY_HARASSMENT", "probability": "NEGLIGIBLE" }
+    ]);
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "candidates": [{
+                "content": { "role": "model", "parts": [{ "text": "hi" }] },
+                "finishReason": "STOP",
+                "safetyRatings": ratings
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("decode");
+    let mut enc = StreamEncoder::new(Wire::Gemini).with_model("gemini-2.5-flash");
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push"));
+    }
+    frames.extend(enc.finish().expect("finish"));
+    let found = frames.iter().any(|frame| {
+        serde_json::from_str::<Value>(&frame.data)
+            .ok()
+            .and_then(|value| value.pointer("/candidates/0/safetyRatings").cloned())
+            .as_ref()
+            == Some(&ratings)
+    });
+    assert!(found, "safety ratings missing: {frames:?}");
+}
+
+#[test]
+fn gemini_complete_keeps_safety_ratings() {
+    let ratings = json!([
+        { "category": "HARM_CATEGORY_HARASSMENT", "probability": "NEGLIGIBLE" }
+    ]);
+    let body = serde_json::to_vec(&json!({
+        "responseId": "gemini-real",
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "hi" }] },
+            "finishReason": "STOP",
+            "safetyRatings": ratings
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile()).expect("decode");
+    let encoded = encode_response(Wire::Gemini, &events).expect("encode");
+    assert_eq!(
+        encoded.pointer("/candidates/0/safetyRatings"),
+        Some(&ratings),
+        "safety ratings missing: {encoded}"
+    );
+}
+
+#[test]
 fn converse_stream_keeps_metrics_and_trace() {
     let raw = RawSse {
         event: None,

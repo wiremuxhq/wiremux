@@ -445,6 +445,15 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             text: text.to_string(),
         });
     }
+    if let Some(ratings) = value
+        .pointer("/candidates/0/safetyRatings")
+        .filter(|ratings| ratings.as_array().is_some_and(|items| !items.is_empty()))
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "gemini_safety_ratings".into(),
+            payload: ratings.clone(),
+        });
+    }
     if let Some(reason) = value
         .pointer("/candidates/0/finishReason")
         .and_then(Value::as_str)
@@ -464,8 +473,14 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
     let has_call = out
         .iter()
         .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. }));
+    let has_safety = out.iter().any(|ev| {
+        matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_safety_ratings"
+        )
+    });
     let only_search_entry = matches!(out.as_slice(), [IrStreamEvent::SearchEntryPoint { .. }]);
-    if out.is_empty() || (out.len() < 2 && !has_call && !only_search_entry) {
+    if out.is_empty() || (out.len() < 2 && !has_call && !only_search_entry && !has_safety) {
         *call_seq = seq_at_entry;
         return None;
     }
@@ -868,7 +883,11 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                     && (item_type == "responses_id" || responses_output_item(item_type, payload)))
                 || (wire == Wire::ChatCompletions
                     && (item_type == "system_fingerprint" || item_type == "chat_completion_id"))
-                || (wire == Wire::Gemini && item_type == "gemini_response_id")
+                || (wire == Wire::Gemini
+                    && matches!(
+                        item_type.as_str(),
+                        "gemini_response_id" | "gemini_safety_ratings"
+                    ))
                 || (wire == Wire::Converse
                     && matches!(
                         item_type.as_str(),
