@@ -336,6 +336,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         container: None,
         context_management: None,
         mcp_servers: None,
+        media_resolution: None,
     }
 }
 

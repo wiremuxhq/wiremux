@@ -226,6 +226,11 @@ pub struct IrSampling {
     /// Messages request `mcp_servers` array. Chat, Responses, Gemini,
     /// and Converse drop.
     pub mcp_servers: Option<serde_json::Value>,
+    /// Gemini `generationConfig.mediaResolution`
+    /// (`MEDIA_RESOLUTION_LOW`, `MEDIA_RESOLUTION_MEDIUM`,
+    /// `MEDIA_RESOLUTION_HIGH`). Chat, Messages, Responses, and
+    /// Converse drop.
+    pub media_resolution: Option<String>,
 }
 
 impl IrSampling {

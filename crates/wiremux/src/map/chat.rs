@@ -244,6 +244,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         container: None,
         context_management: None,
         mcp_servers: None,
+        media_resolution: None,
     }
 }
 
@@ -710,6 +711,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.top_k.is_some() {
         report.record("sampling.top_k", LossAction::Drop, "no slot");
+    }
+    if s.media_resolution.is_some() {
+        report.record("sampling.media_resolution", LossAction::Drop, "no slot");
     }
     if s.inference_geo.is_some() {
         report.record("sampling.inference_geo", LossAction::Drop, "no slot");
