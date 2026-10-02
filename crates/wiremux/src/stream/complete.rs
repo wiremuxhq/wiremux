@@ -363,6 +363,15 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     tool_calls.push(messages_tool_use_value(&id, &name, &args));
                 }
             }
+            IrStreamEvent::Protocol { item_type, payload }
+                if messages_content_block(item_type, payload) =>
+            {
+                if !text.is_empty() {
+                    images.push(json!({ "type": "text", "text": text }));
+                    text.clear();
+                }
+                images.push(payload.clone());
+            }
             _ => {}
         }
     }
@@ -448,6 +457,13 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
         out["stop_sequence"] = json!(text);
     }
     out
+}
+
+fn messages_content_block(item_type: &str, payload: &Value) -> bool {
+    if item_type == "chunk" || item_type == "output_image" {
+        return false;
+    }
+    payload.get("type").and_then(Value::as_str) == Some(item_type)
 }
 
 fn messages_tool_use_value(id: &str, name: &str, args: &str) -> Value {
