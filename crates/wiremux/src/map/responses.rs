@@ -618,7 +618,10 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                 false
             }
             IrPart::Raw { raw, .. } => {
-                if responses_raw_passthrough(raw) {
+                if super::plain_media_part(part).is_some() {
+                    report.record("part.media_hint", LossAction::Drop, "no slot");
+                    true
+                } else if responses_raw_passthrough(raw) {
                     true
                 } else {
                     report.record(
@@ -657,7 +660,28 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                     "type": "input_audio",
                     "input_audio": { "data": data, "format": format }
                 }),
-                IrPart::Raw { raw, .. } => raw.clone(),
+                IrPart::Raw { raw, .. } => {
+                    if let Some(plain) = super::plain_media_part(part) {
+                        match plain {
+                            IrPart::ImageBase64 { media_type, data } => json!({
+                                "type": "input_image",
+                                "image_url": format!("data:{media_type};base64,{data}")
+                            }),
+                            IrPart::Document {
+                                source,
+                                media_type,
+                                name,
+                            } => encode_document(&source, &media_type, name.as_deref()),
+                            IrPart::Audio { data, format } => json!({
+                                "type": "input_audio",
+                                "input_audio": { "data": data, "format": format }
+                            }),
+                            _ => raw.clone(),
+                        }
+                    } else {
+                        raw.clone()
+                    }
+                }
                 IrPart::Thinking { .. } => unreachable!("filtered"),
             })
             .collect(),

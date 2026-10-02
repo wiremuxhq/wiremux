@@ -446,6 +446,58 @@ pub(super) fn function_response_image(part: &IrPart) -> Option<(String, String)>
         .then_some((inline.mime, inline.data))
 }
 
+pub(super) fn part_has_media_hint(part: &Value) -> bool {
+    part.get("mediaResolution").is_some()
+        || part.get("mediaProcessing").is_some()
+        || part.get("videoMetadata").is_some()
+}
+
+/// Bytes-only view of a Gemini part kept whole so `mediaResolution`,
+/// `mediaProcessing`, or `videoMetadata` can round-trip.
+pub(super) fn plain_media_part(part: &IrPart) -> Option<IrPart> {
+    let IrPart::Raw { raw, .. } = part else {
+        return None;
+    };
+    if !part_has_media_hint(raw) {
+        return None;
+    }
+    if let Some(inline) = raw.get("inlineData") {
+        let media = str_field(inline, "mimeType").unwrap_or_default();
+        let data = str_field(inline, "data").unwrap_or_default();
+        if data.is_empty() {
+            return None;
+        }
+        if is_audio_media_type(&media) {
+            return Some(IrPart::Audio {
+                data,
+                format: audio_format_from_mime(&media),
+            });
+        }
+        if is_pdf_media_type(&media) {
+            return Some(IrPart::Document {
+                source: IrDocumentSource::Base64(data),
+                media_type: media,
+                name: None,
+            });
+        }
+        return Some(IrPart::ImageBase64 {
+            media_type: media,
+            data,
+        });
+    }
+    let file = raw.get("fileData")?;
+    let media = str_field(file, "mimeType").unwrap_or_default();
+    let uri = str_field(file, "fileUri").unwrap_or_default();
+    if is_pdf_media_type(&media) && !uri.is_empty() {
+        return Some(IrPart::Document {
+            source: document_ref_source(uri),
+            media_type: media,
+            name: None,
+        });
+    }
+    None
+}
+
 pub(super) fn function_response_inline(part: &IrPart) -> Option<FunctionResponseInline> {
     let (mime, data, name) = match part {
         IrPart::ImageBase64 { media_type, data } => (media_type.clone(), data.clone(), None),

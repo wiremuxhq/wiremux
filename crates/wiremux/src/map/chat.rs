@@ -556,12 +556,17 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                 false
             }
             IrPart::Raw { .. } => {
-                report.record(
-                    "part.raw",
-                    LossAction::Drop,
-                    "raw part has no Chat Completions slot",
-                );
-                false
+                if super::plain_media_part(part).is_some() {
+                    report.record("part.media_hint", LossAction::Drop, "no slot");
+                    true
+                } else {
+                    report.record(
+                        "part.raw",
+                        LossAction::Drop,
+                        "raw part has no Chat Completions slot",
+                    );
+                    false
+                }
             }
             IrPart::Document {
                 source: IrDocumentSource::Url(_),
@@ -604,7 +609,23 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                     "type": "input_audio",
                     "input_audio": { "data": data, "format": format }
                 }),
-                IrPart::Thinking { .. } | IrPart::Raw { .. } => unreachable!("filtered"),
+                IrPart::Raw { .. } => match super::plain_media_part(part).expect("media hint") {
+                    IrPart::ImageBase64 { media_type, data } => json!({
+                        "type": "image_url",
+                        "image_url": {"url": format!("data:{media_type};base64,{data}")}
+                    }),
+                    IrPart::Document {
+                        source,
+                        media_type,
+                        name,
+                    } => encode_document(&source, &media_type, name.as_deref()),
+                    IrPart::Audio { data, format } => json!({
+                        "type": "input_audio",
+                        "input_audio": { "data": data, "format": format }
+                    }),
+                    _ => unreachable!("plain media"),
+                },
+                IrPart::Thinking { .. } => unreachable!("filtered"),
             })
             .collect(),
     )

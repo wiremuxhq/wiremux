@@ -169,6 +169,13 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
             text_parts.push(IrPart::Text(text.to_string()));
         }
         if let Some(inline) = part.get("inlineData") {
+            if super::part_has_media_hint(part) {
+                text_parts.push(IrPart::Raw {
+                    type_name: "inlineData".into(),
+                    raw: part.clone(),
+                });
+                continue;
+            }
             let media = str_field(inline, "mimeType").unwrap_or_default();
             let data = str_field(inline, "data").unwrap_or_default();
             if is_audio_media_type(&media) {
@@ -192,7 +199,7 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
         if let Some(file) = part.get("fileData") {
             let media = str_field(file, "mimeType").unwrap_or_default();
             let uri = str_field(file, "fileUri").unwrap_or_default();
-            if is_pdf_media_type(&media) && !uri.is_empty() {
+            if is_pdf_media_type(&media) && !uri.is_empty() && !super::part_has_media_hint(part) {
                 text_parts.push(IrPart::Document {
                     source: document_ref_source(uri),
                     media_type: media,
@@ -868,6 +875,7 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
             IrPart::Raw { raw, .. } => {
                 if raw.get("fileData").is_some()
                     || raw.get("fileUri").is_some()
+                    || raw.get("inlineData").is_some()
                     || raw.get("executableCode").is_some()
                     || raw.get("codeExecutionResult").is_some()
                     || raw.get("toolCall").is_some()
