@@ -5734,6 +5734,55 @@ fn gemini_generation_sidecars_round_trip() {
 }
 
 #[test]
+fn gemini_visible_text_keeps_thought_signature() {
+    let req = br#"{
+        "contents": [{
+            "role": "model",
+            "parts": [{
+                "text": "The answer is 4",
+                "thoughtSignature": "sig_visible_text"
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/text")
+            .and_then(Value::as_str),
+        Some("The answer is 4"),
+        "visible text must stay, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/thoughtSignature")
+            .and_then(Value::as_str),
+        Some("sig_visible_text"),
+        "text thoughtSignature must round-trip, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "part.media_hint"),
+        "Gemini keeps the signature, got {report:?}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    let rendered = chat.to_string();
+    assert!(
+        rendered.contains("The answer is 4"),
+        "Chat must keep the visible text, got {chat}"
+    );
+    assert!(
+        loss_dropped(&chat_report, "part.media_hint"),
+        "Chat must record the signature drop, got {chat_report:?}"
+    );
+    assert!(
+        !rendered.contains("sig_visible_text"),
+        "Chat must not leak the Gemini signature, got {chat}"
+    );
+}
+
+#[test]
 fn dest_gemini_frequency_penalty_reaches_chat() {
     let req = br#"{
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],

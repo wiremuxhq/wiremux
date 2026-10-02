@@ -476,6 +476,7 @@ pub(super) fn part_has_media_hint(part: &Value) -> bool {
         || part.get("audioTranscription").is_some()
         || part.get("speechMetadata").is_some()
         || part.get("partMetadata").is_some()
+        || part.get("thoughtSignature").is_some()
 }
 
 /// Bytes-only view of a Gemini part kept whole so `mediaResolution`,
