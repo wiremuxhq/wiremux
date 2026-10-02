@@ -301,6 +301,24 @@ fn decode_stream_events_seq(
         }
         let add_delta_usage =
             name == "message_delta" && matches!(first, IrStreamEvent::FinishReason { .. });
+        let keep_container = matches!(
+            first,
+            IrStreamEvent::Usage { .. } | IrStreamEvent::FinishReason { .. }
+        );
+        if keep_container {
+            let container = if name == "message_start" {
+                value.pointer("/message/container")
+            } else if name == "message_delta" {
+                value.get("container")
+            } else {
+                None
+            };
+            if let Some(container) = container.filter(|container| container.is_object()) {
+                out.push(IrStreamEvent::Container {
+                    value: container.clone(),
+                });
+            }
+        }
         out.push(first);
         if add_delta_usage && let Some(usage) = usage {
             out.push(usage::from_anthropic(usage));

@@ -52,6 +52,8 @@ pub struct StreamEncoder {
     created_at: Option<i64>,
     chat_completion_id: Option<String>,
     messages_id: Option<String>,
+    messages_container: Option<Value>,
+    messages_container_written: bool,
     responses_id: Option<String>,
     gemini_response_id: Option<String>,
     converse_passthrough: Vec<(String, Value)>,
@@ -99,6 +101,8 @@ impl StreamEncoder {
             created_at: None,
             chat_completion_id: None,
             messages_id: None,
+            messages_container: None,
+            messages_container_written: false,
             responses_id: None,
             gemini_response_id: None,
             converse_passthrough: Vec::new(),
@@ -343,16 +347,22 @@ impl StreamEncoder {
         if let IrStreamEvent::StopSequence { ref text } = ev {
             self.stop_sequence = Some(text.clone());
         }
+        if let IrStreamEvent::Container { ref value } = ev {
+            self.messages_container = Some(value.clone());
+        }
         let mut out = Vec::new();
         if !self.started {
             if matches!(
                 ev,
-                IrStreamEvent::ServiceTier { .. } | IrStreamEvent::StopSequence { .. }
+                IrStreamEvent::ServiceTier { .. }
+                    | IrStreamEvent::StopSequence { .. }
+                    | IrStreamEvent::Container { .. }
             ) {
                 return Ok(out);
             }
             self.started = true;
             out.push(self.messages_start_frame());
+            self.messages_container_written = self.messages_container.is_some();
         }
         match ev {
             IrStreamEvent::StopSequence { .. } => {}
@@ -639,20 +649,24 @@ impl StreamEncoder {
         {
             usage["service_tier"] = json!(mapped);
         }
+        let mut message = json!({
+            "id": self.messages_id.as_deref().unwrap_or("msg_wiremux"),
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "model": self.model,
+            "stop_reason": null,
+            "stop_sequence": null,
+            "usage": usage
+        });
+        if let Some(container) = &self.messages_container {
+            message["container"] = container.clone();
+        }
         named(
             "message_start",
             json!({
                 "type": "message_start",
-                "message": {
-                    "id": self.messages_id.as_deref().unwrap_or("msg_wiremux"),
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [],
-                    "model": self.model,
-                    "stop_reason": null,
-                    "stop_sequence": null,
-                    "usage": usage
-                }
+                "message": message
             }),
         )
     }
@@ -662,6 +676,7 @@ impl StreamEncoder {
         if !self.started {
             self.started = true;
             out.push(self.messages_start_frame());
+            self.messages_container_written = self.messages_container.is_some();
         }
         out.extend(self.close_open());
         for ev in std::mem::take(&mut self.deferred) {
@@ -700,6 +715,11 @@ impl StreamEncoder {
             if let Some(u) = usage.get("usage") {
                 data["usage"] = u.clone();
             }
+        }
+        if !self.messages_container_written
+            && let Some(container) = &self.messages_container
+        {
+            data["container"] = container.clone();
         }
         out.push(named("message_delta", data));
         out.push(named("message_stop", json!({ "type": "message_stop" })));
