@@ -211,6 +211,7 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
     let mut stop = "end_turn";
     let mut usage = None;
     let mut service_tier = None;
+    let mut extra_fields = None;
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta }
@@ -277,6 +278,11 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
                     *cache_read_tokens,
                     *cache_write_tokens,
                 ));
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "additionalModelResponseFields" && !payload.is_null() =>
+            {
+                extra_fields = Some(payload.clone());
             }
             _ => {}
         }
@@ -366,6 +372,9 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
     }
     if let Some((input, output, cache_read, cache_write)) = usage {
         body["usage"] = encode_converse_usage(input, output, cache_read, cache_write);
+    }
+    if let Some(fields) = extra_fields {
+        body["additionalModelResponseFields"] = fields;
     }
     Ok(body)
 }
@@ -467,6 +476,15 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
     }
     if let Some(usage) = value.get("usage") {
         out.push(usage_from_converse(usage));
+    }
+    if let Some(fields) = value
+        .get("additionalModelResponseFields")
+        .filter(|fields| !fields.is_null())
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "additionalModelResponseFields".into(),
+            payload: fields.clone(),
+        });
     }
     out.push(IrStreamEvent::Done);
     Ok(out)
