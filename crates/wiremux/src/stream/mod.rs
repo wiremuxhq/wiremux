@@ -787,8 +787,9 @@ impl ToolCallAssembler {
 #[must_use]
 pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
     match ev {
-        IrStreamEvent::Protocol { item_type, .. } => {
-            wire == Wire::Messages && messages_protocol_reemits(item_type)
+        IrStreamEvent::Protocol { item_type, payload } => {
+            (wire == Wire::Messages && messages_protocol_reemits(item_type))
+                || (wire == Wire::Responses && responses_output_item(item_type, payload))
         }
         IrStreamEvent::Unknown { .. } => matches!(wire, Wire::Messages | Wire::Responses),
         _ => true,
@@ -813,7 +814,12 @@ fn messages_protocol_reemits(item_type: &str) -> bool {
 pub fn encode_stream_event(wire: Wire, ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     match ev {
         IrStreamEvent::Unknown { event, raw } => Ok(encode_named(event, raw)),
-        IrStreamEvent::Protocol { item_type, payload } => Ok(encode_named(item_type, payload)),
+        IrStreamEvent::Protocol { item_type, payload } => {
+            if wire == Wire::Responses && responses_output_item(item_type, payload) {
+                return Ok(responses_output_item_frame(payload));
+            }
+            Ok(encode_named(item_type, payload))
+        }
         other => match wire {
             Wire::ChatCompletions => chat::encode(other),
             Wire::Messages => messages::encode(other),
@@ -831,6 +837,33 @@ pub fn encode_stream_event(wire: Wire, ev: &IrStreamEvent) -> Result<RawSse, Map
                 wire.as_str()
             ))),
         },
+    }
+}
+
+fn responses_output_item(item_type: &str, payload: &Value) -> bool {
+    if item_type == "chunk" || item_type == "output_image" {
+        return false;
+    }
+    payload.get("type").and_then(Value::as_str) == Some(item_type)
+}
+
+fn responses_output_item_frame(payload: &Value) -> RawSse {
+    let index = payload
+        .get("output_index")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut item = payload.clone();
+    if let Some(obj) = item.as_object_mut() {
+        obj.remove("output_index");
+    }
+    RawSse {
+        event: Some("response.output_item.done".into()),
+        data: serde_json::json!({
+            "type": "response.output_item.done",
+            "output_index": index,
+            "item": item
+        })
+        .to_string(),
     }
 }
 
@@ -1552,6 +1585,16 @@ base_url = "http://127.0.0.1"
             payload: Value::Null,
         };
         assert!(!event_has_slot(Wire::Gemini, &ev));
+    }
+
+    #[cfg(feature = "proxy")]
+    #[test]
+    fn event_has_slot_keeps_responses_web_search_call() {
+        let ev = IrStreamEvent::Protocol {
+            item_type: "web_search_call".into(),
+            payload: serde_json::json!({"type": "web_search_call", "id": "ws_1"}),
+        };
+        assert!(event_has_slot(Wire::Responses, &ev));
     }
 
     #[test]
