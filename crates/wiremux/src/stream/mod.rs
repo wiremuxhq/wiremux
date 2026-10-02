@@ -353,6 +353,9 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             }
         }
     }
+    if let Some(ev) = gemini::search_entry_from_value(value) {
+        out.push(ev);
+    }
     if let Some(content) = value
         .pointer("/candidates/0/logprobsResult")
         .and_then(gemini::logprobs_from_result)
@@ -387,7 +390,8 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
     let has_call = out
         .iter()
         .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. }));
-    if out.is_empty() || (out.len() < 2 && !has_call) {
+    let only_search_entry = matches!(out.as_slice(), [IrStreamEvent::SearchEntryPoint { .. }]);
+    if out.is_empty() || (out.len() < 2 && !has_call && !only_search_entry) {
         *call_seq = seq_at_entry;
         return None;
     }

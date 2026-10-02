@@ -128,6 +128,9 @@ impl StreamEncoder {
             {
                 Ok(Vec::new())
             }
+            IrStreamEvent::SearchEntryPoint { .. } if !matches!(self.wire, Wire::Gemini) => {
+                Ok(Vec::new())
+            }
             other => match self.wire {
                 Wire::Messages => self.push_messages(other),
                 Wire::Responses => self.push_responses(other),

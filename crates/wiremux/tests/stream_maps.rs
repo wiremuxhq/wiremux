@@ -1345,6 +1345,259 @@ fn dest_gemini_stream_grounding_chunks_remap_dest_chat_annotations() {
     );
 }
 
+const GEMINI_SEARCH_ENTRY_HTML: &str = r#"<div class="search-entry">GroundingSearchEntry</div>"#;
+
+fn gemini_search_entry_body(with_chunks: bool) -> Value {
+    let mut grounding = json!({
+        "searchEntryPoint": { "renderedContent": GEMINI_SEARCH_ENTRY_HTML },
+        "webSearchQueries": ["wiremux"]
+    });
+    if with_chunks {
+        grounding["groundingChunks"] = json!([{
+            "web": { "uri": "https://example.com", "title": "Example Domain" }
+        }]);
+    }
+    json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "see" }]
+            },
+            "groundingMetadata": grounding
+        }]
+    })
+}
+
+fn assert_gemini_rendered_content(body: &Value, context: &str) {
+    assert_eq!(
+        body.pointer("/candidates/0/groundingMetadata/searchEntryPoint/renderedContent")
+            .and_then(Value::as_str),
+        Some(GEMINI_SEARCH_ENTRY_HTML),
+        "{context} must keep searchEntryPoint.renderedContent, got {body}"
+    );
+    assert!(
+        body.pointer("/candidates/0/groundingMetadata/webSearchQueries")
+            .is_none(),
+        "{context} must leave webSearchQueries dropped, got {body}"
+    );
+}
+
+fn assert_no_search_entry_leak(context: &str, text: &str) {
+    assert!(
+        !text.contains("GroundingSearchEntry")
+            && !text.contains("searchEntryPoint")
+            && !text.contains("renderedContent")
+            && !text.contains("webSearchQueries"),
+        "{context} must not copy searchEntryPoint HTML, got {text}"
+    );
+}
+
+#[test]
+fn dest_gemini_complete_search_entry_point_keeps_rendered_content() {
+    for with_chunks in [true, false] {
+        let body = serde_json::to_vec(&gemini_search_entry_body(with_chunks)).expect("json");
+        let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+            .expect("decode dest Gemini complete search entry");
+        let mapped = encode_response(Wire::Gemini, &events).expect("encode dest Gemini complete");
+        let context = format!("dest Gemini complete with_chunks={with_chunks}");
+        assert_gemini_rendered_content(&mapped, &context);
+        let chunks = mapped.pointer("/candidates/0/groundingMetadata/groundingChunks");
+        if with_chunks {
+            assert_eq!(
+                chunks
+                    .and_then(|v| v.pointer("/0/web/uri"))
+                    .and_then(Value::as_str),
+                Some("https://example.com"),
+                "{context} must keep groundingChunks, got {mapped}"
+            );
+        } else {
+            assert!(
+                chunks.is_none(),
+                "{context} must not invent groundingChunks, got {mapped}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dest_gemini_stream_search_entry_point_keeps_rendered_content() {
+    for with_chunks in [true, false] {
+        let raw = RawSse {
+            event: None,
+            data: gemini_search_entry_body(with_chunks).to_string(),
+        };
+        let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+            .expect("decode dest Gemini STREAM search entry");
+        assert!(
+            events.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::SearchEntryPoint { rendered_content }
+                    if rendered_content == GEMINI_SEARCH_ENTRY_HTML
+            )),
+            "dest Gemini STREAM with_chunks={with_chunks} must decode search entry HTML, got {events:?}"
+        );
+        let frames = encode_all(Wire::Gemini, &events);
+        let bodies = sse_json_frames(&frames);
+        let rendered = bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/groundingMetadata/searchEntryPoint/renderedContent")
+                .and_then(Value::as_str)
+        });
+        assert_eq!(
+            rendered,
+            Some(GEMINI_SEARCH_ENTRY_HTML),
+            "dest Gemini STREAM with_chunks={with_chunks} must keep renderedContent, got {frames:?}"
+        );
+        assert!(
+            bodies.iter().all(|body| {
+                body.pointer("/candidates/0/groundingMetadata/webSearchQueries")
+                    .is_none()
+            }),
+            "dest Gemini STREAM with_chunks={with_chunks} must leave webSearchQueries dropped, got {frames:?}"
+        );
+        let chunk_uri = bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/groundingMetadata/groundingChunks/0/web/uri")
+                .and_then(Value::as_str)
+        });
+        if with_chunks {
+            assert_eq!(
+                chunk_uri,
+                Some("https://example.com"),
+                "dest Gemini STREAM with chunks must keep groundingChunks, got {frames:?}"
+            );
+        } else {
+            assert!(
+                chunk_uri.is_none(),
+                "dest Gemini STREAM without chunks must not invent groundingChunks, got {frames:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dest_gemini_search_entry_point_without_chunks_or_text_round_trips() {
+    let body = json!({
+        "candidates": [{
+            "groundingMetadata": {
+                "searchEntryPoint": { "renderedContent": GEMINI_SEARCH_ENTRY_HTML }
+            }
+        }]
+    });
+    let raw = RawSse {
+        event: None,
+        data: body.to_string(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode dest Gemini STREAM search entry only");
+    assert!(
+        matches!(
+            events.as_slice(),
+            [IrStreamEvent::SearchEntryPoint { rendered_content }]
+                if rendered_content == GEMINI_SEARCH_ENTRY_HTML
+        ),
+        "search entry HTML alone must decode to one event, got {events:?}"
+    );
+    let frames = encode_all(Wire::Gemini, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/groundingMetadata/searchEntryPoint/renderedContent")
+                .and_then(Value::as_str)
+        }),
+        Some(GEMINI_SEARCH_ENTRY_HTML),
+        "dest Gemini STREAM search entry alone must encode renderedContent, got {frames:?}"
+    );
+    assert!(
+        bodies.iter().all(|body| {
+            body.pointer("/candidates/0/groundingMetadata/groundingChunks")
+                .is_none()
+        }),
+        "dest Gemini STREAM search entry alone must not invent groundingChunks, got {frames:?}"
+    );
+    let bytes = serde_json::to_vec(&body).expect("json");
+    let complete = decode_response(Wire::Gemini, &bytes, &gemini_profile())
+        .expect("decode dest Gemini complete search entry only");
+    let mapped = encode_response(Wire::Gemini, &complete).expect("encode dest Gemini complete");
+    assert_gemini_rendered_content(
+        &mapped,
+        "dest Gemini complete search entry without chunks or text",
+    );
+    assert!(
+        mapped
+            .pointer("/candidates/0/groundingMetadata/groundingChunks")
+            .is_none(),
+        "dest Gemini complete search entry alone must not invent groundingChunks, got {mapped}"
+    );
+}
+
+#[test]
+fn dest_gemini_search_entry_point_stays_off_other_wires() {
+    let wires = [
+        Wire::ChatCompletions,
+        Wire::Messages,
+        Wire::Responses,
+        Wire::Converse,
+    ];
+    for with_chunks in [true, false] {
+        let body = serde_json::to_vec(&gemini_search_entry_body(with_chunks)).expect("json");
+        let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+            .expect("decode dest Gemini search entry");
+        for wire in wires {
+            let mapped = encode_response(wire, &events).expect("encode complete");
+            assert_no_search_entry_leak(
+                &format!("{} complete with_chunks={with_chunks}", wire.as_str()),
+                &mapped.to_string(),
+            );
+            if with_chunks {
+                assert!(
+                    mapped.to_string().contains("https://example.com"),
+                    "{} complete must still cite the grounding chunk, got {mapped}",
+                    wire.as_str()
+                );
+            }
+            let frames = encode_all(wire, &events);
+            let stream = frames
+                .iter()
+                .map(|frame| frame.data.as_str())
+                .collect::<String>();
+            assert_no_search_entry_leak(
+                &format!("{} STREAM with_chunks={with_chunks}", wire.as_str()),
+                &stream,
+            );
+            if with_chunks {
+                assert!(
+                    stream.contains("https://example.com"),
+                    "{} STREAM must still cite the grounding chunk, got {frames:?}",
+                    wire.as_str()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn dest_gemini_empty_search_entry_point_is_ignored() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"see"}]},"groundingMetadata":{"searchEntryPoint":{"renderedContent":""},"groundingChunks":[{"web":{"uri":"https://example.com","title":"Example Domain"}}]}}]}"#.into(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode dest Gemini empty search entry");
+    assert!(
+        !events
+            .iter()
+            .any(|ev| matches!(ev, IrStreamEvent::SearchEntryPoint { .. })),
+        "empty renderedContent must not decode, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::AnnotationAdded { annotation }
+                if annotation.get("url").and_then(Value::as_str) == Some("https://example.com")
+        )),
+        "empty renderedContent must still keep the grounding chunk, got {events:?}"
+    );
+}
+
 #[test]
 fn dest_gemini_stream_grounding_chunks_non_web_remap_dest_chat_annotations() {
     let cases = [

@@ -161,6 +161,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
         | IrStreamEvent::Moderation { .. } => Ok(json!({
             "contentBlockDelta": { "delta": { "text": "" } }
         })),
+        IrStreamEvent::SearchEntryPoint { .. } => Ok(json!({})),
         IrStreamEvent::ServiceTier { tier } => {
             let mut metadata = serde_json::Map::new();
             if let Some((mapped, _)) = crate::map::converse_service_tier(tier) {
