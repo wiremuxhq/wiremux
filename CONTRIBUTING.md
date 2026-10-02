@@ -26,7 +26,7 @@ make check
 ```
 
 `make check` needs rustc 1.95 (see `rust-toolchain.toml`), rustfmt,
-clippy, and `cargo-deny`.
+clippy, `cargo-deny`, actionlint 1.7.12, and zizmor 1.16.0.
 
 Every commit needs a Developer Certificate of Origin trailer:
 
