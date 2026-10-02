@@ -1295,6 +1295,53 @@ fn converse_complete_round_trips_additional_model_response_fields() {
 }
 
 #[test]
+fn converse_complete_round_trips_metrics_trace_and_performance() {
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{ "text": "pong" }]
+            }
+        },
+        "stopReason": "end_turn",
+        "metrics": { "latencyMs": 12 },
+        "trace": { "guardrail": { "action": "NONE" } },
+        "performanceConfig": { "latency": "optimized" }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile()).expect("decode");
+    let mapped = encode_response(Wire::Converse, &events).expect("encode");
+    assert_eq!(
+        mapped
+            .pointer("/metrics/latencyMs")
+            .and_then(|value| value.as_u64()),
+        Some(12),
+        "metrics missing: {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/trace/guardrail/action")
+            .and_then(|value| value.as_str()),
+        Some("NONE"),
+        "trace missing: {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/performanceConfig/latency")
+            .and_then(|value| value.as_str()),
+        Some("optimized"),
+        "performance config missing: {mapped}"
+    );
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode chat");
+    assert!(chat.get("metrics").is_none(), "Chat gained metrics: {chat}");
+    assert!(chat.get("trace").is_none(), "Chat gained trace: {chat}");
+    assert!(
+        chat.get("performanceConfig").is_none(),
+        "Chat gained performanceConfig: {chat}"
+    );
+}
+
+#[test]
 fn converse_complete_tool_calls_finish_stays_tool_use() {
     let events = [
         IrStreamEvent::ToolCallStart {
