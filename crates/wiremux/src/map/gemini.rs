@@ -458,6 +458,10 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         cached_content: str_field(value, "cachedContent")
             .map(|name| name.trim().to_string())
             .filter(|name| !name.is_empty()),
+        safety_settings: value
+            .get("safetySettings")
+            .filter(|settings| settings.is_array())
+            .cloned(),
     }
 }
 
@@ -1180,6 +1184,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         .filter(|name| !name.is_empty())
     {
         body["cachedContent"] = json!(name);
+    }
+    if let Some(settings) = s.safety_settings.as_ref().filter(|value| value.is_array()) {
+        body["safetySettings"] = settings.clone();
     }
     if let Some(store) = s.store {
         body["store"] = json!(store);

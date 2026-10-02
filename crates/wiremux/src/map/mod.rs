@@ -339,6 +339,9 @@ fn drop_dest_n_and_penalties(s: &IrSampling, report: &mut LossReport) {
     if s.cached_content.is_some() {
         report.record("sampling.cached_content", LossAction::Drop, "no slot");
     }
+    if s.safety_settings.is_some() {
+        report.record("sampling.safety_settings", LossAction::Drop, "no slot");
+    }
 }
 
 fn drop_dest_output_modalities(s: &IrSampling, report: &mut LossReport) {

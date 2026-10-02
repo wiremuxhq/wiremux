@@ -253,6 +253,9 @@ pub struct IrSampling {
     /// Gemini request-root `cachedContent` (`cachedContents/{id}`).
     /// Chat, Messages, Responses, and Converse drop.
     pub cached_content: Option<String>,
+    /// Gemini request-root `safetySettings` array.
+    /// Chat, Messages, Responses, and Converse drop.
+    pub safety_settings: Option<serde_json::Value>,
 }
 
 impl IrSampling {
