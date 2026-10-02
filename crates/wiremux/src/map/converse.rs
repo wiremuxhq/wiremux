@@ -720,6 +720,10 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
         IrPart::ImageUrl(url) => encode_image_url(url, report),
         IrPart::ImageBase64 { media_type, data } => encode_image_bytes(media_type, data, report),
         IrPart::Raw { .. } => {
+            if let Some(plain) = super::plain_media_part(part) {
+                report.record("part.media_hint", LossAction::Drop, "no slot");
+                return encode_part(&plain, report);
+            }
             report.record("content", LossAction::Drop, "converse image/raw dropped");
             None
         }

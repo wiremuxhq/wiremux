@@ -880,6 +880,10 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             }))
         }
         IrPart::Raw { raw, .. } => {
+            if let Some(plain) = super::plain_media_part(part) {
+                report.record("part.media_hint", LossAction::Drop, "no slot");
+                return encode_part(&plain, report);
+            }
             if let Some((media_type, data)) = super::function_response_image(part) {
                 return Some(json!({
                     "type": "image",

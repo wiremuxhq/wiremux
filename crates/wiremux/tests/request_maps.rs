@@ -5477,6 +5477,86 @@ fn gemini_media_resolution_round_trip() {
 }
 
 #[test]
+fn gemini_part_media_resolution_round_trip() {
+    let req = br#"{
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "inlineData": {"mimeType": "image/jpeg", "data": "aaaa"},
+                "mediaResolution": {"level": "MEDIA_RESOLUTION_HIGH"}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/inlineData/data")
+            .and_then(Value::as_str),
+        Some("aaaa"),
+        "image bytes must stay, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/mediaResolution/level")
+            .and_then(Value::as_str),
+        Some("MEDIA_RESOLUTION_HIGH"),
+        "part mediaResolution must round-trip, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "part.media_hint"),
+        "Gemini keeps the part hint, got {report:?}"
+    );
+
+    for (wire, profile) in [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Messages, messages_profile()),
+        (Wire::Responses, hard_error_profile()),
+        (Wire::Converse, converse_profile()),
+    ] {
+        let (encoded, dest_report) = encode(wire, &ir, &profile).expect("encode");
+        let dest: Value = serde_json::from_slice(&encoded).expect("json");
+        let rendered = dest.to_string();
+        assert!(
+            rendered.contains("aaaa"),
+            "{wire:?} dropped the image bytes, got {dest}"
+        );
+        assert!(
+            loss_dropped(&dest_report, "part.media_hint"),
+            "{wire:?} must record the media hint drop, got {dest_report:?}"
+        );
+        assert!(
+            !rendered.contains("mediaResolution"),
+            "{wire:?} leaked the Gemini hint, got {dest}"
+        );
+    }
+
+    let video = br#"{
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "inlineData": {"mimeType": "video/mp4", "data": "bbbb"},
+                "videoMetadata": {"fps": 2.0}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, video).expect("decode video");
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode video");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/videoMetadata/fps")
+            .and_then(Value::as_f64),
+        Some(2.0),
+        "videoMetadata must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/inlineData/data")
+            .and_then(Value::as_str),
+        Some("bbbb"),
+        "video bytes must stay, got {body}"
+    );
+}
+
+#[test]
 fn dest_gemini_frequency_penalty_reaches_chat() {
     let req = br#"{
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
