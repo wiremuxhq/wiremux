@@ -782,6 +782,7 @@ impl StreamEncoder {
             IrStreamEvent::AnnotationAdded { annotation } => {
                 out.extend(self.ensure_item(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                let annotation = super::responses::annotation_without_segment_text(&annotation);
                 let annotations = self.text_annotations.entry(index).or_default();
                 annotations.push(annotation.clone());
                 let annotation_index =

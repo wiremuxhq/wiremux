@@ -520,6 +520,14 @@ fn check_responses_indexes(value: &Value) -> Result<(), MapError> {
     Ok(())
 }
 
+pub(super) fn annotation_without_segment_text(annotation: &Value) -> Value {
+    let mut annotation = annotation.clone();
+    if let Some(obj) = annotation.as_object_mut() {
+        obj.remove("segment_text");
+    }
+    annotation
+}
+
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     let (event, data) = match ev {
         IrStreamEvent::TextDelta { text } => (
@@ -579,16 +587,19 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 }
             }),
         ),
-        IrStreamEvent::AnnotationAdded { annotation } => (
-            "response.output_text.annotation.added",
-            json!({
-                "type": "response.output_text.annotation.added",
-                "output_index": 0,
-                "content_index": 0,
-                "annotation_index": 0,
-                "annotation": annotation
-            }),
-        ),
+        IrStreamEvent::AnnotationAdded { annotation } => {
+            let annotation = annotation_without_segment_text(annotation);
+            (
+                "response.output_text.annotation.added",
+                json!({
+                    "type": "response.output_text.annotation.added",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "annotation_index": 0,
+                    "annotation": annotation
+                }),
+            )
+        }
         IrStreamEvent::AudioDelta { data } => (
             "response.audio.delta",
             json!({

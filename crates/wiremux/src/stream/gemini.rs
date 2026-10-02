@@ -562,6 +562,13 @@ pub(super) fn apply_grounding_support(
             support.pointer("/segment/startIndex"),
             support.pointer("/segment/endIndex"),
         );
+        if let Some(text) = support
+            .pointer("/segment/text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            annotation["segment_text"] = json!(text);
+        }
         break;
     }
 }
@@ -599,13 +606,21 @@ pub(super) fn annotation_from_grounding_chunk(chunk: &Value) -> Option<Value> {
 }
 
 pub(super) fn grounding_support_from_annotation(annotation: &Value, chunk_index: usize) -> Value {
-    json!({
+    let mut support = json!({
         "segment": {
             "startIndex": annotation.get("start_index").cloned().unwrap_or(json!(0)),
             "endIndex": annotation.get("end_index").cloned().unwrap_or(json!(0))
         },
         "groundingChunkIndices": [chunk_index]
-    })
+    });
+    if let Some(text) = annotation
+        .get("segment_text")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        support["segment"]["text"] = json!(text);
+    }
+    support
 }
 
 pub(super) fn grounding_chunk_from_annotation(annotation: &Value) -> Value {

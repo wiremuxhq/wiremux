@@ -8617,3 +8617,189 @@ fn converse_stream_content_block_index_above_cap_is_error() {
         "hostile contentBlockIndex must be an error, not index 0, got {err}"
     );
 }
+
+fn gemini_function_call_body(part: Value) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [part]
+            }
+        }]
+    }))
+    .expect("json")
+}
+
+fn paris_function_call_part() -> Value {
+    json!({
+        "thoughtSignature": "sig-paris",
+        "functionCall": {
+            "name": "get_weather",
+            "args": { "city": "Paris" }
+        }
+    })
+}
+
+#[test]
+fn dest_gemini_complete_function_call_thought_signature_round_trips() {
+    let body = gemini_function_call_body(paris_function_call_part());
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("decode dest Gemini complete functionCall thoughtSignature");
+    let gemini = encode_response(Wire::Gemini, &events).expect("encode dest Gemini complete");
+    assert_eq!(
+        gemini
+            .pointer("/candidates/0/content/parts/0/thoughtSignature")
+            .and_then(Value::as_str),
+        Some("sig-paris"),
+        "dest Gemini complete must keep part thoughtSignature, got {gemini}"
+    );
+    assert_eq!(
+        gemini
+            .pointer("/candidates/0/content/parts/0/functionCall/args/city")
+            .and_then(Value::as_str),
+        Some("Paris"),
+        "dest Gemini complete must keep functionCall args, got {gemini}"
+    );
+
+    let empty = gemini_function_call_body(json!({
+        "thoughtSignature": "sig-empty",
+        "functionCall": {
+            "name": "get_weather",
+            "args": {}
+        }
+    }));
+    let empty_events = decode_response(Wire::Gemini, &empty, &gemini_profile())
+        .expect("decode dest Gemini complete empty-args thoughtSignature");
+    let empty_gemini =
+        encode_response(Wire::Gemini, &empty_events).expect("encode dest Gemini complete");
+    assert_eq!(
+        empty_gemini
+            .pointer("/candidates/0/content/parts/0/thoughtSignature")
+            .and_then(Value::as_str),
+        Some("sig-empty"),
+        "dest Gemini complete must keep thoughtSignature when args are empty, got {empty_gemini}"
+    );
+
+    for wire in [
+        Wire::ChatCompletions,
+        Wire::Messages,
+        Wire::Responses,
+        Wire::Converse,
+    ] {
+        let mapped = encode_response(wire, &events).expect("encode");
+        assert!(
+            !mapped.to_string().contains("sig-paris"),
+            "dest {wire:?} complete must not carry the function-call signature, got {mapped}"
+        );
+    }
+}
+
+#[test]
+fn dest_gemini_stream_function_call_thought_signature_stays_on_start() {
+    let raw = RawSse {
+        event: None,
+        data: String::from_utf8(gemini_function_call_body(paris_function_call_part()))
+            .expect("utf8"),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode dest Gemini STREAM functionCall thoughtSignature");
+    let frames = encode_all(Wire::Gemini, &events);
+    let bodies = sse_json_frames(&frames);
+    assert!(
+        bodies.iter().any(|body| {
+            body.pointer("/candidates/0/content/parts/0/thoughtSignature")
+                .and_then(Value::as_str)
+                == Some("sig-paris")
+        }),
+        "dest Gemini STREAM must keep thoughtSignature on a start frame, got {frames:?}"
+    );
+    assert!(
+        bodies.iter().any(|body| {
+            body.pointer("/candidates/0/content/parts/0/functionCall/args/city")
+                .and_then(Value::as_str)
+                == Some("Paris")
+        }),
+        "dest Gemini STREAM must keep functionCall args city Paris, got {frames:?}"
+    );
+}
+
+fn gemini_grounding_support_quote_body() -> Value {
+    json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "see this" }]
+            },
+            "groundingMetadata": {
+                "groundingChunks": [{
+                    "web": { "uri": "https://example.com/s", "title": "S" }
+                }],
+                "groundingSupports": [{
+                    "segment": {
+                        "startIndex": 4,
+                        "endIndex": 8,
+                        "text": "SegmentQuoteThis"
+                    },
+                    "groundingChunkIndices": [0]
+                }]
+            }
+        }]
+    })
+}
+
+#[test]
+fn dest_gemini_grounding_support_segment_text_round_trips() {
+    let body = gemini_grounding_support_quote_body();
+    let bytes = serde_json::to_vec(&body).expect("json");
+    let events = decode_response(Wire::Gemini, &bytes, &gemini_profile())
+        .expect("decode dest Gemini complete groundingSupports segment.text");
+    let gemini = encode_response(Wire::Gemini, &events).expect("encode dest Gemini complete");
+    assert_eq!(
+        gemini
+            .pointer("/candidates/0/groundingMetadata/groundingSupports/0/segment/text")
+            .and_then(Value::as_str),
+        Some("SegmentQuoteThis"),
+        "dest Gemini complete must keep groundingSupports segment.text, got {gemini}"
+    );
+
+    let raw = RawSse {
+        event: None,
+        data: body.to_string(),
+    };
+    let stream_events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode dest Gemini STREAM groundingSupports segment.text");
+    let gemini_frames = encode_all(Wire::Gemini, &stream_events);
+    let gemini_bodies = sse_json_frames(&gemini_frames);
+    assert!(
+        gemini_bodies.iter().any(|frame| {
+            frame
+                .pointer("/candidates/0/groundingMetadata/groundingSupports/0/segment/text")
+                .and_then(Value::as_str)
+                == Some("SegmentQuoteThis")
+        }),
+        "dest Gemini STREAM must keep groundingSupports segment.text, got {gemini_frames:?}"
+    );
+
+    for wire in [
+        Wire::ChatCompletions,
+        Wire::Messages,
+        Wire::Responses,
+        Wire::Converse,
+    ] {
+        let complete = encode_response(wire, &events).expect("encode complete");
+        assert!(
+            !complete.to_string().contains("SegmentQuoteThis"),
+            "dest {wire:?} complete must not carry the support quote, got {complete}"
+        );
+        let frames = encode_all(wire, &stream_events);
+        let joined = frames
+            .iter()
+            .map(|frame| frame.data.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !joined.contains("SegmentQuoteThis"),
+            "dest {wire:?} STREAM must not carry the support quote, got {frames:?}"
+        );
+    }
+}
