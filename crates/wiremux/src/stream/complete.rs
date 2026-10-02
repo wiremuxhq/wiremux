@@ -1091,15 +1091,8 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     if let Some(ev) = super::chat::system_fingerprint_event(value) {
         out.push(ev);
     }
-    if let Some(id) = value
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|text| !text.trim().is_empty())
-    {
-        out.push(IrStreamEvent::Protocol {
-            item_type: "chat_completion_id".into(),
-            payload: json!(id),
-        });
+    if let Some(ev) = super::chat::completion_id_event(value) {
+        out.push(ev);
     }
     if let Some(unix) = value.get("created").and_then(Value::as_i64) {
         out.push(IrStreamEvent::Created { unix });
