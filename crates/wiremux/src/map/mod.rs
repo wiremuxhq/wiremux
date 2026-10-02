@@ -342,6 +342,9 @@ fn drop_dest_n_and_penalties(s: &IrSampling, report: &mut LossReport) {
     if s.safety_settings.is_some() {
         report.record("sampling.safety_settings", LossAction::Drop, "no slot");
     }
+    if s.request_labels.is_some() {
+        report.record("sampling.request_labels", LossAction::Drop, "no slot");
+    }
 }
 
 fn drop_dest_output_modalities(s: &IrSampling, report: &mut LossReport) {

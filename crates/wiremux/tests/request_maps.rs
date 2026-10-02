@@ -5913,6 +5913,43 @@ fn gemini_safety_settings_round_trip() {
 }
 
 #[test]
+fn gemini_request_labels_round_trip() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "labels": {"team": "maps", "env": "prod"}
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/labels/team").and_then(Value::as_str),
+        Some("maps"),
+        "Gemini labels must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/labels/env").and_then(Value::as_str),
+        Some("prod"),
+        "Gemini label env must round-trip, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.request_labels"),
+        "Gemini keeps labels, got {report:?}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    assert!(
+        loss_dropped(&chat_report, "sampling.request_labels"),
+        "Chat has no labels slot, got {chat_report:?}"
+    );
+    assert!(
+        !chat.to_string().contains("\"team\":\"maps\""),
+        "Chat must not emit the Gemini labels, got {chat}"
+    );
+}
+
+#[test]
 fn dest_gemini_frequency_penalty_reaches_chat() {
     let req = br#"{
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],

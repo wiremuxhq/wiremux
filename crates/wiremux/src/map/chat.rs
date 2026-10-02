@@ -253,6 +253,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         multi_speaker_speech: None,
         cached_content: None,
         safety_settings: None,
+        request_labels: None,
     }
 }
 
@@ -776,6 +777,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.safety_settings.is_some() {
         report.record("sampling.safety_settings", LossAction::Drop, "no slot");
+    }
+    if s.request_labels.is_some() {
+        report.record("sampling.request_labels", LossAction::Drop, "no slot");
     }
     if s.inference_geo.is_some() {
         report.record("sampling.inference_geo", LossAction::Drop, "no slot");

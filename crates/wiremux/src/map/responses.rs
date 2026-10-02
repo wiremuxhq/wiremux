@@ -345,6 +345,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         multi_speaker_speech: None,
         cached_content: None,
         safety_settings: None,
+        request_labels: None,
     }
 }
 
