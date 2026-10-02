@@ -64,6 +64,80 @@ fn messages_tool_result_image_and_is_error_round_trip() {
 }
 
 #[test]
+fn gemini_keeps_messages_tool_result_image() {
+    let raw = r#"{
+        "model": "claude-haiku-4-5",
+        "max_tokens": 16,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "call_1",
+                "content": [
+                    {"type": "text", "text": "no"},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aaaa"}}
+                ]
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, raw.as_bytes()).expect("decode");
+    let (body, report) = encode_value(Wire::Gemini, &ir);
+    assert!(
+        !has_action(&report, LossAction::Drop, "image"),
+        "Gemini functionResponse.parts accepts inlineData, got {report:?} {body}"
+    );
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("aaaa") && rendered.contains("inlineData"),
+        "image bytes must be functionResponse inlineData, got {body}"
+    );
+}
+
+#[test]
+fn gemini_named_function_response_image_reaches_image_wires() {
+    let raw = r#"{
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "functionResponse": {
+                    "name": "get_image",
+                    "response": {"ok": true},
+                    "parts": [{
+                        "inlineData": {
+                            "mimeType": "image/jpeg",
+                            "displayName": "instrument.jpg",
+                            "data": "aaaa"
+                        }
+                    }]
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, raw.as_bytes()).expect("decode");
+    for wire in [Wire::Messages, Wire::Responses, Wire::Converse] {
+        let (body, report) = encode_value(wire, &ir);
+        let rendered = body.to_string();
+        assert!(
+            rendered.contains("aaaa"),
+            "{wire:?} dropped functionResponse image bytes: {body} {report:?}"
+        );
+        assert!(
+            !has_action(&report, LossAction::Drop, "image"),
+            "{wire:?} recorded an image drop: {report:?}"
+        );
+    }
+    let (body, report) = encode_value(Wire::ChatCompletions, &ir);
+    assert!(
+        !body.to_string().contains("aaaa"),
+        "Chat tool content has no image slot, got {body}"
+    );
+    assert!(
+        has_action(&report, LossAction::Drop, "image"),
+        "Chat must record the image drop, got {report:?}"
+    );
+}
+
+#[test]
 fn chat_tool_result_image_is_a_drop() {
     let raw = r#"{
         "model": "claude-haiku-4-5",

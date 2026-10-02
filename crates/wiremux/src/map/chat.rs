@@ -409,7 +409,9 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 is_error,
             } => {
                 for part in parts {
-                    if matches!(part, IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. }) {
+                    if matches!(part, IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. })
+                        || super::function_response_image(part).is_some()
+                    {
                         report.record(format!("items[{idx}].image"), LossAction::Drop, "no slot");
                     }
                 }

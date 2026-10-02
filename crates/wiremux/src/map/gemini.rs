@@ -148,7 +148,7 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
             items.push(IrItem::FunctionOutput {
                 call_id,
                 output,
-                parts: Vec::new(),
+                parts: decode_function_response_parts(fr),
                 is_error: false,
             });
             continue;
@@ -223,6 +223,44 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
         }
     }
     flush_parts(role, &mut text_parts, items);
+}
+
+fn decode_function_response_parts(fr: &Value) -> Vec<IrPart> {
+    let Some(parts) = fr.get("parts").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for part in parts {
+        let Some(inline) = part.get("inlineData") else {
+            continue;
+        };
+        let media = str_field(inline, "mimeType").unwrap_or_default();
+        let data = str_field(inline, "data").unwrap_or_default();
+        if data.is_empty() {
+            continue;
+        }
+        let name = str_field(inline, "displayName").filter(|item| !item.is_empty());
+        if is_pdf_media_type(&media) || media.eq_ignore_ascii_case("text/plain") {
+            out.push(IrPart::Document {
+                source: IrDocumentSource::Base64(data),
+                media_type: media,
+                name,
+            });
+            continue;
+        }
+        if media.to_ascii_lowercase().starts_with("image/") && name.is_none() {
+            out.push(IrPart::ImageBase64 {
+                media_type: media,
+                data,
+            });
+            continue;
+        }
+        out.push(IrPart::Raw {
+            type_name: "functionResponse.inlineData".into(),
+            raw: json!({ "inlineData": inline }),
+        });
+    }
+    out
 }
 
 fn flush_parts(role: &str, parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
@@ -627,17 +665,31 @@ pub(super) fn encode(
                 parts,
                 is_error,
             } => {
-                for part in parts {
-                    if matches!(part, IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. }) {
-                        report.record(format!("items[{idx}].image"), LossAction::Drop, "no slot");
-                    }
-                }
                 if *is_error {
                     report.record(
                         format!("items[{idx}].is_error"),
                         LossAction::Drop,
                         "no slot",
                     );
+                }
+                let mut wire_parts = Vec::new();
+                for part in parts {
+                    if let Some(inline) = super::function_response_inline(part) {
+                        let mut blob = json!({
+                            "mimeType": inline.mime,
+                            "data": inline.data,
+                        });
+                        if let Some(name) = inline.display_name {
+                            blob["displayName"] = json!(name);
+                        }
+                        wire_parts.push(json!({ "inlineData": blob }));
+                    } else if matches!(
+                        part,
+                        IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. } | IrPart::Audio { .. }
+                    ) || matches!(part, IrPart::Raw { raw, .. } if raw.get("inlineData").is_some())
+                    {
+                        report.record(format!("items[{idx}].part"), LossAction::Drop, "no slot");
+                    }
                 }
                 let name = call_names
                     .iter()
@@ -651,17 +703,15 @@ pub(super) fn encode(
                     "tool output is not a JSON object",
                     "result",
                 );
-                push_role_part(
-                    &mut contents,
-                    "user",
-                    json!({
-                        "functionResponse": {
-                            "id": call_id,
-                            "name": name,
-                            "response": response
-                        }
-                    }),
-                );
+                let mut body = json!({
+                    "id": call_id,
+                    "name": name,
+                    "response": response
+                });
+                if !wire_parts.is_empty() {
+                    body["parts"] = serde_json::Value::Array(wire_parts);
+                }
+                push_role_part(&mut contents, "user", json!({ "functionResponse": body }));
             }
             IrItem::Reasoning {
                 encrypted: _,

@@ -879,6 +879,16 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             }))
         }
         IrPart::Raw { raw, .. } => {
+            if let Some((media_type, data)) = super::function_response_image(part) {
+                return Some(json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data
+                    }
+                }));
+            }
             if messages_raw_passthrough(raw) {
                 Some(raw.clone())
             } else {
