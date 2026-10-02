@@ -5734,6 +5734,62 @@ fn gemini_generation_sidecars_round_trip() {
 }
 
 #[test]
+fn gemini_multi_speaker_speech_round_trip() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {
+            "speechConfig": {
+                "multiSpeakerVoiceConfig": {
+                    "speakerVoiceConfigs": [
+                        {
+                            "speaker": "Host",
+                            "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Kore"}}
+                        },
+                        {
+                            "speaker": "Guest",
+                            "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Puck"}}
+                        }
+                    ]
+                }
+            }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer(
+            "/generationConfig/speechConfig/multiSpeakerVoiceConfig/speakerVoiceConfigs/0/speaker"
+        )
+        .and_then(Value::as_str),
+        Some("Host"),
+        "multi-speaker speech must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/generationConfig/speechConfig/multiSpeakerVoiceConfig/speakerVoiceConfigs/1/voiceConfig/prebuiltVoiceConfig/voiceName")
+            .and_then(Value::as_str),
+        Some("Puck"),
+        "second speaker voice must round-trip, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.multi_speaker_speech"),
+        "Gemini keeps multi-speaker speech, got {report:?}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    assert!(
+        loss_dropped(&chat_report, "sampling.multi_speaker_speech"),
+        "Chat has no multi-speaker speech slot, got {chat_report:?}"
+    );
+    assert!(
+        !chat.to_string().contains("multiSpeakerVoiceConfig"),
+        "Chat must not emit the Gemini speech object, got {chat}"
+    );
+}
+
+#[test]
 fn gemini_visible_text_keeps_thought_signature() {
     let req = br#"{
         "contents": [{

@@ -375,6 +375,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         translation_config: None,
         affective_dialog: None,
         enhanced_civic_answers: None,
+        multi_speaker_speech: None,
     }
 }
 
