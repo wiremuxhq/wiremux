@@ -431,6 +431,25 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             payload: metadata.clone(),
         });
     }
+    if let Some(metadata) = value
+        .pointer("/candidates/0/citationMetadata")
+        .filter(|metadata| {
+            let sources = metadata
+                .get("citationSources")
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty());
+            let citations = metadata
+                .get("citations")
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty());
+            sources || citations
+        })
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "gemini_citation_metadata".into(),
+            payload: metadata.clone(),
+        });
+    }
     if let Some(attrs) = value
         .pointer("/candidates/0/groundingAttributions")
         .and_then(Value::as_array)
@@ -499,9 +518,20 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_url_context"
         )
     });
+    let has_citation = out.iter().any(|ev| {
+        matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_citation_metadata"
+        )
+    });
     let only_search_entry = matches!(out.as_slice(), [IrStreamEvent::SearchEntryPoint { .. }]);
     if out.is_empty()
-        || (out.len() < 2 && !has_call && !only_search_entry && !has_safety && !has_url_context)
+        || (out.len() < 2
+            && !has_call
+            && !only_search_entry
+            && !has_safety
+            && !has_url_context
+            && !has_citation)
     {
         *call_seq = seq_at_entry;
         return None;
@@ -908,7 +938,10 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                 || (wire == Wire::Gemini
                     && matches!(
                         item_type.as_str(),
-                        "gemini_response_id" | "gemini_safety_ratings" | "gemini_url_context"
+                        "gemini_response_id"
+                            | "gemini_safety_ratings"
+                            | "gemini_url_context"
+                            | "gemini_citation_metadata"
                     ))
                 || (wire == Wire::Converse
                     && matches!(

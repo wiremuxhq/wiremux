@@ -512,6 +512,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut gemini_response_id = None;
     let mut safety_ratings = None;
     let mut url_context = None;
+    let mut citation_metadata = None;
     let mut current: Option<(String, String, String, Option<String>)> = None;
     for ev in events {
         match ev {
@@ -519,7 +520,9 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             | IrStreamEvent::AudioTranscriptDelta { text: delta } => text.push_str(delta),
             IrStreamEvent::RefusalDelta { text: delta } => refusal.push_str(delta),
             IrStreamEvent::AnnotationAdded { annotation }
-                if annotation.get("url_context").and_then(Value::as_bool) != Some(true) =>
+                if annotation.get("url_context").and_then(Value::as_bool) != Some(true)
+                    && annotation.get("citation_metadata").and_then(Value::as_bool)
+                        != Some(true) =>
             {
                 let idx = grounding_chunks.len();
                 grounding_chunks.push(super::gemini::grounding_chunk_from_annotation(annotation));
@@ -648,6 +651,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             {
                 url_context = Some(payload.clone());
             }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_citation_metadata" && payload.is_object() =>
+            {
+                citation_metadata = Some(payload.clone());
+            }
             _ => {}
         }
     }
@@ -688,6 +696,9 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     if let Some(metadata) = url_context {
         candidate["urlContextMetadata"] = metadata;
+    }
+    if let Some(metadata) = citation_metadata {
+        candidate["citationMetadata"] = metadata;
     }
     if !refusal.is_empty() {
         candidate["finishMessage"] = json!(refusal);

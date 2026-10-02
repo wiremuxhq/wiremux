@@ -507,6 +507,7 @@ pub(super) fn first_citation_annotation(candidate: &Value) -> Option<Value> {
 pub(super) fn citation_annotations(candidate: &Value) -> impl Iterator<Item = Value> + '_ {
     CITATION_LIST_POINTERS.iter().flat_map(|pointer| {
         let from_url_context = *pointer == "/urlContextMetadata/urlMetadata";
+        let from_citation = pointer.starts_with("/citationMetadata/");
         candidate
             .pointer(pointer)
             .and_then(Value::as_array)
@@ -516,6 +517,9 @@ pub(super) fn citation_annotations(candidate: &Value) -> impl Iterator<Item = Va
                 let mut annotation = annotation_from_citation(cite)?;
                 if from_url_context {
                     annotation["url_context"] = json!(true);
+                }
+                if from_citation {
+                    annotation["citation_metadata"] = json!(true);
                 }
                 Some(annotation)
             })

@@ -1898,6 +1898,35 @@ fn dest_gemini_complete_citation_sources_remaps_dest_chat_url_citation() {
 }
 
 #[test]
+fn gemini_complete_keeps_citation_metadata() {
+    let metadata = json!({
+        "citationSources": [{
+            "uri": "https://example.com/src",
+            "title": "Src"
+        }]
+    });
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "Hi" }] },
+            "citationMetadata": metadata,
+            "finishReason": "STOP"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile()).expect("decode");
+    let encoded = encode_response(Wire::Gemini, &events).expect("encode");
+    assert_eq!(
+        encoded.pointer("/candidates/0/citationMetadata"),
+        Some(&metadata),
+        "citation metadata missing: {encoded}"
+    );
+    assert!(
+        encoded.pointer("/candidates/0/groundingMetadata").is_none(),
+        "citation metadata must not become grounding: {encoded}"
+    );
+}
+
+#[test]
 fn dest_gemini_stream_citation_sources_remap_dest_chat_annotations() {
     let raw = RawSse {
         event: None,

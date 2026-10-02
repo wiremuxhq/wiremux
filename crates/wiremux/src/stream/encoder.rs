@@ -60,6 +60,7 @@ pub struct StreamEncoder {
     gemini_response_id: Option<String>,
     gemini_safety_ratings: Option<Value>,
     gemini_url_context: Option<Value>,
+    gemini_citation_metadata: Option<Value>,
     converse_passthrough: Vec<(String, Value)>,
     service_tier: Option<String>,
     stop_sequence: Option<String>,
@@ -113,6 +114,7 @@ impl StreamEncoder {
             gemini_response_id: None,
             gemini_safety_ratings: None,
             gemini_url_context: None,
+            gemini_citation_metadata: None,
             converse_passthrough: Vec::new(),
             service_tier: None,
             stop_sequence: None,
@@ -177,6 +179,14 @@ impl StreamEncoder {
                 Ok(Vec::new())
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_citation_metadata" =>
+            {
+                if self.wire == Wire::Gemini && payload.is_object() {
+                    self.gemini_citation_metadata = Some(payload);
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "gemini_safety_ratings" =>
             {
                 if self.wire == Wire::Gemini
@@ -219,7 +229,9 @@ impl StreamEncoder {
             }
             IrStreamEvent::AnnotationAdded { annotation }
                 if self.wire == Wire::Gemini
-                    && annotation.get("url_context").and_then(Value::as_bool) == Some(true) =>
+                    && (annotation.get("url_context").and_then(Value::as_bool) == Some(true)
+                        || annotation.get("citation_metadata").and_then(Value::as_bool)
+                            == Some(true)) =>
             {
                 Ok(Vec::new())
             }
@@ -263,6 +275,7 @@ impl StreamEncoder {
         if self.gemini_response_id.is_none()
             && self.gemini_safety_ratings.is_none()
             && self.gemini_url_context.is_none()
+            && self.gemini_citation_metadata.is_none()
         {
             return frame;
         }
@@ -291,6 +304,15 @@ impl StreamEncoder {
                 .and_then(Value::as_object_mut)
         {
             candidate.insert("urlContextMetadata".into(), metadata.clone());
+        }
+        if self.gemini_citation_metadata.is_some()
+            && value.pointer("/candidates/0/finishReason").is_some()
+            && let Some(metadata) = &self.gemini_citation_metadata
+            && let Some(candidate) = value
+                .pointer_mut("/candidates/0")
+                .and_then(Value::as_object_mut)
+        {
+            candidate.insert("citationMetadata".into(), metadata.clone());
         }
         RawSse {
             event: frame.event,
