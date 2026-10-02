@@ -7404,6 +7404,46 @@ fn message_delta_stop_reason_wins_over_usage() {
 }
 
 #[test]
+fn responses_stream_web_search_call_round_trips() {
+    let raw = RawSse {
+        event: Some("response.output_item.added".into()),
+        data: json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed",
+                "action": { "query": "wiremux" }
+            }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("decode");
+    let ev = events
+        .iter()
+        .find(|ev| {
+            matches!(
+                ev,
+                IrStreamEvent::Protocol { item_type, .. } if item_type == "web_search_call"
+            )
+        })
+        .expect("web_search_call");
+    let encoded = encode_stream_event(Wire::Responses, ev).expect("encode");
+    assert_eq!(encoded.event.as_deref(), Some("response.output_item.done"));
+    let data: Value = serde_json::from_str(&encoded.data).expect("json");
+    assert_eq!(
+        data.pointer("/item/id").and_then(|value| value.as_str()),
+        Some("ws_1")
+    );
+    assert_eq!(
+        data.pointer("/item/action/query")
+            .and_then(|value| value.as_str()),
+        Some("wiremux")
+    );
+}
+
+#[test]
 fn responses_reasoning_delta_is_not_output_text() {
     let ev = IrStreamEvent::ReasoningDelta {
         text: "hidden thought".into(),
