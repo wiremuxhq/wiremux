@@ -947,6 +947,90 @@ fn gemini_unknown_finish_reason_is_preserved() {
 }
 
 #[test]
+fn dest_gemini_unknown_finish_reason_round_trips() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"candidates":[{"finishReason":"FUTURE_REASON","content":{"role":"model","parts":[{"text":"x"}]}}]}"#.into(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect("decode dest Gemini STREAM unknown finish");
+    let frames = encode_all(Wire::Gemini, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/finishReason")
+                .and_then(Value::as_str)
+        }),
+        Some("FUTURE_REASON"),
+        "dest Gemini STREAM must keep an unknown finishReason, got {frames:?}"
+    );
+
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "finishReason": "FUTURE_REASON",
+            "content": { "role": "model", "parts": [{ "text": "x" }] }
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("decode dest Gemini complete unknown finish");
+    let mapped = encode_response(Wire::Gemini, &events).expect("encode dest Gemini");
+    assert_eq!(
+        mapped
+            .pointer("/candidates/0/finishReason")
+            .and_then(Value::as_str),
+        Some("FUTURE_REASON"),
+        "dest Gemini complete must keep an unknown finishReason, got {mapped}"
+    );
+
+    let blocked = serde_json::to_vec(&json!({
+        "promptFeedback": { "blockReason": "NOT_A_KNOWN_REASON" }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &blocked, &gemini_profile())
+        .expect("decode unknown blockReason");
+    let mapped = encode_response(Wire::Gemini, &events).expect("encode block");
+    assert_eq!(
+        mapped
+            .pointer("/candidates/0/finishReason")
+            .and_then(Value::as_str),
+        Some("SAFETY"),
+        "unknown blockReason must encode as SAFETY, got {mapped}"
+    );
+    assert!(
+        !mapped.to_string().contains("NOT_A_KNOWN_REASON"),
+        "unknown blockReason must not be copied onto finishReason, got {mapped}"
+    );
+}
+
+#[test]
+fn dest_gemini_stream_custom_tool_call_keeps_id() {
+    let events = [IrStreamEvent::CustomToolCallStart {
+        id: "call_custom".into(),
+        name: "code_exec".into(),
+        index: 0,
+    }];
+    let frames = encode_all(Wire::Gemini, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/content/parts/0/functionCall/id")
+                .and_then(Value::as_str)
+        }),
+        Some("call_custom"),
+        "dest Gemini STREAM custom tool must keep functionCall.id, got {frames:?}"
+    );
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/candidates/0/content/parts/0/functionCall/name")
+                .and_then(Value::as_str)
+        }),
+        Some("code_exec"),
+        "dest Gemini STREAM custom tool must keep functionCall.name, got {frames:?}"
+    );
+}
+
+#[test]
 fn gemini_thought_then_function_call_emits_both() {
     let raw = RawSse {
         event: None,
