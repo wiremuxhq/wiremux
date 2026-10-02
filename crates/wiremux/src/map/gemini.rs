@@ -904,6 +904,7 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                     || raw.get("audioTranscription").is_some()
                     || raw.get("speechMetadata").is_some()
                     || raw.get("partMetadata").is_some()
+                    || raw.get("thoughtSignature").is_some()
                 {
                     out.push(raw.clone());
                 } else {
