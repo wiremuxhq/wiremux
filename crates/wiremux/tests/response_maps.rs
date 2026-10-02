@@ -289,6 +289,64 @@ fn stream_delta_stays_delta_only_and_complete_ignores_missing_message() {
 }
 
 #[test]
+fn messages_complete_round_trips_its_own_id() {
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_real",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-haiku-4-5",
+        "content": [{ "type": "text", "text": "pong" }],
+        "stop_reason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile()).expect("decode");
+    let mapped = encode_response(Wire::Messages, &events).expect("encode");
+    assert_eq!(
+        mapped.get("id").and_then(|value| value.as_str()),
+        Some("msg_real"),
+        "Messages id replaced: {mapped}"
+    );
+    let chat_body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-real",
+        "choices": [{
+            "message": { "role": "assistant", "content": "pong" },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let chat_events =
+        decode_response(Wire::ChatCompletions, &chat_body, &chat_profile()).expect("decode");
+    let messages = encode_response(Wire::Messages, &chat_events).expect("encode");
+    assert_eq!(
+        messages.get("id").and_then(|value| value.as_str()),
+        Some("msg_wiremux"),
+        "Chat id must not become the Messages id: {messages}"
+    );
+}
+
+#[test]
+fn responses_complete_round_trips_its_own_id() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_real",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "pong" }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile()).expect("decode");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode");
+    assert_eq!(
+        mapped.get("id").and_then(|value| value.as_str()),
+        Some("resp_real"),
+        "Responses id replaced: {mapped}"
+    );
+}
+
+#[test]
 fn responses_complete_output_text_is_text_delta() {
     let body = br#"{"id":"resp_1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hello from responses"}]}],"usage":{"input_tokens":3,"output_tokens":2}}"#;
     let events = decode_response(Wire::Responses, body, &responses_profile()).unwrap();

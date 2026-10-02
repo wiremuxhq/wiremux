@@ -287,6 +287,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
     let mut finish = None;
+    let mut messages_id = None;
     let mut usage = None;
     let mut service_tier = None;
     let mut diagnostics = None;
@@ -386,6 +387,11 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 }
                 images.push(payload.clone());
             }
+            IrStreamEvent::Protocol { item_type, payload } if item_type == "messages_id" => {
+                if let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty()) {
+                    messages_id = Some(text.to_string());
+                }
+            }
             _ => {}
         }
     }
@@ -418,7 +424,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     content.extend(tool_calls);
 
     let mut out = json!({
-        "id": "msg_wiremux",
+        "id": messages_id.as_deref().unwrap_or("msg_wiremux"),
         "type": "message",
         "role": "assistant",
         "model": model,
@@ -754,6 +760,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
     let mut finish = None;
+    let mut responses_id = None;
     let mut usage = None;
     let mut annotations = Vec::new();
     let mut audio_data = String::new();
@@ -847,6 +854,11 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     tool_calls.push(responses_tool_call_value(&id, &name, &args, custom));
                 }
             }
+            IrStreamEvent::Protocol { item_type, payload } if item_type == "responses_id" => {
+                if let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty()) {
+                    responses_id = Some(text.to_string());
+                }
+            }
             IrStreamEvent::Protocol { item_type, payload }
                 if payload.get("type").and_then(Value::as_str) == Some(item_type.as_str())
                     && item_type != "chunk"
@@ -935,7 +947,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
         .map(responses_complete_status)
         .unwrap_or("completed");
     let mut out = json!({
-        "id": "resp_wiremux",
+        "id": responses_id.as_deref().unwrap_or("resp_wiremux"),
         "object": "response",
         "status": status,
         "output": output,
@@ -1349,6 +1361,16 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
             out.push(IrStreamEvent::ServiceTier { tier });
         }
         out.push(from_anthropic(usage));
+    }
+    if let Some(id) = value
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "messages_id".into(),
+            payload: json!(id),
+        });
     }
     Ok(out)
 }
