@@ -51,6 +51,7 @@ pub struct StreamEncoder {
     reasoning_items: HashMap<u32, String>,
     created_at: Option<i64>,
     chat_completion_id: Option<String>,
+    messages_id: Option<String>,
     service_tier: Option<String>,
     stop_sequence: Option<String>,
     metadata: Option<BTreeMap<String, String>>,
@@ -94,6 +95,7 @@ impl StreamEncoder {
             reasoning_items: HashMap::new(),
             created_at: None,
             chat_completion_id: None,
+            messages_id: None,
             service_tier: None,
             stop_sequence: None,
             metadata: None,
@@ -123,6 +125,14 @@ impl StreamEncoder {
             {
                 if let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty()) {
                     self.chat_completion_id = Some(text.to_string());
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload } if item_type == "messages_id" => {
+                if self.wire == Wire::Messages
+                    && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())
+                {
+                    self.messages_id = Some(text.to_string());
                 }
                 Ok(Vec::new())
             }
@@ -579,7 +589,7 @@ impl StreamEncoder {
             json!({
                 "type": "message_start",
                 "message": {
-                    "id": "msg_wiremux",
+                    "id": self.messages_id.as_deref().unwrap_or("msg_wiremux"),
                     "type": "message",
                     "role": "assistant",
                     "content": [],

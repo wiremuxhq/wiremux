@@ -7847,6 +7847,41 @@ fn chat_stream_keeps_completion_id() {
 }
 
 #[test]
+fn messages_stream_keeps_message_id_when_usage_is_present() {
+    let raw = RawSse {
+        event: Some("message_start".into()),
+        data: json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_real",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": "claude-haiku-4-5",
+                "usage": { "input_tokens": 3, "output_tokens": 1 }
+            }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Messages, &raw, &messages_profile()).expect("decode");
+    let mut enc = StreamEncoder::new(Wire::Messages).with_model("claude-haiku-4-5");
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push"));
+    }
+    let start = frames
+        .iter()
+        .find(|frame| frame.event.as_deref() == Some("message_start"))
+        .expect("message_start");
+    let value: Value = serde_json::from_str(&start.data).expect("json");
+    assert_eq!(
+        value.pointer("/message/id").and_then(|id| id.as_str()),
+        Some("msg_real"),
+        "message id replaced: {value}"
+    );
+}
+
+#[test]
 fn chat_stream_custom_tool_call_decodes() {
     let raw = RawSse {
         event: None,
