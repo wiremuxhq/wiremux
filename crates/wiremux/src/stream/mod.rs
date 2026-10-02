@@ -340,6 +340,19 @@ fn decode_stream_events_seq(
                 value: managed.clone(),
             });
         }
+        if name == "message_delta"
+            && matches!(
+                first,
+                IrStreamEvent::FinishReason { .. } | IrStreamEvent::Usage { .. }
+            )
+            && let Some(reason) = value
+                .pointer("/diagnostics/cache_miss_reason")
+                .filter(|reason| reason.is_object())
+        {
+            out.push(IrStreamEvent::Diagnostics {
+                cache_miss_reason: reason.clone(),
+            });
+        }
         out.push(first);
         if add_delta_usage && let Some(usage) = usage {
             out.push(usage::from_anthropic(usage));
