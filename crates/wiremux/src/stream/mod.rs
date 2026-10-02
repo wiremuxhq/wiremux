@@ -322,6 +322,16 @@ fn gemini_value_has_function_call(value: &Value) -> bool {
 fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStreamEvent>> {
     let seq_at_entry = *call_seq;
     let mut out = Vec::new();
+    if let Some(id) = value
+        .get("responseId")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "gemini_response_id".into(),
+            payload: serde_json::json!(id),
+        });
+    }
     if let Some(parts) = value
         .pointer("/candidates/0/content/parts")
         .and_then(Value::as_array)
@@ -806,6 +816,7 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                     && (item_type == "responses_id" || responses_output_item(item_type, payload)))
                 || (wire == Wire::ChatCompletions
                     && (item_type == "system_fingerprint" || item_type == "chat_completion_id"))
+                || (wire == Wire::Gemini && item_type == "gemini_response_id")
         }
         IrStreamEvent::Unknown { .. } => matches!(wire, Wire::Messages | Wire::Responses),
         _ => true,
