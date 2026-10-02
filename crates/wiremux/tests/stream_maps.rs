@@ -7961,6 +7961,46 @@ fn gemini_stream_keeps_response_id() {
 }
 
 #[test]
+fn converse_stream_keeps_metrics_and_trace() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "metadata": {
+                "usage": { "inputTokens": 3, "outputTokens": 1 },
+                "metrics": { "latencyMs": 12 },
+                "trace": { "guardrail": { "action": "NONE" } }
+            }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Converse, &raw, &converse_profile()).expect("decode");
+    let mut enc = StreamEncoder::new(Wire::Converse);
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push"));
+    }
+    let metadata = frames
+        .iter()
+        .filter_map(|frame| serde_json::from_str::<Value>(&frame.data).ok())
+        .find(|value| value.get("metadata").is_some())
+        .expect("metadata frame");
+    assert_eq!(
+        metadata
+            .pointer("/metadata/metrics/latencyMs")
+            .and_then(|value| value.as_u64()),
+        Some(12),
+        "metrics missing: {metadata}"
+    );
+    assert_eq!(
+        metadata
+            .pointer("/metadata/trace/guardrail/action")
+            .and_then(|value| value.as_str()),
+        Some("NONE"),
+        "trace missing: {metadata}"
+    );
+}
+
+#[test]
 fn chat_stream_custom_tool_call_decodes() {
     let raw = RawSse {
         event: None,

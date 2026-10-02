@@ -817,6 +817,11 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                 || (wire == Wire::ChatCompletions
                     && (item_type == "system_fingerprint" || item_type == "chat_completion_id"))
                 || (wire == Wire::Gemini && item_type == "gemini_response_id")
+                || (wire == Wire::Converse
+                    && matches!(
+                        item_type.as_str(),
+                        "additionalModelResponseFields" | "metrics" | "trace" | "performanceConfig"
+                    ))
         }
         IrStreamEvent::Unknown { .. } => matches!(wire, Wire::Messages | Wire::Responses),
         _ => true,
