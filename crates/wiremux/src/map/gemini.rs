@@ -416,7 +416,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .or_else(|| f32_field(cfg, "presence_penalty")),
         seed: i64_field(cfg, "seed"),
         n: u32_field(cfg, "candidateCount").or_else(|| u32_field(cfg, "candidate_count")),
-        output_modalities: gemini_output_modalities(cfg, report),
+        output_modalities: gemini_output_modalities(cfg),
         audio_voice: if gemini_multi_speaker_speech(cfg).is_some() {
             None
         } else {
@@ -469,7 +469,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     }
 }
 
-fn gemini_output_modalities(cfg: &Value, report: &mut LossReport) -> Vec<String> {
+fn gemini_output_modalities(cfg: &Value) -> Vec<String> {
     let Some(arr) = cfg
         .get("responseModalities")
         .or_else(|| cfg.get("response_modalities"))
@@ -478,7 +478,6 @@ fn gemini_output_modalities(cfg: &Value, report: &mut LossReport) -> Vec<String>
         return Vec::new();
     };
     let mut out = Vec::new();
-    let mut saw_image = false;
     for item in arr {
         let Some(raw) = item.as_str() else {
             continue;
@@ -488,15 +487,8 @@ fn gemini_output_modalities(cfg: &Value, report: &mut LossReport) -> Vec<String>
         } else if raw.eq_ignore_ascii_case("audio") {
             out.push("audio".to_string());
         } else if raw.eq_ignore_ascii_case("image") {
-            saw_image = true;
+            out.push("image".to_string());
         }
-    }
-    if saw_image {
-        report.record(
-            "sampling.output_modalities.image",
-            LossAction::Drop,
-            "image has no dest Chat slot",
-        );
     }
     out
 }
@@ -1137,6 +1129,8 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
                 Some("TEXT".to_string())
             } else if raw.eq_ignore_ascii_case("audio") {
                 Some("AUDIO".to_string())
+            } else if raw.eq_ignore_ascii_case("image") {
+                Some("IMAGE".to_string())
             } else {
                 None
             }

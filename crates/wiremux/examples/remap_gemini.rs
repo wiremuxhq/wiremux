@@ -5,7 +5,7 @@
 //! ```
 //!
 //! Gemini `generationConfig.responseModalities` IMAGE has no Chat
-//! `modalities` image slot and Drops. Gemini usage
+//! `modalities` image slot. Chat encode drops it. Gemini usage
 //! `promptTokensDetails` IMAGE has no Chat `image_tokens` (same official
 //! Drop). AUDIO next to IMAGE still remaps.
 
