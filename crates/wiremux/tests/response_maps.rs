@@ -190,6 +190,31 @@ fn chat_complete_round_trips_system_fingerprint() {
 }
 
 #[test]
+fn chat_complete_round_trips_its_own_id() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-real",
+        "choices": [{
+            "message": { "role": "assistant", "content": "hello" },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile()).expect("decode");
+    let mapped = encode_response(Wire::ChatCompletions, &events).expect("encode");
+    assert_eq!(
+        mapped.get("id").and_then(|value| value.as_str()),
+        Some("chatcmpl-real"),
+        "Chat id missing: {mapped}"
+    );
+    let gemini = encode_response(Wire::Gemini, &events).expect("encode gemini");
+    assert_eq!(
+        gemini.get("responseId").and_then(|value| value.as_str()),
+        Some("gemini-wiremux"),
+        "Gemini must keep its own response id, got {gemini}"
+    );
+}
+
+#[test]
 fn chat_complete_message_tool_calls() {
     let body = serde_json::to_vec(&json!({
         "choices": [{
