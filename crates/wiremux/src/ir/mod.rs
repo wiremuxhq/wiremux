@@ -174,8 +174,9 @@ pub struct IrSampling {
     /// `default` / `auto` degrade to `standard`). Messages drops.
     pub service_tier: Option<String>,
     /// Dest Chat `modalities` (`text` / `audio`). Dest Gemini
-    /// `generationConfig.responseModalities` (`TEXT` / `AUDIO`).
+    /// `generationConfig.responseModalities` (`TEXT` / `AUDIO` / `IMAGE`).
     /// Dest Messages, dest Responses, and dest Converse drop.
+    /// Dest Chat drops `image`.
     pub output_modalities: Vec<String>,
     /// Dest Chat `audio.voice` (string or object `id`). Dest Gemini
     /// `generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName`.

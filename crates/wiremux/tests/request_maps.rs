@@ -6415,8 +6415,24 @@ fn dest_gemini_image_modality_drops() {
         "contents":[{"role":"user","parts":[{"text":"hi"}]}],
         "generationConfig":{"responseModalities":["IMAGE"]}
     }"#;
-    let (ir, decode_report) = decode(Wire::Gemini, req).expect("decode dest Gemini");
-    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode dest Gemini");
+    assert_eq!(ir.sampling.output_modalities, ["image"]);
+    let (gemini_bytes, gemini_report) =
+        encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode Gemini");
+    let gemini: Value = serde_json::from_slice(&gemini_bytes).expect("json");
+    assert_eq!(
+        gemini
+            .pointer("/generationConfig/responseModalities/0")
+            .and_then(Value::as_str),
+        Some("IMAGE"),
+        "Gemini IMAGE must round-trip, got {gemini}"
+    );
+    assert!(
+        !loss_dropped(&gemini_report, "sampling.output_modalities"),
+        "Gemini has an IMAGE modality slot, got {gemini_report:?}"
+    );
+    let (bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     let modalities = body
         .get("modalities")
@@ -6430,8 +6446,8 @@ fn dest_gemini_image_modality_drops() {
         "dest Gemini IMAGE must not reach Chat modalities, got {body}"
     );
     assert!(
-        loss_dropped(&decode_report, "sampling.output_modalities.image"),
-        "dest Gemini IMAGE has no dest Chat slot and must Drop, got {decode_report:?}"
+        loss_dropped(&chat_report, "sampling.output_modalities"),
+        "Chat has no image modality and must Drop, got {chat_report:?}"
     );
 }
 
@@ -6442,14 +6458,10 @@ fn dest_gemini_image_plus_audio_still_reaches_chat() {
         "generationConfig":{"responseModalities":["IMAGE","AUDIO"]}
     }"#;
     let (ir, decode_report) = decode(Wire::Gemini, req).expect("decode dest Gemini");
-    assert_eq!(ir.sampling.output_modalities, ["audio"]);
-    assert!(
-        loss_dropped(&decode_report, "sampling.output_modalities.image"),
-        "dest Gemini IMAGE must Drop on its own key, got {decode_report:?}"
-    );
+    assert_eq!(ir.sampling.output_modalities, ["image", "audio"]);
     assert!(
         !loss_dropped(&decode_report, "sampling.output_modalities"),
-        "dest Gemini AUDIO must not share the IMAGE Drop key, got {decode_report:?}"
+        "decode must keep IMAGE for a Gemini dest, got {decode_report:?}"
     );
     let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
