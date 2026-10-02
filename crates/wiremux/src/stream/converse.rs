@@ -528,6 +528,20 @@ pub(super) fn decode_metadata_events(value: &Value) -> Vec<IrStreamEvent> {
     if let Some(tier) = service_tier_from(value) {
         out.push(IrStreamEvent::ServiceTier { tier });
     }
+    let source = value.get("metadata").unwrap_or(value);
+    for key in [
+        "additionalModelResponseFields",
+        "metrics",
+        "trace",
+        "performanceConfig",
+    ] {
+        if let Some(fields) = source.get(key).filter(|fields| !fields.is_null()) {
+            out.push(IrStreamEvent::Protocol {
+                item_type: key.into(),
+                payload: fields.clone(),
+            });
+        }
+    }
     if let Some(usage) = value.pointer("/metadata/usage") {
         out.push(usage_from_converse(usage));
     }

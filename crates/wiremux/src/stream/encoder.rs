@@ -54,6 +54,7 @@ pub struct StreamEncoder {
     messages_id: Option<String>,
     responses_id: Option<String>,
     gemini_response_id: Option<String>,
+    converse_passthrough: Vec<(String, Value)>,
     service_tier: Option<String>,
     stop_sequence: Option<String>,
     metadata: Option<BTreeMap<String, String>>,
@@ -100,6 +101,7 @@ impl StreamEncoder {
             messages_id: None,
             responses_id: None,
             gemini_response_id: None,
+            converse_passthrough: Vec::new(),
             service_tier: None,
             stop_sequence: None,
             metadata: None,
@@ -154,6 +156,16 @@ impl StreamEncoder {
                 {
                     self.gemini_response_id = Some(text.to_string());
                 }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if self.wire == Wire::Converse
+                    && matches!(
+                        item_type.as_str(),
+                        "additionalModelResponseFields" | "metrics" | "trace" | "performanceConfig"
+                    ) =>
+            {
+                self.converse_passthrough.push((item_type, payload));
                 Ok(Vec::new())
             }
             IrStreamEvent::Protocol { .. } | IrStreamEvent::Unknown { .. } => {
@@ -1458,6 +1470,21 @@ impl StreamEncoder {
                     super::converse::encode(&IrStreamEvent::AnnotationAdded { annotation })?,
                     index,
                 ));
+            }
+            IrStreamEvent::Usage { .. } => {
+                let mut frame = super::converse::encode(&ev)?;
+                if let Some(meta) = frame
+                    .get_mut("metadata")
+                    .and_then(|value| value.as_object_mut())
+                {
+                    for (key, value) in self.converse_passthrough.drain(..) {
+                        meta.insert(key, value);
+                    }
+                }
+                out.push(RawSse {
+                    event: None,
+                    data: frame.to_string(),
+                });
             }
             other => out.push(encode_stream_event(Wire::Converse, &other)?),
         }
