@@ -5444,6 +5444,39 @@ fn dest_gemini_json_mime_reaches_chat() {
 }
 
 #[test]
+fn gemini_media_resolution_round_trip() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {"mediaResolution": "MEDIA_RESOLUTION_HIGH"}
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/mediaResolution")
+            .and_then(Value::as_str),
+        Some("MEDIA_RESOLUTION_HIGH"),
+        "Gemini mediaResolution must round-trip, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.media_resolution"),
+        "Gemini has mediaResolution and must not Drop, got {report:?}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    assert!(
+        loss_dropped(&chat_report, "sampling.media_resolution"),
+        "Chat has no mediaResolution slot, got {chat_report:?}"
+    );
+    assert!(
+        !chat.to_string().contains("MEDIA_RESOLUTION_HIGH"),
+        "Chat must not emit the Gemini enum, got {chat}"
+    );
+}
+
+#[test]
 fn dest_gemini_frequency_penalty_reaches_chat() {
     let req = br#"{
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],

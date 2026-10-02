@@ -369,6 +369,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .get("mcp_servers")
             .filter(|servers| servers.is_array())
             .cloned(),
+        media_resolution: None,
     }
 }
 

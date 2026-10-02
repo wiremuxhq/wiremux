@@ -419,6 +419,9 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         container: None,
         context_management: None,
         mcp_servers: None,
+        media_resolution: str_field(cfg, "mediaResolution")
+            .map(|level| level.trim().to_string())
+            .filter(|level| !level.is_empty()),
     }
 }
 
@@ -926,6 +929,14 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(k) = s.top_k {
         cfg["topK"] = json!(k);
+    }
+    if let Some(level) = s
+        .media_resolution
+        .as_deref()
+        .map(str::trim)
+        .filter(|level| !level.is_empty())
+    {
+        cfg["mediaResolution"] = json!(level);
     }
     if s.inference_geo.is_some() {
         report.record("sampling.inference_geo", LossAction::Drop, "no slot");
