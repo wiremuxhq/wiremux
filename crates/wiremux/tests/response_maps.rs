@@ -4,7 +4,7 @@ use serde_json::json;
 use wiremux::{
     IrStreamEvent, LossAction, RawSse, ResolvedProfile, StreamEncoder, Wire, decode_response,
     decode_response_with_loss, decode_stream_events, encode_response, encode_response_with_model,
-    frame_is_terminal, parse_profile_str, stream_has_terminal,
+    encode_stream_event, frame_is_terminal, parse_profile_str, stream_has_terminal,
 };
 
 fn chat_profile() -> ResolvedProfile {
@@ -717,6 +717,36 @@ fn gemini_prompt_feedback_block_reason_is_content_filter() {
                     && vendor.as_deref() == Some("NOT_A_KNOWN_REASON")
         )),
         "unknown blockReason must keep the vendor token, got {events:?}"
+    );
+}
+
+#[test]
+fn gemini_prohibited_content_block_reason_round_trips() {
+    let body = serde_json::to_vec(&json!({
+        "promptFeedback": { "blockReason": "PROHIBITED_CONTENT" }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("blocked complete must decode");
+    let encoded = encode_response(Wire::Gemini, &events).expect("encode");
+    let rendered = encoded.to_string();
+    assert!(
+        rendered.contains("PROHIBITED_CONTENT"),
+        "Gemini must keep the block reason token, got {encoded}"
+    );
+
+    let raw = encode_stream_event(
+        Wire::Gemini,
+        &IrStreamEvent::FinishReason {
+            reason: "content_filter".into(),
+            vendor: Some("PROHIBITED_CONTENT".into()),
+        },
+    )
+    .expect("stream encode");
+    assert!(
+        raw.data.contains("PROHIBITED_CONTENT"),
+        "stream frame must keep the block reason token, got {}",
+        raw.data
     );
 }
 

@@ -388,8 +388,8 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             *audio_tokens,
             *completion_audio_tokens,
         ),
-        IrStreamEvent::FinishReason { reason, .. } => json!({
-            "candidates": [{ "finishReason": encode_finish(reason) }]
+        IrStreamEvent::FinishReason { reason, vendor } => json!({
+            "candidates": [{ "finishReason": finish_token(reason, vendor.as_deref()) }]
         }),
         IrStreamEvent::Diagnostics { .. }
         | IrStreamEvent::Container { .. }
@@ -596,6 +596,30 @@ pub(super) fn grounding_chunk_from_annotation(annotation: &Value) -> Value {
         web["title"] = json!(title);
     }
     json!({ "web": web })
+}
+
+pub(super) fn finish_token(reason: &str, vendor: Option<&str>) -> String {
+    if let Some(token) = vendor.filter(|token| is_gemini_finish_token(token)) {
+        return (*token).to_string();
+    }
+    encode_finish(reason).to_string()
+}
+
+fn is_gemini_finish_token(token: &str) -> bool {
+    matches!(
+        token,
+        "STOP"
+            | "MAX_TOKENS"
+            | "SAFETY"
+            | "RECITATION"
+            | "OTHER"
+            | "BLOCKLIST"
+            | "PROHIBITED_CONTENT"
+            | "SPII"
+            | "IMAGE_SAFETY"
+            | "LANGUAGE"
+            | "MALFORMED_FUNCTION_CALL"
+    )
 }
 
 pub(super) fn encode_finish(reason: &str) -> &'static str {

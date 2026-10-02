@@ -510,8 +510,8 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::ReasoningSignature { signature } => {
                 reasoning_signature = Some(signature.clone());
             }
-            IrStreamEvent::FinishReason { reason, .. } => {
-                finish = Some(super::gemini::encode_finish(reason).to_string());
+            IrStreamEvent::FinishReason { reason, vendor } => {
+                finish = Some(super::gemini::finish_token(reason, vendor.as_deref()));
             }
             IrStreamEvent::Usage {
                 prompt_tokens,
