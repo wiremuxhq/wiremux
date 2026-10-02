@@ -5631,6 +5631,38 @@ fn messages_response_context_management_round_trips_and_other_wires_omit_it() {
 }
 
 #[test]
+fn messages_stream_keeps_context_management_on_message_delta() {
+    let managed = json!({ "applied_edits": [{ "type": "clear_tool_uses_20250919" }] });
+    let raw = RawSse {
+        event: Some("message_delta".into()),
+        data: json!({
+            "type": "message_delta",
+            "delta": { "stop_reason": "end_turn", "stop_sequence": null },
+            "context_management": managed,
+            "usage": { "output_tokens": 4 }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Messages, &raw, &messages_profile()).expect("decode");
+    let mut enc = StreamEncoder::new(Wire::Messages).with_model("claude-haiku-4-5");
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push"));
+    }
+    frames.extend(enc.finish().expect("finish"));
+    let delta = frames
+        .iter()
+        .find(|frame| frame.event.as_deref() == Some("message_delta"))
+        .expect("message_delta");
+    let value: Value = serde_json::from_str(&delta.data).expect("json");
+    assert_eq!(
+        value.get("context_management"),
+        Some(&managed),
+        "context management missing: {value}"
+    );
+}
+
+#[test]
 fn messages_stop_sequence_round_trips_and_other_wires_omit_it() {
     let body = serde_json::to_vec(&json!({
         "id": "msg_1",
