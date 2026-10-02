@@ -417,7 +417,12 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         seed: i64_field(cfg, "seed"),
         n: u32_field(cfg, "candidateCount").or_else(|| u32_field(cfg, "candidate_count")),
         output_modalities: gemini_output_modalities(cfg, report),
-        audio_voice: gemini_speech_voice(cfg),
+        audio_voice: if gemini_multi_speaker_speech(cfg).is_some() {
+            None
+        } else {
+            gemini_speech_voice(cfg)
+        },
+        multi_speaker_speech: gemini_multi_speaker_speech(cfg),
         audio_format: None,
         logprobs,
         logit_bias: std::collections::BTreeMap::new(),
@@ -489,6 +494,14 @@ fn gemini_speech_obj(cfg: &Value) -> Option<&Value> {
     cfg.get("speechConfig").or_else(|| cfg.get("speech_config"))
 }
 
+fn gemini_multi_speaker_speech(cfg: &Value) -> Option<Value> {
+    let speech = gemini_speech_obj(cfg)?;
+    speech
+        .get("multiSpeakerVoiceConfig")
+        .filter(|value| value.is_object())?;
+    Some(speech.clone())
+}
+
 fn gemini_speech_voice(cfg: &Value) -> Option<String> {
     let speech = gemini_speech_obj(cfg)?;
     let voice_cfg = speech
@@ -507,6 +520,9 @@ fn gemini_drop_speech_language(cfg: &Value, report: &mut LossReport) {
     let Some(speech) = gemini_speech_obj(cfg) else {
         return;
     };
+    if speech.get("multiSpeakerVoiceConfig").is_some() {
+        return;
+    }
     let lang = str_field(speech, "languageCode").or_else(|| str_field(speech, "language_code"));
     if lang.as_deref().is_some_and(|s| !s.trim().is_empty()) {
         report.record("sampling.audio_language", LossAction::Drop, "no slot");
@@ -1123,7 +1139,13 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             "gemini generationConfig.responseModalities",
         );
     }
-    if let Some(voice) = s
+    if let Some(speech) = s
+        .multi_speaker_speech
+        .as_ref()
+        .filter(|value| value.is_object())
+    {
+        cfg["speechConfig"] = speech.clone();
+    } else if let Some(voice) = s
         .audio_voice
         .as_deref()
         .map(str::trim)

@@ -246,6 +246,10 @@ pub struct IrSampling {
     /// Gemini `generationConfig.enableEnhancedCivicAnswers`.
     /// Chat, Messages, Responses, and Converse drop.
     pub enhanced_civic_answers: Option<bool>,
+    /// Gemini `generationConfig.speechConfig` when it uses
+    /// `multiSpeakerVoiceConfig`. A single `voiceConfig` stays on
+    /// `audio_voice`. Chat, Messages, Responses, and Converse drop.
+    pub multi_speaker_speech: Option<serde_json::Value>,
 }
 
 impl IrSampling {
