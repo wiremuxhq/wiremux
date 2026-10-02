@@ -246,6 +246,10 @@ fn decode_sampling(value: &Value) -> IrSampling {
         mcp_servers: None,
         media_resolution: None,
         image_config: None,
+        audio_transcription_config: None,
+        translation_config: None,
+        affective_dialog: None,
+        enhanced_civic_answers: None,
     }
 }
 
@@ -740,6 +744,26 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.image_config.is_some() {
         report.record("sampling.image_config", LossAction::Drop, "no slot");
+    }
+    if s.audio_transcription_config.is_some() {
+        report.record(
+            "sampling.audio_transcription_config",
+            LossAction::Drop,
+            "no slot",
+        );
+    }
+    if s.translation_config.is_some() {
+        report.record("sampling.translation_config", LossAction::Drop, "no slot");
+    }
+    if s.affective_dialog.is_some() {
+        report.record("sampling.affective_dialog", LossAction::Drop, "no slot");
+    }
+    if s.enhanced_civic_answers.is_some() {
+        report.record(
+            "sampling.enhanced_civic_answers",
+            LossAction::Drop,
+            "no slot",
+        );
     }
     if s.inference_geo.is_some() {
         report.record("sampling.inference_geo", LossAction::Drop, "no slot");

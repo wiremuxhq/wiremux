@@ -371,6 +371,10 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .cloned(),
         media_resolution: None,
         image_config: None,
+        audio_transcription_config: None,
+        translation_config: None,
+        affective_dialog: None,
+        enhanced_civic_answers: None,
     }
 }
 

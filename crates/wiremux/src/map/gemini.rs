@@ -440,6 +440,16 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .get("imageConfig")
             .filter(|value| value.is_object())
             .cloned(),
+        audio_transcription_config: cfg
+            .get("audioTranscriptionConfig")
+            .filter(|value| value.is_object())
+            .cloned(),
+        translation_config: cfg
+            .get("translationConfig")
+            .filter(|value| value.is_object())
+            .cloned(),
+        affective_dialog: bool_field(cfg, "enableAffectiveDialog"),
+        enhanced_civic_answers: bool_field(cfg, "enableEnhancedCivicAnswers"),
     }
 }
 
@@ -962,6 +972,26 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(config) = s.image_config.as_ref().filter(|value| value.is_object()) {
         cfg["imageConfig"] = config.clone();
+    }
+    if let Some(config) = s
+        .audio_transcription_config
+        .as_ref()
+        .filter(|value| value.is_object())
+    {
+        cfg["audioTranscriptionConfig"] = config.clone();
+    }
+    if let Some(config) = s
+        .translation_config
+        .as_ref()
+        .filter(|value| value.is_object())
+    {
+        cfg["translationConfig"] = config.clone();
+    }
+    if let Some(enabled) = s.affective_dialog {
+        cfg["enableAffectiveDialog"] = json!(enabled);
+    }
+    if let Some(enabled) = s.enhanced_civic_answers {
+        cfg["enableEnhancedCivicAnswers"] = json!(enabled);
     }
     if s.inference_geo.is_some() {
         report.record("sampling.inference_geo", LossAction::Drop, "no slot");
