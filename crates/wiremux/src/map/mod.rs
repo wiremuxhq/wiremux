@@ -310,6 +310,9 @@ fn drop_dest_n_and_penalties(s: &IrSampling, report: &mut LossReport) {
     if s.media_resolution.is_some() {
         report.record("sampling.media_resolution", LossAction::Drop, "no slot");
     }
+    if s.image_config.is_some() {
+        report.record("sampling.image_config", LossAction::Drop, "no slot");
+    }
 }
 
 fn drop_dest_output_modalities(s: &IrSampling, report: &mut LossReport) {
