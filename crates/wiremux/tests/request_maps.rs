@@ -7001,6 +7001,64 @@ fn gemini_function_response_parts_round_trip() {
 }
 
 #[test]
+fn gemini_server_tool_call_round_trip() {
+    let req = br#"{
+        "contents": [
+            {
+                "role": "model",
+                "parts": [{
+                    "toolCall": {
+                        "id": "tc_1",
+                        "toolName": "google_search",
+                        "toolType": "GOOGLE_SEARCH_WEB",
+                        "args": {"query": "wiremux"}
+                    }
+                }]
+            },
+            {
+                "role": "user",
+                "parts": [{
+                    "toolResponse": {
+                        "id": "tc_1",
+                        "toolType": "GOOGLE_SEARCH_WEB",
+                        "response": {"output": "ok"}
+                    }
+                }]
+            }
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/toolCall/args/query")
+            .and_then(Value::as_str),
+        Some("wiremux"),
+        "Gemini toolCall must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/toolCall/toolType")
+            .and_then(Value::as_str),
+        Some("GOOGLE_SEARCH_WEB"),
+        "Gemini toolCall type must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/contents/1/parts/0/toolResponse/response/output")
+            .and_then(Value::as_str),
+        Some("ok"),
+        "Gemini toolResponse must round-trip, got {body}"
+    );
+    let (_, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.action == LossAction::Drop && event.path == "part.raw"),
+        "Chat must record a drop for Gemini server tool parts, got {report:?}"
+    );
+}
+
+#[test]
 #[allow(non_snake_case)]
 fn gemini_fileData_encode_messages_does_not_leak() {
     let req = br#"{
