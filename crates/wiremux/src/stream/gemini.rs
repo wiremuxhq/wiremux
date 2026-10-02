@@ -178,6 +178,9 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     if let Some(ev) = usage_from_chunk(value) {
         return Ok(Some(ev));
     }
+    if let Some(ev) = search_entry_from_value(value) {
+        return Ok(Some(ev));
+    }
     Ok(None)
 }
 
@@ -322,6 +325,13 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "groundingMetadata": {
                     "groundingChunks": [grounding_chunk_from_annotation(annotation)],
                     "groundingSupports": [grounding_support_from_annotation(annotation, 0)]
+                }
+            }]
+        }),
+        IrStreamEvent::SearchEntryPoint { rendered_content } => json!({
+            "candidates": [{
+                "groundingMetadata": {
+                    "searchEntryPoint": { "renderedContent": rendered_content }
                 }
             }]
         }),
@@ -554,6 +564,15 @@ pub(super) fn apply_grounding_support(
         );
         break;
     }
+}
+
+pub(super) fn search_entry_from_value(value: &Value) -> Option<IrStreamEvent> {
+    let rendered_content = value
+        .pointer("/candidates/0/groundingMetadata/searchEntryPoint/renderedContent")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    Some(IrStreamEvent::SearchEntryPoint { rendered_content })
 }
 
 pub(super) fn annotation_from_grounding_chunk(chunk: &Value) -> Option<Value> {

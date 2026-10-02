@@ -474,6 +474,12 @@ pub enum IrStreamEvent {
     AnnotationAdded {
         annotation: serde_json::Value,
     },
+    /// Dest Gemini `candidates[].groundingMetadata.searchEntryPoint.renderedContent`.
+    /// HTML a Grounding with Google Search client must display.
+    /// Other wires omit it. `webSearchQueries` stays dropped.
+    SearchEntryPoint {
+        rendered_content: String,
+    },
     /// Dest Chat `message.audio.data` and dest Responses `response.audio.delta`.
     AudioDelta {
         data: String,

@@ -469,6 +469,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut tool_calls = Vec::new();
     let mut grounding_chunks = Vec::new();
     let mut grounding_supports = Vec::new();
+    let mut search_entry = None;
     let mut media_parts = Vec::new();
     let mut logprobs_content = Vec::new();
     let mut service_tier = None;
@@ -484,6 +485,9 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 grounding_supports.push(super::gemini::grounding_support_from_annotation(
                     annotation, idx,
                 ));
+            }
+            IrStreamEvent::SearchEntryPoint { rendered_content } => {
+                search_entry = Some(rendered_content.clone());
             }
             IrStreamEvent::AudioDelta { data } => {
                 if !text.is_empty() {
@@ -587,11 +591,19 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     if !refusal.is_empty() {
         candidate["finishMessage"] = json!(refusal);
     }
-    if !grounding_chunks.is_empty() {
-        candidate["groundingMetadata"] = json!({
-            "groundingChunks": grounding_chunks,
-            "groundingSupports": grounding_supports,
-        });
+    if !grounding_chunks.is_empty() || search_entry.is_some() {
+        let mut metadata = serde_json::Map::new();
+        if !grounding_chunks.is_empty() {
+            metadata.insert("groundingChunks".into(), json!(grounding_chunks));
+            metadata.insert("groundingSupports".into(), json!(grounding_supports));
+        }
+        if let Some(html) = search_entry {
+            metadata.insert(
+                "searchEntryPoint".into(),
+                json!({ "renderedContent": html }),
+            );
+        }
+        candidate["groundingMetadata"] = Value::Object(metadata);
     }
     if !logprobs_content.is_empty() {
         candidate["logprobsResult"] =
