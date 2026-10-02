@@ -42,10 +42,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                     if str_field(block, "data").filter(|s| !s.is_empty()).is_none() {
                         return Ok(None);
                     }
-                    Ok(Some(IrStreamEvent::Protocol {
-                        item_type: "redacted_thinking".into(),
-                        payload: block.clone(),
-                    }))
+                    Ok(Some(protocol(name, value)))
                 }
                 _ => Ok(Some(protocol(name, value))),
             }
