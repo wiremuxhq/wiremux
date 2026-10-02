@@ -250,6 +250,9 @@ pub struct IrSampling {
     /// `multiSpeakerVoiceConfig`. A single `voiceConfig` stays on
     /// `audio_voice`. Chat, Messages, Responses, and Converse drop.
     pub multi_speaker_speech: Option<serde_json::Value>,
+    /// Gemini request-root `cachedContent` (`cachedContents/{id}`).
+    /// Chat, Messages, Responses, and Converse drop.
+    pub cached_content: Option<String>,
 }
 
 impl IrSampling {

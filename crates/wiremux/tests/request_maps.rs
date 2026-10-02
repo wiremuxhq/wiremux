@@ -5839,6 +5839,38 @@ fn gemini_visible_text_keeps_thought_signature() {
 }
 
 #[test]
+fn gemini_cached_content_round_trip() {
+    let req = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "cachedContent": "cachedContents/abc"
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("cachedContent").and_then(Value::as_str),
+        Some("cachedContents/abc"),
+        "Gemini cachedContent must round-trip, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.cached_content"),
+        "Gemini keeps cachedContent, got {report:?}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode Chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    assert!(
+        loss_dropped(&chat_report, "sampling.cached_content"),
+        "Chat has no cachedContent slot, got {chat_report:?}"
+    );
+    assert!(
+        !chat.to_string().contains("cachedContents/abc"),
+        "Chat must not emit the Gemini cache name, got {chat}"
+    );
+}
+
+#[test]
 fn dest_gemini_frequency_penalty_reaches_chat() {
     let req = br#"{
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],

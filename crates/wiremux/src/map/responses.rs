@@ -343,6 +343,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         affective_dialog: None,
         enhanced_civic_answers: None,
         multi_speaker_speech: None,
+        cached_content: None,
     }
 }
 

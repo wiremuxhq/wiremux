@@ -455,6 +455,9 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
             .cloned(),
         affective_dialog: bool_field(cfg, "enableAffectiveDialog"),
         enhanced_civic_answers: bool_field(cfg, "enableEnhancedCivicAnswers"),
+        cached_content: str_field(value, "cachedContent")
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty()),
     }
 }
 
@@ -1169,6 +1172,14 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if cfg.as_object().is_some_and(|o| !o.is_empty()) {
         body["generationConfig"] = cfg;
+    }
+    if let Some(name) = s
+        .cached_content
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        body["cachedContent"] = json!(name);
     }
     if let Some(store) = s.store {
         body["store"] = json!(store);
