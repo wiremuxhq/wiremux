@@ -7918,6 +7918,44 @@ fn messages_stream_keeps_message_id_when_usage_is_present() {
 }
 
 #[test]
+fn messages_stream_keeps_container_when_usage_is_present() {
+    let raw = RawSse {
+        event: Some("message_start".into()),
+        data: json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_real",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": "claude-haiku-4-5",
+                "container": { "id": "container_real", "expires_at": "2026-10-03T00:00:00Z" },
+                "usage": { "input_tokens": 3, "output_tokens": 1 }
+            }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Messages, &raw, &messages_profile()).expect("decode");
+    let mut enc = StreamEncoder::new(Wire::Messages).with_model("claude-haiku-4-5");
+    let mut frames = Vec::new();
+    for ev in events {
+        frames.extend(enc.push(ev).expect("push"));
+    }
+    let start = frames
+        .iter()
+        .find(|frame| frame.event.as_deref() == Some("message_start"))
+        .expect("message_start");
+    let value: Value = serde_json::from_str(&start.data).expect("json");
+    assert_eq!(
+        value
+            .pointer("/message/container/id")
+            .and_then(|id| id.as_str()),
+        Some("container_real"),
+        "container missing: {value}"
+    );
+}
+
+#[test]
 fn responses_stream_keeps_response_id() {
     let raw = RawSse {
         event: Some("response.created".into()),
