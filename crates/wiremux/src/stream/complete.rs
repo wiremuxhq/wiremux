@@ -459,6 +459,7 @@ fn messages_tool_use_value(id: &str, name: &str, args: &str) -> Value {
 
 fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut text = String::new();
+    let mut refusal = String::new();
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
     let mut finish = None;
@@ -474,6 +475,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
         match ev {
             IrStreamEvent::TextDelta { text: delta }
             | IrStreamEvent::AudioTranscriptDelta { text: delta } => text.push_str(delta),
+            IrStreamEvent::RefusalDelta { text: delta } => refusal.push_str(delta),
             IrStreamEvent::AnnotationAdded { annotation } => {
                 let idx = grounding_chunks.len();
                 grounding_chunks.push(super::gemini::grounding_chunk_from_annotation(annotation));
@@ -577,6 +579,9 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     });
     if let Some(reason) = finish {
         candidate["finishReason"] = json!(reason);
+    }
+    if !refusal.is_empty() {
+        candidate["finishMessage"] = json!(refusal);
     }
     if !grounding_chunks.is_empty() {
         candidate["groundingMetadata"] = json!({

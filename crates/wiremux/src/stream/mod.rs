@@ -359,6 +359,15 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
     {
         out.push(IrStreamEvent::Logprobs { content });
     }
+    if let Some(text) = value
+        .pointer("/candidates/0/finishMessage")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(IrStreamEvent::RefusalDelta {
+            text: text.to_string(),
+        });
+    }
     if let Some(reason) = value
         .pointer("/candidates/0/finishReason")
         .and_then(Value::as_str)
