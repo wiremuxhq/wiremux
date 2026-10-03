@@ -6319,6 +6319,30 @@ fn converse_complete_keeps_document_citation() {
 }
 
 #[test]
+fn converse_complete_keeps_guard_content() {
+    let guard = json!({
+        "text": { "text": "I cannot help with that." }
+    });
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{ "guardContent": guard }]
+            }
+        },
+        "stopReason": "guardrail_intervened"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile()).expect("decode");
+    let encoded = encode_response(Wire::Converse, &events).expect("encode");
+    assert_eq!(
+        encoded.pointer("/output/message/content/0/guardContent"),
+        Some(&guard),
+        "guard content missing: {encoded}"
+    );
+}
+
+#[test]
 fn dest_converse_complete_citations_content_does_not_duplicate_sibling_text() {
     let body = serde_json::to_vec(&json!({
         "output": {

@@ -224,6 +224,9 @@ impl StreamEncoder {
             {
                 Ok(Vec::new())
             }
+            IrStreamEvent::Protocol { item_type, .. } if item_type == "converse_guard_content" => {
+                Ok(Vec::new())
+            }
             IrStreamEvent::Protocol { .. } | IrStreamEvent::Unknown { .. } => {
                 Ok(vec![encode_stream_event(self.wire, &ev)?])
             }
