@@ -500,6 +500,16 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             payload: ratings.clone(),
         });
     }
+    if let Some(score) = value
+        .pointer("/candidates/0/avgLogprobs")
+        .and_then(Value::as_f64)
+        .filter(|score| score.is_finite())
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "gemini_avg_logprobs".into(),
+            payload: Value::from(score),
+        });
+    }
     if let Some(reason) = value
         .pointer("/candidates/0/finishReason")
         .and_then(Value::as_str)
@@ -545,6 +555,12 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_prompt_safety"
         )
     });
+    let has_avg_logprobs = out.iter().any(|ev| {
+        matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_avg_logprobs"
+        )
+    });
     let only_search_entry = matches!(out.as_slice(), [IrStreamEvent::SearchEntryPoint { .. }]);
     if out.is_empty()
         || (out.len() < 2
@@ -553,7 +569,8 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             && !has_safety
             && !has_url_context
             && !has_citation
-            && !has_prompt_safety)
+            && !has_prompt_safety
+            && !has_avg_logprobs)
     {
         *call_seq = seq_at_entry;
         return None;
@@ -979,6 +996,7 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                             | "gemini_prompt_safety"
                             | "gemini_traffic_type"
                             | "gemini_tool_use_prompt_tokens"
+                            | "gemini_avg_logprobs"
                     ))
                 || (wire == Wire::Converse
                     && matches!(
