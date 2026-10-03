@@ -7730,6 +7730,42 @@ fn responses_complete_keeps_function_item_id() {
 }
 
 #[test]
+fn responses_complete_keeps_previous_response_id() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_2",
+        "object": "response",
+        "previous_response_id": "resp_1",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "hi" }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    assert_eq!(
+        mapped
+            .pointer("/previous_response_id")
+            .and_then(Value::as_str),
+        Some("resp_1"),
+        "previous response id must come back, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/id").and_then(Value::as_str),
+        Some("resp_2"),
+        "response id stays on /id, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/output_text").and_then(Value::as_str),
+        Some("hi"),
+        "reply text stays, got {mapped}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",

@@ -62,6 +62,7 @@ pub struct StreamEncoder {
     messages_context_management: Option<Value>,
     messages_cache_miss: Option<Value>,
     responses_id: Option<String>,
+    responses_previous_id: Option<String>,
     responses_message_id: Option<String>,
     responses_message_status: Option<String>,
     responses_reasoning_id: Option<String>,
@@ -138,6 +139,7 @@ impl StreamEncoder {
             messages_context_management: None,
             messages_cache_miss: None,
             responses_id: None,
+            responses_previous_id: None,
             responses_message_id: None,
             responses_message_status: None,
             responses_reasoning_id: None,
@@ -262,6 +264,16 @@ impl StreamEncoder {
                     && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())
                 {
                     self.responses_id = Some(text.to_string());
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_previous_id" =>
+            {
+                if self.wire == Wire::Responses
+                    && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())
+                {
+                    self.responses_previous_id = Some(text.to_string());
                 }
                 Ok(Vec::new())
             }
@@ -1255,6 +1267,9 @@ impl StreamEncoder {
                 "id": self.responses_id.as_deref().unwrap_or("resp_wiremux"),
                 "status": "in_progress"
             });
+            if let Some(prev) = self.responses_previous_id.as_deref() {
+                created["previous_response_id"] = json!(prev);
+            }
             if !self.model.is_empty() {
                 created["model"] = json!(self.model);
             }
@@ -1763,6 +1778,9 @@ impl StreamEncoder {
             "object": "response",
             "status": status
         });
+        if let Some(prev) = self.responses_previous_id.as_deref() {
+            response["previous_response_id"] = json!(prev);
+        }
         if let Some(detail) = super::responses::incomplete_details_reason(reason) {
             response["incomplete_details"] = json!({ "reason": detail });
         }
