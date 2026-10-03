@@ -172,8 +172,14 @@ fn gemini_images_and_thought_signatures_replay_on_the_next_request() {
                         media_type: "image/png".into(),
                         data: "iVBORw0KGgo=".into(),
                     },
-                    IrPart::ImageUrl("https://example.com/photo.png".into()),
-                    IrPart::ImageUrl("see the notes".into()),
+                    IrPart::ImageUrl {
+                        url: "https://example.com/photo.png".into(),
+                        detail: None,
+                    },
+                    IrPart::ImageUrl {
+                        url: "see the notes".into(),
+                        detail: None,
+                    },
                 ],
             }],
         ),
@@ -350,7 +356,10 @@ fn chat_request_fixtures_match_host_encode() {
             "gpt-4o",
             vec![IrItem::User {
                 parts: vec![
-                    IrPart::ImageUrl("https://example.com/img.png".into()),
+                    IrPart::ImageUrl {
+                        url: "https://example.com/img.png".into(),
+                        detail: None,
+                    },
                     IrPart::ImageBase64 {
                         media_type: "image/jpeg".into(),
                         data: "/9j/4AAQ".into(),
@@ -543,7 +552,10 @@ fn responses_input_item_fixtures() {
                         text: "skip".into(),
                         signature: None,
                     },
-                    IrPart::ImageUrl("https://example.com/img.png".into()),
+                    IrPart::ImageUrl {
+                        url: "https://example.com/img.png".into(),
+                        detail: None,
+                    },
                     IrPart::ImageBase64 {
                         media_type: "image/png".into(),
                         data: "iVBORw0KGgo=".into(),

@@ -211,12 +211,12 @@ fn decode_content_part(block: &Value) -> Option<IrPart> {
 fn decode_image(block: &Value) -> Option<IrPart> {
     let source = block.get("source")?;
     match source.get("type").and_then(Value::as_str) {
-        Some("url") => str_field(source, "url").map(IrPart::ImageUrl),
+        Some("url") => str_field(source, "url").map(|url| IrPart::ImageUrl { url, detail: None }),
         Some("base64") => Some(IrPart::ImageBase64 {
             media_type: str_field(source, "media_type").unwrap_or_else(|| "image/png".into()),
             data: str_field(source, "data").unwrap_or_default(),
         }),
-        _ => str_field(source, "url").map(IrPart::ImageUrl),
+        _ => str_field(source, "url").map(|url| IrPart::ImageUrl { url, detail: None }),
     }
 }
 
@@ -873,7 +873,7 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
     match part {
         IrPart::Text(text) if text.trim().is_empty() => None,
         IrPart::Text(text) => Some(json!({"type": "text", "text": text})),
-        IrPart::ImageUrl(url) => Some(json!({
+        IrPart::ImageUrl { url, .. } => Some(json!({
             "type": "image",
             "source": {"type": "url", "url": url}
         })),
@@ -1314,19 +1314,13 @@ pub(super) fn normalize_object_schema_required(schema: &mut Value) {
     }
 }
 
-/// Printed decimal of an f32, so the JSON number matches that decimal (`0.2`).
-fn json_f32(value: f32) -> Value {
-    let parsed = value.to_string().parse::<f64>().unwrap_or(f64::from(value));
-    json!(parsed)
-}
-
 fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     let s = &ir.sampling;
     if let Some(t) = s.temperature {
-        body["temperature"] = json_f32(t);
+        body["temperature"] = super::json_f32(t);
     }
     if let Some(p) = s.top_p {
-        body["top_p"] = json!(p);
+        body["top_p"] = super::json_f32(p);
     }
     if let Some(k) = s.top_k {
         body["top_k"] = json!(k);

@@ -294,7 +294,10 @@ fn decode_image(image: &Value) -> Option<IrPart> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
     {
-        return Some(IrPart::ImageUrl(uri.to_string()));
+        return Some(IrPart::ImageUrl {
+            url: uri.to_string(),
+            detail: None,
+        });
     }
     None
 }
@@ -575,9 +578,9 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                         "no slot",
                     );
                 }
-                let has_image = parts
-                    .iter()
-                    .any(|part| matches!(part, IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. }));
+                let has_image = parts.iter().any(|part| {
+                    matches!(part, IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. })
+                });
                 let text = if output.trim().is_empty() && !has_image {
                     report.record(
                         format!("items[{idx}]"),
@@ -595,7 +598,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 for part in parts {
                     match part {
                         IrPart::Text(_) => {}
-                        IrPart::ImageUrl(url) => {
+                        IrPart::ImageUrl { url, .. } => {
                             if let Some(block) = encode_image_url(url, report) {
                                 content.push(block);
                             }
@@ -719,7 +722,7 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             name,
         } => encode_document(source, media_type, name.as_deref(), report),
         IrPart::Audio { data, format } => encode_audio(data, format, report),
-        IrPart::ImageUrl(url) => encode_image_url(url, report),
+        IrPart::ImageUrl { url, .. } => encode_image_url(url, report),
         IrPart::ImageBase64 { media_type, data } => encode_image_bytes(media_type, data, report),
         IrPart::Raw { .. } => {
             if let Some(plain) = super::plain_media_part(part) {
@@ -862,10 +865,10 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         cfg.insert("maxTokens".into(), json!(n));
     }
     if let Some(t) = s.temperature {
-        cfg.insert("temperature".into(), json!(t));
+        cfg.insert("temperature".into(), super::json_f32(t));
     }
     if let Some(p) = s.top_p {
-        cfg.insert("topP".into(), json!(p));
+        cfg.insert("topP".into(), super::json_f32(p));
     }
     if s.top_k.is_some() {
         report.record("sampling.top_k", LossAction::Drop, "no slot");

@@ -67,7 +67,7 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>) {
             let output = parts_text(&parts);
             let images = parts
                 .iter()
-                .filter(|part| matches!(part, IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. }))
+                .filter(|part| matches!(part, IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. }))
                 .cloned()
                 .collect();
             items.push(IrItem::FunctionOutput {
@@ -117,18 +117,23 @@ fn decode_part(part: &Value) -> Option<IrPart> {
             .and_then(Value::as_str)
             .map(|t| IrPart::Text(t.to_string())),
         "image_url" => {
-            let url = part.get("image_url").and_then(|u| {
-                u.as_str()
-                    .map(str::to_string)
-                    .or_else(|| str_field(u, "url"))
-            })?;
+            let image = part.get("image_url")?;
+            let url = image
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| str_field(image, "url"))?;
+            let detail = image
+                .get("detail")
+                .and_then(Value::as_str)
+                .filter(|detail| !detail.is_empty() && *detail != "auto")
+                .map(str::to_string);
             if let Some((media_type, data)) = super::split_data_url(&url) {
                 Some(IrPart::ImageBase64 {
                     media_type: media_type.to_string(),
                     data: data.to_string(),
                 })
             } else {
-                Some(IrPart::ImageUrl(url))
+                Some(IrPart::ImageUrl { url, detail })
             }
         }
         "file" => decode_openai_file_part(part),
@@ -426,7 +431,7 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 is_error,
             } => {
                 for part in parts {
-                    if matches!(part, IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. })
+                    if matches!(part, IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. })
                         || super::function_response_image(part).is_some()
                     {
                         report.record(format!("items[{idx}].image"), LossAction::Drop, "no slot");
@@ -611,7 +616,13 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
             .iter()
             .map(|part| match part {
                 IrPart::Text(text) => json!({"type": "text", "text": text}),
-                IrPart::ImageUrl(url) => json!({"type": "image_url", "image_url": {"url": url}}),
+                IrPart::ImageUrl { url, detail } => {
+                    let mut image_url = json!({ "url": url });
+                    if let Some(detail) = detail {
+                        image_url["detail"] = json!(detail);
+                    }
+                    json!({ "type": "image_url", "image_url": image_url })
+                }
                 IrPart::ImageBase64 { media_type, data } => json!({
                     "type": "image_url",
                     "image_url": {"url": format!("data:{media_type};base64,{data}")}
@@ -733,7 +744,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
                 "o-series and gpt-5 Chat Completions reject temperature",
             );
         } else {
-            body["temperature"] = json!(t);
+            body["temperature"] = super::json_f32(t);
         }
     }
     if let Some(p) = s.top_p {
@@ -744,7 +755,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
                 "o-series and gpt-5 Chat Completions reject top_p",
             );
         } else {
-            body["top_p"] = json!(p);
+            body["top_p"] = super::json_f32(p);
         }
     }
     if s.top_k.is_some() {

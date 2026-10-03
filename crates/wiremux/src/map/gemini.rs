@@ -753,7 +753,7 @@ pub(super) fn encode(
                         wire_parts.push(json!({ "inlineData": blob }));
                     } else if matches!(
                         part,
-                        IrPart::ImageUrl(_) | IrPart::ImageBase64 { .. } | IrPart::Audio { .. }
+                        IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. } | IrPart::Audio { .. }
                     ) || matches!(part, IrPart::Raw { raw, .. } if raw.get("inlineData").is_some())
                     {
                         report.record(format!("items[{idx}].part"), LossAction::Drop, "no slot");
@@ -941,7 +941,7 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                     );
                 }
             }
-            IrPart::ImageUrl(url) => {
+            IrPart::ImageUrl { url, .. } => {
                 if let Some(rest) = url.strip_prefix("data:")
                     && let Some((mime, b64)) = rest.split_once(";base64,")
                 {
@@ -981,10 +981,10 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     let s = &ir.sampling;
     let mut cfg = json!({});
     if let Some(t) = s.temperature {
-        cfg["temperature"] = json!(t);
+        cfg["temperature"] = super::json_f32(t);
     }
     if let Some(p) = s.top_p {
-        cfg["topP"] = json!(p);
+        cfg["topP"] = super::json_f32(p);
     }
     if let Some(k) = s.top_k {
         cfg["topK"] = json!(k);
