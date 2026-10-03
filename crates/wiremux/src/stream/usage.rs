@@ -7,6 +7,55 @@ use crate::ir::IrStreamEvent;
 
 use super::u32_field;
 
+pub(super) fn chat_prediction_token_events(usage: &Value) -> Vec<IrStreamEvent> {
+    let mut out = Vec::new();
+    for (key, item_type) in [
+        (
+            "accepted_prediction_tokens",
+            "chat_accepted_prediction_tokens",
+        ),
+        (
+            "rejected_prediction_tokens",
+            "chat_rejected_prediction_tokens",
+        ),
+    ] {
+        if let Some(count) =
+            nested_u32(usage, "completion_tokens_details", key).filter(|count| *count > 0)
+        {
+            out.push(IrStreamEvent::Protocol {
+                item_type: item_type.into(),
+                payload: json!(count),
+            });
+        }
+    }
+    out
+}
+
+pub(super) fn insert_chat_prediction_tokens(
+    usage: &mut Value,
+    accepted: Option<u32>,
+    rejected: Option<u32>,
+) {
+    if accepted.is_none() && rejected.is_none() {
+        return;
+    }
+    let Some(obj) = usage.as_object_mut() else {
+        return;
+    };
+    let details = obj
+        .entry("completion_tokens_details")
+        .or_insert_with(|| json!({}));
+    let Some(details) = details.as_object_mut() else {
+        return;
+    };
+    if let Some(count) = accepted {
+        details.insert("accepted_prediction_tokens".into(), json!(count));
+    }
+    if let Some(count) = rejected {
+        details.insert("rejected_prediction_tokens".into(), json!(count));
+    }
+}
+
 pub(crate) fn from_chat(usage: &Value) -> IrStreamEvent {
     let cache_read = nested_u32(usage, "prompt_tokens_details", "cached_tokens")
         .filter(|&n| n > 0)

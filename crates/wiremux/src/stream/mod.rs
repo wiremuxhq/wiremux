@@ -956,6 +956,8 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                             | "chat_completion_id"
                             | "chat_audio_id"
                             | "chat_audio_expires"
+                            | "chat_accepted_prediction_tokens"
+                            | "chat_rejected_prediction_tokens"
                     ))
                 || (wire == Wire::Gemini
                     && matches!(

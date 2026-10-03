@@ -143,6 +143,7 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
             out.push(ev);
         }
         out.push(usage::from_chat(usage));
+        out.extend(usage::chat_prediction_token_events(usage));
         return Ok(out);
     }
 
@@ -150,6 +151,7 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
         let mut out = Vec::new();
         if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
             out.push(usage::from_chat(usage));
+            out.extend(usage::chat_prediction_token_events(usage));
         }
         if let Some(ev) = super::complete::moderation_event(value) {
             out.push(ev);
@@ -270,6 +272,7 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     }
     if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
         out.push(usage::from_chat(usage));
+        out.extend(usage::chat_prediction_token_events(usage));
     }
     Ok(out)
 }
