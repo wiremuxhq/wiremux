@@ -548,6 +548,8 @@ pub(super) fn plain_media_part(part: &IrPart) -> Option<IrPart> {
                 source: IrDocumentSource::Base64(data),
                 media_type: media,
                 name: None,
+                citations_enabled: None,
+                context: None,
             });
         }
         return Some(IrPart::ImageBase64 {
@@ -566,6 +568,8 @@ pub(super) fn plain_media_part(part: &IrPart) -> Option<IrPart> {
             source: document_ref_source(uri),
             media_type: media,
             name: None,
+            citations_enabled: None,
+            context: None,
         });
     }
     None
@@ -582,6 +586,7 @@ pub(super) fn function_response_inline(part: &IrPart) -> Option<FunctionResponse
             source: IrDocumentSource::Base64(data),
             media_type,
             name,
+            ..
         } => (media_type.clone(), data.clone(), name.clone()),
         IrPart::Raw { raw, .. } => {
             let inline = raw.get("inlineData")?;
@@ -680,6 +685,8 @@ fn decode_openai_file_part(part: &Value) -> Option<IrPart> {
             source: IrDocumentSource::FileId(file_id),
             media_type,
             name,
+            citations_enabled: None,
+            context: None,
         });
     }
     if let Some(url) = str_field(file, "file_url")
@@ -691,6 +698,8 @@ fn decode_openai_file_part(part: &Value) -> Option<IrPart> {
             source: document_ref_source(url),
             media_type,
             name,
+            citations_enabled: None,
+            context: None,
         });
     }
     let data = str_field(file, "file_data")
@@ -710,6 +719,8 @@ fn decode_openai_file_part(part: &Value) -> Option<IrPart> {
         source: IrDocumentSource::Base64(payload),
         media_type,
         name,
+        citations_enabled: None,
+        context: None,
     })
 }
 

@@ -416,10 +416,16 @@ pub enum IrPart {
     },
     /// Messages `document`, Chat/Responses `file`/`input_file`,
     /// Gemini PDF `inlineData`/`fileData`, Converse `document`.
+    /// `citations_enabled` and `context` are Messages document fields.
+    /// Other dest wires drop them.
     Document {
         source: IrDocumentSource,
         media_type: String,
         name: Option<String>,
+        /// Messages `citations.enabled`. `None` omits the object.
+        citations_enabled: Option<bool>,
+        /// Messages document `context`.
+        context: Option<String>,
     },
     /// Chat `input_audio` and Gemini `inlineData` with `audio/*`.
     Audio {
@@ -433,6 +439,8 @@ pub enum IrPart {
 #[non_exhaustive]
 pub enum IrDocumentSource {
     Base64(String),
+    /// Messages PlainTextSource `data`. The string is the document text, not base64.
+    Text(String),
     Url(String),
     FileId(String),
 }

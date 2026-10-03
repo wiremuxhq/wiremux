@@ -228,7 +228,10 @@ fn decode_document(block: &Value) -> Option<IrPart> {
     let name = str_field(block, "title")
         .or_else(|| str_field(block, "name"))
         .filter(|s| !s.is_empty());
+    let citations_enabled = block.pointer("/citations/enabled").and_then(Value::as_bool);
+    let context = str_field(block, "context").filter(|s| !s.is_empty());
     let src = match source.get("type").and_then(Value::as_str) {
+        Some("text") => IrDocumentSource::Text(str_field(source, "data")?),
         Some("url") => IrDocumentSource::Url(str_field(source, "url")?),
         Some("file") => IrDocumentSource::FileId(
             str_field(source, "file_id").or_else(|| str_field(source, "id"))?,
@@ -246,14 +249,19 @@ fn decode_document(block: &Value) -> Option<IrPart> {
             }
         }
     };
+    let media_type = if !media_type.is_empty() {
+        media_type
+    } else if matches!(src, IrDocumentSource::Text(_)) {
+        "text/plain".into()
+    } else {
+        "application/pdf".into()
+    };
     Some(IrPart::Document {
         source: src,
-        media_type: if media_type.is_empty() {
-            "application/pdf".into()
-        } else {
-            media_type
-        },
+        media_type,
         name,
+        citations_enabled,
+        context,
     })
 }
 
@@ -885,7 +893,18 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             source,
             media_type,
             name,
-        } => Some(encode_document(source, media_type, name.as_deref())),
+            citations_enabled,
+            context,
+        } => {
+            let mut block = encode_document(source, media_type, name.as_deref());
+            if let Some(enabled) = citations_enabled {
+                block["citations"] = json!({ "enabled": enabled });
+            }
+            if let Some(context) = context.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                block["context"] = json!(context);
+            }
+            Some(block)
+        }
         IrPart::Audio { .. } => {
             report.record("part.audio", LossAction::Drop, "audio has no Messages slot");
             None
@@ -944,6 +963,15 @@ fn encode_document(source: &IrDocumentSource, media_type: &str, name: Option<&st
             "type": "base64",
             "media_type": if media_type.is_empty() {
                 "application/pdf"
+            } else {
+                media_type
+            },
+            "data": data
+        }),
+        IrDocumentSource::Text(data) => json!({
+            "type": "text",
+            "media_type": if media_type.is_empty() {
+                "text/plain"
             } else {
                 media_type
             },

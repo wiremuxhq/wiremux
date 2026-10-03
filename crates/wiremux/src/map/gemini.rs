@@ -196,6 +196,8 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
                     source: IrDocumentSource::Base64(data),
                     media_type: media,
                     name: None,
+                    citations_enabled: None,
+                    context: None,
                 });
             } else {
                 text_parts.push(IrPart::ImageBase64 {
@@ -212,6 +214,8 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
                     source: document_ref_source(uri),
                     media_type: media,
                     name: None,
+                    citations_enabled: None,
+                    context: None,
                 });
             } else {
                 text_parts.push(IrPart::Raw {
@@ -271,6 +275,8 @@ fn decode_function_response_parts(fr: &Value) -> Vec<IrPart> {
                 source: IrDocumentSource::Base64(data),
                 media_type: media,
                 name,
+                citations_enabled: None,
+                context: None,
             });
             continue;
         }
@@ -909,6 +915,17 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 }));
             }
             IrPart::Document {
+                source: IrDocumentSource::Text(data),
+                ..
+            } => {
+                report.record(
+                    "part.document",
+                    LossAction::Degrade,
+                    "plain text document becomes text",
+                );
+                out.push(json!({ "text": data }));
+            }
+            IrPart::Document {
                 source, media_type, ..
             } => out.push(encode_document(source, media_type)),
             IrPart::Audio { data, format } => {
@@ -964,6 +981,7 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
 
 fn encode_document(source: &IrDocumentSource, media_type: &str) -> Value {
     match source {
+        IrDocumentSource::Text(data) => json!({ "text": data }),
         IrDocumentSource::Base64(data) => json!({
             "inlineData": { "mimeType": media_type, "data": data }
         }),
