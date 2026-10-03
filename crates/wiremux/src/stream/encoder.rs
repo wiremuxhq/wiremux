@@ -69,6 +69,8 @@ pub struct StreamEncoder {
     responses_reasoning_content: Option<Value>,
     responses_tool_status_pending: BTreeMap<u32, String>,
     responses_tool_status: BTreeMap<u32, String>,
+    responses_tool_item_id_pending: BTreeMap<u32, String>,
+    responses_tool_item_id: BTreeMap<u32, String>,
     gemini_response_id: Option<String>,
     gemini_safety_ratings: Option<Value>,
     gemini_prompt_safety: Option<Value>,
@@ -143,6 +145,8 @@ impl StreamEncoder {
             responses_reasoning_content: None,
             responses_tool_status_pending: BTreeMap::new(),
             responses_tool_status: BTreeMap::new(),
+            responses_tool_item_id_pending: BTreeMap::new(),
+            responses_tool_item_id: BTreeMap::new(),
             gemini_response_id: None,
             gemini_safety_ratings: None,
             gemini_prompt_safety: None,
@@ -329,6 +333,30 @@ impl StreamEncoder {
                     } else {
                         self.responses_tool_status_pending
                             .insert(index, status.to_string());
+                    }
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_tool_item_id" =>
+            {
+                if self.wire != Wire::Responses {
+                    return Ok(Vec::new());
+                }
+                if let Some(item_id) = payload
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|item_id| !item_id.is_empty())
+                    && let Some(index) = payload
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .and_then(|index| u32::try_from(index).ok())
+                {
+                    if let Some(enc) = self.last_tool.get(&index).copied() {
+                        self.responses_tool_item_id.insert(enc, item_id.to_string());
+                    } else {
+                        self.responses_tool_item_id_pending
+                            .insert(index, item_id.to_string());
                     }
                 }
                 Ok(Vec::new())
@@ -1335,6 +1363,9 @@ impl StreamEncoder {
                 if let Some(status) = self.responses_tool_status_pending.remove(&index) {
                     self.responses_tool_status.insert(enc, status);
                 }
+                if let Some(item_id) = self.responses_tool_item_id_pending.remove(&index) {
+                    self.responses_tool_item_id.insert(enc, item_id);
+                }
                 self.open = Some((enc, BlockKind::Tool));
             }
             IrStreamEvent::AnnotationAdded { annotation } => {
@@ -1448,6 +1479,9 @@ impl StreamEncoder {
                     .insert(enc, (id.clone(), name.clone(), String::new()));
                 if let Some(status) = self.responses_tool_status_pending.remove(&index) {
                     self.responses_tool_status.insert(enc, status);
+                }
+                if let Some(item_id) = self.responses_tool_item_id_pending.remove(&index) {
+                    self.responses_tool_item_id.insert(enc, item_id);
                 }
                 self.open = Some((enc, BlockKind::CustomTool));
             }
@@ -1669,6 +1703,9 @@ impl StreamEncoder {
                         "name": name,
                         "arguments": arguments
                     });
+                    if let Some(item_id) = self.responses_tool_item_id.remove(&index) {
+                        item["id"] = json!(item_id);
+                    }
                     if let Some(status) = self.responses_tool_status.remove(&index) {
                         item["status"] = json!(status);
                     }
@@ -1685,6 +1722,9 @@ impl StreamEncoder {
                         "name": name,
                         "input": input
                     });
+                    if let Some(item_id) = self.responses_tool_item_id.remove(&index) {
+                        item["id"] = json!(item_id);
+                    }
                     if let Some(status) = self.responses_tool_status.remove(&index) {
                         item["status"] = json!(status);
                     }
