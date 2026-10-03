@@ -75,6 +75,8 @@ pub struct StreamEncoder {
     responses_tool_namespace: BTreeMap<u32, String>,
     responses_tool_created_by_pending: BTreeMap<u32, String>,
     responses_tool_created_by: BTreeMap<u32, String>,
+    responses_tool_caller_pending: BTreeMap<u32, Value>,
+    responses_tool_caller: BTreeMap<u32, Value>,
     responses_tool_item_id_pending: BTreeMap<u32, String>,
     responses_tool_item_id: BTreeMap<u32, String>,
     gemini_response_id: Option<String>,
@@ -157,6 +159,8 @@ impl StreamEncoder {
             responses_tool_namespace: BTreeMap::new(),
             responses_tool_created_by_pending: BTreeMap::new(),
             responses_tool_created_by: BTreeMap::new(),
+            responses_tool_caller_pending: BTreeMap::new(),
+            responses_tool_caller: BTreeMap::new(),
             responses_tool_item_id_pending: BTreeMap::new(),
             responses_tool_item_id: BTreeMap::new(),
             gemini_response_id: None,
@@ -410,6 +414,31 @@ impl StreamEncoder {
                     } else {
                         self.responses_tool_created_by_pending
                             .insert(index, created_by.to_string());
+                    }
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_tool_caller" =>
+            {
+                if self.wire != Wire::Responses {
+                    return Ok(Vec::new());
+                }
+                if let Some(caller) = payload.get("caller").filter(|caller| {
+                    caller
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|ty| !ty.is_empty())
+                }) && let Some(index) = payload
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .and_then(|index| u32::try_from(index).ok())
+                {
+                    if let Some(enc) = self.last_tool.get(&index).copied() {
+                        self.responses_tool_caller.insert(enc, caller.clone());
+                    } else {
+                        self.responses_tool_caller_pending
+                            .insert(index, caller.clone());
                     }
                 }
                 Ok(Vec::new())
@@ -1449,6 +1478,9 @@ impl StreamEncoder {
                 if let Some(created_by) = self.responses_tool_created_by_pending.remove(&index) {
                     self.responses_tool_created_by.insert(enc, created_by);
                 }
+                if let Some(caller) = self.responses_tool_caller_pending.remove(&index) {
+                    self.responses_tool_caller.insert(enc, caller);
+                }
                 if let Some(item_id) = self.responses_tool_item_id_pending.remove(&index) {
                     self.responses_tool_item_id.insert(enc, item_id);
                 }
@@ -1571,6 +1603,9 @@ impl StreamEncoder {
                 }
                 if let Some(created_by) = self.responses_tool_created_by_pending.remove(&index) {
                     self.responses_tool_created_by.insert(enc, created_by);
+                }
+                if let Some(caller) = self.responses_tool_caller_pending.remove(&index) {
+                    self.responses_tool_caller.insert(enc, caller);
                 }
                 if let Some(item_id) = self.responses_tool_item_id_pending.remove(&index) {
                     self.responses_tool_item_id.insert(enc, item_id);
@@ -1810,6 +1845,9 @@ impl StreamEncoder {
                     if let Some(created_by) = self.responses_tool_created_by.remove(&index) {
                         item["created_by"] = json!(created_by);
                     }
+                    if let Some(caller) = self.responses_tool_caller.remove(&index) {
+                        item["caller"] = caller;
+                    }
                     item
                 }
                 None => json!({ "type": "function_call" }),
@@ -1834,6 +1872,9 @@ impl StreamEncoder {
                     }
                     if let Some(created_by) = self.responses_tool_created_by.remove(&index) {
                         item["created_by"] = json!(created_by);
+                    }
+                    if let Some(caller) = self.responses_tool_caller.remove(&index) {
+                        item["caller"] = caller;
                     }
                     item
                 }
