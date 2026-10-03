@@ -66,6 +66,7 @@ pub struct StreamEncoder {
     gemini_safety_ratings: Option<Value>,
     gemini_prompt_safety: Option<Value>,
     gemini_traffic_type: Option<String>,
+    gemini_tool_use_prompt_tokens: Option<u32>,
     gemini_url_context: Option<Value>,
     gemini_citation_metadata: Option<Value>,
     converse_passthrough: Vec<(String, Value)>,
@@ -127,6 +128,7 @@ impl StreamEncoder {
             gemini_safety_ratings: None,
             gemini_prompt_safety: None,
             gemini_traffic_type: None,
+            gemini_tool_use_prompt_tokens: None,
             gemini_url_context: None,
             gemini_citation_metadata: None,
             converse_passthrough: Vec::new(),
@@ -272,6 +274,16 @@ impl StreamEncoder {
                 Ok(Vec::new())
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_tool_use_prompt_tokens" =>
+            {
+                if self.wire == Wire::Gemini
+                    && let Some(count) = payload.as_u64().and_then(|n| u32::try_from(n).ok())
+                {
+                    self.gemini_tool_use_prompt_tokens = Some(count);
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if self.wire == Wire::Converse
                     && matches!(
                         item_type.as_str(),
@@ -365,6 +377,7 @@ impl StreamEncoder {
             && self.gemini_citation_metadata.is_none()
             && self.gemini_prompt_safety.is_none()
             && self.gemini_traffic_type.is_none()
+            && self.gemini_tool_use_prompt_tokens.is_none()
         {
             return frame;
         }
@@ -415,6 +428,11 @@ impl StreamEncoder {
             && let Some(usage) = value.get_mut("usageMetadata")
         {
             usage::insert_gemini_traffic_type(usage, Some(kind));
+        }
+        if let Some(count) = self.gemini_tool_use_prompt_tokens
+            && let Some(usage) = value.get_mut("usageMetadata")
+        {
+            usage::insert_gemini_tool_use_prompt_tokens(usage, Some(count));
         }
         RawSse {
             event: frame.event,

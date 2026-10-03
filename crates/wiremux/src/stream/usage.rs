@@ -354,6 +354,37 @@ pub(super) fn gemini_traffic_type_events(value: &Value) -> Vec<IrStreamEvent> {
     }]
 }
 
+pub(super) fn gemini_tool_use_prompt_events(value: &Value) -> Vec<IrStreamEvent> {
+    let Some(count) = value
+        .pointer("/usageMetadata/toolUsePromptTokenCount")
+        .and_then(Value::as_u64)
+        .filter(|count| *count > 0)
+        .and_then(|count| u32::try_from(count).ok())
+    else {
+        return Vec::new();
+    };
+    vec![IrStreamEvent::Protocol {
+        item_type: "gemini_tool_use_prompt_tokens".into(),
+        payload: json!(count),
+    }]
+}
+
+pub(super) fn insert_gemini_tool_use_prompt_tokens(usage: &mut Value, count: Option<u32>) {
+    let Some(count) = count.filter(|count| *count > 0) else {
+        return;
+    };
+    let Some(obj) = usage.as_object_mut() else {
+        return;
+    };
+    obj.insert("toolUsePromptTokenCount".into(), json!(count));
+    if let Some(total) = obj.get("totalTokenCount").and_then(Value::as_u64) {
+        obj.insert(
+            "totalTokenCount".into(),
+            json!(total.saturating_add(u64::from(count))),
+        );
+    }
+}
+
 pub(super) fn insert_gemini_traffic_type(usage: &mut Value, kind: Option<&str>) {
     let Some(kind) = kind.filter(|kind| !kind.is_empty()) else {
         return;
