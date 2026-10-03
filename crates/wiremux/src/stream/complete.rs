@@ -972,6 +972,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut tool_status: BTreeMap<u32, String> = BTreeMap::new();
     let mut tool_item_ids: BTreeMap<u32, String> = BTreeMap::new();
     let mut tool_namespaces: BTreeMap<u32, String> = BTreeMap::new();
+    let mut tool_created_by: BTreeMap<u32, String> = BTreeMap::new();
     let mut open_tool: Option<u32> = None;
     let mut replay_items = Vec::new();
     let mut saw_reasoning_item = false;
@@ -1036,15 +1037,14 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 id, name, index, ..
             } => {
                 if let Some((id, name, args, custom)) = current.take() {
-                    let (status, item_id, namespace) = take_tool_extra(
+                    let extra = take_tool_extra(
                         &mut open_tool,
                         &tool_status,
                         &tool_item_ids,
                         &tool_namespaces,
+                        &tool_created_by,
                     );
-                    tool_calls.push(responses_tool_call_value(
-                        &id, &name, &args, custom, status, item_id, namespace,
-                    ));
+                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, extra));
                 }
                 open_tool = Some(*index);
                 current = Some((id.clone(), name.clone(), String::new(), false));
@@ -1053,15 +1053,14 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 id, name, index, ..
             } => {
                 if let Some((id, name, args, custom)) = current.take() {
-                    let (status, item_id, namespace) = take_tool_extra(
+                    let extra = take_tool_extra(
                         &mut open_tool,
                         &tool_status,
                         &tool_item_ids,
                         &tool_namespaces,
+                        &tool_created_by,
                     );
-                    tool_calls.push(responses_tool_call_value(
-                        &id, &name, &args, custom, status, item_id, namespace,
-                    ));
+                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, extra));
                 }
                 open_tool = Some(*index);
                 current = Some((id.clone(), name.clone(), String::new(), true));
@@ -1074,15 +1073,14 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::ToolCallEnd => {
                 if let Some((id, name, args, custom)) = current.take() {
-                    let (status, item_id, namespace) = take_tool_extra(
+                    let extra = take_tool_extra(
                         &mut open_tool,
                         &tool_status,
                         &tool_item_ids,
                         &tool_namespaces,
+                        &tool_created_by,
                     );
-                    tool_calls.push(responses_tool_call_value(
-                        &id, &name, &args, custom, status, item_id, namespace,
-                    ));
+                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, extra));
                 }
             }
             IrStreamEvent::Protocol { item_type, payload }
@@ -1098,6 +1096,21 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                         .and_then(|index| u32::try_from(index).ok())
                 {
                     tool_item_ids.insert(index, item_id.to_string());
+                }
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_tool_created_by" =>
+            {
+                if let Some(created_by) = payload
+                    .get("created_by")
+                    .and_then(Value::as_str)
+                    .filter(|created_by| !created_by.is_empty())
+                    && let Some(index) = payload
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .and_then(|index| u32::try_from(index).ok())
+                {
+                    tool_created_by.insert(index, created_by.to_string());
                 }
             }
             IrStreamEvent::Protocol { item_type, payload }
@@ -1194,15 +1207,14 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
         }
     }
     if let Some((id, name, args, custom)) = current.take() {
-        let (status, item_id, namespace) = take_tool_extra(
+        let extra = take_tool_extra(
             &mut open_tool,
             &tool_status,
             &tool_item_ids,
             &tool_namespaces,
+            &tool_created_by,
         );
-        tool_calls.push(responses_tool_call_value(
-            &id, &name, &args, custom, status, item_id, namespace,
-        ));
+        tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, extra));
     }
 
     let mut output = Vec::new();
@@ -1358,21 +1370,35 @@ fn responses_complete_status(reason: &str) -> &str {
     }
 }
 
+struct ToolWriteBack<'a> {
+    status: Option<&'a str>,
+    item_id: Option<&'a str>,
+    namespace: Option<&'a str>,
+    created_by: Option<&'a str>,
+}
+
 fn take_tool_extra<'a>(
     open_tool: &mut Option<u32>,
     tool_status: &'a BTreeMap<u32, String>,
     tool_item_ids: &'a BTreeMap<u32, String>,
     tool_namespaces: &'a BTreeMap<u32, String>,
-) -> (Option<&'a str>, Option<&'a str>, Option<&'a str>) {
+    tool_created_by: &'a BTreeMap<u32, String>,
+) -> ToolWriteBack<'a> {
     let idx = open_tool.take();
-    (
-        idx.and_then(|index| tool_status.get(&index))
+    ToolWriteBack {
+        status: idx
+            .and_then(|index| tool_status.get(&index))
             .map(String::as_str),
-        idx.and_then(|index| tool_item_ids.get(&index))
+        item_id: idx
+            .and_then(|index| tool_item_ids.get(&index))
             .map(String::as_str),
-        idx.and_then(|index| tool_namespaces.get(&index))
+        namespace: idx
+            .and_then(|index| tool_namespaces.get(&index))
             .map(String::as_str),
-    )
+        created_by: idx
+            .and_then(|index| tool_created_by.get(&index))
+            .map(String::as_str),
+    }
 }
 
 fn responses_tool_call_value(
@@ -1380,9 +1406,7 @@ fn responses_tool_call_value(
     name: &str,
     args: &str,
     custom: bool,
-    status: Option<&str>,
-    item_id: Option<&str>,
-    namespace: Option<&str>,
+    extra: ToolWriteBack<'_>,
 ) -> Value {
     let mut item = if custom {
         json!({
@@ -1401,14 +1425,17 @@ fn responses_tool_call_value(
             "arguments": args,
         })
     };
-    if let Some(item_id) = item_id.filter(|item_id| !item_id.is_empty()) {
+    if let Some(item_id) = extra.item_id.filter(|item_id| !item_id.is_empty()) {
         item["id"] = json!(item_id);
     }
-    if let Some(status) = status.filter(|status| !status.is_empty()) {
+    if let Some(status) = extra.status.filter(|status| !status.is_empty()) {
         item["status"] = json!(status);
     }
-    if let Some(namespace) = namespace.filter(|namespace| !namespace.is_empty()) {
+    if let Some(namespace) = extra.namespace.filter(|namespace| !namespace.is_empty()) {
         item["namespace"] = json!(namespace);
+    }
+    if let Some(created_by) = extra.created_by.filter(|created_by| !created_by.is_empty()) {
+        item["created_by"] = json!(created_by);
     }
     item
 }
@@ -2059,6 +2086,9 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
                 if let Some(ev) = super::responses::tool_item_id_event(item, index) {
                     out.push(ev);
                 }
+                if let Some(ev) = super::responses::tool_item_created_by_event(item, index) {
+                    out.push(ev);
+                }
                 if let Some(ev) = super::responses::tool_item_namespace_event(item, index) {
                     out.push(ev);
                 }
@@ -2082,6 +2112,9 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
                 let index = tool_index;
                 tool_index = tool_index.saturating_add(1);
                 if let Some(ev) = super::responses::tool_item_id_event(item, index) {
+                    out.push(ev);
+                }
+                if let Some(ev) = super::responses::tool_item_created_by_event(item, index) {
                     out.push(ev);
                 }
                 if let Some(ev) = super::responses::tool_item_namespace_event(item, index) {
