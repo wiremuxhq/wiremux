@@ -1084,10 +1084,10 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         cfg["stopSequences"] = json!(s.stop);
     }
     if let Some(fp) = s.frequency_penalty {
-        cfg["frequencyPenalty"] = json!(fp);
+        cfg["frequencyPenalty"] = super::json_f32(fp);
     }
     if let Some(pp) = s.presence_penalty {
-        cfg["presencePenalty"] = json!(pp);
+        cfg["presencePenalty"] = super::json_f32(pp);
     }
     if let Some(seed) = s.seed {
         cfg["seed"] = json!(seed);

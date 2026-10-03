@@ -861,10 +861,10 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         body["stop"] = json!(s.stop);
     }
     if let Some(fp) = s.frequency_penalty {
-        body["frequency_penalty"] = json!(fp);
+        body["frequency_penalty"] = super::json_f32(fp);
     }
     if let Some(pp) = s.presence_penalty {
-        body["presence_penalty"] = json!(pp);
+        body["presence_penalty"] = super::json_f32(pp);
     }
     if let Some(seed) = s.seed {
         body["seed"] = json!(seed);
