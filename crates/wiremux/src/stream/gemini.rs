@@ -256,7 +256,7 @@ pub(super) fn map_finish(reason: &str, has_function_call: bool) -> String {
     .to_string()
 }
 
-fn map_block(reason: &str) -> String {
+pub(super) fn map_block(reason: &str) -> String {
     let mapped = map_finish(reason, false);
     let preserved_unknown = mapped == reason && !reason.eq_ignore_ascii_case("stop");
     if preserved_unknown || (mapped == "stop" && !reason.eq_ignore_ascii_case("stop")) {

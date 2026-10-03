@@ -1879,6 +1879,33 @@ fn gemini_complete_keeps_prompt_safety_ratings() {
 }
 
 #[test]
+fn gemini_complete_keeps_block_reason_message() {
+    let body = serde_json::to_vec(&json!({
+        "promptFeedback": {
+            "blockReason": "PROHIBITED_CONTENT",
+            "blockReasonMessage": "The prompt was blocked."
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile()).expect("decode");
+    let encoded = encode_response(Wire::Gemini, &events).expect("encode");
+    assert_eq!(
+        encoded
+            .pointer("/promptFeedback/blockReasonMessage")
+            .and_then(Value::as_str),
+        Some("The prompt was blocked."),
+        "block reason message missing: {encoded}"
+    );
+    assert_eq!(
+        encoded
+            .pointer("/candidates/0/finishReason")
+            .and_then(Value::as_str),
+        Some("PROHIBITED_CONTENT"),
+        "block reason must stay the finish token: {encoded}"
+    );
+}
+
+#[test]
 fn gemini_complete_keeps_traffic_type() {
     let body = serde_json::to_vec(&json!({
         "usageMetadata": {

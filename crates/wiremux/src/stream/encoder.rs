@@ -65,6 +65,7 @@ pub struct StreamEncoder {
     gemini_response_id: Option<String>,
     gemini_safety_ratings: Option<Value>,
     gemini_prompt_safety: Option<Value>,
+    gemini_block_reason_message: Option<String>,
     gemini_traffic_type: Option<String>,
     gemini_tool_use_prompt_tokens: Option<u32>,
     gemini_avg_logprobs: Option<f64>,
@@ -131,6 +132,7 @@ impl StreamEncoder {
             gemini_response_id: None,
             gemini_safety_ratings: None,
             gemini_prompt_safety: None,
+            gemini_block_reason_message: None,
             gemini_traffic_type: None,
             gemini_tool_use_prompt_tokens: None,
             gemini_avg_logprobs: None,
@@ -265,6 +267,19 @@ impl StreamEncoder {
                     && payload.as_array().is_some_and(|items| !items.is_empty())
                 {
                     self.gemini_prompt_safety = Some(payload);
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_block_reason_message" =>
+            {
+                if self.wire == Wire::Gemini
+                    && let Some(message) = payload
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|message| !message.is_empty())
+                {
+                    self.gemini_block_reason_message = Some(message.to_string());
                 }
                 Ok(Vec::new())
             }
@@ -444,6 +459,7 @@ impl StreamEncoder {
             && self.gemini_url_context.is_none()
             && self.gemini_citation_metadata.is_none()
             && self.gemini_prompt_safety.is_none()
+            && self.gemini_block_reason_message.is_none()
             && self.gemini_traffic_type.is_none()
             && self.gemini_tool_use_prompt_tokens.is_none()
             && self.gemini_avg_logprobs.is_none()
@@ -488,13 +504,21 @@ impl StreamEncoder {
         {
             candidate.insert("citationMetadata".into(), metadata.clone());
         }
-        let attach_prompt = self.gemini_prompt_safety.is_some()
+        let attach_prompt = (self.gemini_prompt_safety.is_some()
+            || self.gemini_block_reason_message.is_some())
             && value.pointer("/candidates/0/finishReason").is_some();
-        if attach_prompt
-            && let Some(ratings) = &self.gemini_prompt_safety
-            && let Some(obj) = value.as_object_mut()
-        {
-            obj.insert("promptFeedback".into(), json!({ "safetyRatings": ratings }));
+        if attach_prompt && let Some(obj) = value.as_object_mut() {
+            let feedback = obj
+                .entry("promptFeedback".to_string())
+                .or_insert_with(|| json!({}));
+            if let Some(feedback) = feedback.as_object_mut() {
+                if let Some(ratings) = &self.gemini_prompt_safety {
+                    feedback.insert("safetyRatings".into(), ratings.clone());
+                }
+                if let Some(message) = &self.gemini_block_reason_message {
+                    feedback.insert("blockReasonMessage".into(), json!(message));
+                }
+            }
         }
         if let Some(kind) = self.gemini_traffic_type.as_deref()
             && let Some(usage) = value.get_mut("usageMetadata")

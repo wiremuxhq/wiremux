@@ -568,6 +568,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut gemini_response_id = None;
     let mut safety_ratings = None;
     let mut prompt_safety = None;
+    let mut gemini_block_reason_message = None;
     let mut gemini_traffic_type = None;
     let mut gemini_tool_use_prompt_tokens = None;
     let mut gemini_avg_logprobs = None;
@@ -716,6 +717,15 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 prompt_safety = Some(payload.clone());
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_block_reason_message" =>
+            {
+                gemini_block_reason_message = payload
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|message| !message.is_empty())
+                    .map(str::to_string);
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "gemini_traffic_type" =>
             {
                 gemini_traffic_type = payload
@@ -844,6 +854,16 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     }
     if let Some(ratings) = prompt_safety {
         out["promptFeedback"] = json!({ "safetyRatings": ratings });
+    }
+    if let Some(message) = gemini_block_reason_message {
+        match out.get_mut("promptFeedback").and_then(Value::as_object_mut) {
+            Some(feedback) => {
+                feedback.insert("blockReasonMessage".into(), json!(message));
+            }
+            None => {
+                out["promptFeedback"] = json!({ "blockReasonMessage": message });
+            }
+        }
     }
     if let Some((
         prompt,

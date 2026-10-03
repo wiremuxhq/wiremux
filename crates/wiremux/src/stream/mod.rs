@@ -500,6 +500,31 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             payload: ratings.clone(),
         });
     }
+    if let Some(message) = value
+        .pointer("/promptFeedback/blockReasonMessage")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "gemini_block_reason_message".into(),
+            payload: Value::from(message),
+        });
+        if value
+            .pointer("/candidates/0/finishReason")
+            .and_then(Value::as_str)
+            .is_none_or(|reason| reason.is_empty())
+            && let Some(reason) = value
+                .pointer("/promptFeedback/blockReason")
+                .and_then(Value::as_str)
+                .filter(|reason| !reason.is_empty())
+        {
+            out.push(IrStreamEvent::FinishReason {
+                reason: gemini::map_block(reason),
+                vendor: Some(reason.to_string()),
+            });
+        }
+    }
     if let Some(score) = value
         .pointer("/candidates/0/avgLogprobs")
         .and_then(Value::as_f64)
@@ -1021,6 +1046,7 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                             | "gemini_url_context"
                             | "gemini_citation_metadata"
                             | "gemini_prompt_safety"
+                            | "gemini_block_reason_message"
                             | "gemini_traffic_type"
                             | "gemini_tool_use_prompt_tokens"
                             | "gemini_avg_logprobs"
