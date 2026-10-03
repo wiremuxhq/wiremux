@@ -385,6 +385,63 @@ pub(super) fn insert_gemini_tool_use_prompt_tokens(usage: &mut Value, count: Opt
     }
 }
 
+pub(super) fn gemini_modality_detail_events(value: &Value) -> Vec<IrStreamEvent> {
+    let mut out = Vec::new();
+    if let Some(details) = kept_modality_details(value, "/usageMetadata/promptTokensDetails") {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "gemini_prompt_token_details".into(),
+            payload: details,
+        });
+    }
+    if let Some(details) = kept_modality_details(value, "/usageMetadata/candidatesTokensDetails") {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "gemini_candidate_token_details".into(),
+            payload: details,
+        });
+    }
+    out
+}
+
+fn kept_modality_details(value: &Value, pointer: &str) -> Option<Value> {
+    let kept: Vec<Value> = value
+        .pointer(pointer)
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| modality_row_kept(row))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    if kept.is_empty() {
+        None
+    } else {
+        Some(Value::Array(kept))
+    }
+}
+
+fn modality_row_kept(row: &Value) -> bool {
+    let modality = row.get("modality").and_then(Value::as_str).unwrap_or("");
+    let count = row.get("tokenCount").and_then(Value::as_u64).unwrap_or(0);
+    !modality.is_empty() && !modality.eq_ignore_ascii_case("IMAGE") && count > 0
+}
+
+pub(super) fn insert_gemini_modality_details(
+    usage: &mut Value,
+    field: &str,
+    details: Option<&Value>,
+) {
+    let Some(details) =
+        details.filter(|rows| rows.as_array().is_some_and(|items| !items.is_empty()))
+    else {
+        return;
+    };
+    let Some(obj) = usage.as_object_mut() else {
+        return;
+    };
+    obj.insert(field.to_string(), details.clone());
+}
+
 pub(super) fn insert_gemini_traffic_type(usage: &mut Value, kind: Option<&str>) {
     let Some(kind) = kind.filter(|kind| !kind.is_empty()) else {
         return;
