@@ -6421,6 +6421,47 @@ fn dest_chat_frequency_penalty_reaches_gemini() {
 }
 
 #[test]
+fn penalty_decimals_stay_short() {
+    let chat = br#"{
+        "model": "gpt-4o",
+        "frequency_penalty": 0.2,
+        "presence_penalty": 0.1,
+        "messages": [{"role": "user", "content": "Hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, chat).expect("decode chat");
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode chat");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("frequency_penalty"),
+        Some(&serde_json::json!(0.2)),
+        "Chat frequency_penalty must print 0.2, got {body}"
+    );
+    assert_eq!(
+        body.get("presence_penalty"),
+        Some(&serde_json::json!(0.1)),
+        "Chat presence_penalty must print 0.1, got {body}"
+    );
+
+    let gemini = br#"{
+        "contents": [{"role": "user", "parts": [{"text": "Hi"}]}],
+        "generationConfig": {"frequencyPenalty": 0.2, "presencePenalty": 0.1}
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, gemini).expect("decode gemini");
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode gemini");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/frequencyPenalty"),
+        Some(&serde_json::json!(0.2)),
+        "Gemini frequencyPenalty must print 0.2, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/generationConfig/presencePenalty"),
+        Some(&serde_json::json!(0.1)),
+        "Gemini presencePenalty must print 0.1, got {body}"
+    );
+}
+
+#[test]
 fn dest_gemini_presence_penalty_reaches_chat() {
     let req = br#"{
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
