@@ -1879,6 +1879,40 @@ fn gemini_complete_keeps_prompt_safety_ratings() {
 }
 
 #[test]
+fn gemini_complete_keeps_executable_code() {
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [
+                    { "executableCode": { "language": "PYTHON", "code": "print(1)" } },
+                    { "codeExecutionResult": { "outcome": "OUTCOME_OK", "output": "1" } }
+                ]
+            },
+            "finishReason": "STOP"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("decode dest Gemini complete code");
+    let mapped = encode_response(Wire::Gemini, &events).expect("encode dest Gemini complete");
+    assert_eq!(
+        mapped
+            .pointer("/candidates/0/content/parts/0/executableCode/code")
+            .and_then(Value::as_str),
+        Some("print(1)"),
+        "executable code must come back, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/candidates/0/content/parts/1/codeExecutionResult/output")
+            .and_then(Value::as_str),
+        Some("1"),
+        "code result must come back, got {mapped}"
+    );
+}
+
+#[test]
 fn gemini_complete_keeps_block_reason_message() {
     let body = serde_json::to_vec(&json!({
         "promptFeedback": {
