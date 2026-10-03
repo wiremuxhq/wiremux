@@ -8022,6 +8022,45 @@ fn responses_complete_keeps_function_caller() {
 }
 
 #[test]
+fn responses_complete_keeps_message_agent() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "id": "msg_1",
+            "role": "assistant",
+            "status": "completed",
+            "phase": "commentary",
+            "agent": { "agent_name": "planner" },
+            "content": [{ "type": "output_text", "text": "hi" }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    assert_eq!(
+        mapped
+            .pointer("/output/0/agent/agent_name")
+            .and_then(Value::as_str),
+        Some("planner"),
+        "message agent must stay planner, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/output/0/phase").and_then(Value::as_str),
+        Some("commentary"),
+        "message phase stays commentary, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/output/0/id").and_then(Value::as_str),
+        Some("msg_1"),
+        "message id stays, got {mapped}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",
