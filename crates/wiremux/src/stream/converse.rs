@@ -291,10 +291,16 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
                 citations.push(payload.clone());
             }
             IrStreamEvent::Protocol { item_type, payload }
-                if item_type == "converse_guard_content" && payload.is_object() =>
+                if payload.is_object()
+                    && let Some(key) = match item_type.as_str() {
+                        "converse_guard_content" => Some("guardContent"),
+                        "converse_document" => Some("document"),
+                        "converse_video" => Some("video"),
+                        _ => None,
+                    } =>
             {
                 flush_text(&mut text, &mut content);
-                content.push(json!({ "guardContent": payload }));
+                content.push(json!({ key: payload }));
             }
             IrStreamEvent::Protocol { item_type, payload }
                 if converse_passthrough(item_type) && !payload.is_null() =>
@@ -450,6 +456,17 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
                 item_type: "converse_guard_content".into(),
                 payload: guard.clone(),
             });
+        }
+        for (key, item_type) in [
+            ("document", "converse_document"),
+            ("video", "converse_video"),
+        ] {
+            if let Some(value) = block.get(key).filter(|value| value.is_object()) {
+                out.push(IrStreamEvent::Protocol {
+                    item_type: item_type.into(),
+                    payload: value.clone(),
+                });
+            }
         }
         if let Some(citations) = block
             .pointer("/citationsContent/citations")
