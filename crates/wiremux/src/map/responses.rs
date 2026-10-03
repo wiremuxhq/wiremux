@@ -242,7 +242,7 @@ fn parts_text(parts: &[IrPart]) -> String {
 }
 
 fn decode_sampling(value: &Value) -> IrSampling {
-    let (json_schema, json_schema_name) = responses_json_schema(value);
+    let (json_schema, json_schema_name, json_schema_strict) = responses_json_schema(value);
     let json_object = responses_json_object(value);
     IrSampling {
         temperature: f32_field(value, "temperature"),
@@ -272,7 +272,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
             .and_then(|r| u32_field(r, "max_tokens")),
         json_schema,
         json_schema_name,
-        json_schema_strict: None,
+        json_schema_strict,
         json_object,
         include: decode_include(value),
         prompt_cache_key: str_field(value, "prompt_cache_key").filter(|s| !s.trim().is_empty()),
@@ -400,13 +400,13 @@ fn responses_json_object(value: &Value) -> Option<bool> {
     (format.get("type").and_then(Value::as_str) == Some("json_object")).then_some(true)
 }
 
-fn responses_json_schema(value: &Value) -> (Option<Value>, Option<String>) {
+fn responses_json_schema(value: &Value) -> (Option<Value>, Option<String>, Option<bool>) {
     let format = value.get("text").and_then(|t| t.get("format"));
     let Some(format) = format else {
-        return (None, None);
+        return (None, None, None);
     };
     if format.get("type").and_then(Value::as_str) != Some("json_schema") {
-        return (None, None);
+        return (None, None, None);
     }
     let schema = format.get("schema").cloned();
     let name = format
@@ -414,7 +414,8 @@ fn responses_json_schema(value: &Value) -> (Option<Value>, Option<String>) {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    (schema, name)
+    let strict = bool_field(format, "strict");
+    (schema, name, strict)
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -955,9 +956,6 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.mcp_servers.is_some() {
         report.record("sampling.mcp_servers", LossAction::Drop, "no slot");
     }
-    if s.json_schema_strict.is_some() {
-        report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
-    }
     if let Some(max) = s.max_tokens {
         body["max_output_tokens"] = json!(max);
     }
@@ -1129,11 +1127,15 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         if !body.get("text").is_some_and(Value::is_object) {
             body["text"] = json!({});
         }
-        body["text"]["format"] = json!({
+        let mut format = json!({
             "type": "json_schema",
             "name": name,
             "schema": schema,
         });
+        if let Some(strict) = s.json_schema_strict {
+            format["strict"] = json!(strict);
+        }
+        body["text"]["format"] = format;
     } else if s.json_object == Some(true) {
         if !body.get("text").is_some_and(Value::is_object) {
             body["text"] = json!({});
