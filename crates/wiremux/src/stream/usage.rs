@@ -83,6 +83,34 @@ pub(crate) fn from_chat(usage: &Value) -> IrStreamEvent {
     }
 }
 
+pub(super) fn messages_web_search_events(usage: &Value) -> Vec<IrStreamEvent> {
+    let Some(count) = usage
+        .pointer("/server_tool_use/web_search_requests")
+        .and_then(Value::as_u64)
+        .filter(|count| *count > 0)
+        .and_then(|count| u32::try_from(count).ok())
+    else {
+        return Vec::new();
+    };
+    vec![IrStreamEvent::Protocol {
+        item_type: "messages_web_search_requests".into(),
+        payload: json!(count),
+    }]
+}
+
+pub(super) fn insert_messages_web_search_requests(usage: &mut Value, count: Option<u32>) {
+    let Some(count) = count else {
+        return;
+    };
+    let Some(obj) = usage.as_object_mut() else {
+        return;
+    };
+    obj.insert(
+        "server_tool_use".into(),
+        json!({ "web_search_requests": count }),
+    );
+}
+
 pub(super) fn from_anthropic(usage: &Value) -> IrStreamEvent {
     let reasoning = nested_u32(usage, "output_tokens_details", "thinking_tokens").unwrap_or(0);
     IrStreamEvent::Usage {

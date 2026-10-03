@@ -7059,6 +7059,33 @@ fn chat_complete_keeps_prediction_token_counts() {
 }
 
 #[test]
+fn messages_complete_keeps_web_search_requests() {
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_real",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-haiku-4-5",
+        "content": [{ "type": "text", "text": "hi" }],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "server_tool_use": { "web_search_requests": 2 }
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile()).expect("decode");
+    let encoded = encode_response(Wire::Messages, &events).expect("encode");
+    assert_eq!(
+        encoded
+            .pointer("/usage/server_tool_use/web_search_requests")
+            .and_then(Value::as_u64),
+        Some(2),
+        "web search requests missing: {encoded}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_cancelled_remaps_dest_chat_finish_reason_stop() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",

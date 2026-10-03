@@ -54,6 +54,7 @@ pub struct StreamEncoder {
     accepted_prediction_tokens: Option<u32>,
     rejected_prediction_tokens: Option<u32>,
     messages_id: Option<String>,
+    messages_web_search_requests: Option<u32>,
     messages_container: Option<Value>,
     messages_container_written: bool,
     messages_context_management: Option<Value>,
@@ -111,6 +112,7 @@ impl StreamEncoder {
             accepted_prediction_tokens: None,
             rejected_prediction_tokens: None,
             messages_id: None,
+            messages_web_search_requests: None,
             messages_container: None,
             messages_container_written: false,
             messages_context_management: None,
@@ -174,6 +176,16 @@ impl StreamEncoder {
                     && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())
                 {
                     self.messages_id = Some(text.to_string());
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "messages_web_search_requests" =>
+            {
+                if self.wire == Wire::Messages
+                    && let Some(count) = payload.as_u64().and_then(|n| u32::try_from(n).ok())
+                {
+                    self.messages_web_search_requests = Some(count);
                 }
                 Ok(Vec::new())
             }
@@ -849,8 +861,13 @@ impl StreamEncoder {
         if let Some((p, c, cr, cw, r, _, _)) = self.usage {
             let usage =
                 usage::encode_anthropic(p, c, cr, cw, r, self.usage_inference_geo.as_deref());
-            if let Some(u) = usage.get("usage") {
-                data["usage"] = u.clone();
+            if let Some(u) = usage.get("usage").cloned() {
+                let mut usage_body = u;
+                usage::insert_messages_web_search_requests(
+                    &mut usage_body,
+                    self.messages_web_search_requests.take(),
+                );
+                data["usage"] = usage_body;
             }
         }
         if !self.messages_container_written
