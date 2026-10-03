@@ -7873,6 +7873,71 @@ fn responses_complete_keeps_custom_tool_created_by() {
 }
 
 #[test]
+fn responses_complete_keeps_program_item() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [
+            {
+                "type": "program",
+                "id": "prog_1",
+                "call_id": "call_prog",
+                "code": "return 1",
+                "fingerprint": "fp_abc"
+            },
+            {
+                "type": "program_output",
+                "id": "pout_1",
+                "call_id": "call_prog",
+                "result": "1",
+                "status": "completed"
+            }
+        ]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    let output = mapped
+        .get("output")
+        .and_then(Value::as_array)
+        .expect("output");
+    let program = output
+        .iter()
+        .find(|item| item.get("type").and_then(Value::as_str) == Some("program"));
+    let program_output = output
+        .iter()
+        .find(|item| item.get("type").and_then(Value::as_str) == Some("program_output"));
+    assert_eq!(
+        program
+            .and_then(|item| item.get("fingerprint"))
+            .and_then(Value::as_str),
+        Some("fp_abc"),
+        "program fingerprint must come back, got {mapped}"
+    );
+    assert_eq!(
+        program
+            .and_then(|item| item.get("call_id"))
+            .and_then(Value::as_str),
+        Some("call_prog"),
+        "program call id stays, got {mapped}"
+    );
+    assert_eq!(
+        program_output
+            .and_then(|item| item.get("result"))
+            .and_then(Value::as_str),
+        Some("1"),
+        "program output result must come back, got {mapped}"
+    );
+    assert_eq!(
+        output.len(),
+        2,
+        "program items must not be duplicated, got {mapped}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",
