@@ -7766,6 +7766,42 @@ fn responses_complete_keeps_previous_response_id() {
 }
 
 #[test]
+fn responses_complete_keeps_message_phase() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "id": "msg_1",
+            "role": "assistant",
+            "status": "completed",
+            "phase": "commentary",
+            "content": [{ "type": "output_text", "text": "thinking out loud" }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    assert_eq!(
+        mapped.pointer("/output/0/phase").and_then(Value::as_str),
+        Some("commentary"),
+        "message phase must stay commentary, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/output/0/id").and_then(Value::as_str),
+        Some("msg_1"),
+        "message id stays, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/output_text").and_then(Value::as_str),
+        Some("thinking out loud"),
+        "reply text stays, got {mapped}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",

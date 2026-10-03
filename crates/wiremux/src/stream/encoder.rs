@@ -65,6 +65,7 @@ pub struct StreamEncoder {
     responses_previous_id: Option<String>,
     responses_message_id: Option<String>,
     responses_message_status: Option<String>,
+    responses_message_phase: Option<String>,
     responses_reasoning_id: Option<String>,
     responses_reasoning_status: Option<String>,
     responses_reasoning_content: Option<Value>,
@@ -142,6 +143,7 @@ impl StreamEncoder {
             responses_previous_id: None,
             responses_message_id: None,
             responses_message_status: None,
+            responses_message_phase: None,
             responses_reasoning_id: None,
             responses_reasoning_status: None,
             responses_reasoning_content: None,
@@ -279,15 +281,20 @@ impl StreamEncoder {
             }
             IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "responses_message_id"
-                    || item_type == "responses_message_status" =>
+                    || item_type == "responses_message_status"
+                    || item_type == "responses_message_phase" =>
             {
                 if self.wire == Wire::Responses
                     && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())
                 {
-                    if item_type == "responses_message_id" {
-                        self.responses_message_id = Some(text.to_string());
-                    } else {
-                        self.responses_message_status = Some(text.to_string());
+                    match item_type.as_str() {
+                        "responses_message_id" => {
+                            self.responses_message_id = Some(text.to_string())
+                        }
+                        "responses_message_status" => {
+                            self.responses_message_status = Some(text.to_string())
+                        }
+                        _ => self.responses_message_phase = Some(text.to_string()),
                     }
                 }
                 Ok(Vec::new())
@@ -1686,6 +1693,9 @@ impl StreamEncoder {
                 }
                 if let Some(status) = self.responses_message_status.as_deref() {
                     message["status"] = json!(status);
+                }
+                if let Some(phase) = self.responses_message_phase.as_deref() {
+                    message["phase"] = json!(phase);
                 }
                 message
             }
