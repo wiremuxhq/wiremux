@@ -72,8 +72,8 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             text: text.to_string(),
         }));
     }
-    if let Some(content) = logprobs_content(choice) {
-        return Ok(Some(IrStreamEvent::Logprobs { content }));
+    if let Some(ev) = chat_logprobs_event(choice) {
+        return Ok(Some(ev));
     }
     if let Some(text) = delta
         .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
@@ -257,8 +257,8 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
         }
         out.extend(audio_identity_events(audio));
     }
-    if let Some(content) = logprobs_content(choice) {
-        out.push(IrStreamEvent::Logprobs { content });
+    if let Some(ev) = chat_logprobs_event(choice) {
+        out.push(ev);
     }
     if let Some(reason) = choice
         .get("finish_reason")
@@ -277,15 +277,63 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
     Ok(out)
 }
 
-pub(super) fn logprobs_content(choice: &Value) -> Option<Value> {
+/// Chat `logprobs.content` and `logprobs.refusal` stay separate.
+/// A refusal-only array is not stored as content. Empty arrays are absent.
+pub(super) fn chat_logprobs_event(choice: &Value) -> Option<IrStreamEvent> {
     let logprobs = choice.get("logprobs")?;
-    let mut out = Vec::new();
-    for key in ["content", "refusal"] {
-        if let Some(arr) = logprobs.get(key).and_then(Value::as_array) {
-            out.extend(arr.iter().cloned());
-        }
+    let content = present_logprob_array(logprobs.get("content"));
+    let refusal = present_logprob_array(logprobs.get("refusal"));
+    if content.is_none() && refusal.is_none() {
+        return None;
     }
-    (!out.is_empty()).then_some(Value::Array(out))
+    Some(IrStreamEvent::Logprobs {
+        content: content.unwrap_or(Value::Null),
+        refusal,
+    })
+}
+
+fn present_logprob_array(value: Option<&Value>) -> Option<Value> {
+    let items = value?.as_array()?;
+    (!items.is_empty()).then(|| Value::Array(items.clone()))
+}
+
+pub(super) fn push_logprob_items(dst: &mut Vec<Value>, value: &Value) {
+    match value {
+        Value::Array(items) => dst.extend(items.iter().cloned()),
+        Value::Null => {}
+        other => dst.push(other.clone()),
+    }
+}
+
+/// Content tokens, then refusal tokens, for dests that have one logprobs list.
+pub(super) fn merged_logprob_items(content: &Value, refusal: &Option<Value>) -> Vec<Value> {
+    let mut out = Vec::new();
+    push_logprob_items(&mut out, content);
+    if let Some(refusal) = refusal {
+        push_logprob_items(&mut out, refusal);
+    }
+    out
+}
+
+pub(super) fn chat_logprobs_value(content: &Value, refusal: &Option<Value>) -> Option<Value> {
+    let mut logprobs = serde_json::Map::new();
+    insert_logprob_field(&mut logprobs, "content", Some(content));
+    insert_logprob_field(&mut logprobs, "refusal", refusal.as_ref());
+    (!logprobs.is_empty()).then_some(Value::Object(logprobs))
+}
+
+fn insert_logprob_field(
+    logprobs: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<&Value>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    if value.is_null() || value.as_array().is_some_and(|items| items.is_empty()) {
+        return;
+    }
+    logprobs.insert(key.to_string(), value.clone());
 }
 
 pub(super) fn chat_image_url_part(media_type: &str, data: &str) -> Value {
@@ -733,13 +781,16 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 }
             }]
         }),
-        IrStreamEvent::Logprobs { content } => json!({
-            "choices": [{
+        IrStreamEvent::Logprobs { content, refusal } => {
+            let mut choice = json!({
                 "index": 0,
                 "delta": {},
-                "logprobs": { "content": content }
-            }]
-        }),
+            });
+            if let Some(logprobs) = chat_logprobs_value(content, refusal) {
+                choice["logprobs"] = logprobs;
+            }
+            json!({ "choices": [choice] })
+        }
         IrStreamEvent::Created { unix } => json!({
             "created": unix,
             "choices": []

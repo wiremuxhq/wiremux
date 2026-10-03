@@ -151,7 +151,10 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         .get("logprobsResult")
         .and_then(logprobs_from_result)
     {
-        return Ok(Some(IrStreamEvent::Logprobs { content }));
+        return Ok(Some(IrStreamEvent::Logprobs {
+            content,
+            refusal: None,
+        }));
     }
 
     if let Some(reason) = candidate
@@ -359,9 +362,12 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 }
             }]
         }),
-        IrStreamEvent::Logprobs { content } => json!({
-            "candidates": [{ "logprobsResult": logprobs_to_result(content) }]
-        }),
+        IrStreamEvent::Logprobs { content, refusal } => {
+            let merged = Value::Array(super::chat::merged_logprob_items(content, refusal));
+            json!({
+                "candidates": [{ "logprobsResult": logprobs_to_result(&merged) }]
+            })
+        }
         IrStreamEvent::ServiceTier { tier } => match crate::map::gemini_service_tier(tier) {
             Some((mapped, _)) => json!({ "usageMetadata": { "serviceTier": mapped } }),
             None => json!({ "candidates": [] }),

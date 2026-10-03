@@ -52,6 +52,7 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut images = Vec::new();
     let mut tool_calls = Vec::new();
     let mut logprobs_content = Vec::new();
+    let mut logprobs_refusal = Vec::new();
     let mut created = None;
     let mut service_tier = None;
     let mut system_fingerprint = None;
@@ -79,8 +80,11 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 images.push(super::chat::chat_image_url_part(media_type, data));
             }
             IrStreamEvent::AudioTranscriptDelta { text } => audio_transcript.push_str(text),
-            IrStreamEvent::Logprobs { content } => {
+            IrStreamEvent::Logprobs { content, refusal } => {
                 extend_logprobs_content(&mut logprobs_content, content);
+                if let Some(refusal) = refusal {
+                    extend_logprobs_content(&mut logprobs_refusal, refusal);
+                }
             }
             IrStreamEvent::Created { unix } => created = Some(*unix),
             IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
@@ -209,8 +213,15 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
         "index": 0,
         "message": message,
     });
-    if !logprobs_content.is_empty() {
-        choice["logprobs"] = json!({ "content": logprobs_content });
+    if !logprobs_content.is_empty() || !logprobs_refusal.is_empty() {
+        let mut logprobs = serde_json::Map::new();
+        if !logprobs_content.is_empty() {
+            logprobs.insert("content".into(), Value::Array(logprobs_content));
+        }
+        if !logprobs_refusal.is_empty() {
+            logprobs.insert("refusal".into(), Value::Array(logprobs_refusal));
+        }
+        choice["logprobs"] = Value::Object(logprobs);
     }
     if let Some(reason) = finish {
         choice["finish_reason"] = json!(reason);
@@ -288,11 +299,7 @@ fn chat_message_content(text: &str, refusal: &str, images: &[Value], no_tools: b
 }
 
 fn extend_logprobs_content(dst: &mut Vec<Value>, content: &Value) {
-    match content {
-        Value::Array(arr) => dst.extend(arr.iter().cloned()),
-        other if !other.is_null() => dst.push(other.clone()),
-        _ => {}
-    }
+    super::chat::push_logprob_items(dst, content);
 }
 
 fn chat_tool_call_value(id: &str, name: &str, args: &str, custom: bool) -> Value {
@@ -621,8 +628,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     "inlineData": { "mimeType": media_type, "data": data }
                 }));
             }
-            IrStreamEvent::Logprobs { content } => {
+            IrStreamEvent::Logprobs { content, refusal } => {
                 extend_logprobs_content(&mut logprobs_content, content);
+                if let Some(refusal) = refusal {
+                    extend_logprobs_content(&mut logprobs_content, refusal);
+                }
             }
             IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
             IrStreamEvent::ReasoningSignature { signature } => {
@@ -1017,8 +1027,11 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 }));
             }
             IrStreamEvent::AudioTranscriptDelta { text } => audio_transcript.push_str(text),
-            IrStreamEvent::Logprobs { content } => {
+            IrStreamEvent::Logprobs { content, refusal } => {
                 extend_logprobs_content(&mut logprobs_content, content);
+                if let Some(refusal) = refusal {
+                    extend_logprobs_content(&mut logprobs_content, refusal);
+                }
             }
             IrStreamEvent::Created { unix } => created = Some(*unix),
             IrStreamEvent::ServiceTier { tier } => service_tier = Some(tier.clone()),
@@ -1658,8 +1671,8 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
                 out.extend(complete_chat_tool_call(fc)?);
             }
         }
-        if let Some(content) = super::chat::logprobs_content(choice) {
-            out.push(IrStreamEvent::Logprobs { content });
+        if let Some(ev) = super::chat::chat_logprobs_event(choice) {
+            out.push(ev);
         }
         if let Some(reason) = choice
             .get("finish_reason")
@@ -2101,7 +2114,10 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
                                 }
                             }
                             if let Some(content) = super::responses::logprobs_array(part) {
-                                out.push(IrStreamEvent::Logprobs { content });
+                                out.push(IrStreamEvent::Logprobs {
+                                    content,
+                                    refusal: None,
+                                });
                             }
                         }
                         Some("refusal") => {
