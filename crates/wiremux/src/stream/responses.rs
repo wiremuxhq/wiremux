@@ -251,27 +251,35 @@ fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     let index = output_index(value);
     match item_type(value) {
         Some("function_call") => {
-            let mut out = vec![IrStreamEvent::ToolCallStart {
+            let mut out = Vec::new();
+            if let Some(ev) = tool_item_status_event(item, index) {
+                out.push(ev);
+            }
+            out.push(IrStreamEvent::ToolCallStart {
                 id: str_field(item, "call_id")
                     .or_else(|| str_field(item, "id"))
                     .unwrap_or_default(),
                 name: str_field(item, "name").unwrap_or_default(),
                 thought_signature: None,
                 index,
-            }];
+            });
             if let Some(delta) = super::json_text_field(item, "arguments")? {
                 out.push(IrStreamEvent::ToolCallArgDelta { delta, index });
             }
             Ok(out)
         }
         Some("custom_tool_call") => {
-            let mut out = vec![IrStreamEvent::CustomToolCallStart {
+            let mut out = Vec::new();
+            if let Some(ev) = tool_item_status_event(item, index) {
+                out.push(ev);
+            }
+            out.push(IrStreamEvent::CustomToolCallStart {
                 id: str_field(item, "call_id")
                     .or_else(|| str_field(item, "id"))
                     .unwrap_or_default(),
                 name: str_field(item, "name").unwrap_or_default(),
                 index,
-            }];
+            });
             if let Some(delta) = super::json_text_field(item, "input")? {
                 out.push(IrStreamEvent::CustomToolCallInputDelta { delta, index });
             }
@@ -348,6 +356,14 @@ pub(super) fn message_item_identity_events(item: &Value) -> Vec<IrStreamEvent> {
         });
     }
     out
+}
+
+pub(super) fn tool_item_status_event(item: &Value, index: u32) -> Option<IrStreamEvent> {
+    let status = str_field(item, "status").filter(|status| !status.is_empty())?;
+    Some(IrStreamEvent::Protocol {
+        item_type: "responses_tool_status".into(),
+        payload: json!({ "index": index, "status": status }),
+    })
 }
 
 pub(super) fn reasoning_item_identity_events(item: &Value) -> Vec<IrStreamEvent> {
