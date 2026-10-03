@@ -1025,7 +1025,8 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                     || item_type == "messages_id"
                     || item_type == "messages_web_search_requests"
                     || item_type == "messages_web_fetch_requests"
-                    || item_type == "messages_cache_creation"))
+                    || item_type == "messages_cache_creation"
+                    || item_type == "messages_citation"))
                 || (wire == Wire::Responses
                     && (item_type == "responses_id" || responses_output_item(item_type, payload)))
                 || (wire == Wire::ChatCompletions

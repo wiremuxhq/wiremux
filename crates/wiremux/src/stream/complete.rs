@@ -339,6 +339,11 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::AnnotationAdded { annotation } => {
                 citations.push(super::messages::citation_from_annotation(annotation));
             }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "messages_citation" && payload.is_object() =>
+            {
+                citations.push(payload.clone());
+            }
             IrStreamEvent::ImageDelta { media_type, data } => {
                 if !text.is_empty() {
                     images.push(json!({ "type": "text", "text": text }));
@@ -1451,6 +1456,13 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
                                 super::messages::annotation_from_messages_citation(citation)
                             {
                                 out.push(IrStreamEvent::AnnotationAdded { annotation });
+                            } else if citation.is_object()
+                                && citation.get("type").and_then(Value::as_str).is_some()
+                            {
+                                out.push(IrStreamEvent::Protocol {
+                                    item_type: "messages_citation".into(),
+                                    payload: citation.clone(),
+                                });
                             }
                         }
                     }
