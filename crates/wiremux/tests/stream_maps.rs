@@ -590,6 +590,40 @@ fn gemini_empty_finish_message_is_not_a_refusal() {
 }
 
 #[test]
+fn gemini_response_id_alone_is_kept() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"responseId":"resp_only"}"#.into(),
+    };
+    let events = decode_stream_events(Wire::Gemini, &raw, &gemini_profile()).expect("decode");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_response_id" && payload.as_str() == Some("resp_only")
+        )),
+        "a response id with no candidate must stay, got {events:?}"
+    );
+}
+
+#[test]
+fn gemini_error_with_response_id_stays_hard_error() {
+    let raw = RawSse {
+        event: None,
+        data: r#"{"responseId":"resp_err","error":{"code":400,"message":"INVALID_ARGUMENT: bad fileUri"}}"#.into(),
+    };
+    let err = decode_stream_events(Wire::Gemini, &raw, &gemini_profile())
+        .expect_err("error object must stay HardError when a response id is also present");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "error");
+            assert!(detail.contains("bad fileUri"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+}
+
+#[test]
 fn gemini_error_chunk_is_hard_error() {
     let raw = RawSse {
         event: None,
@@ -7025,6 +7059,28 @@ fn responses_failed_keeps_last_error_message() {
         text.contains("server_error"),
         "last_error.code must survive an empty message, got {text}"
     );
+
+    let official = RawSse {
+        event: Some("response.failed".into()),
+        data: json!({
+            "type": "response.failed",
+            "response": {
+                "status": "failed",
+                "error": {
+                    "code": "server_error",
+                    "message": "The model failed to generate a response."
+                }
+            }
+        })
+        .to_string(),
+    };
+    let err = decode_stream_events(Wire::Responses, &official, &responses_profile())
+        .expect_err("response.error must fail the decode");
+    let text = err.to_string();
+    assert!(
+        text.contains("server_error") && text.contains("The model failed to generate a response."),
+        "response.error must survive, got {text}"
+    );
 }
 
 #[test]
@@ -7702,6 +7758,85 @@ fn responses_complete_keeps_reasoning_item_id() {
         Some("resp_1"),
         "response id stays on /id, got {mapped}"
     );
+}
+
+#[test]
+fn responses_tool_extras_share_one_encoded_slot() {
+    let events = vec![
+        IrStreamEvent::Protocol {
+            item_type: "responses_tool_status".into(),
+            payload: json!({"index": 0, "status": "completed"}),
+        },
+        IrStreamEvent::Protocol {
+            item_type: "responses_tool_namespace".into(),
+            payload: json!({"index": 0, "namespace": "ns"}),
+        },
+        IrStreamEvent::Protocol {
+            item_type: "responses_tool_created_by".into(),
+            payload: json!({"index": 0, "created_by": "bot"}),
+        },
+        IrStreamEvent::Protocol {
+            item_type: "responses_tool_caller".into(),
+            payload: json!({"index": 0, "caller": {"type": "user"}}),
+        },
+        IrStreamEvent::Protocol {
+            item_type: "responses_tool_item_id".into(),
+            payload: json!({"index": 0, "id": "fc_1"}),
+        },
+        IrStreamEvent::ToolCallStart {
+            id: "call_1".into(),
+            name: "lookup".into(),
+            thought_signature: None,
+            index: 0,
+        },
+        IrStreamEvent::ToolCallArgDelta {
+            delta: "{}".into(),
+            index: 0,
+        },
+        IrStreamEvent::ToolCallEnd,
+    ];
+    let frames = encode_all(Wire::Responses, &events);
+    let done = frames
+        .iter()
+        .find(|frame| frame.event.as_deref() == Some("response.output_item.done"))
+        .expect("output item");
+    let body: Value = serde_json::from_str(&done.data).expect("json");
+    let item = &body["item"];
+    assert_eq!(item["id"], "fc_1");
+    assert_eq!(item["call_id"], "call_1");
+    assert_eq!(item["name"], "lookup");
+    assert_eq!(item["status"], "completed");
+    assert_eq!(item["namespace"], "ns");
+    assert_eq!(item["created_by"], "bot");
+    assert_eq!(item["caller"]["type"], "user");
+}
+
+#[test]
+fn responses_complete_keeps_every_tool_extra_on_one_call() {
+    let body = serde_json::to_vec(&json!({
+        "status": "completed",
+        "output": [{
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "name": "lookup",
+            "arguments": "{}",
+            "status": "completed",
+            "namespace": "ns",
+            "created_by": "bot",
+            "caller": { "type": "user" }
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile()).expect("decode");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode");
+    let item = mapped.pointer("/output/0").cloned().unwrap_or(Value::Null);
+    assert_eq!(item["id"], "fc_1");
+    assert_eq!(item["status"], "completed");
+    assert_eq!(item["namespace"], "ns");
+    assert_eq!(item["created_by"], "bot");
+    assert_eq!(item["caller"]["type"], "user");
+    assert_eq!(item["name"], "lookup");
 }
 
 #[test]
@@ -9014,6 +9149,47 @@ fn responses_stream_web_search_call_round_trips() {
         data.pointer("/item/action/query")
             .and_then(|value| value.as_str()),
         Some("wiremux")
+    );
+}
+
+#[test]
+fn responses_output_item_done_keeps_the_item_once() {
+    let raw = RawSse {
+        event: Some("response.output_item.done".into()),
+        data: json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed"
+            }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("decode");
+    let encoded = events
+        .iter()
+        .map(|ev| encode_stream_event(Wire::Responses, ev).expect("encode"))
+        .filter(|frame| frame.event.as_deref() == Some("response.output_item.done"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        encoded.len(),
+        1,
+        "done must not be replayed as nested items: {encoded:?}"
+    );
+    let body: Value = serde_json::from_str(&encoded[0].data).expect("json");
+    assert_eq!(
+        body.pointer("/item/id").and_then(Value::as_str),
+        Some("ws_1")
+    );
+    assert_eq!(
+        body.pointer("/item/type").and_then(Value::as_str),
+        Some("web_search_call")
+    );
+    assert!(
+        body.pointer("/item/item").is_none(),
+        "item must not wrap the original event, got {body}"
     );
 }
 

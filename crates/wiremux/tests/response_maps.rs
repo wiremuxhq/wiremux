@@ -827,6 +827,21 @@ fn gemini_prompt_feedback_block_reason_is_content_filter() {
         "stream promptFeedback.blockReason=SAFETY must keep SAFETY: {streamed:?}"
     );
 
+    let with_id = RawSse {
+        event: None,
+        data: r#"{"responseId":"resp_1","usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":0,"totalTokenCount":3},"promptFeedback":{"blockReason":"SAFETY"}}"#.into(),
+    };
+    let streamed = decode_stream_events(Wire::Gemini, &with_id, &gemini_profile())
+        .expect("blocked chunk with responseId must decode");
+    assert!(
+        streamed.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::FinishReason { reason, vendor, .. }
+                if reason == "content_filter" && vendor.as_deref() == Some("SAFETY")
+        )),
+        "blockReason with responseId must stay content_filter, got {streamed:?}"
+    );
+
     let unknown = serde_json::to_vec(&json!({
         "promptFeedback": { "blockReason": "NOT_A_KNOWN_REASON" }
     }))
@@ -1903,5 +1918,67 @@ fn responses_complete_round_trips_search_mcp_list_and_approval() {
                     == Some("enc-xyz")
         }),
         "encrypted reasoning missing: {output:?}"
+    );
+}
+
+#[test]
+fn cross_wire_complete_does_not_replay_foreign_items() {
+    let responses = serde_json::to_vec(&json!({
+        "model": "gpt-4.1",
+        "status": "completed",
+        "output": [
+            {
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed",
+                "action": { "query": "wiremux" }
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "hi" }]
+            }
+        ]
+    }))
+    .expect("json");
+    let events =
+        decode_response(Wire::Responses, &responses, &responses_profile()).expect("decode");
+    let messages = encode_response(Wire::Messages, &events).expect("encode messages");
+    let content = messages
+        .get("content")
+        .and_then(serde_json::Value::as_array)
+        .expect("content");
+    assert!(
+        content.iter().all(|block| {
+            block.get("type").and_then(serde_json::Value::as_str) != Some("web_search_call")
+        }),
+        "Messages content must not contain a Responses web_search_call, got {messages}"
+    );
+    assert!(
+        content.iter().any(|block| {
+            block.get("type").and_then(serde_json::Value::as_str) == Some("text")
+                && block.get("text").and_then(serde_json::Value::as_str) == Some("hi")
+        }),
+        "text must still arrive, got {messages}"
+    );
+
+    let anthropic = serde_json::to_vec(&json!({
+        "model": "claude-haiku-4-5",
+        "content": [
+            { "type": "redacted_thinking", "data": "abc" },
+            { "type": "text", "text": "hi" }
+        ],
+        "stop_reason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &anthropic, &messages_profile()).expect("decode");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode responses");
+    let output = mapped.get("output").and_then(serde_json::Value::as_array);
+    let output = output.map(Vec::as_slice).unwrap_or(&[]);
+    assert!(
+        output.iter().all(|item| {
+            item.get("type").and_then(serde_json::Value::as_str) != Some("redacted_thinking")
+        }),
+        "Responses output must not contain redacted_thinking, got {mapped}"
     );
 }

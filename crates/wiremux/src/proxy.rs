@@ -556,6 +556,26 @@ fn forward_inbound_headers(
         if profile.betas.header.trim().is_empty() {
             profile.betas.header = "anthropic-beta".to_string();
         }
+        // A profile that only sets [headers] anthropic-beta must keep
+        // that token when the client sends its own beta list.
+        if profile.betas.values.is_empty() {
+            let header_name = profile.betas.header.clone();
+            let seeded: Vec<String> = profile
+                .http
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(&header_name))
+                .map(|(_, value)| {
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|token| !token.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            profile.betas.values.extend(seeded);
+        }
         for token in extra_betas {
             if !profile
                 .betas
@@ -1205,6 +1225,99 @@ mod tests {
         assert!(
             !chat_text.contains("char_location") && !chat_text.contains("content_block_delta"),
             "Chat must not receive a Messages protocol frame, got {chat_text}"
+        );
+    }
+
+    #[test]
+    fn messages_text_stream_is_not_responses_output_items() {
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"m\"\nwire = \"messages\"\n")
+                .expect("profile");
+        let sse = concat!(
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let mapped = super::map_sse_bytes(
+            wiremux_auth::Wire::Responses,
+            wiremux_auth::Wire::Messages,
+            &profile,
+            "gpt-5",
+            sse.as_bytes(),
+        );
+        let text = String::from_utf8(mapped).expect("utf8");
+        assert!(
+            text.contains("hi"),
+            "Responses client must still see the text, got {text}"
+        );
+        assert!(
+            !text.contains("content_block_start")
+                && !text.contains("content_block_stop")
+                && !text.contains("server_tool_use"),
+            "Responses client must not see Messages frames as output items, got {text}"
+        );
+    }
+
+    #[test]
+    fn inbound_beta_keeps_profile_header_beta() {
+        let mut profile = crate::parse_profile_str(
+            r#"
+schema_version = 1
+id = "m"
+wire = "messages"
+base_url = "http://127.0.0.1"
+auth_scheme = "none"
+[headers]
+anthropic-beta = "context-1m-2025-08-07"
+"#,
+        )
+        .expect("profile");
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            "anthropic-beta",
+            "fine-grained-tool-streaming-2025-05-14"
+                .parse()
+                .expect("header"),
+        );
+        let mut loss = crate::ir::LossReport::default();
+        super::forward_inbound_headers(
+            &mut profile,
+            &mut loss,
+            wiremux_auth::Wire::Messages,
+            &headers,
+        );
+        let req = crate::headers::apply_profile_headers(
+            reqwest::Client::new().request(reqwest::Method::POST, "http://127.0.0.1/v1/messages"),
+            &profile,
+            None,
+        )
+        .build()
+        .expect("request");
+        let value = req
+            .headers()
+            .get("anthropic-beta")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            value.contains("context-1m-2025-08-07"),
+            "profile beta must survive the client beta, got {value}"
+        );
+        assert!(
+            value.contains("fine-grained-tool-streaming-2025-05-14"),
+            "client beta must be forwarded, got {value}"
+        );
+        assert_eq!(
+            req.headers().get_all("anthropic-beta").iter().count(),
+            1,
+            "betas must be one header, got {:?}",
+            req.headers().get_all("anthropic-beta")
         );
     }
 

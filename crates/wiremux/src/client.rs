@@ -956,12 +956,13 @@ fn classify_sse_wrapped_error(data: &str, status: u16) -> Option<ClientError> {
     ))
 }
 
-/// `response.failed` is not an `{error:{...}}` envelope. A `last_error`
-/// code or message still uses the same classifier. Neither field means
-/// the frame can finish as `failed`.
+/// `response.failed` is not an `{error:{...}}` envelope. Official
+/// failures put the object on `response.error`. `last_error` is kept
+/// for the older shape. Neither field means the frame can finish as
+/// `failed`.
 fn classify_responses_failed(data: &str, status: u16) -> Option<ClientError> {
     let value: Value = serde_json::from_str(data).ok()?;
-    let last = value.pointer("/response/last_error")?;
+    let last = crate::stream::responses_failure_object(&value)?;
     let code = json_error_code(last);
     let code_name = json_error_code_name(last);
     let message = last

@@ -833,6 +833,29 @@ async fn stream_responses_retryable_codes_use_client_variants() {
         other => panic!("response.failed server_error must be Transient, got {other:?}"),
     }
 
+    let (saw_official, official_err) = drive_responses_sse(concat!(
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"The model failed to generate a response.\"}}}\n\n",
+    ))
+    .await;
+    assert!(
+        saw_official,
+        "text before official response.failed must be delivered"
+    );
+    match official_err {
+        Some(ClientError::Transient {
+            kind: TransientKind::Http,
+            message,
+            ..
+        }) => assert!(
+            message.contains("The model failed to generate a response."),
+            "{message}"
+        ),
+        other => panic!("response.error server_error must be Transient, got {other:?}"),
+    }
+
     for code in [
         "internal_error",
         "connection_failed",

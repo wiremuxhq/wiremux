@@ -7985,6 +7985,90 @@ fn responses_input_file_part_round_trips_as_document() {
 }
 
 #[test]
+fn responses_function_output_keeps_input_file_same_wire() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": [{
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": [
+                {"type": "input_text", "text": "see file"},
+                {
+                    "type": "input_file",
+                    "filename": "a.pdf",
+                    "file_data": "data:application/pdf;base64,AAAA"
+                }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let output = body
+        .pointer("/input/0/output")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let parts = output.as_array().expect("structured output");
+    assert!(
+        parts.iter().any(|part| {
+            part.get("type").and_then(Value::as_str) == Some("input_text")
+                && part.get("text").and_then(Value::as_str) == Some("see file")
+        }),
+        "text part must stay, got {body}"
+    );
+    assert!(
+        parts.iter().any(|part| {
+            part.get("type").and_then(Value::as_str) == Some("input_file")
+                && part.get("filename").and_then(Value::as_str) == Some("a.pdf")
+                && part.get("file_data").and_then(Value::as_str)
+                    == Some("data:application/pdf;base64,AAAA")
+        }),
+        "input_file must round-trip inside function_call_output, got {body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| { event.path.contains("part") && event.action == LossAction::Drop }),
+        "same-wire file must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_text_document_to_converse_keeps_text() {
+    let req = br#"{
+        "model": "claude-sonnet-4-5",
+        "max_tokens": 32,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "document",
+                "source": {
+                    "type": "text",
+                    "media_type": "text/plain",
+                    "data": "Policy: refunds within 30 days"
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("Policy: refunds within 30 days"),
+        "Converse must keep the document text, got {body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| { event.path.contains("document") && event.action == LossAction::Drop }),
+        "plain text document must Degrade, not Drop, got {report:?}"
+    );
+}
+
+#[test]
 #[allow(non_snake_case)]
 fn gemini_fileData_part_round_trips_as_raw() {
     let req = br#"{

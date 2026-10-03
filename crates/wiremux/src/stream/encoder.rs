@@ -70,16 +70,10 @@ pub struct StreamEncoder {
     responses_reasoning_id: Option<String>,
     responses_reasoning_status: Option<String>,
     responses_reasoning_content: Option<Value>,
-    responses_tool_status_pending: BTreeMap<u32, String>,
-    responses_tool_status: BTreeMap<u32, String>,
-    responses_tool_namespace_pending: BTreeMap<u32, String>,
-    responses_tool_namespace: BTreeMap<u32, String>,
-    responses_tool_created_by_pending: BTreeMap<u32, String>,
-    responses_tool_created_by: BTreeMap<u32, String>,
-    responses_tool_caller_pending: BTreeMap<u32, Value>,
-    responses_tool_caller: BTreeMap<u32, Value>,
-    responses_tool_item_id_pending: BTreeMap<u32, String>,
-    responses_tool_item_id: BTreeMap<u32, String>,
+    /// Tool extras that arrived before the tool start. Keyed by IR index.
+    responses_tool_pending: BTreeMap<u32, super::responses::ResponsesToolExtra>,
+    /// Tool extras for an open or closed encoded slot.
+    responses_tool_extra: BTreeMap<u32, super::responses::ResponsesToolExtra>,
     gemini_response_id: Option<String>,
     gemini_safety_ratings: Option<Value>,
     gemini_prompt_safety: Option<Value>,
@@ -155,16 +149,8 @@ impl StreamEncoder {
             responses_reasoning_id: None,
             responses_reasoning_status: None,
             responses_reasoning_content: None,
-            responses_tool_status_pending: BTreeMap::new(),
-            responses_tool_status: BTreeMap::new(),
-            responses_tool_namespace_pending: BTreeMap::new(),
-            responses_tool_namespace: BTreeMap::new(),
-            responses_tool_created_by_pending: BTreeMap::new(),
-            responses_tool_created_by: BTreeMap::new(),
-            responses_tool_caller_pending: BTreeMap::new(),
-            responses_tool_caller: BTreeMap::new(),
-            responses_tool_item_id_pending: BTreeMap::new(),
-            responses_tool_item_id: BTreeMap::new(),
+            responses_tool_pending: BTreeMap::new(),
+            responses_tool_extra: BTreeMap::new(),
             gemini_response_id: None,
             gemini_safety_ratings: None,
             gemini_prompt_safety: None,
@@ -360,125 +346,15 @@ impl StreamEncoder {
                 Ok(Vec::new())
             }
             IrStreamEvent::Protocol { item_type, payload }
-                if item_type == "responses_tool_status" =>
+                if super::responses::tool_extra_from_protocol(&item_type, &payload).is_some() =>
             {
                 if self.wire != Wire::Responses {
                     return Ok(Vec::new());
                 }
-                if let Some(status) = payload
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .filter(|status| !status.is_empty())
-                    && let Some(index) = payload
-                        .get("index")
-                        .and_then(Value::as_u64)
-                        .and_then(|index| u32::try_from(index).ok())
+                if let Some((index, extra)) =
+                    super::responses::tool_extra_from_protocol(&item_type, &payload)
                 {
-                    if let Some(enc) = self.last_tool.get(&index).copied() {
-                        self.responses_tool_status.insert(enc, status.to_string());
-                    } else {
-                        self.responses_tool_status_pending
-                            .insert(index, status.to_string());
-                    }
-                }
-                Ok(Vec::new())
-            }
-            IrStreamEvent::Protocol { item_type, payload }
-                if item_type == "responses_tool_namespace" =>
-            {
-                if self.wire != Wire::Responses {
-                    return Ok(Vec::new());
-                }
-                if let Some(namespace) = payload
-                    .get("namespace")
-                    .and_then(Value::as_str)
-                    .filter(|namespace| !namespace.is_empty())
-                    && let Some(index) = payload
-                        .get("index")
-                        .and_then(Value::as_u64)
-                        .and_then(|index| u32::try_from(index).ok())
-                {
-                    if let Some(enc) = self.last_tool.get(&index).copied() {
-                        self.responses_tool_namespace
-                            .insert(enc, namespace.to_string());
-                    } else {
-                        self.responses_tool_namespace_pending
-                            .insert(index, namespace.to_string());
-                    }
-                }
-                Ok(Vec::new())
-            }
-            IrStreamEvent::Protocol { item_type, payload }
-                if item_type == "responses_tool_created_by" =>
-            {
-                if self.wire != Wire::Responses {
-                    return Ok(Vec::new());
-                }
-                if let Some(created_by) = payload
-                    .get("created_by")
-                    .and_then(Value::as_str)
-                    .filter(|created_by| !created_by.is_empty())
-                    && let Some(index) = payload
-                        .get("index")
-                        .and_then(Value::as_u64)
-                        .and_then(|index| u32::try_from(index).ok())
-                {
-                    if let Some(enc) = self.last_tool.get(&index).copied() {
-                        self.responses_tool_created_by
-                            .insert(enc, created_by.to_string());
-                    } else {
-                        self.responses_tool_created_by_pending
-                            .insert(index, created_by.to_string());
-                    }
-                }
-                Ok(Vec::new())
-            }
-            IrStreamEvent::Protocol { item_type, payload }
-                if item_type == "responses_tool_caller" =>
-            {
-                if self.wire != Wire::Responses {
-                    return Ok(Vec::new());
-                }
-                if let Some(caller) = payload.get("caller").filter(|caller| {
-                    caller
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .is_some_and(|ty| !ty.is_empty())
-                }) && let Some(index) = payload
-                    .get("index")
-                    .and_then(Value::as_u64)
-                    .and_then(|index| u32::try_from(index).ok())
-                {
-                    if let Some(enc) = self.last_tool.get(&index).copied() {
-                        self.responses_tool_caller.insert(enc, caller.clone());
-                    } else {
-                        self.responses_tool_caller_pending
-                            .insert(index, caller.clone());
-                    }
-                }
-                Ok(Vec::new())
-            }
-            IrStreamEvent::Protocol { item_type, payload }
-                if item_type == "responses_tool_item_id" =>
-            {
-                if self.wire != Wire::Responses {
-                    return Ok(Vec::new());
-                }
-                if let Some(item_id) = payload
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .filter(|item_id| !item_id.is_empty())
-                    && let Some(index) = payload
-                        .get("index")
-                        .and_then(Value::as_u64)
-                        .and_then(|index| u32::try_from(index).ok())
-                {
-                    if let Some(enc) = self.last_tool.get(&index).copied() {
-                        self.responses_tool_item_id.insert(enc, item_id.to_string());
-                    } else {
-                        self.responses_tool_item_id_pending
-                            .insert(index, item_id.to_string());
-                    }
+                    self.note_tool_extra(index, extra);
                 }
                 Ok(Vec::new())
             }
@@ -886,6 +762,29 @@ impl StreamEncoder {
         RawSse {
             event: frame.event,
             data: value.to_string(),
+        }
+    }
+
+    fn note_tool_extra(&mut self, index: u32, extra: super::responses::ResponsesToolExtra) {
+        if let Some(enc) = self.last_tool.get(&index).copied() {
+            self.responses_tool_extra
+                .entry(enc)
+                .or_default()
+                .merge(extra);
+        } else {
+            self.responses_tool_pending
+                .entry(index)
+                .or_default()
+                .merge(extra);
+        }
+    }
+
+    fn take_pending_tool_extra(&mut self, index: u32, enc: u32) {
+        if let Some(extra) = self.responses_tool_pending.remove(&index) {
+            self.responses_tool_extra
+                .entry(enc)
+                .or_default()
+                .merge(extra);
         }
     }
 
@@ -1505,21 +1404,7 @@ impl StreamEncoder {
                 self.tool_ids.insert(enc, id.clone());
                 self.tool_items
                     .insert(enc, (id.clone(), name.clone(), String::new()));
-                if let Some(status) = self.responses_tool_status_pending.remove(&index) {
-                    self.responses_tool_status.insert(enc, status);
-                }
-                if let Some(namespace) = self.responses_tool_namespace_pending.remove(&index) {
-                    self.responses_tool_namespace.insert(enc, namespace);
-                }
-                if let Some(created_by) = self.responses_tool_created_by_pending.remove(&index) {
-                    self.responses_tool_created_by.insert(enc, created_by);
-                }
-                if let Some(caller) = self.responses_tool_caller_pending.remove(&index) {
-                    self.responses_tool_caller.insert(enc, caller);
-                }
-                if let Some(item_id) = self.responses_tool_item_id_pending.remove(&index) {
-                    self.responses_tool_item_id.insert(enc, item_id);
-                }
+                self.take_pending_tool_extra(index, enc);
                 self.open = Some((enc, BlockKind::Tool));
             }
             IrStreamEvent::AnnotationAdded { annotation } => {
@@ -1621,21 +1506,7 @@ impl StreamEncoder {
                 ));
                 self.tool_items
                     .insert(enc, (id.clone(), name.clone(), String::new()));
-                if let Some(status) = self.responses_tool_status_pending.remove(&index) {
-                    self.responses_tool_status.insert(enc, status);
-                }
-                if let Some(namespace) = self.responses_tool_namespace_pending.remove(&index) {
-                    self.responses_tool_namespace.insert(enc, namespace);
-                }
-                if let Some(created_by) = self.responses_tool_created_by_pending.remove(&index) {
-                    self.responses_tool_created_by.insert(enc, created_by);
-                }
-                if let Some(caller) = self.responses_tool_caller_pending.remove(&index) {
-                    self.responses_tool_caller.insert(enc, caller);
-                }
-                if let Some(item_id) = self.responses_tool_item_id_pending.remove(&index) {
-                    self.responses_tool_item_id.insert(enc, item_id);
-                }
+                self.take_pending_tool_extra(index, enc);
                 self.open = Some((enc, BlockKind::CustomTool));
             }
             IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
@@ -1862,20 +1733,8 @@ impl StreamEncoder {
                         "name": name,
                         "arguments": arguments
                     });
-                    if let Some(item_id) = self.responses_tool_item_id.remove(&index) {
-                        item["id"] = json!(item_id);
-                    }
-                    if let Some(status) = self.responses_tool_status.remove(&index) {
-                        item["status"] = json!(status);
-                    }
-                    if let Some(namespace) = self.responses_tool_namespace.remove(&index) {
-                        item["namespace"] = json!(namespace);
-                    }
-                    if let Some(created_by) = self.responses_tool_created_by.remove(&index) {
-                        item["created_by"] = json!(created_by);
-                    }
-                    if let Some(caller) = self.responses_tool_caller.remove(&index) {
-                        item["caller"] = caller;
+                    if let Some(extra) = self.responses_tool_extra.remove(&index) {
+                        extra.write_item(&mut item);
                     }
                     item
                 }
@@ -1890,20 +1749,8 @@ impl StreamEncoder {
                         "name": name,
                         "input": input
                     });
-                    if let Some(item_id) = self.responses_tool_item_id.remove(&index) {
-                        item["id"] = json!(item_id);
-                    }
-                    if let Some(status) = self.responses_tool_status.remove(&index) {
-                        item["status"] = json!(status);
-                    }
-                    if let Some(namespace) = self.responses_tool_namespace.remove(&index) {
-                        item["namespace"] = json!(namespace);
-                    }
-                    if let Some(created_by) = self.responses_tool_created_by.remove(&index) {
-                        item["created_by"] = json!(created_by);
-                    }
-                    if let Some(caller) = self.responses_tool_caller.remove(&index) {
-                        item["caller"] = caller;
+                    if let Some(extra) = self.responses_tool_extra.remove(&index) {
+                        extra.write_item(&mut item);
                     }
                     item
                 }

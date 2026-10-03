@@ -253,15 +253,17 @@ fn decode_stream_events_seq(
             return Ok(events);
         }
     }
-    let Some(first) = first else {
-        return Ok(Vec::new());
-    };
+    // Fan-out runs even when singular decode found nothing. A response id
+    // with no candidate used to be dropped because Ok(None) returned first.
     if matches!(wire, Wire::Gemini)
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
         && let Some(events) = fan_out_gemini_parts(&value, call_seq)
     {
         return Ok(events);
     }
+    let Some(first) = first else {
+        return Ok(Vec::new());
+    };
     if let Some(expanded) = expand_complete_tool_call(wire, &first, raw)? {
         return Ok(expanded);
     }
@@ -513,20 +515,23 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             item_type: "gemini_block_reason_message".into(),
             payload: Value::from(message),
         });
-        if value
-            .pointer("/candidates/0/finishReason")
+    }
+    // blockReason is enough. blockReasonMessage is optional, and a
+    // responseId plus usage would otherwise hide the block from the
+    // singular decoder.
+    if value
+        .pointer("/candidates/0/finishReason")
+        .and_then(Value::as_str)
+        .is_none_or(|reason| reason.is_empty())
+        && let Some(reason) = value
+            .pointer("/promptFeedback/blockReason")
             .and_then(Value::as_str)
-            .is_none_or(|reason| reason.is_empty())
-            && let Some(reason) = value
-                .pointer("/promptFeedback/blockReason")
-                .and_then(Value::as_str)
-                .filter(|reason| !reason.is_empty())
-        {
-            out.push(IrStreamEvent::FinishReason {
-                reason: gemini::map_block(reason),
-                vendor: Some(reason.to_string()),
-            });
-        }
+            .filter(|reason| !reason.is_empty())
+    {
+        out.push(IrStreamEvent::FinishReason {
+            reason: gemini::map_block(reason),
+            vendor: Some(reason.to_string()),
+        });
     }
     if let Some(score) = value
         .pointer("/candidates/0/avgLogprobs")
@@ -568,65 +573,7 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
     if let Some(ev) = gemini::usage_from_chunk(value) {
         out.push(ev);
     }
-    let has_call = out
-        .iter()
-        .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. }));
-    let has_safety = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_safety_ratings"
-        )
-    });
-    let has_url_context = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_url_context"
-        )
-    });
-    let has_citation = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_citation_metadata"
-        )
-    });
-    let has_prompt_safety = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_prompt_safety"
-        )
-    });
-    let has_avg_logprobs = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_avg_logprobs"
-        )
-    });
-    let has_candidate_tokens = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_candidate_tokens"
-        )
-    });
-    let has_modality_details = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_prompt_token_details"
-                || item_type == "gemini_candidate_token_details"
-        )
-    });
-    let only_search_entry = matches!(out.as_slice(), [IrStreamEvent::SearchEntryPoint { .. }]);
-    if out.is_empty()
-        || (out.len() < 2
-            && !has_call
-            && !only_search_entry
-            && !has_safety
-            && !has_url_context
-            && !has_citation
-            && !has_prompt_safety
-            && !has_avg_logprobs
-            && !has_candidate_tokens
-            && !has_modality_details)
-    {
+    if out.is_empty() {
         *call_seq = seq_at_entry;
         return None;
     }
@@ -642,17 +589,13 @@ pub(crate) const INCOMPLETE_STREAM_MESSAGE: &str = "upstream stream ended before
 /// Maps-only hosts call this on each SSE frame. EOF after content is a
 /// failure unless one frame was terminal. [`StreamEncoder::finish`] is
 /// for a stream the caller already knows completed.
-pub fn frame_is_terminal(wire: Wire, raw: &RawSse, profile: &ResolvedProfile) -> bool {
+pub fn frame_is_terminal(wire: Wire, raw: &RawSse, _profile: &ResolvedProfile) -> bool {
     match wire {
         Wire::ChatCompletions => chat_frame_is_terminal(raw),
         Wire::Messages => messages_frame_is_terminal(raw),
         Wire::Responses => responses_frame_is_terminal(raw),
         Wire::Gemini => gemini_frame_is_terminal(raw),
-        Wire::Converse => decode_stream_events(wire, raw, profile).is_ok_and(|events| {
-            events
-                .iter()
-                .any(|ev| matches!(ev, IrStreamEvent::FinishReason { .. }))
-        }),
+        Wire::Converse => converse_frame_is_terminal(raw),
         _ => false,
     }
 }
@@ -700,6 +643,17 @@ fn messages_frame_is_terminal(raw: &RawSse) -> bool {
         .pointer("/delta/stop_reason")
         .and_then(Value::as_str)
         .is_some_and(|reason| !reason.is_empty())
+}
+
+fn converse_frame_is_terminal(raw: &RawSse) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(&raw.data) else {
+        return false;
+    };
+    // messageStop is the only Converse stream frame that becomes FinishReason.
+    value
+        .pointer("/messageStop/stopReason")
+        .and_then(Value::as_str)
+        .is_some()
 }
 
 fn responses_frame_is_terminal(raw: &RawSse) -> bool {
@@ -1175,7 +1129,71 @@ fn responses_output_item(item_type: &str, payload: &Value) -> bool {
     if item_type == "chunk" || item_type == "output_image" {
         return false;
     }
+    // SSE names (`content_block_start`, `response.output_item.done`) also
+    // have payload.type equal to the event name. Those are not output items.
+    if item_type.contains('.') || messages_stream_event(item_type) {
+        return false;
+    }
+    if messages_content_block_type(item_type) {
+        return false;
+    }
     payload.get("type").and_then(Value::as_str) == Some(item_type)
+}
+
+fn messages_stream_event(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "message_start"
+            | "content_block_start"
+            | "content_block_delta"
+            | "content_block_stop"
+            | "message_delta"
+            | "message_stop"
+            | "ping"
+    )
+}
+
+/// Messages content blocks stored as Protocol. Not Responses output items.
+fn messages_content_block_type(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "redacted_thinking"
+            | "server_tool_use"
+            | "web_search_tool_result"
+            | "web_fetch_tool_result"
+            | "code_execution_tool_result"
+            | "mcp_tool_use"
+            | "mcp_tool_result"
+            | "bash_code_execution_tool_result"
+            | "text_editor_code_execution_tool_result"
+            | "search_result"
+            | "document"
+            | "container_upload"
+            | "tool_result"
+            | "thinking"
+            | "image"
+    )
+}
+
+/// Responses output items that must not be pasted into another wire's body.
+pub(super) fn responses_hosted_item_type(item_type: &str) -> bool {
+    item_type.ends_with("_call")
+        || item_type.ends_with("_call_output")
+        || matches!(
+            item_type,
+            "reasoning"
+                | "mcp_list_tools"
+                | "mcp_approval_request"
+                | "mcp_approval_response"
+                | "item_reference"
+                | "program"
+                | "compaction"
+        )
+}
+
+#[cfg(feature = "client")]
+pub(crate) fn responses_failure_object(value: &Value) -> Option<&Value> {
+    responses::failure_object(value)
 }
 
 fn responses_output_item_frame(payload: &Value) -> RawSse {
@@ -1926,6 +1944,47 @@ base_url = "http://127.0.0.1"
             payload: serde_json::json!({"type": "web_search_call", "id": "ws_1"}),
         };
         assert!(event_has_slot(Wire::Responses, &ev));
+    }
+
+    #[test]
+    fn converse_message_stop_is_terminal_and_a_delta_is_not() {
+        let profile = profile();
+        let stop = RawSse {
+            event: None,
+            data: r#"{"messageStop":{"stopReason":"end_turn"}}"#.into(),
+        };
+        assert!(frame_is_terminal(Wire::Converse, &stop, &profile));
+        let delta = RawSse {
+            event: None,
+            data: r#"{"contentBlockDelta":{"delta":{"text":"hi"}}}"#.into(),
+        };
+        assert!(!frame_is_terminal(Wire::Converse, &delta, &profile));
+        let empty_reason = RawSse {
+            event: None,
+            data: r#"{"messageStop":{"stopReason":""}}"#.into(),
+        };
+        assert!(
+            frame_is_terminal(Wire::Converse, &empty_reason, &profile),
+            "an empty stopReason string is still the terminal frame"
+        );
+    }
+
+    #[cfg(feature = "proxy")]
+    #[test]
+    fn event_has_slot_messages_content_block_start_is_not_responses() {
+        let ev = IrStreamEvent::Protocol {
+            item_type: "content_block_start".into(),
+            payload: serde_json::json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": { "type": "text", "text": "" }
+            }),
+        };
+        assert!(event_has_slot(Wire::Messages, &ev));
+        assert!(
+            !event_has_slot(Wire::Responses, &ev),
+            "Messages lifecycle frames must not become Responses output items"
+        );
     }
 
     #[cfg(feature = "proxy")]

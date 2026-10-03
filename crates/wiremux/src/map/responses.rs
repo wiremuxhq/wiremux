@@ -801,20 +801,35 @@ fn encode_function_output(
     if !output.is_empty() {
         content.push(json!({"type": "input_text", "text": output}));
     }
-    let mut kept_image = false;
+    let mut kept_structured = false;
     for part in parts {
         match part {
             IrPart::Text(_) => {}
             IrPart::ImageUrl { url, .. } => {
                 content.push(json!({"type": "input_image", "image_url": url}));
-                kept_image = true;
+                kept_structured = true;
             }
             IrPart::ImageBase64 { media_type, data } => {
                 content.push(json!({
                     "type": "input_image",
                     "image_url": format!("data:{media_type};base64,{data}")
                 }));
-                kept_image = true;
+                kept_structured = true;
+            }
+            IrPart::Document {
+                source,
+                media_type,
+                name,
+                ..
+            } => {
+                content.push(encode_document(
+                    source,
+                    media_type,
+                    name.as_deref(),
+                    "input_text",
+                    report,
+                ));
+                kept_structured = true;
             }
             IrPart::Raw { .. } => {
                 if let Some((media_type, data)) = super::function_response_image(part) {
@@ -822,7 +837,7 @@ fn encode_function_output(
                         "type": "input_image",
                         "image_url": format!("data:{media_type};base64,{data}")
                     }));
-                    kept_image = true;
+                    kept_structured = true;
                 } else {
                     report.record(
                         format!("items[{idx}].part"),
@@ -838,7 +853,7 @@ fn encode_function_output(
             ),
         }
     }
-    let output_value = if kept_image {
+    let output_value = if kept_structured {
         Value::Array(content)
     } else {
         json!(output)
