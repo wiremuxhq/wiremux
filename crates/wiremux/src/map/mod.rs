@@ -574,7 +574,7 @@ pub(super) fn plain_media_part(part: &IrPart) -> Option<IrPart> {
 pub(super) fn function_response_inline(part: &IrPart) -> Option<FunctionResponseInline> {
     let (mime, data, name) = match part {
         IrPart::ImageBase64 { media_type, data } => (media_type.clone(), data.clone(), None),
-        IrPart::ImageUrl(url) => {
+        IrPart::ImageUrl { url, .. } => {
             let (mime, data) = split_data_url(url)?;
             (mime.to_string(), data.to_string(), None)
         }
@@ -718,6 +718,11 @@ fn decode_input_audio_part(part: &Value) -> Option<IrPart> {
     let data = str_field(audio, "data")?;
     let format = str_field(audio, "format").unwrap_or_else(|| "wav".into());
     Some(IrPart::Audio { data, format })
+}
+
+fn json_f32(value: f32) -> Value {
+    let parsed = value.to_string().parse::<f64>().unwrap_or(f64::from(value));
+    serde_json::json!(parsed)
 }
 
 fn f32_field(value: &Value, key: &str) -> Option<f32> {

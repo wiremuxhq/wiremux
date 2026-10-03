@@ -392,7 +392,12 @@ pub enum IrItem {
 #[non_exhaustive]
 pub enum IrPart {
     Text(String),
-    ImageUrl(String),
+    /// Chat `image_url`. `detail` is `low`, `high`, or `auto`.
+    /// Other dest wires keep the URL and drop `detail`.
+    ImageUrl {
+        url: String,
+        detail: Option<String>,
+    },
     ImageBase64 {
         media_type: String,
         data: String,

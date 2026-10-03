@@ -215,7 +215,7 @@ fn decode_image(part: &Value) -> Option<IrPart> {
                 data: data.to_string(),
             });
         }
-        return Some(IrPart::ImageUrl(url));
+        return Some(IrPart::ImageUrl { url, detail: None });
     }
     if let Some(data) =
         str_field(part, "data").or_else(|| part.get("source").and_then(|s| str_field(s, "data")))
@@ -678,7 +678,7 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
             .iter()
             .map(|part| match part {
                 IrPart::Text(text) => json!({"type": text_ty, "text": text}),
-                IrPart::ImageUrl(url) => json!({"type": "input_image", "image_url": url}),
+                IrPart::ImageUrl { url, .. } => json!({"type": "input_image", "image_url": url}),
                 IrPart::ImageBase64 { media_type, data } => json!({
                     "type": "input_image",
                     "image_url": format!("data:{media_type};base64,{data}")
@@ -771,7 +771,7 @@ fn encode_function_output(
     for part in parts {
         match part {
             IrPart::Text(_) => {}
-            IrPart::ImageUrl(url) => {
+            IrPart::ImageUrl { url, .. } => {
                 content.push(json!({"type": "input_image", "image_url": url}));
                 kept_image = true;
             }
@@ -889,10 +889,10 @@ fn encode_responses_request_fields(s: &IrSampling, body: &mut Value, report: &mu
 fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     let s = &ir.sampling;
     if let Some(t) = s.temperature {
-        body["temperature"] = json!(t);
+        body["temperature"] = super::json_f32(t);
     }
     if let Some(p) = s.top_p {
-        body["top_p"] = json!(p);
+        body["top_p"] = super::json_f32(p);
     }
     if s.top_k.is_some() {
         report.record("sampling.top_k", LossAction::Drop, "no slot");

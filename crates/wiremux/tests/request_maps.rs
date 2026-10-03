@@ -2337,7 +2337,10 @@ fn gemini_https_image_url_degrades_to_text_placeholder() {
         vec![IrItem::User {
             parts: vec![
                 IrPart::Text("see".into()),
-                IrPart::ImageUrl("https://example.com/cat.png".into()),
+                IrPart::ImageUrl {
+                    url: "https://example.com/cat.png".into(),
+                    detail: None,
+                },
             ],
         }],
     );
