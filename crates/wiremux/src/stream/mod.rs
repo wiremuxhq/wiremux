@@ -1037,6 +1037,7 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                             | "performanceConfig"
                             | "converse_frame"
                             | "converse_citation"
+                            | "converse_redacted_content"
                     ))
         }
         IrStreamEvent::Unknown { .. } => matches!(wire, Wire::Messages | Wire::Responses),

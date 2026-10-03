@@ -6513,6 +6513,44 @@ fn converse_complete_keeps_guard_content() {
 }
 
 #[test]
+fn converse_complete_keeps_redacted_reasoning() {
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "reasoningContent": { "redactedContent": "YmxvYg==" }
+                }, {
+                    "text": "hi"
+                }]
+            }
+        },
+        "stopReason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile()).expect("decode");
+    let encoded = encode_response(Wire::Converse, &events).expect("encode");
+    assert_eq!(
+        encoded
+            .pointer("/output/message/content/0/reasoningContent/redactedContent")
+            .and_then(Value::as_str),
+        Some("YmxvYg=="),
+        "redacted reasoning missing: {encoded}"
+    );
+    assert!(
+        encoded
+            .pointer("/output/message/content")
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| block.get("text").and_then(Value::as_str) == Some("hi"))
+            }),
+        "reply text missing: {encoded}"
+    );
+}
+
+#[test]
 fn converse_complete_keeps_document_block() {
     let document = json!({
         "format": "pdf",
