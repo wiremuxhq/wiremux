@@ -7086,6 +7086,39 @@ fn messages_complete_keeps_web_search_requests() {
 }
 
 #[test]
+fn messages_complete_keeps_web_fetch_requests() {
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_real",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-haiku-4-5",
+        "content": [{ "type": "text", "text": "hi" }],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "server_tool_use": { "web_fetch_requests": 1 }
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile()).expect("decode");
+    let encoded = encode_response(Wire::Messages, &events).expect("encode");
+    assert_eq!(
+        encoded
+            .pointer("/usage/server_tool_use/web_fetch_requests")
+            .and_then(Value::as_u64),
+        Some(1),
+        "web fetch requests missing: {encoded}"
+    );
+    assert!(
+        encoded
+            .pointer("/usage/server_tool_use/web_search_requests")
+            .is_none(),
+        "fetch-only usage must not invent a search count: {encoded}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_cancelled_remaps_dest_chat_finish_reason_stop() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",
