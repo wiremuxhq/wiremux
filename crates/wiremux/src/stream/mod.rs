@@ -471,7 +471,10 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
         .pointer("/candidates/0/logprobsResult")
         .and_then(gemini::logprobs_from_result)
     {
-        out.push(IrStreamEvent::Logprobs { content });
+        out.push(IrStreamEvent::Logprobs {
+            content,
+            refusal: None,
+        });
     }
     if let Some(text) = value
         .pointer("/candidates/0/finishMessage")

@@ -1575,33 +1575,23 @@ impl StreamEncoder {
                     }),
                 ));
             }
-            IrStreamEvent::Logprobs { content } => {
+            IrStreamEvent::Logprobs { content, refusal } => {
                 out.extend(self.ensure_item(BlockKind::Text));
                 let index = self.open.map(|(i, _)| i).unwrap_or(0);
-                match &content {
-                    Value::Array(arr) => {
-                        self.text_logprobs
-                            .entry(index)
-                            .or_default()
-                            .extend(arr.iter().cloned());
-                    }
-                    other if !other.is_null() => {
-                        self.text_logprobs
-                            .entry(index)
-                            .or_default()
-                            .push(other.clone());
-                    }
-                    _ => {}
+                let merged = super::chat::merged_logprob_items(&content, &refusal);
+                let mut body = json!({
+                    "type": "response.output_text.delta",
+                    "output_index": index,
+                    "delta": "",
+                });
+                if !merged.is_empty() {
+                    self.text_logprobs
+                        .entry(index)
+                        .or_default()
+                        .extend(merged.clone());
+                    body["logprobs"] = Value::Array(merged);
                 }
-                out.push(named(
-                    "response.output_text.delta",
-                    json!({
-                        "type": "response.output_text.delta",
-                        "output_index": index,
-                        "delta": "",
-                        "logprobs": content
-                    }),
-                ));
+                out.push(named("response.output_text.delta", body));
             }
             IrStreamEvent::AudioTranscriptDelta { text } => {
                 out.push(named(
@@ -2576,6 +2566,7 @@ mod tests {
                     "bytes": [72, 105],
                     "top_logprobs": [{ "token": "Hi", "logprob": -0.1, "bytes": [72, 105] }]
                 }]),
+                refusal: None,
             })
             .expect("push dest Messages logprobs");
         assert!(

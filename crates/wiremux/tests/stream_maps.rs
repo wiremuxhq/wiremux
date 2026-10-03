@@ -8514,6 +8514,104 @@ fn dest_chat_stream_logprobs_refusal_remaps_dest_gemini_logprobs_result() {
 }
 
 #[test]
+fn dest_chat_stream_logprobs_refusal_stays_on_chat_refusal() {
+    let raw = RawSse {
+        event: None,
+        data: json!({
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "logprobs": {
+                    "refusal": [{
+                        "token": "nope",
+                        "logprob": -0.2,
+                        "bytes": [110, 111, 112, 101],
+                        "top_logprobs": [{
+                            "token": "nope",
+                            "logprob": -0.2,
+                            "bytes": [110, 111, 112, 101]
+                        }]
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile())
+        .expect("decode dest Chat STREAM logprobs.refusal");
+    let frames = encode_all(Wire::ChatCompletions, &events);
+    let bodies = sse_json_frames(&frames);
+    assert_eq!(
+        bodies.iter().find_map(|body| {
+            body.pointer("/choices/0/logprobs/refusal/0/token")
+                .and_then(Value::as_str)
+        }),
+        Some("nope"),
+        "same-wire Chat STREAM logprobs.refusal must keep token nope, got {frames:?}"
+    );
+    assert!(
+        bodies.iter().all(|body| {
+            body.pointer("/choices/0/logprobs/content/0/token")
+                .and_then(Value::as_str)
+                != Some("nope")
+        }),
+        "same-wire Chat STREAM must not keep refusal token nope only under logprobs.content, got {frames:?}"
+    );
+    assert!(
+        bodies
+            .iter()
+            .all(|body| body.pointer("/choices/0/logprobs/content").is_none()),
+        "refusal-only Chat STREAM logprobs must leave content absent, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_chat_complete_logprobs_refusal_stays_on_chat_refusal() {
+    let body = serde_json::to_vec(&json!({
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null
+            },
+            "logprobs": {
+                "refusal": [{
+                    "token": "nope",
+                    "logprob": -0.2,
+                    "bytes": [110, 111, 112, 101],
+                    "top_logprobs": [{
+                        "token": "nope",
+                        "logprob": -0.2,
+                        "bytes": [110, 111, 112, 101]
+                    }]
+                }]
+            },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile())
+        .expect("decode dest Chat complete logprobs.refusal");
+    let chat = encode_response(Wire::ChatCompletions, &events).expect("encode dest Chat complete");
+    assert_eq!(
+        chat.pointer("/choices/0/logprobs/refusal/0/token")
+            .and_then(Value::as_str),
+        Some("nope"),
+        "same-wire Chat complete logprobs.refusal must keep token nope, got {chat}"
+    );
+    assert_ne!(
+        chat.pointer("/choices/0/logprobs/content/0/token")
+            .and_then(Value::as_str),
+        Some("nope"),
+        "same-wire Chat complete must not keep refusal token nope only under logprobs.content, got {chat}"
+    );
+    assert!(
+        chat.pointer("/choices/0/logprobs/content").is_none(),
+        "refusal-only Chat complete logprobs must leave content absent, got {chat}"
+    );
+}
+
+#[test]
 fn dest_gemini_stream_logprobs_result_remaps_dest_chat() {
     let raw = RawSse {
         event: None,

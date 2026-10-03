@@ -549,9 +549,14 @@ pub enum IrStreamEvent {
     },
     /// Dest Chat STREAM `choices[].logprobs.content` and dest Responses
     /// `response.output_text.delta.logprobs`. Dest Gemini
-    /// `candidates[].logprobsResult`.
+    /// `candidates[].logprobsResult` is one list, so encode appends
+    /// `refusal` tokens there. Dest Responses logprobs is one array and
+    /// gets the same append.
+    /// `refusal` is Chat `logprobs.refusal`. Other wires do not have that key.
     Logprobs {
         content: serde_json::Value,
+        /// Chat `logprobs.refusal`. Other wires do not have that key.
+        refusal: Option<serde_json::Value>,
     },
     /// Dest Chat `created` and dest Responses `created_at` (unix seconds).
     Created {

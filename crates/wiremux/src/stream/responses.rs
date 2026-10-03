@@ -28,7 +28,10 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                 return Ok(Some(IrStreamEvent::TextDelta { text }));
             }
             if let Some(content) = logprobs_array(value) {
-                return Ok(Some(IrStreamEvent::Logprobs { content }));
+                return Ok(Some(IrStreamEvent::Logprobs {
+                    content,
+                    refusal: None,
+                }));
             }
             Ok(None)
         }
@@ -241,7 +244,10 @@ pub(super) fn decode_all(name: &str, value: &Value) -> Result<Vec<IrStreamEvent>
         out.push(IrStreamEvent::TextDelta { text });
     }
     if let Some(content) = logprobs_array(value) {
-        out.push(IrStreamEvent::Logprobs { content });
+        out.push(IrStreamEvent::Logprobs {
+            content,
+            refusal: None,
+        });
     }
     Ok(out)
 }
@@ -727,15 +733,18 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "delta": text
             }),
         ),
-        IrStreamEvent::Logprobs { content } => (
-            "response.output_text.delta",
-            json!({
+        IrStreamEvent::Logprobs { content, refusal } => {
+            let merged = super::chat::merged_logprob_items(content, refusal);
+            let mut data = json!({
                 "type": "response.output_text.delta",
                 "output_index": 0,
                 "delta": "",
-                "logprobs": content
-            }),
-        ),
+            });
+            if !merged.is_empty() {
+                data["logprobs"] = Value::Array(merged);
+            }
+            ("response.output_text.delta", data)
+        }
         IrStreamEvent::RefusalDelta { text } => (
             "response.refusal.delta",
             json!({
