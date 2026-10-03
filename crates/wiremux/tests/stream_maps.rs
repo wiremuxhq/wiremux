@@ -7025,6 +7025,28 @@ fn responses_failed_keeps_last_error_message() {
         text.contains("server_error"),
         "last_error.code must survive an empty message, got {text}"
     );
+
+    let official = RawSse {
+        event: Some("response.failed".into()),
+        data: json!({
+            "type": "response.failed",
+            "response": {
+                "status": "failed",
+                "error": {
+                    "code": "server_error",
+                    "message": "The model failed to generate a response."
+                }
+            }
+        })
+        .to_string(),
+    };
+    let err = decode_stream_events(Wire::Responses, &official, &responses_profile())
+        .expect_err("response.error must fail the decode");
+    let text = err.to_string();
+    assert!(
+        text.contains("server_error") && text.contains("The model failed to generate a response."),
+        "response.error must survive, got {text}"
+    );
 }
 
 #[test]
@@ -9014,6 +9036,47 @@ fn responses_stream_web_search_call_round_trips() {
         data.pointer("/item/action/query")
             .and_then(|value| value.as_str()),
         Some("wiremux")
+    );
+}
+
+#[test]
+fn responses_output_item_done_keeps_the_item_once() {
+    let raw = RawSse {
+        event: Some("response.output_item.done".into()),
+        data: json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed"
+            }
+        })
+        .to_string(),
+    };
+    let events = decode_stream_events(Wire::Responses, &raw, &responses_profile()).expect("decode");
+    let encoded = events
+        .iter()
+        .map(|ev| encode_stream_event(Wire::Responses, ev).expect("encode"))
+        .filter(|frame| frame.event.as_deref() == Some("response.output_item.done"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        encoded.len(),
+        1,
+        "done must not be replayed as nested items: {encoded:?}"
+    );
+    let body: Value = serde_json::from_str(&encoded[0].data).expect("json");
+    assert_eq!(
+        body.pointer("/item/id").and_then(Value::as_str),
+        Some("ws_1")
+    );
+    assert_eq!(
+        body.pointer("/item/type").and_then(Value::as_str),
+        Some("web_search_call")
+    );
+    assert!(
+        body.pointer("/item/item").is_none(),
+        "item must not wrap the original event, got {body}"
     );
 }
 

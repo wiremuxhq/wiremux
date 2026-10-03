@@ -804,13 +804,16 @@ fn encode_document(
         );
         return None;
     }
-    if matches!(source, IrDocumentSource::Text(_)) {
+    if let IrDocumentSource::Text(data) = source {
+        if data.trim().is_empty() {
+            return None;
+        }
         report.record(
             "part.document",
-            LossAction::Drop,
-            "plain text document has no converse bytes slot",
+            LossAction::Degrade,
+            "plain text document becomes text",
         );
-        return None;
+        return Some(json!({ "text": data }));
     }
     let Some(format) = super::converse_document_format(media_type) else {
         report.record(

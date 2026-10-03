@@ -8,6 +8,34 @@ use crate::map::MapError;
 use super::usage;
 use super::{MAX_TOOL_CALL_INDEX, RawSse, check_index, protocol, str_field};
 
+/// Official Responses failures use `response.error`. `last_error` is the
+/// older shape tests and callers already send.
+pub(super) fn failure_object(value: &Value) -> Option<&Value> {
+    fn useful(err: &Value) -> bool {
+        if !err.is_object() {
+            return false;
+        }
+        let message = err
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty());
+        let code = match err.get("code") {
+            Some(Value::String(text)) => !text.trim().is_empty(),
+            Some(Value::Number(_)) => true,
+            _ => false,
+        };
+        message || code
+    }
+    value
+        .pointer("/response/error")
+        .filter(|err| useful(err))
+        .or_else(|| {
+            value
+                .pointer("/response/last_error")
+                .filter(|err| useful(err))
+        })
+}
+
 fn last_error_code(last: &Value) -> Option<String> {
     let code = last.get("code")?;
     if let Some(text) = code.as_str() {
@@ -154,7 +182,22 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             Some("function_call") | Some("custom_tool_call") => {
                 Ok(Some(IrStreamEvent::ToolCallEnd))
             }
-            _ => Ok(Some(protocol(name, value))),
+            _ => {
+                let item = value.get("item").unwrap_or(value);
+                let replay = replay_output_item(item);
+                if replay.len() > 1 {
+                    return Err(MapError::Invalid(
+                        "decode_stream_event cannot represent every event in this Responses item; use decode_stream_events"
+                            .into(),
+                    ));
+                }
+                Ok(Some(
+                    replay
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| protocol(name, value)),
+                ))
+            }
         },
         "response.completed" => {
             if let Some("cancelled" | "canceled") =
@@ -172,7 +215,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             }
         }
         "response.failed" => {
-            let last = value.pointer("/response/last_error");
+            let last = failure_object(value);
             let message = last
                 .and_then(|err| err.get("message"))
                 .and_then(Value::as_str)

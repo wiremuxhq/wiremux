@@ -551,6 +551,9 @@ fn messages_content_block(item_type: &str, payload: &Value) -> bool {
     if item_type == "chunk" || item_type == "output_image" {
         return false;
     }
+    if super::responses_hosted_item_type(item_type) {
+        return false;
+    }
     payload.get("type").and_then(Value::as_str) == Some(item_type)
 }
 
@@ -1250,9 +1253,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 }
             }
             IrStreamEvent::Protocol { item_type, payload }
-                if payload.get("type").and_then(Value::as_str) == Some(item_type.as_str())
-                    && item_type != "chunk"
-                    && item_type != "output_image" =>
+                if super::responses_output_item(item_type, payload) =>
             {
                 if item_type == "reasoning" {
                     saw_reasoning_item = true;
@@ -1889,14 +1890,27 @@ fn decode_responses_complete(
             json!({ "type": event, "response": value }).to_string(),
         )
     };
-    let mut events = decode_stream_events(
+    let decoded = decode_stream_events(
         Wire::Responses,
         &RawSse {
-            event: Some(event),
+            event: Some(event.clone()),
             data,
         },
         profile,
-    )?;
+    );
+    // A failed JSON body carries response.error. Stream frames surface
+    // that as Invalid so a live client can retry. The complete body still
+    // maps to finish_reason stop.
+    let mut events = match decoded {
+        Ok(events) => events,
+        Err(MapError::Invalid(_)) if event == "response.failed" => {
+            vec![IrStreamEvent::FinishReason {
+                reason: "failed".into(),
+                vendor: None,
+            }]
+        }
+        Err(err) => return Err(err),
+    };
     let extra = complete_responses_output_events(value)?;
     if extra.is_empty() {
         return Ok(events);
