@@ -291,6 +291,12 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
                 citations.push(payload.clone());
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "converse_guard_content" && payload.is_object() =>
+            {
+                flush_text(&mut text, &mut content);
+                content.push(json!({ "guardContent": payload }));
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if converse_passthrough(item_type) && !payload.is_null() =>
             {
                 passthrough.push((item_type.clone(), payload.clone()));
@@ -438,6 +444,12 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
             && let Some(ev) = image_delta_from_converse(image)
         {
             out.push(ev);
+        }
+        if let Some(guard) = block.get("guardContent").filter(|guard| guard.is_object()) {
+            out.push(IrStreamEvent::Protocol {
+                item_type: "converse_guard_content".into(),
+                payload: guard.clone(),
+            });
         }
         if let Some(citations) = block
             .pointer("/citationsContent/citations")
