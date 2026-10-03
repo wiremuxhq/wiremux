@@ -951,6 +951,8 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut reasoning_signature = None;
     let mut finish = None;
     let mut responses_id = None;
+    let mut responses_message_id = None;
+    let mut responses_message_status = None;
     let mut usage = None;
     let mut annotations = Vec::new();
     let mut audio_data = String::new();
@@ -1050,6 +1052,18 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 }
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_message_id"
+                    || item_type == "responses_message_status" =>
+            {
+                if let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty()) {
+                    if item_type == "responses_message_id" {
+                        responses_message_id = Some(text.to_string());
+                    } else {
+                        responses_message_status = Some(text.to_string());
+                    }
+                }
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if payload.get("type").and_then(Value::as_str) == Some(item_type.as_str())
                     && item_type != "chunk"
                     && item_type != "output_image" =>
@@ -1113,11 +1127,18 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
         if !refusal.is_empty() {
             content.push(json!({ "type": "refusal", "refusal": refusal }));
         }
-        output.push(json!({
+        let mut message = json!({
             "type": "message",
             "role": "assistant",
             "content": content,
-        }));
+        });
+        if let Some(id) = responses_message_id.as_deref() {
+            message["id"] = json!(id);
+        }
+        if let Some(status) = responses_message_status.as_deref() {
+            message["status"] = json!(status);
+        }
+        output.push(message);
     }
     if !audio_data.is_empty() || !audio_transcript.is_empty() {
         let mut item = serde_json::Map::new();
@@ -1799,6 +1820,7 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
     for item in items {
         match item.get("type").and_then(Value::as_str) {
             Some("message") => {
+                out.extend(super::responses::message_item_identity_events(item));
                 let Some(content) = item.get("content").and_then(Value::as_array) else {
                     continue;
                 };

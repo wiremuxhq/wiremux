@@ -62,6 +62,8 @@ pub struct StreamEncoder {
     messages_context_management: Option<Value>,
     messages_cache_miss: Option<Value>,
     responses_id: Option<String>,
+    responses_message_id: Option<String>,
+    responses_message_status: Option<String>,
     gemini_response_id: Option<String>,
     gemini_safety_ratings: Option<Value>,
     gemini_prompt_safety: Option<Value>,
@@ -129,6 +131,8 @@ impl StreamEncoder {
             messages_context_management: None,
             messages_cache_miss: None,
             responses_id: None,
+            responses_message_id: None,
+            responses_message_status: None,
             gemini_response_id: None,
             gemini_safety_ratings: None,
             gemini_prompt_safety: None,
@@ -244,6 +248,21 @@ impl StreamEncoder {
                     && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())
                 {
                     self.responses_id = Some(text.to_string());
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_message_id"
+                    || item_type == "responses_message_status" =>
+            {
+                if self.wire == Wire::Responses
+                    && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())
+                {
+                    if item_type == "responses_message_id" {
+                        self.responses_message_id = Some(text.to_string());
+                    } else {
+                        self.responses_message_status = Some(text.to_string());
+                    }
                 }
                 Ok(Vec::new())
             }
@@ -1535,11 +1554,18 @@ impl StreamEncoder {
                     }
                     text_done.push(done);
                 }
-                json!({
+                let mut message = json!({
                     "type": "message",
                     "role": "assistant",
                     "content": content
-                })
+                });
+                if let Some(id) = self.responses_message_id.as_deref() {
+                    message["id"] = json!(id);
+                }
+                if let Some(status) = self.responses_message_status.as_deref() {
+                    message["status"] = json!(status);
+                }
+                message
             }
             BlockKind::Thinking => {
                 let text = self.reasoning_items.remove(&index).unwrap_or_default();
