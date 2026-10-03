@@ -7119,6 +7119,51 @@ fn messages_complete_keeps_web_fetch_requests() {
 }
 
 #[test]
+fn messages_complete_keeps_cache_creation_breakdown() {
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_real",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-haiku-4-5",
+        "content": [{ "type": "text", "text": "hi" }],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "cache_creation_input_tokens": 6,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 4,
+                "ephemeral_1h_input_tokens": 2
+            }
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile()).expect("decode");
+    let encoded = encode_response(Wire::Messages, &events).expect("encode");
+    assert_eq!(
+        encoded
+            .pointer("/usage/cache_creation/ephemeral_5m_input_tokens")
+            .and_then(Value::as_u64),
+        Some(4),
+        "5 minute cache tokens missing: {encoded}"
+    );
+    assert_eq!(
+        encoded
+            .pointer("/usage/cache_creation/ephemeral_1h_input_tokens")
+            .and_then(Value::as_u64),
+        Some(2),
+        "1 hour cache tokens missing: {encoded}"
+    );
+    assert_eq!(
+        encoded
+            .pointer("/usage/cache_creation_input_tokens")
+            .and_then(Value::as_u64),
+        Some(6),
+        "cache creation total missing: {encoded}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_cancelled_remaps_dest_chat_finish_reason_stop() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",

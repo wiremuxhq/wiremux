@@ -56,6 +56,7 @@ pub struct StreamEncoder {
     messages_id: Option<String>,
     messages_web_search_requests: Option<u32>,
     messages_web_fetch_requests: Option<u32>,
+    messages_cache_creation: Option<Value>,
     messages_container: Option<Value>,
     messages_container_written: bool,
     messages_context_management: Option<Value>,
@@ -115,6 +116,7 @@ impl StreamEncoder {
             messages_id: None,
             messages_web_search_requests: None,
             messages_web_fetch_requests: None,
+            messages_cache_creation: None,
             messages_container: None,
             messages_container_written: false,
             messages_context_management: None,
@@ -193,6 +195,14 @@ impl StreamEncoder {
                     } else {
                         self.messages_web_fetch_requests = Some(count);
                     }
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "messages_cache_creation" =>
+            {
+                if self.wire == Wire::Messages && payload.is_object() {
+                    self.messages_cache_creation = Some(payload);
                 }
                 Ok(Vec::new())
             }
@@ -874,6 +884,10 @@ impl StreamEncoder {
                     &mut usage_body,
                     self.messages_web_search_requests.take(),
                     self.messages_web_fetch_requests.take(),
+                );
+                usage::insert_messages_cache_creation(
+                    &mut usage_body,
+                    self.messages_cache_creation.as_ref(),
                 );
                 data["usage"] = usage_body;
             }
