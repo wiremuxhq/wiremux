@@ -1035,6 +1035,7 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                         || item_type == "responses_reasoning_status"
                         || item_type == "responses_reasoning_content"
                         || item_type == "responses_tool_status"
+                        || item_type == "responses_tool_item_id"
                         || responses_output_item(item_type, payload)))
                 || (wire == Wire::ChatCompletions
                     && matches!(

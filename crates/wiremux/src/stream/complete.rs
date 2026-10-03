@@ -968,6 +968,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut moderation = None;
     let mut tool_calls = Vec::new();
     let mut tool_status: BTreeMap<u32, String> = BTreeMap::new();
+    let mut tool_item_ids: BTreeMap<u32, String> = BTreeMap::new();
     let mut open_tool: Option<u32> = None;
     let mut replay_items = Vec::new();
     let mut saw_reasoning_item = false;
@@ -1032,11 +1033,11 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 id, name, index, ..
             } => {
                 if let Some((id, name, args, custom)) = current.take() {
-                    let status = open_tool
-                        .take()
-                        .and_then(|idx| tool_status.get(&idx))
-                        .map(String::as_str);
-                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, status));
+                    let (status, item_id) =
+                        take_tool_extra(&mut open_tool, &tool_status, &tool_item_ids);
+                    tool_calls.push(responses_tool_call_value(
+                        &id, &name, &args, custom, status, item_id,
+                    ));
                 }
                 open_tool = Some(*index);
                 current = Some((id.clone(), name.clone(), String::new(), false));
@@ -1045,11 +1046,11 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 id, name, index, ..
             } => {
                 if let Some((id, name, args, custom)) = current.take() {
-                    let status = open_tool
-                        .take()
-                        .and_then(|idx| tool_status.get(&idx))
-                        .map(String::as_str);
-                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, status));
+                    let (status, item_id) =
+                        take_tool_extra(&mut open_tool, &tool_status, &tool_item_ids);
+                    tool_calls.push(responses_tool_call_value(
+                        &id, &name, &args, custom, status, item_id,
+                    ));
                 }
                 open_tool = Some(*index);
                 current = Some((id.clone(), name.clone(), String::new(), true));
@@ -1062,11 +1063,26 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::ToolCallEnd => {
                 if let Some((id, name, args, custom)) = current.take() {
-                    let status = open_tool
-                        .take()
-                        .and_then(|idx| tool_status.get(&idx))
-                        .map(String::as_str);
-                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, status));
+                    let (status, item_id) =
+                        take_tool_extra(&mut open_tool, &tool_status, &tool_item_ids);
+                    tool_calls.push(responses_tool_call_value(
+                        &id, &name, &args, custom, status, item_id,
+                    ));
+                }
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_tool_item_id" =>
+            {
+                if let Some(item_id) = payload
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|item_id| !item_id.is_empty())
+                    && let Some(index) = payload
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .and_then(|index| u32::try_from(index).ok())
+                {
+                    tool_item_ids.insert(index, item_id.to_string());
                 }
             }
             IrStreamEvent::Protocol { item_type, payload }
@@ -1138,11 +1154,10 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
         }
     }
     if let Some((id, name, args, custom)) = current.take() {
-        let status = open_tool
-            .take()
-            .and_then(|idx| tool_status.get(&idx))
-            .map(String::as_str);
-        tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, status));
+        let (status, item_id) = take_tool_extra(&mut open_tool, &tool_status, &tool_item_ids);
+        tool_calls.push(responses_tool_call_value(
+            &id, &name, &args, custom, status, item_id,
+        ));
     }
 
     let mut output = Vec::new();
@@ -1292,12 +1307,27 @@ fn responses_complete_status(reason: &str) -> &str {
     }
 }
 
+fn take_tool_extra<'a>(
+    open_tool: &mut Option<u32>,
+    tool_status: &'a BTreeMap<u32, String>,
+    tool_item_ids: &'a BTreeMap<u32, String>,
+) -> (Option<&'a str>, Option<&'a str>) {
+    let idx = open_tool.take();
+    (
+        idx.and_then(|index| tool_status.get(&index))
+            .map(String::as_str),
+        idx.and_then(|index| tool_item_ids.get(&index))
+            .map(String::as_str),
+    )
+}
+
 fn responses_tool_call_value(
     id: &str,
     name: &str,
     args: &str,
     custom: bool,
     status: Option<&str>,
+    item_id: Option<&str>,
 ) -> Value {
     let mut item = if custom {
         json!({
@@ -1316,6 +1346,9 @@ fn responses_tool_call_value(
             "arguments": args,
         })
     };
+    if let Some(item_id) = item_id.filter(|item_id| !item_id.is_empty()) {
+        item["id"] = json!(item_id);
+    }
     if let Some(status) = status.filter(|status| !status.is_empty()) {
         item["status"] = json!(status);
     }
@@ -1965,6 +1998,9 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
             Some("function_call") => {
                 let index = tool_index;
                 tool_index = tool_index.saturating_add(1);
+                if let Some(ev) = super::responses::tool_item_id_event(item, index) {
+                    out.push(ev);
+                }
                 if let Some(ev) = super::responses::tool_item_status_event(item, index) {
                     out.push(ev);
                 }
@@ -1984,6 +2020,9 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
             Some("custom_tool_call") => {
                 let index = tool_index;
                 tool_index = tool_index.saturating_add(1);
+                if let Some(ev) = super::responses::tool_item_id_event(item, index) {
+                    out.push(ev);
+                }
                 if let Some(ev) = super::responses::tool_item_status_event(item, index) {
                     out.push(ev);
                 }
