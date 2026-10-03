@@ -4425,6 +4425,43 @@ fn responses_json_schema_round_trips() {
 }
 
 #[test]
+fn responses_json_schema_keeps_strict() {
+    for strict in [true, false] {
+        let req = format!(
+            r#"{{
+                "model": "gpt-5",
+                "input": "hi",
+                "text": {{
+                    "format": {{
+                        "type": "json_schema",
+                        "name": "note",
+                        "strict": {strict},
+                        "schema": {{"type": "object", "properties": {{"q": {{"type": "string"}}}}}}
+                    }}
+                }}
+            }}"#
+        );
+        let (ir, _) = decode(Wire::Responses, req.as_bytes()).expect("decode");
+        assert_eq!(
+            ir.sampling.json_schema_strict,
+            Some(strict),
+            "Responses must store text.format.strict"
+        );
+        let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            body.pointer("/text/format/strict").and_then(Value::as_bool),
+            Some(strict),
+            "Responses must emit text.format.strict, got {body}"
+        );
+        assert!(
+            !loss_dropped(&report, "sampling.json_schema_strict"),
+            "Responses has a strict slot, got {report:?}"
+        );
+    }
+}
+
+#[test]
 fn dest_responses_json_object_reaches_chat() {
     let req = br#"{
         "model": "gpt-4o",
