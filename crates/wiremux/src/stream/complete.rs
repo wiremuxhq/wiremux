@@ -954,6 +954,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut responses_previous_id = None;
     let mut responses_message_id = None;
     let mut responses_message_status = None;
+    let mut responses_message_phase = None;
     let mut responses_reasoning_id = None;
     let mut responses_reasoning_status = None;
     let mut responses_reasoning_content = None;
@@ -1115,13 +1116,16 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "responses_message_id"
-                    || item_type == "responses_message_status" =>
+                    || item_type == "responses_message_status"
+                    || item_type == "responses_message_phase" =>
             {
                 if let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty()) {
-                    if item_type == "responses_message_id" {
-                        responses_message_id = Some(text.to_string());
-                    } else {
-                        responses_message_status = Some(text.to_string());
+                    match item_type.as_str() {
+                        "responses_message_id" => responses_message_id = Some(text.to_string()),
+                        "responses_message_status" => {
+                            responses_message_status = Some(text.to_string())
+                        }
+                        _ => responses_message_phase = Some(text.to_string()),
                     }
                 }
             }
@@ -1239,6 +1243,9 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
         }
         if let Some(status) = responses_message_status.as_deref() {
             message["status"] = json!(status);
+        }
+        if let Some(phase) = responses_message_phase.as_deref() {
+            message["phase"] = json!(phase);
         }
         output.push(message);
     }

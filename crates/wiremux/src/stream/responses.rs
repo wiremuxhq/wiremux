@@ -361,6 +361,12 @@ pub(super) fn message_item_identity_events(item: &Value) -> Vec<IrStreamEvent> {
             payload: json!(status),
         });
     }
+    if let Some(phase) = str_field(item, "phase").filter(|phase| !phase.is_empty()) {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "responses_message_phase".into(),
+            payload: json!(phase),
+        });
+    }
     out
 }
 
