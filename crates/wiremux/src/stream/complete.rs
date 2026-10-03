@@ -951,6 +951,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut reasoning_signature = None;
     let mut finish = None;
     let mut responses_id = None;
+    let mut responses_previous_id = None;
     let mut responses_message_id = None;
     let mut responses_message_status = None;
     let mut responses_reasoning_id = None;
@@ -1106,6 +1107,13 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 }
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_previous_id" =>
+            {
+                if let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty()) {
+                    responses_previous_id = Some(text.to_string());
+                }
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "responses_message_id"
                     || item_type == "responses_message_status" =>
             {
@@ -1257,6 +1265,9 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
         "status": status,
         "output": output,
     });
+    if let Some(prev) = responses_previous_id.as_deref() {
+        out["previous_response_id"] = json!(prev);
+    }
     if let Some(detail) = finish
         .as_deref()
         .and_then(super::responses::incomplete_details_reason)

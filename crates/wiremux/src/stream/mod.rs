@@ -1029,6 +1029,7 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                     || item_type == "messages_citation"))
                 || (wire == Wire::Responses
                     && (item_type == "responses_id"
+                        || item_type == "responses_previous_id"
                         || item_type == "responses_message_id"
                         || item_type == "responses_message_status"
                         || item_type == "responses_reasoning_id"

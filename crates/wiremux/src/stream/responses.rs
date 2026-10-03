@@ -492,6 +492,17 @@ fn response_slot_events(value: &Value) -> Vec<IrStreamEvent> {
             payload: json!(id),
         });
     }
+    if let Some(prev) = value
+        .pointer("/response/previous_response_id")
+        .or_else(|| value.get("previous_response_id"))
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "responses_previous_id".into(),
+            payload: json!(prev),
+        });
+    }
     if let Some(ev) = super::complete::created_event(value) {
         out.push(ev);
     }
