@@ -253,15 +253,17 @@ fn decode_stream_events_seq(
             return Ok(events);
         }
     }
-    let Some(first) = first else {
-        return Ok(Vec::new());
-    };
+    // Fan-out runs even when singular decode found nothing. A response id
+    // with no candidate used to be dropped because Ok(None) returned first.
     if matches!(wire, Wire::Gemini)
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
         && let Some(events) = fan_out_gemini_parts(&value, call_seq)
     {
         return Ok(events);
     }
+    let Some(first) = first else {
+        return Ok(Vec::new());
+    };
     if let Some(expanded) = expand_complete_tool_call(wire, &first, raw)? {
         return Ok(expanded);
     }
@@ -571,65 +573,7 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
     if let Some(ev) = gemini::usage_from_chunk(value) {
         out.push(ev);
     }
-    let has_call = out
-        .iter()
-        .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. }));
-    let has_safety = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_safety_ratings"
-        )
-    });
-    let has_url_context = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_url_context"
-        )
-    });
-    let has_citation = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_citation_metadata"
-        )
-    });
-    let has_prompt_safety = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_prompt_safety"
-        )
-    });
-    let has_avg_logprobs = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_avg_logprobs"
-        )
-    });
-    let has_candidate_tokens = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_candidate_tokens"
-        )
-    });
-    let has_modality_details = out.iter().any(|ev| {
-        matches!(
-            ev,
-            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_prompt_token_details"
-                || item_type == "gemini_candidate_token_details"
-        )
-    });
-    let only_search_entry = matches!(out.as_slice(), [IrStreamEvent::SearchEntryPoint { .. }]);
-    if out.is_empty()
-        || (out.len() < 2
-            && !has_call
-            && !only_search_entry
-            && !has_safety
-            && !has_url_context
-            && !has_citation
-            && !has_prompt_safety
-            && !has_avg_logprobs
-            && !has_candidate_tokens
-            && !has_modality_details)
-    {
+    if out.is_empty() {
         *call_seq = seq_at_entry;
         return None;
     }
@@ -645,17 +589,13 @@ pub(crate) const INCOMPLETE_STREAM_MESSAGE: &str = "upstream stream ended before
 /// Maps-only hosts call this on each SSE frame. EOF after content is a
 /// failure unless one frame was terminal. [`StreamEncoder::finish`] is
 /// for a stream the caller already knows completed.
-pub fn frame_is_terminal(wire: Wire, raw: &RawSse, profile: &ResolvedProfile) -> bool {
+pub fn frame_is_terminal(wire: Wire, raw: &RawSse, _profile: &ResolvedProfile) -> bool {
     match wire {
         Wire::ChatCompletions => chat_frame_is_terminal(raw),
         Wire::Messages => messages_frame_is_terminal(raw),
         Wire::Responses => responses_frame_is_terminal(raw),
         Wire::Gemini => gemini_frame_is_terminal(raw),
-        Wire::Converse => decode_stream_events(wire, raw, profile).is_ok_and(|events| {
-            events
-                .iter()
-                .any(|ev| matches!(ev, IrStreamEvent::FinishReason { .. }))
-        }),
+        Wire::Converse => converse_frame_is_terminal(raw),
         _ => false,
     }
 }
@@ -703,6 +643,17 @@ fn messages_frame_is_terminal(raw: &RawSse) -> bool {
         .pointer("/delta/stop_reason")
         .and_then(Value::as_str)
         .is_some_and(|reason| !reason.is_empty())
+}
+
+fn converse_frame_is_terminal(raw: &RawSse) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(&raw.data) else {
+        return false;
+    };
+    // messageStop is the only Converse stream frame that becomes FinishReason.
+    value
+        .pointer("/messageStop/stopReason")
+        .and_then(Value::as_str)
+        .is_some()
 }
 
 fn responses_frame_is_terminal(raw: &RawSse) -> bool {
@@ -1993,6 +1944,29 @@ base_url = "http://127.0.0.1"
             payload: serde_json::json!({"type": "web_search_call", "id": "ws_1"}),
         };
         assert!(event_has_slot(Wire::Responses, &ev));
+    }
+
+    #[test]
+    fn converse_message_stop_is_terminal_and_a_delta_is_not() {
+        let profile = profile();
+        let stop = RawSse {
+            event: None,
+            data: r#"{"messageStop":{"stopReason":"end_turn"}}"#.into(),
+        };
+        assert!(frame_is_terminal(Wire::Converse, &stop, &profile));
+        let delta = RawSse {
+            event: None,
+            data: r#"{"contentBlockDelta":{"delta":{"text":"hi"}}}"#.into(),
+        };
+        assert!(!frame_is_terminal(Wire::Converse, &delta, &profile));
+        let empty_reason = RawSse {
+            event: None,
+            data: r#"{"messageStop":{"stopReason":""}}"#.into(),
+        };
+        assert!(
+            frame_is_terminal(Wire::Converse, &empty_reason, &profile),
+            "an empty stopReason string is still the terminal frame"
+        );
     }
 
     #[cfg(feature = "proxy")]

@@ -502,6 +502,113 @@ pub(super) fn tool_item_status_event(item: &Value, index: u32) -> Option<IrStrea
     })
 }
 
+/// Sidecar fields on one Responses tool item. Pending and live slots
+/// share this so a new field is one place, not a pair of maps.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct ResponsesToolExtra {
+    pub status: Option<String>,
+    pub namespace: Option<String>,
+    pub created_by: Option<String>,
+    pub caller: Option<Value>,
+    pub item_id: Option<String>,
+}
+
+impl ResponsesToolExtra {
+    pub(super) fn is_empty(&self) -> bool {
+        self.status.is_none()
+            && self.namespace.is_none()
+            && self.created_by.is_none()
+            && self.caller.is_none()
+            && self.item_id.is_none()
+    }
+
+    pub(super) fn merge(&mut self, other: Self) {
+        if other.status.is_some() {
+            self.status = other.status;
+        }
+        if other.namespace.is_some() {
+            self.namespace = other.namespace;
+        }
+        if other.created_by.is_some() {
+            self.created_by = other.created_by;
+        }
+        if other.caller.is_some() {
+            self.caller = other.caller;
+        }
+        if other.item_id.is_some() {
+            self.item_id = other.item_id;
+        }
+    }
+
+    pub(super) fn write_item(&self, item: &mut Value) {
+        if let Some(item_id) = self.item_id.as_deref().filter(|id| !id.is_empty()) {
+            item["id"] = json!(item_id);
+        }
+        if let Some(status) = self.status.as_deref().filter(|status| !status.is_empty()) {
+            item["status"] = json!(status);
+        }
+        if let Some(namespace) = self.namespace.as_deref().filter(|ns| !ns.is_empty()) {
+            item["namespace"] = json!(namespace);
+        }
+        if let Some(created_by) = self.created_by.as_deref().filter(|by| !by.is_empty()) {
+            item["created_by"] = json!(created_by);
+        }
+        if let Some(caller) = &self.caller {
+            item["caller"] = caller.clone();
+        }
+    }
+}
+
+pub(super) fn tool_extra_from_protocol(
+    item_type: &str,
+    payload: &Value,
+) -> Option<(u32, ResponsesToolExtra)> {
+    let index = payload
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|index| u32::try_from(index).ok())?;
+    let mut extra = ResponsesToolExtra::default();
+    match item_type {
+        "responses_tool_status" => {
+            extra.status = nonempty_payload_str(payload, "status");
+        }
+        "responses_tool_namespace" => {
+            extra.namespace = nonempty_payload_str(payload, "namespace");
+        }
+        "responses_tool_created_by" => {
+            extra.created_by = nonempty_payload_str(payload, "created_by");
+        }
+        "responses_tool_item_id" => {
+            extra.item_id = nonempty_payload_str(payload, "id");
+        }
+        "responses_tool_caller" => {
+            extra.caller = payload
+                .get("caller")
+                .filter(|caller| {
+                    caller
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|ty| !ty.is_empty())
+                })
+                .cloned();
+        }
+        _ => return None,
+    }
+    if extra.is_empty() {
+        None
+    } else {
+        Some((index, extra))
+    }
+}
+
+fn nonempty_payload_str(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
 pub(super) fn reasoning_item_identity_events(item: &Value) -> Vec<IrStreamEvent> {
     if item.get("type").and_then(Value::as_str) != Some("reasoning") {
         return Vec::new();
