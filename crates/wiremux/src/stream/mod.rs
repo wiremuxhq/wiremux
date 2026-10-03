@@ -777,6 +777,7 @@ fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> 
         || part.get("functionResponse").is_some()
         || part.get("toolCall").is_some()
         || part.get("toolResponse").is_some()
+        || part.get("fileData").is_some()
     {
         out.push(IrStreamEvent::Protocol {
             item_type: "gemini_code_part".into(),

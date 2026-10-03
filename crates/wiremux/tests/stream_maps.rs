@@ -1961,6 +1961,42 @@ fn gemini_complete_keeps_function_response() {
 }
 
 #[test]
+fn gemini_complete_keeps_file_data() {
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{
+                    "fileData": {
+                        "mimeType": "application/pdf",
+                        "fileUri": "https://example.com/a.pdf"
+                    }
+                }]
+            },
+            "finishReason": "STOP"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("decode dest Gemini complete file");
+    let mapped = encode_response(Wire::Gemini, &events).expect("encode dest Gemini complete");
+    assert_eq!(
+        mapped
+            .pointer("/candidates/0/content/parts/0/fileData/fileUri")
+            .and_then(Value::as_str),
+        Some("https://example.com/a.pdf"),
+        "file uri must come back, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/candidates/0/content/parts/0/fileData/mimeType")
+            .and_then(Value::as_str),
+        Some("application/pdf"),
+        "file type must come back, got {mapped}"
+    );
+}
+
+#[test]
 fn gemini_complete_keeps_block_reason_message() {
     let body = serde_json::to_vec(&json!({
         "promptFeedback": {
