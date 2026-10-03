@@ -7982,6 +7982,46 @@ fn responses_complete_keeps_shell_call_output() {
 }
 
 #[test]
+fn responses_complete_keeps_function_caller() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "name": "echo",
+            "arguments": "{}",
+            "caller": { "type": "program", "caller_id": "call_prog" }
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    assert_eq!(
+        mapped
+            .pointer("/output/0/caller/type")
+            .and_then(Value::as_str),
+        Some("program"),
+        "function caller type must stay program, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/output/0/caller/caller_id")
+            .and_then(Value::as_str),
+        Some("call_prog"),
+        "function caller id must stay call_prog, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/output/0/call_id").and_then(Value::as_str),
+        Some("call_1"),
+        "function call id stays, got {mapped}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",

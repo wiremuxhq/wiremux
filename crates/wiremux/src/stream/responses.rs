@@ -255,6 +255,9 @@ fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
             if let Some(ev) = tool_item_id_event(item, index) {
                 out.push(ev);
             }
+            if let Some(ev) = tool_item_caller_event(item, index) {
+                out.push(ev);
+            }
             if let Some(ev) = tool_item_created_by_event(item, index) {
                 out.push(ev);
             }
@@ -280,6 +283,9 @@ fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
         Some("custom_tool_call") => {
             let mut out = Vec::new();
             if let Some(ev) = tool_item_id_event(item, index) {
+                out.push(ev);
+            }
+            if let Some(ev) = tool_item_caller_event(item, index) {
                 out.push(ev);
             }
             if let Some(ev) = tool_item_created_by_event(item, index) {
@@ -396,6 +402,19 @@ pub(super) fn tool_item_id_event(item: &Value, index: u32) -> Option<IrStreamEve
     Some(IrStreamEvent::Protocol {
         item_type: "responses_tool_item_id".into(),
         payload: json!({ "index": index, "id": item_id }),
+    })
+}
+
+pub(super) fn tool_item_caller_event(item: &Value, index: u32) -> Option<IrStreamEvent> {
+    let caller = item.get("caller").filter(|caller| {
+        caller
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|ty| !ty.is_empty())
+    })?;
+    Some(IrStreamEvent::Protocol {
+        item_type: "responses_tool_caller".into(),
+        payload: json!({ "index": index, "caller": caller }),
     })
 }
 
