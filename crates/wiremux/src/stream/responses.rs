@@ -331,7 +331,8 @@ pub(super) fn replay_output_item(item: &Value) -> Vec<IrStreamEvent> {
         .is_some_and(|s| !s.is_empty());
     let hosted = ty.ends_with("_call") && ty != "function_call" && ty != "custom_tool_call";
     let mcp_item = matches!(ty, "mcp_list_tools" | "mcp_approval_request");
-    if hosted || encrypted || mcp_item {
+    let program_item = matches!(ty, "program" | "program_output");
+    if hosted || encrypted || mcp_item || program_item {
         let item_type = if ty.is_empty() {
             "reasoning".to_string()
         } else {
