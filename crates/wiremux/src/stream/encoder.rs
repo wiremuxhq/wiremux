@@ -73,6 +73,8 @@ pub struct StreamEncoder {
     responses_tool_status: BTreeMap<u32, String>,
     responses_tool_namespace_pending: BTreeMap<u32, String>,
     responses_tool_namespace: BTreeMap<u32, String>,
+    responses_tool_created_by_pending: BTreeMap<u32, String>,
+    responses_tool_created_by: BTreeMap<u32, String>,
     responses_tool_item_id_pending: BTreeMap<u32, String>,
     responses_tool_item_id: BTreeMap<u32, String>,
     gemini_response_id: Option<String>,
@@ -153,6 +155,8 @@ impl StreamEncoder {
             responses_tool_status: BTreeMap::new(),
             responses_tool_namespace_pending: BTreeMap::new(),
             responses_tool_namespace: BTreeMap::new(),
+            responses_tool_created_by_pending: BTreeMap::new(),
+            responses_tool_created_by: BTreeMap::new(),
             responses_tool_item_id_pending: BTreeMap::new(),
             responses_tool_item_id: BTreeMap::new(),
             gemini_response_id: None,
@@ -381,6 +385,31 @@ impl StreamEncoder {
                     } else {
                         self.responses_tool_namespace_pending
                             .insert(index, namespace.to_string());
+                    }
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_tool_created_by" =>
+            {
+                if self.wire != Wire::Responses {
+                    return Ok(Vec::new());
+                }
+                if let Some(created_by) = payload
+                    .get("created_by")
+                    .and_then(Value::as_str)
+                    .filter(|created_by| !created_by.is_empty())
+                    && let Some(index) = payload
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .and_then(|index| u32::try_from(index).ok())
+                {
+                    if let Some(enc) = self.last_tool.get(&index).copied() {
+                        self.responses_tool_created_by
+                            .insert(enc, created_by.to_string());
+                    } else {
+                        self.responses_tool_created_by_pending
+                            .insert(index, created_by.to_string());
                     }
                 }
                 Ok(Vec::new())
@@ -1417,6 +1446,9 @@ impl StreamEncoder {
                 if let Some(namespace) = self.responses_tool_namespace_pending.remove(&index) {
                     self.responses_tool_namespace.insert(enc, namespace);
                 }
+                if let Some(created_by) = self.responses_tool_created_by_pending.remove(&index) {
+                    self.responses_tool_created_by.insert(enc, created_by);
+                }
                 if let Some(item_id) = self.responses_tool_item_id_pending.remove(&index) {
                     self.responses_tool_item_id.insert(enc, item_id);
                 }
@@ -1536,6 +1568,9 @@ impl StreamEncoder {
                 }
                 if let Some(namespace) = self.responses_tool_namespace_pending.remove(&index) {
                     self.responses_tool_namespace.insert(enc, namespace);
+                }
+                if let Some(created_by) = self.responses_tool_created_by_pending.remove(&index) {
+                    self.responses_tool_created_by.insert(enc, created_by);
                 }
                 if let Some(item_id) = self.responses_tool_item_id_pending.remove(&index) {
                     self.responses_tool_item_id.insert(enc, item_id);
@@ -1772,6 +1807,9 @@ impl StreamEncoder {
                     if let Some(namespace) = self.responses_tool_namespace.remove(&index) {
                         item["namespace"] = json!(namespace);
                     }
+                    if let Some(created_by) = self.responses_tool_created_by.remove(&index) {
+                        item["created_by"] = json!(created_by);
+                    }
                     item
                 }
                 None => json!({ "type": "function_call" }),
@@ -1793,6 +1831,9 @@ impl StreamEncoder {
                     }
                     if let Some(namespace) = self.responses_tool_namespace.remove(&index) {
                         item["namespace"] = json!(namespace);
+                    }
+                    if let Some(created_by) = self.responses_tool_created_by.remove(&index) {
+                        item["created_by"] = json!(created_by);
                     }
                     item
                 }

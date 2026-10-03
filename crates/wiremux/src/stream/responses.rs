@@ -255,6 +255,9 @@ fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
             if let Some(ev) = tool_item_id_event(item, index) {
                 out.push(ev);
             }
+            if let Some(ev) = tool_item_created_by_event(item, index) {
+                out.push(ev);
+            }
             if let Some(ev) = tool_item_namespace_event(item, index) {
                 out.push(ev);
             }
@@ -277,6 +280,9 @@ fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
         Some("custom_tool_call") => {
             let mut out = Vec::new();
             if let Some(ev) = tool_item_id_event(item, index) {
+                out.push(ev);
+            }
+            if let Some(ev) = tool_item_created_by_event(item, index) {
                 out.push(ev);
             }
             if let Some(ev) = tool_item_namespace_event(item, index) {
@@ -385,6 +391,14 @@ pub(super) fn tool_item_id_event(item: &Value, index: u32) -> Option<IrStreamEve
     Some(IrStreamEvent::Protocol {
         item_type: "responses_tool_item_id".into(),
         payload: json!({ "index": index, "id": item_id }),
+    })
+}
+
+pub(super) fn tool_item_created_by_event(item: &Value, index: u32) -> Option<IrStreamEvent> {
+    let created_by = str_field(item, "created_by").filter(|created_by| !created_by.is_empty())?;
+    Some(IrStreamEvent::Protocol {
+        item_type: "responses_tool_created_by".into(),
+        payload: json!({ "index": index, "created_by": created_by }),
     })
 }
 

@@ -7840,6 +7840,39 @@ fn responses_complete_keeps_custom_tool_namespace() {
 }
 
 #[test]
+fn responses_complete_keeps_custom_tool_created_by() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "custom_tool_call",
+            "id": "ctc_1",
+            "call_id": "call_1",
+            "name": "echo",
+            "created_by": "agent_7",
+            "input": "x"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    assert_eq!(
+        mapped
+            .pointer("/output/0/created_by")
+            .and_then(Value::as_str),
+        Some("agent_7"),
+        "custom tool created_by must stay agent_7, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/output/0/call_id").and_then(Value::as_str),
+        Some("call_1"),
+        "call id stays, got {mapped}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",
