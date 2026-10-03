@@ -1905,6 +1905,39 @@ fn gemini_complete_keeps_traffic_type() {
 }
 
 #[test]
+fn gemini_complete_keeps_tool_use_prompt_tokens() {
+    let body = serde_json::to_vec(&json!({
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 4,
+            "totalTokenCount": 21,
+            "toolUsePromptTokenCount": 7
+        },
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "hi" }] },
+            "finishReason": "STOP"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile()).expect("decode");
+    let encoded = encode_response(Wire::Gemini, &events).expect("encode");
+    assert_eq!(
+        encoded
+            .pointer("/usageMetadata/toolUsePromptTokenCount")
+            .and_then(Value::as_u64),
+        Some(7),
+        "tool use prompt tokens missing: {encoded}"
+    );
+    assert_eq!(
+        encoded
+            .pointer("/usageMetadata/totalTokenCount")
+            .and_then(Value::as_u64),
+        Some(21),
+        "total must include tool use prompt tokens: {encoded}"
+    );
+}
+
+#[test]
 fn dest_gemini_complete_citation_sources_remaps_dest_chat_url_citation() {
     let body = serde_json::to_vec(&json!({
         "candidates": [{

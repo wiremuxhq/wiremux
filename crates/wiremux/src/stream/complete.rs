@@ -569,6 +569,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut safety_ratings = None;
     let mut prompt_safety = None;
     let mut gemini_traffic_type = None;
+    let mut gemini_tool_use_prompt_tokens = None;
     let mut url_context = None;
     let mut citation_metadata = None;
     let mut current: Option<(String, String, String, Option<String>)> = None;
@@ -720,6 +721,12 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     .map(str::to_string);
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_tool_use_prompt_tokens" =>
+            {
+                gemini_tool_use_prompt_tokens =
+                    payload.as_u64().and_then(|count| u32::try_from(count).ok());
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "gemini_url_context" && payload.is_object() =>
             {
                 url_context = Some(payload.clone());
@@ -829,6 +836,10 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             super::usage::insert_gemini_traffic_type(
                 &mut usage_body,
                 gemini_traffic_type.as_deref(),
+            );
+            super::usage::insert_gemini_tool_use_prompt_tokens(
+                &mut usage_body,
+                gemini_tool_use_prompt_tokens,
             );
             out["usageMetadata"] = usage_body;
         }
