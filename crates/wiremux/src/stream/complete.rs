@@ -511,6 +511,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut service_tier = None;
     let mut gemini_response_id = None;
     let mut safety_ratings = None;
+    let mut prompt_safety = None;
     let mut url_context = None;
     let mut citation_metadata = None;
     let mut current: Option<(String, String, String, Option<String>)> = None;
@@ -647,6 +648,12 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 safety_ratings = Some(payload.clone());
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_prompt_safety"
+                    && payload.as_array().is_some_and(|items| !items.is_empty()) =>
+            {
+                prompt_safety = Some(payload.clone());
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "gemini_url_context" && payload.is_object() =>
             {
                 url_context = Some(payload.clone());
@@ -730,6 +737,9 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     });
     if !model.is_empty() {
         out["modelVersion"] = json!(model);
+    }
+    if let Some(ratings) = prompt_safety {
+        out["promptFeedback"] = json!({ "safetyRatings": ratings });
     }
     if let Some((
         prompt,

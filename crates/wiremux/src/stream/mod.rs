@@ -487,6 +487,15 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             payload: ratings.clone(),
         });
     }
+    if let Some(ratings) = value
+        .pointer("/promptFeedback/safetyRatings")
+        .filter(|ratings| ratings.as_array().is_some_and(|items| !items.is_empty()))
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "gemini_prompt_safety".into(),
+            payload: ratings.clone(),
+        });
+    }
     if let Some(reason) = value
         .pointer("/candidates/0/finishReason")
         .and_then(Value::as_str)
@@ -524,6 +533,12 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_citation_metadata"
         )
     });
+    let has_prompt_safety = out.iter().any(|ev| {
+        matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_prompt_safety"
+        )
+    });
     let only_search_entry = matches!(out.as_slice(), [IrStreamEvent::SearchEntryPoint { .. }]);
     if out.is_empty()
         || (out.len() < 2
@@ -531,7 +546,8 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             && !only_search_entry
             && !has_safety
             && !has_url_context
-            && !has_citation)
+            && !has_citation
+            && !has_prompt_safety)
     {
         *call_seq = seq_at_entry;
         return None;
@@ -942,6 +958,7 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                             | "gemini_safety_ratings"
                             | "gemini_url_context"
                             | "gemini_citation_metadata"
+                            | "gemini_prompt_safety"
                     ))
                 || (wire == Wire::Converse
                     && matches!(
