@@ -59,6 +59,7 @@ pub struct StreamEncoder {
     responses_id: Option<String>,
     gemini_response_id: Option<String>,
     gemini_safety_ratings: Option<Value>,
+    gemini_prompt_safety: Option<Value>,
     gemini_url_context: Option<Value>,
     gemini_citation_metadata: Option<Value>,
     converse_passthrough: Vec<(String, Value)>,
@@ -113,6 +114,7 @@ impl StreamEncoder {
             responses_id: None,
             gemini_response_id: None,
             gemini_safety_ratings: None,
+            gemini_prompt_safety: None,
             gemini_url_context: None,
             gemini_citation_metadata: None,
             converse_passthrough: Vec::new(),
@@ -197,6 +199,16 @@ impl StreamEncoder {
                 Ok(Vec::new())
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_prompt_safety" =>
+            {
+                if self.wire == Wire::Gemini
+                    && payload.as_array().is_some_and(|items| !items.is_empty())
+                {
+                    self.gemini_prompt_safety = Some(payload);
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if self.wire == Wire::Converse
                     && matches!(
                         item_type.as_str(),
@@ -276,6 +288,7 @@ impl StreamEncoder {
             && self.gemini_safety_ratings.is_none()
             && self.gemini_url_context.is_none()
             && self.gemini_citation_metadata.is_none()
+            && self.gemini_prompt_safety.is_none()
         {
             return frame;
         }
@@ -313,6 +326,14 @@ impl StreamEncoder {
                 .and_then(Value::as_object_mut)
         {
             candidate.insert("citationMetadata".into(), metadata.clone());
+        }
+        let attach_prompt = self.gemini_prompt_safety.is_some()
+            && value.pointer("/candidates/0/finishReason").is_some();
+        if attach_prompt
+            && let Some(ratings) = &self.gemini_prompt_safety
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert("promptFeedback".into(), json!({ "safetyRatings": ratings }));
         }
         RawSse {
             event: frame.event,
