@@ -780,7 +780,10 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "gemini_code_part"
                     && (payload.get("executableCode").is_some()
-                        || payload.get("codeExecutionResult").is_some()) =>
+                        || payload.get("codeExecutionResult").is_some()
+                        || payload.get("functionResponse").is_some()
+                        || payload.get("toolCall").is_some()
+                        || payload.get("toolResponse").is_some()) =>
             {
                 gemini_code_parts.push(payload.clone());
             }

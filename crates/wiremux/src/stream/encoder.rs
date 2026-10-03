@@ -507,7 +507,10 @@ impl StreamEncoder {
             IrStreamEvent::Protocol { item_type, payload } if item_type == "gemini_code_part" => {
                 if self.wire != Wire::Gemini
                     || (payload.get("executableCode").is_none()
-                        && payload.get("codeExecutionResult").is_none())
+                        && payload.get("codeExecutionResult").is_none()
+                        && payload.get("functionResponse").is_none()
+                        && payload.get("toolCall").is_none()
+                        && payload.get("toolResponse").is_none())
                 {
                     return Ok(Vec::new());
                 }
