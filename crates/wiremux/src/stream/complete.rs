@@ -955,6 +955,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut responses_message_id = None;
     let mut responses_message_status = None;
     let mut responses_message_phase = None;
+    let mut responses_message_agent = None;
     let mut responses_reasoning_id = None;
     let mut responses_reasoning_status = None;
     let mut responses_reasoning_content = None;
@@ -1191,6 +1192,15 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 }
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_message_agent"
+                    && payload
+                        .get("agent_name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| !name.is_empty()) =>
+            {
+                responses_message_agent = Some(payload.clone());
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "responses_reasoning_id"
                     || item_type == "responses_reasoning_status"
                     || item_type == "responses_reasoning_content" =>
@@ -1312,6 +1322,9 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
         }
         if let Some(phase) = responses_message_phase.as_deref() {
             message["phase"] = json!(phase);
+        }
+        if let Some(agent) = responses_message_agent {
+            message["agent"] = agent;
         }
         output.push(message);
     }

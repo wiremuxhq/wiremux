@@ -390,6 +390,17 @@ pub(super) fn message_item_identity_events(item: &Value) -> Vec<IrStreamEvent> {
             payload: json!(phase),
         });
     }
+    if let Some(agent) = item.get("agent").filter(|agent| {
+        agent
+            .get("agent_name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| !name.is_empty())
+    }) {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "responses_message_agent".into(),
+            payload: agent.clone(),
+        });
+    }
     out
 }
 

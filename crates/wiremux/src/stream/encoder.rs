@@ -66,6 +66,7 @@ pub struct StreamEncoder {
     responses_message_id: Option<String>,
     responses_message_status: Option<String>,
     responses_message_phase: Option<String>,
+    responses_message_agent: Option<Value>,
     responses_reasoning_id: Option<String>,
     responses_reasoning_status: Option<String>,
     responses_reasoning_content: Option<Value>,
@@ -150,6 +151,7 @@ impl StreamEncoder {
             responses_message_id: None,
             responses_message_status: None,
             responses_message_phase: None,
+            responses_message_agent: None,
             responses_reasoning_id: None,
             responses_reasoning_status: None,
             responses_reasoning_content: None,
@@ -308,6 +310,19 @@ impl StreamEncoder {
                         }
                         _ => self.responses_message_phase = Some(text.to_string()),
                     }
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_message_agent" =>
+            {
+                if self.wire == Wire::Responses
+                    && payload
+                        .get("agent_name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| !name.is_empty())
+                {
+                    self.responses_message_agent = Some(payload);
                 }
                 Ok(Vec::new())
             }
@@ -1801,6 +1816,9 @@ impl StreamEncoder {
                 }
                 if let Some(phase) = self.responses_message_phase.as_deref() {
                     message["phase"] = json!(phase);
+                }
+                if let Some(agent) = self.responses_message_agent.take() {
+                    message["agent"] = agent;
                 }
                 message
             }
