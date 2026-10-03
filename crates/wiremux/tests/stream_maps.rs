@@ -1938,6 +1938,27 @@ fn gemini_complete_keeps_tool_use_prompt_tokens() {
 }
 
 #[test]
+fn gemini_complete_keeps_avg_logprobs() {
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "hi" }] },
+            "finishReason": "STOP",
+            "avgLogprobs": -0.25
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile()).expect("decode");
+    let encoded = encode_response(Wire::Gemini, &events).expect("encode");
+    assert_eq!(
+        encoded
+            .pointer("/candidates/0/avgLogprobs")
+            .and_then(Value::as_f64),
+        Some(-0.25),
+        "avgLogprobs missing: {encoded}"
+    );
+}
+
+#[test]
 fn dest_gemini_complete_citation_sources_remaps_dest_chat_url_citation() {
     let body = serde_json::to_vec(&json!({
         "candidates": [{

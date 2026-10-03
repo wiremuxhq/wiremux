@@ -67,6 +67,7 @@ pub struct StreamEncoder {
     gemini_prompt_safety: Option<Value>,
     gemini_traffic_type: Option<String>,
     gemini_tool_use_prompt_tokens: Option<u32>,
+    gemini_avg_logprobs: Option<f64>,
     gemini_url_context: Option<Value>,
     gemini_citation_metadata: Option<Value>,
     converse_passthrough: Vec<(String, Value)>,
@@ -129,6 +130,7 @@ impl StreamEncoder {
             gemini_prompt_safety: None,
             gemini_traffic_type: None,
             gemini_tool_use_prompt_tokens: None,
+            gemini_avg_logprobs: None,
             gemini_url_context: None,
             gemini_citation_metadata: None,
             converse_passthrough: Vec::new(),
@@ -284,6 +286,16 @@ impl StreamEncoder {
                 Ok(Vec::new())
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_avg_logprobs" =>
+            {
+                if self.wire == Wire::Gemini
+                    && let Some(score) = payload.as_f64().filter(|score| score.is_finite())
+                {
+                    self.gemini_avg_logprobs = Some(score);
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if self.wire == Wire::Converse
                     && matches!(
                         item_type.as_str(),
@@ -378,6 +390,7 @@ impl StreamEncoder {
             && self.gemini_prompt_safety.is_none()
             && self.gemini_traffic_type.is_none()
             && self.gemini_tool_use_prompt_tokens.is_none()
+            && self.gemini_avg_logprobs.is_none()
         {
             return frame;
         }
@@ -433,6 +446,14 @@ impl StreamEncoder {
             && let Some(usage) = value.get_mut("usageMetadata")
         {
             usage::insert_gemini_tool_use_prompt_tokens(usage, Some(count));
+        }
+        if let Some(score) = self.gemini_avg_logprobs
+            && value.pointer("/candidates/0/finishReason").is_some()
+            && let Some(candidate) = value
+                .pointer_mut("/candidates/0")
+                .and_then(Value::as_object_mut)
+        {
+            candidate.insert("avgLogprobs".into(), json!(score));
         }
         RawSse {
             event: frame.event,
