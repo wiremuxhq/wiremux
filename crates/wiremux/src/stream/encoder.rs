@@ -227,7 +227,11 @@ impl StreamEncoder {
             IrStreamEvent::Protocol { item_type, .. }
                 if matches!(
                     item_type.as_str(),
-                    "converse_guard_content" | "converse_document" | "converse_video"
+                    "converse_guard_content"
+                        | "converse_document"
+                        | "converse_video"
+                        | "converse_image"
+                        | "converse_audio"
                 ) =>
             {
                 Ok(Vec::new())
