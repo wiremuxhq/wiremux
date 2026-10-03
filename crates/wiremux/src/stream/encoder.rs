@@ -51,6 +51,8 @@ pub struct StreamEncoder {
     reasoning_items: HashMap<u32, String>,
     created_at: Option<i64>,
     chat_completion_id: Option<String>,
+    accepted_prediction_tokens: Option<u32>,
+    rejected_prediction_tokens: Option<u32>,
     messages_id: Option<String>,
     messages_container: Option<Value>,
     messages_container_written: bool,
@@ -106,6 +108,8 @@ impl StreamEncoder {
             reasoning_items: HashMap::new(),
             created_at: None,
             chat_completion_id: None,
+            accepted_prediction_tokens: None,
+            rejected_prediction_tokens: None,
             messages_id: None,
             messages_container: None,
             messages_container_written: false,
@@ -147,6 +151,21 @@ impl StreamEncoder {
             {
                 if let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty()) {
                     self.chat_completion_id = Some(text.to_string());
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "chat_accepted_prediction_tokens"
+                    || item_type == "chat_rejected_prediction_tokens" =>
+            {
+                if self.wire == Wire::ChatCompletions
+                    && let Some(count) = payload.as_u64().and_then(|n| u32::try_from(n).ok())
+                {
+                    if item_type == "chat_accepted_prediction_tokens" {
+                        self.accepted_prediction_tokens = Some(count);
+                    } else {
+                        self.rejected_prediction_tokens = Some(count);
+                    }
                 }
                 Ok(Vec::new())
             }
@@ -1500,9 +1519,17 @@ impl StreamEncoder {
             });
         }
         if let Some((p, c, cr, cw, r, audio, completion_audio)) = self.usage.take() {
+            let mut encoded = usage::encode_chat(p, c, cr, cw, r, audio, completion_audio);
+            if let Some(usage_body) = encoded.get_mut("usage") {
+                usage::insert_chat_prediction_tokens(
+                    usage_body,
+                    self.accepted_prediction_tokens.take(),
+                    self.rejected_prediction_tokens.take(),
+                );
+            }
             out.push(RawSse {
                 event: None,
-                data: usage::encode_chat(p, c, cr, cw, r, audio, completion_audio).to_string(),
+                data: encoded.to_string(),
             });
         }
         out.push(RawSse {

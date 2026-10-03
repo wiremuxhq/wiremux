@@ -47,6 +47,8 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut audio_transcript = String::new();
     let mut audio_id = None;
     let mut audio_expires = None;
+    let mut accepted_prediction_tokens = None;
+    let mut rejected_prediction_tokens = None;
     let mut images = Vec::new();
     let mut tool_calls = Vec::new();
     let mut logprobs_content = Vec::new();
@@ -93,6 +95,12 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     }
                 } else if item_type == "chat_audio_expires" && payload.is_number() {
                     audio_expires = Some(payload.clone());
+                } else if item_type == "chat_accepted_prediction_tokens" {
+                    accepted_prediction_tokens =
+                        payload.as_u64().and_then(|n| u32::try_from(n).ok());
+                } else if item_type == "chat_rejected_prediction_tokens" {
+                    rejected_prediction_tokens =
+                        payload.as_u64().and_then(|n| u32::try_from(n).ok());
                 }
             }
             IrStreamEvent::Metadata { metadata: meta } => metadata = Some(meta.clone()),
@@ -252,8 +260,14 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
             audio_tokens,
             completion_audio_tokens,
         );
-        if let Some(u) = encoded.get("usage") {
-            out["usage"] = u.clone();
+        if let Some(u) = encoded.get("usage").cloned() {
+            let mut usage_body = u;
+            super::usage::insert_chat_prediction_tokens(
+                &mut usage_body,
+                accepted_prediction_tokens,
+                rejected_prediction_tokens,
+            );
+            out["usage"] = usage_body;
         }
     }
     out
@@ -1261,6 +1275,7 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     }
     if let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
         out.push(from_chat(usage));
+        out.extend(super::usage::chat_prediction_token_events(usage));
     }
     Ok(out)
 }

@@ -7018,6 +7018,47 @@ fn chat_complete_keeps_audio_id_and_expiry() {
 }
 
 #[test]
+fn chat_complete_keeps_prediction_token_counts() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-real",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "ok" },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 4,
+            "total_tokens": 14,
+            "completion_tokens_details": {
+                "accepted_prediction_tokens": 3,
+                "rejected_prediction_tokens": 1
+            }
+        }
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile()).expect("decode");
+    let encoded = encode_response(Wire::ChatCompletions, &events).expect("encode");
+    assert_eq!(
+        encoded
+            .pointer("/usage/completion_tokens_details/accepted_prediction_tokens")
+            .and_then(Value::as_u64),
+        Some(3),
+        "accepted prediction tokens missing: {encoded}"
+    );
+    assert_eq!(
+        encoded
+            .pointer("/usage/completion_tokens_details/rejected_prediction_tokens")
+            .and_then(Value::as_u64),
+        Some(1),
+        "rejected prediction tokens missing: {encoded}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_cancelled_remaps_dest_chat_finish_reason_stop() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",
