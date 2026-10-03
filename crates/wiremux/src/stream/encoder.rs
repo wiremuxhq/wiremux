@@ -220,6 +220,25 @@ impl StreamEncoder {
                 }
                 Ok(Vec::new())
             }
+            IrStreamEvent::Protocol { item_type, payload } if item_type == "messages_citation" => {
+                if self.wire != Wire::Messages || !payload.is_object() {
+                    return Ok(Vec::new());
+                }
+                let mut frames = self.ensure_block(BlockKind::Text);
+                let index = self.open.map(|(i, _)| i).unwrap_or(0);
+                frames.push(named(
+                    "content_block_delta",
+                    json!({
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {
+                            "type": "citations_delta",
+                            "citation": payload
+                        }
+                    }),
+                ));
+                Ok(frames)
+            }
             IrStreamEvent::Protocol { item_type, payload } if item_type == "responses_id" => {
                 if self.wire == Wire::Responses
                     && let Some(text) = payload.as_str().filter(|text| !text.trim().is_empty())

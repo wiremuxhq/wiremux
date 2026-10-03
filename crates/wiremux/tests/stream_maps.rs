@@ -7399,6 +7399,37 @@ fn messages_complete_keeps_cache_creation_breakdown() {
 }
 
 #[test]
+fn messages_complete_keeps_char_location_citation() {
+    let citation = json!({
+        "type": "char_location",
+        "cited_text": "The grass is green.",
+        "document_index": 0,
+        "document_title": "My Document",
+        "start_char_index": 0,
+        "end_char_index": 20
+    });
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{
+            "type": "text",
+            "text": "The grass is green.",
+            "citations": [citation]
+        }],
+        "stop_reason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Messages, &body, &messages_profile()).expect("decode");
+    let encoded = encode_response(Wire::Messages, &events).expect("encode");
+    assert_eq!(
+        encoded.pointer("/content/0/citations/0"),
+        Some(&citation),
+        "document citation missing: {encoded}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_cancelled_remaps_dest_chat_finish_reason_stop() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",
