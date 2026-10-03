@@ -71,6 +71,8 @@ pub struct StreamEncoder {
     responses_reasoning_content: Option<Value>,
     responses_tool_status_pending: BTreeMap<u32, String>,
     responses_tool_status: BTreeMap<u32, String>,
+    responses_tool_namespace_pending: BTreeMap<u32, String>,
+    responses_tool_namespace: BTreeMap<u32, String>,
     responses_tool_item_id_pending: BTreeMap<u32, String>,
     responses_tool_item_id: BTreeMap<u32, String>,
     gemini_response_id: Option<String>,
@@ -149,6 +151,8 @@ impl StreamEncoder {
             responses_reasoning_content: None,
             responses_tool_status_pending: BTreeMap::new(),
             responses_tool_status: BTreeMap::new(),
+            responses_tool_namespace_pending: BTreeMap::new(),
+            responses_tool_namespace: BTreeMap::new(),
             responses_tool_item_id_pending: BTreeMap::new(),
             responses_tool_item_id: BTreeMap::new(),
             gemini_response_id: None,
@@ -352,6 +356,31 @@ impl StreamEncoder {
                     } else {
                         self.responses_tool_status_pending
                             .insert(index, status.to_string());
+                    }
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_tool_namespace" =>
+            {
+                if self.wire != Wire::Responses {
+                    return Ok(Vec::new());
+                }
+                if let Some(namespace) = payload
+                    .get("namespace")
+                    .and_then(Value::as_str)
+                    .filter(|namespace| !namespace.is_empty())
+                    && let Some(index) = payload
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .and_then(|index| u32::try_from(index).ok())
+                {
+                    if let Some(enc) = self.last_tool.get(&index).copied() {
+                        self.responses_tool_namespace
+                            .insert(enc, namespace.to_string());
+                    } else {
+                        self.responses_tool_namespace_pending
+                            .insert(index, namespace.to_string());
                     }
                 }
                 Ok(Vec::new())
@@ -1385,6 +1414,9 @@ impl StreamEncoder {
                 if let Some(status) = self.responses_tool_status_pending.remove(&index) {
                     self.responses_tool_status.insert(enc, status);
                 }
+                if let Some(namespace) = self.responses_tool_namespace_pending.remove(&index) {
+                    self.responses_tool_namespace.insert(enc, namespace);
+                }
                 if let Some(item_id) = self.responses_tool_item_id_pending.remove(&index) {
                     self.responses_tool_item_id.insert(enc, item_id);
                 }
@@ -1501,6 +1533,9 @@ impl StreamEncoder {
                     .insert(enc, (id.clone(), name.clone(), String::new()));
                 if let Some(status) = self.responses_tool_status_pending.remove(&index) {
                     self.responses_tool_status.insert(enc, status);
+                }
+                if let Some(namespace) = self.responses_tool_namespace_pending.remove(&index) {
+                    self.responses_tool_namespace.insert(enc, namespace);
                 }
                 if let Some(item_id) = self.responses_tool_item_id_pending.remove(&index) {
                     self.responses_tool_item_id.insert(enc, item_id);
@@ -1734,6 +1769,9 @@ impl StreamEncoder {
                     if let Some(status) = self.responses_tool_status.remove(&index) {
                         item["status"] = json!(status);
                     }
+                    if let Some(namespace) = self.responses_tool_namespace.remove(&index) {
+                        item["namespace"] = json!(namespace);
+                    }
                     item
                 }
                 None => json!({ "type": "function_call" }),
@@ -1752,6 +1790,9 @@ impl StreamEncoder {
                     }
                     if let Some(status) = self.responses_tool_status.remove(&index) {
                         item["status"] = json!(status);
+                    }
+                    if let Some(namespace) = self.responses_tool_namespace.remove(&index) {
+                        item["namespace"] = json!(namespace);
                     }
                     item
                 }
