@@ -7938,6 +7938,50 @@ fn responses_complete_keeps_program_item() {
 }
 
 #[test]
+fn responses_complete_keeps_shell_call_output() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "shell_call_output",
+            "id": "sh_out_1",
+            "call_id": "call_sh",
+            "status": "completed",
+            "output": "ok"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    assert_eq!(
+        mapped.pointer("/output/0/type").and_then(Value::as_str),
+        Some("shell_call_output"),
+        "shell output must come back, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/output/0/output").and_then(Value::as_str),
+        Some("ok"),
+        "shell output text must stay ok, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/output/0/call_id").and_then(Value::as_str),
+        Some("call_sh"),
+        "shell call id stays, got {mapped}"
+    );
+    let output = mapped
+        .get("output")
+        .and_then(Value::as_array)
+        .expect("output");
+    assert_eq!(
+        output.len(),
+        1,
+        "shell output must not be duplicated, got {mapped}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",

@@ -329,10 +329,14 @@ pub(super) fn replay_output_item(item: &Value) -> Vec<IrStreamEvent> {
         .get("encrypted_content")
         .and_then(Value::as_str)
         .is_some_and(|s| !s.is_empty());
-    let hosted = ty.ends_with("_call") && ty != "function_call" && ty != "custom_tool_call";
-    let mcp_item = matches!(ty, "mcp_list_tools" | "mcp_approval_request");
-    let program_item = matches!(ty, "program" | "program_output");
-    if hosted || encrypted || mcp_item || program_item {
+    // Message, tool-call, reasoning, and audio items are decoded into
+    // their own events. Every other typed output item is the original
+    // object, including shell_call_output and program.
+    let decomposed = matches!(
+        ty,
+        "message" | "function_call" | "custom_tool_call" | "reasoning" | "output_audio"
+    );
+    if encrypted || (!ty.is_empty() && !decomposed) {
         let item_type = if ty.is_empty() {
             "reasoning".to_string()
         } else {
