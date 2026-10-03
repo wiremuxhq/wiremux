@@ -339,6 +339,31 @@ pub(super) fn encode_responses(
     })
 }
 
+pub(super) fn gemini_traffic_type_events(value: &Value) -> Vec<IrStreamEvent> {
+    let Some(kind) = value
+        .pointer("/usageMetadata/trafficType")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|kind| !kind.is_empty())
+    else {
+        return Vec::new();
+    };
+    vec![IrStreamEvent::Protocol {
+        item_type: "gemini_traffic_type".into(),
+        payload: json!(kind),
+    }]
+}
+
+pub(super) fn insert_gemini_traffic_type(usage: &mut Value, kind: Option<&str>) {
+    let Some(kind) = kind.filter(|kind| !kind.is_empty()) else {
+        return;
+    };
+    let Some(obj) = usage.as_object_mut() else {
+        return;
+    };
+    obj.insert("trafficType".into(), json!(kind));
+}
+
 pub(super) fn encode_gemini(
     prompt_tokens: u32,
     completion_tokens: u32,
