@@ -285,7 +285,11 @@ fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
             } else if let Some(text) = str_field(item, "text").filter(|s| !s.is_empty()) {
                 out.push(IrStreamEvent::ReasoningDelta { text });
             }
-            out.extend(replay_output_item(item));
+            let replay = replay_output_item(item);
+            if replay.is_empty() {
+                out.extend(reasoning_item_identity_events(item));
+            }
+            out.extend(replay);
             Ok(out)
         }
         _ => Ok(replay_output_item(item)),
@@ -342,6 +346,42 @@ pub(super) fn message_item_identity_events(item: &Value) -> Vec<IrStreamEvent> {
             item_type: "responses_message_status".into(),
             payload: json!(status),
         });
+    }
+    out
+}
+
+pub(super) fn reasoning_item_identity_events(item: &Value) -> Vec<IrStreamEvent> {
+    if item.get("type").and_then(Value::as_str) != Some("reasoning") {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if let Some(id) = str_field(item, "id").filter(|id| !id.is_empty()) {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "responses_reasoning_id".into(),
+            payload: json!(id),
+        });
+    }
+    if let Some(status) = str_field(item, "status").filter(|status| !status.is_empty()) {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "responses_reasoning_status".into(),
+            payload: json!(status),
+        });
+    }
+    if let Some(parts) = item.get("content").and_then(Value::as_array) {
+        let kept: Vec<Value> = parts
+            .iter()
+            .filter(|part| {
+                part.get("type").and_then(Value::as_str) == Some("reasoning_text")
+                    && str_field(part, "text").is_some_and(|text| !text.is_empty())
+            })
+            .cloned()
+            .collect();
+        if !kept.is_empty() {
+            out.push(IrStreamEvent::Protocol {
+                item_type: "responses_reasoning_content".into(),
+                payload: json!(kept),
+            });
+        }
     }
     out
 }
@@ -453,7 +493,11 @@ pub(super) fn decode_terminal_events(name: &str, value: &Value) -> Option<Vec<Ir
     let mut out = Vec::new();
     if let Some(items) = value.pointer("/response/output").and_then(Value::as_array) {
         for item in items {
-            out.extend(replay_output_item(item));
+            let replay = replay_output_item(item);
+            if replay.is_empty() {
+                out.extend(reasoning_item_identity_events(item));
+            }
+            out.extend(replay);
         }
     }
     if let Some(reason) = terminal_finish_reason(name, value) {

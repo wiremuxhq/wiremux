@@ -7537,6 +7537,56 @@ fn responses_complete_keeps_message_item_id() {
 }
 
 #[test]
+fn responses_complete_keeps_reasoning_item_id() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "reasoning",
+            "id": "rs_abc",
+            "status": "incomplete",
+            "summary": [],
+            "content": [{ "type": "reasoning_text", "text": "private" }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete reasoning");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    assert_eq!(
+        mapped.pointer("/output/0/id").and_then(Value::as_str),
+        Some("rs_abc"),
+        "reasoning item id must come back, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/output/0/status").and_then(Value::as_str),
+        Some("incomplete"),
+        "reasoning item status must stay incomplete, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/output/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("private"),
+        "reasoning text must stay on content, got {mapped}"
+    );
+    let summary = mapped.pointer("/output/0/summary");
+    assert!(
+        summary.is_none()
+            || summary
+                .and_then(Value::as_array)
+                .is_some_and(|rows| rows.is_empty()),
+        "empty summary must stay empty, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/id").and_then(Value::as_str),
+        Some("resp_1"),
+        "response id stays on /id, got {mapped}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",

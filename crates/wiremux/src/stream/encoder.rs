@@ -64,6 +64,9 @@ pub struct StreamEncoder {
     responses_id: Option<String>,
     responses_message_id: Option<String>,
     responses_message_status: Option<String>,
+    responses_reasoning_id: Option<String>,
+    responses_reasoning_status: Option<String>,
+    responses_reasoning_content: Option<Value>,
     gemini_response_id: Option<String>,
     gemini_safety_ratings: Option<Value>,
     gemini_prompt_safety: Option<Value>,
@@ -133,6 +136,9 @@ impl StreamEncoder {
             responses_id: None,
             responses_message_id: None,
             responses_message_status: None,
+            responses_reasoning_id: None,
+            responses_reasoning_status: None,
+            responses_reasoning_content: None,
             gemini_response_id: None,
             gemini_safety_ratings: None,
             gemini_prompt_safety: None,
@@ -263,6 +269,39 @@ impl StreamEncoder {
                     } else {
                         self.responses_message_status = Some(text.to_string());
                     }
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_reasoning_id"
+                    || item_type == "responses_reasoning_status"
+                    || item_type == "responses_reasoning_content" =>
+            {
+                if self.wire != Wire::Responses {
+                    return Ok(Vec::new());
+                }
+                match item_type.as_str() {
+                    "responses_reasoning_id" => {
+                        if let Some(id) = payload.as_str().filter(|id| !id.is_empty()) {
+                            self.responses_reasoning_id = Some(id.to_string());
+                        }
+                    }
+                    "responses_reasoning_status" => {
+                        if let Some(status) = payload.as_str().filter(|status| !status.is_empty()) {
+                            self.responses_reasoning_status = Some(status.to_string());
+                        }
+                    }
+                    _ => {
+                        if payload.as_array().is_some_and(|parts| !parts.is_empty()) {
+                            self.responses_reasoning_content = Some(payload);
+                        }
+                    }
+                }
+                if self.responses_reasoning_id.is_some()
+                    || self.responses_reasoning_status.is_some()
+                    || self.responses_reasoning_content.is_some()
+                {
+                    return Ok(self.ensure_item(BlockKind::Thinking));
                 }
                 Ok(Vec::new())
             }
@@ -1569,10 +1608,23 @@ impl StreamEncoder {
             }
             BlockKind::Thinking => {
                 let text = self.reasoning_items.remove(&index).unwrap_or_default();
-                json!({
-                    "type": "reasoning",
-                    "summary": [{ "type": "summary_text", "text": text }]
-                })
+                let mut item = json!({ "type": "reasoning" });
+                if let Some(id) = self.responses_reasoning_id.take() {
+                    item["id"] = json!(id);
+                }
+                if let Some(status) = self.responses_reasoning_status.take() {
+                    item["status"] = json!(status);
+                }
+                let has_identity = item.get("id").is_some()
+                    || item.get("status").is_some()
+                    || self.responses_reasoning_content.is_some();
+                if !text.is_empty() || !has_identity {
+                    item["summary"] = json!([{ "type": "summary_text", "text": text }]);
+                }
+                if let Some(content) = self.responses_reasoning_content.take() {
+                    item["content"] = content;
+                }
+                item
             }
             BlockKind::Tool => match self.tool_items.remove(&index) {
                 Some((id, name, arguments)) => json!({
