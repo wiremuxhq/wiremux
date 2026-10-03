@@ -568,6 +568,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut gemini_response_id = None;
     let mut safety_ratings = None;
     let mut prompt_safety = None;
+    let mut gemini_traffic_type = None;
     let mut url_context = None;
     let mut citation_metadata = None;
     let mut current: Option<(String, String, String, Option<String>)> = None;
@@ -710,6 +711,15 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 prompt_safety = Some(payload.clone());
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_traffic_type" =>
+            {
+                gemini_traffic_type = payload
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|kind| !kind.is_empty())
+                    .map(str::to_string);
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "gemini_url_context" && payload.is_object() =>
             {
                 url_context = Some(payload.clone());
@@ -814,8 +824,13 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             audio_tokens,
             completion_audio_tokens,
         );
-        if let Some(meta) = encoded.get("usageMetadata") {
-            out["usageMetadata"] = meta.clone();
+        if let Some(meta) = encoded.get("usageMetadata").cloned() {
+            let mut usage_body = meta;
+            super::usage::insert_gemini_traffic_type(
+                &mut usage_body,
+                gemini_traffic_type.as_deref(),
+            );
+            out["usageMetadata"] = usage_body;
         }
     }
     if let Some(tier) = service_tier {

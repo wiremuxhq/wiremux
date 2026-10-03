@@ -513,6 +513,7 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
     if let Some(ev) = gemini::service_tier_from_chunk(value) {
         out.push(ev);
     }
+    out.extend(usage::gemini_traffic_type_events(value));
     if let Some(ev) = gemini::usage_from_chunk(value) {
         out.push(ev);
     }
@@ -975,6 +976,7 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                             | "gemini_url_context"
                             | "gemini_citation_metadata"
                             | "gemini_prompt_safety"
+                            | "gemini_traffic_type"
                     ))
                 || (wire == Wire::Converse
                     && matches!(
