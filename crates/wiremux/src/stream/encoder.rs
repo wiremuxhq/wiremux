@@ -345,6 +345,28 @@ impl StreamEncoder {
             {
                 Ok(Vec::new())
             }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "converse_redacted_content" =>
+            {
+                if self.wire != Wire::Converse {
+                    return Ok(Vec::new());
+                }
+                let Some(blob) = payload.as_str().filter(|blob| !blob.is_empty()) else {
+                    return Ok(Vec::new());
+                };
+                Ok(vec![RawSse {
+                    event: None,
+                    data: json!({
+                        "contentBlockDelta": {
+                            "contentBlockIndex": 0,
+                            "delta": {
+                                "reasoningContent": { "redactedContent": blob }
+                            }
+                        }
+                    })
+                    .to_string(),
+                }])
+            }
             IrStreamEvent::Protocol { item_type, .. }
                 if matches!(
                     item_type.as_str(),

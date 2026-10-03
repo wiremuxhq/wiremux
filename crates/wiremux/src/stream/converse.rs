@@ -30,6 +30,16 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                 signature: signature.to_string(),
             }));
         }
+        if let Some(blob) = delta
+            .pointer("/reasoningContent/redactedContent")
+            .and_then(Value::as_str)
+            .filter(|blob| !blob.is_empty())
+        {
+            return Ok(Some(IrStreamEvent::Protocol {
+                item_type: "converse_redacted_content".into(),
+                payload: json!(blob),
+            }));
+        }
         if let Some(input) = delta.pointer("/toolUse/input").and_then(Value::as_str) {
             let block = value.get("contentBlockDelta").unwrap_or(value);
             return Ok(Some(IrStreamEvent::ToolCallArgDelta {
@@ -213,6 +223,7 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
     let mut citations = Vec::new();
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
+    let mut redacted_reasoning = Vec::new();
     let mut audio_data = String::new();
     let mut stop = "end_turn";
     let mut usage = None;
@@ -226,6 +237,13 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
             IrStreamEvent::ReasoningDelta { text: delta } => reasoning.push_str(delta),
             IrStreamEvent::ReasoningSignature { signature } => {
                 reasoning_signature = Some(signature.clone());
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "converse_redacted_content" =>
+            {
+                if let Some(blob) = payload.as_str().filter(|blob| !blob.is_empty()) {
+                    redacted_reasoning.push(blob.to_string());
+                }
             }
             IrStreamEvent::AudioDelta { data } => audio_data.push_str(data),
             IrStreamEvent::ImageDelta { media_type, data } => {
@@ -313,6 +331,11 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
         }
     }
     let mut prefix = Vec::new();
+    for blob in &redacted_reasoning {
+        prefix.push(json!({
+            "reasoningContent": { "redactedContent": blob }
+        }));
+    }
     if !reasoning.is_empty()
         || reasoning_signature
             .as_deref()
@@ -441,6 +464,16 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
         {
             out.push(IrStreamEvent::ReasoningSignature {
                 signature: signature.to_string(),
+            });
+        }
+        if let Some(blob) = block
+            .pointer("/reasoningContent/redactedContent")
+            .and_then(Value::as_str)
+            .filter(|blob| !blob.is_empty())
+        {
+            out.push(IrStreamEvent::Protocol {
+                item_type: "converse_redacted_content".into(),
+                payload: json!(blob),
             });
         }
         if let Some(audio) = block.get("audio") {
