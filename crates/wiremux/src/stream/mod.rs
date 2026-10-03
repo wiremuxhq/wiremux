@@ -354,6 +354,9 @@ fn decode_stream_events_seq(
             });
         }
         out.push(first);
+        if let Some(usage) = usage {
+            out.extend(usage::messages_web_search_events(usage));
+        }
         if add_delta_usage && let Some(usage) = usage {
             out.push(usage::from_anthropic(usage));
         }
@@ -946,7 +949,9 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
     match ev {
         IrStreamEvent::Protocol { item_type, payload } => {
             (wire == Wire::Messages
-                && (messages_protocol_reemits(item_type) || item_type == "messages_id"))
+                && (messages_protocol_reemits(item_type)
+                    || item_type == "messages_id"
+                    || item_type == "messages_web_search_requests"))
                 || (wire == Wire::Responses
                     && (item_type == "responses_id" || responses_output_item(item_type, payload)))
                 || (wire == Wire::ChatCompletions

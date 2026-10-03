@@ -318,6 +318,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut reasoning_signature = None;
     let mut finish = None;
     let mut messages_id = None;
+    let mut web_search_requests = None;
     let mut usage = None;
     let mut service_tier = None;
     let mut diagnostics = None;
@@ -422,6 +423,11 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     messages_id = Some(text.to_string());
                 }
             }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "messages_web_search_requests" =>
+            {
+                web_search_requests = payload.as_u64().and_then(|count| u32::try_from(count).ok());
+            }
             _ => {}
         }
     }
@@ -481,8 +487,10 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             reasoning_tokens,
             geo.as_deref(),
         );
-        if let Some(u) = encoded.get("usage") {
-            out["usage"] = u.clone();
+        if let Some(u) = encoded.get("usage").cloned() {
+            let mut usage_body = u;
+            super::usage::insert_messages_web_search_requests(&mut usage_body, web_search_requests);
+            out["usage"] = usage_body;
         }
     }
     if let Some(mapped) = service_tier
@@ -1435,6 +1443,7 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
             out.push(IrStreamEvent::ServiceTier { tier });
         }
         out.push(from_anthropic(usage));
+        out.extend(super::usage::messages_web_search_events(usage));
     }
     if let Some(id) = value
         .get("id")
