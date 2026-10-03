@@ -6343,6 +6343,57 @@ fn converse_complete_keeps_guard_content() {
 }
 
 #[test]
+fn converse_complete_keeps_document_block() {
+    let document = json!({
+        "format": "pdf",
+        "name": "report",
+        "source": { "bytes": "AAAA" }
+    });
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{ "document": document }]
+            }
+        },
+        "stopReason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile()).expect("decode");
+    let encoded = encode_response(Wire::Converse, &events).expect("encode");
+    assert_eq!(
+        encoded.pointer("/output/message/content/0/document"),
+        Some(&document),
+        "document block missing: {encoded}"
+    );
+}
+
+#[test]
+fn converse_complete_keeps_video_block() {
+    let video = json!({
+        "format": "mp4",
+        "source": { "bytes": "AAAA" }
+    });
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{ "video": video }]
+            }
+        },
+        "stopReason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile()).expect("decode");
+    let encoded = encode_response(Wire::Converse, &events).expect("encode");
+    assert_eq!(
+        encoded.pointer("/output/message/content/0/video"),
+        Some(&video),
+        "video block missing: {encoded}"
+    );
+}
+
+#[test]
 fn dest_converse_complete_citations_content_does_not_duplicate_sibling_text() {
     let body = serde_json::to_vec(&json!({
         "output": {
