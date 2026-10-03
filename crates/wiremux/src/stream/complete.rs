@@ -953,6 +953,9 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut responses_id = None;
     let mut responses_message_id = None;
     let mut responses_message_status = None;
+    let mut responses_reasoning_id = None;
+    let mut responses_reasoning_status = None;
+    let mut responses_reasoning_content = None;
     let mut usage = None;
     let mut annotations = Vec::new();
     let mut audio_data = String::new();
@@ -1064,6 +1067,29 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 }
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_reasoning_id"
+                    || item_type == "responses_reasoning_status"
+                    || item_type == "responses_reasoning_content" =>
+            {
+                match item_type.as_str() {
+                    "responses_reasoning_id" => {
+                        if let Some(text) = payload.as_str().filter(|text| !text.is_empty()) {
+                            responses_reasoning_id = Some(text.to_string());
+                        }
+                    }
+                    "responses_reasoning_status" => {
+                        if let Some(text) = payload.as_str().filter(|text| !text.is_empty()) {
+                            responses_reasoning_status = Some(text.to_string());
+                        }
+                    }
+                    _ => {
+                        if payload.as_array().is_some_and(|parts| !parts.is_empty()) {
+                            responses_reasoning_content = Some(payload.clone());
+                        }
+                    }
+                }
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if payload.get("type").and_then(Value::as_str) == Some(item_type.as_str())
                     && item_type != "chunk"
                     && item_type != "output_image" =>
@@ -1082,10 +1108,24 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
 
     let mut output = Vec::new();
     output.extend(replay_items);
-    if !saw_reasoning_item && (!reasoning.is_empty() || reasoning_signature.is_some()) {
+    let keep_reasoning = responses_reasoning_id.is_some()
+        || responses_reasoning_status.is_some()
+        || responses_reasoning_content.is_some();
+    if !saw_reasoning_item
+        && (!reasoning.is_empty() || reasoning_signature.is_some() || keep_reasoning)
+    {
         let mut item = json!({ "type": "reasoning" });
+        if let Some(id) = responses_reasoning_id.as_deref() {
+            item["id"] = json!(id);
+        }
+        if let Some(status) = responses_reasoning_status.as_deref() {
+            item["status"] = json!(status);
+        }
         if !reasoning.is_empty() {
             item["summary"] = json!([{ "type": "summary_text", "text": reasoning }]);
+        }
+        if let Some(content) = responses_reasoning_content {
+            item["content"] = content;
         }
         if let Some(signature) = reasoning_signature {
             item["signature"] = json!(signature);
@@ -1905,6 +1945,7 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
                 out.push(IrStreamEvent::ToolCallEnd);
             }
             Some("reasoning") => {
+                out.extend(super::responses::reasoning_item_identity_events(item));
                 if let Some(parts) = item.get("summary").and_then(Value::as_array) {
                     for part in parts {
                         let ty = part.get("type").and_then(Value::as_str);
