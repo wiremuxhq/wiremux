@@ -6977,6 +6977,47 @@ fn dest_chat_complete_message_audio_remaps_dest_converse_audio_bytes() {
 }
 
 #[test]
+fn chat_complete_keeps_audio_id_and_expiry() {
+    let body = serde_json::to_vec(&json!({
+        "id": "chatcmpl-real",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o-audio-preview",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "audio": {
+                    "id": "audio_real",
+                    "expires_at": 1715193600,
+                    "data": "SUQz",
+                    "transcript": "hi"
+                }
+            },
+            "finish_reason": "stop"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::ChatCompletions, &body, &chat_profile()).expect("decode");
+    let encoded = encode_response(Wire::ChatCompletions, &events).expect("encode");
+    assert_eq!(
+        encoded
+            .pointer("/choices/0/message/audio/id")
+            .and_then(Value::as_str),
+        Some("audio_real"),
+        "audio id missing: {encoded}"
+    );
+    assert_eq!(
+        encoded
+            .pointer("/choices/0/message/audio/expires_at")
+            .and_then(Value::as_i64),
+        Some(1715193600),
+        "audio expiry missing: {encoded}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_cancelled_remaps_dest_chat_finish_reason_stop() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",
