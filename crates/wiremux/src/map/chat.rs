@@ -631,7 +631,8 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                     source,
                     media_type,
                     name,
-                } => encode_document(source, media_type, name.as_deref()),
+                    ..
+                } => encode_document(source, media_type, name.as_deref(), report),
                 IrPart::Audio { data, format } => json!({
                     "type": "input_audio",
                     "input_audio": { "data": data, "format": format }
@@ -645,7 +646,8 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                         source,
                         media_type,
                         name,
-                    } => encode_document(&source, &media_type, name.as_deref()),
+                        ..
+                    } => encode_document(&source, &media_type, name.as_deref(), report),
                     IrPart::Audio { data, format } => json!({
                         "type": "input_audio",
                         "input_audio": { "data": data, "format": format }
@@ -659,9 +661,22 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
     )
 }
 
-fn encode_document(source: &IrDocumentSource, media_type: &str, name: Option<&str>) -> Value {
+fn encode_document(
+    source: &IrDocumentSource,
+    media_type: &str,
+    name: Option<&str>,
+    report: &mut LossReport,
+) -> Value {
+    if matches!(source, IrDocumentSource::Text(_)) {
+        report.record(
+            "part.document",
+            LossAction::Degrade,
+            "plain text document becomes text",
+        );
+    }
     let filename = super::document_filename(name, media_type);
     match source {
+        IrDocumentSource::Text(data) => json!({"type": "text", "text": data}),
         IrDocumentSource::Base64(data) => {
             let media_type = if media_type.is_empty() {
                 "application/pdf"

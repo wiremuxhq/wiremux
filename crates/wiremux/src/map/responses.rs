@@ -687,7 +687,8 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                     source,
                     media_type,
                     name,
-                } => encode_document(source, media_type, name.as_deref()),
+                    ..
+                } => encode_document(source, media_type, name.as_deref(), text_ty, report),
                 IrPart::Audio { data, format } => json!({
                     "type": "input_audio",
                     "input_audio": { "data": data, "format": format }
@@ -703,7 +704,14 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                                 source,
                                 media_type,
                                 name,
-                            } => encode_document(&source, &media_type, name.as_deref()),
+                                ..
+                            } => encode_document(
+                                &source,
+                                &media_type,
+                                name.as_deref(),
+                                text_ty,
+                                report,
+                            ),
                             IrPart::Audio { data, format } => json!({
                                 "type": "input_audio",
                                 "input_audio": { "data": data, "format": format }
@@ -721,12 +729,27 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
     )
 }
 
-fn encode_document(source: &IrDocumentSource, media_type: &str, name: Option<&str>) -> Value {
+fn encode_document(
+    source: &IrDocumentSource,
+    media_type: &str,
+    name: Option<&str>,
+    text_ty: &str,
+    report: &mut LossReport,
+) -> Value {
+    if let IrDocumentSource::Text(data) = source {
+        report.record(
+            "part.document",
+            LossAction::Degrade,
+            "plain text document becomes text",
+        );
+        return json!({ "type": text_ty, "text": data });
+    }
     let mut obj = json!({ "type": "input_file" });
     if let Some(name) = name.map(str::trim).filter(|s| !s.is_empty()) {
         obj["filename"] = json!(name);
     }
     match source {
+        IrDocumentSource::Text(_) => unreachable!("returned above"),
         IrDocumentSource::Base64(data) => {
             let media_type = if media_type.is_empty() {
                 "application/pdf"

@@ -276,6 +276,8 @@ fn decode_document(doc: &Value) -> Option<IrPart> {
         source: src,
         media_type: super::media_type_from_converse_format(&format),
         name,
+        citations_enabled: None,
+        context: None,
     })
 }
 
@@ -720,6 +722,7 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             source,
             media_type,
             name,
+            ..
         } => encode_document(source, media_type, name.as_deref(), report),
         IrPart::Audio { data, format } => encode_audio(data, format, report),
         IrPart::ImageUrl { url, .. } => encode_image_url(url, report),
@@ -801,6 +804,14 @@ fn encode_document(
         );
         return None;
     }
+    if matches!(source, IrDocumentSource::Text(_)) {
+        report.record(
+            "part.document",
+            LossAction::Drop,
+            "plain text document has no converse bytes slot",
+        );
+        return None;
+    }
     let Some(format) = super::converse_document_format(media_type) else {
         report.record(
             "part.document",
@@ -814,6 +825,7 @@ fn encode_document(
         .filter(|s| !s.is_empty())
         .unwrap_or("document");
     match source {
+        IrDocumentSource::Text(_) => unreachable!("recorded above"),
         IrDocumentSource::Base64(data) => Some(json!({
             "document": {
                 "format": format,

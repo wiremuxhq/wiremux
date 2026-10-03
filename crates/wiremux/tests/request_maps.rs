@@ -5541,6 +5541,7 @@ fn dest_converse_document_reaches_chat() {
                     source: IrDocumentSource::Base64(data),
                     media_type,
                     name: Some(name),
+                    ..
                 } if data == "JVBERi0x"
                     && media_type == "application/pdf"
                     && name == "note"
@@ -7684,6 +7685,122 @@ fn messages_pdf_document_round_trips() {
 }
 
 #[test]
+fn messages_plain_text_document_keeps_citations_and_context() {
+    let req = br#"{
+        "model": "claude-sonnet-4-5",
+        "max_tokens": 32,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "document",
+                "title": "notes",
+                "context": "Q3 notes",
+                "citations": {"enabled": true},
+                "source": {
+                    "type": "text",
+                    "media_type": "text/plain",
+                    "data": "hello"
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::Document {
+                    source: IrDocumentSource::Text(data),
+                    citations_enabled: Some(true),
+                    context: Some(ctx),
+                    ..
+                } if data == "hello" && ctx == "Q3 notes"
+            ))
+        )),
+        "plain text document must stay text with citations and context, got {:?}",
+        ir.items
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let source = body
+        .pointer("/messages/0/content/0/source")
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(
+        source.get("type").and_then(Value::as_str),
+        Some("text"),
+        "plain text document must stay type text, got {body}"
+    );
+    assert_eq!(
+        source.get("media_type").and_then(Value::as_str),
+        Some("text/plain"),
+        "plain text document must keep media_type, got {body}"
+    );
+    assert_eq!(
+        source.get("data").and_then(Value::as_str),
+        Some("hello"),
+        "plain text document must keep data, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/citations/enabled")
+            .and_then(Value::as_bool),
+        Some(true),
+        "document citations must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/context")
+            .and_then(Value::as_str),
+        Some("Q3 notes"),
+        "document context must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/title")
+            .and_then(Value::as_str),
+        Some("notes")
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| { event.path.contains("document") && event.action == LossAction::Drop }),
+        "plain text document must not Drop, got {report:?} ir={ir:?}"
+    );
+}
+
+#[test]
+fn messages_document_url_omits_media_type() {
+    let req = br#"{
+        "model": "claude-sonnet-4-5",
+        "max_tokens": 16,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "document",
+                "title": "pdf-url",
+                "source": {"type": "url", "url": "https://example.com/a.pdf"}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let source = body
+        .pointer("/messages/0/content/0/source")
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(source.get("type").and_then(Value::as_str), Some("url"));
+    assert_eq!(
+        source.get("url").and_then(Value::as_str),
+        Some("https://example.com/a.pdf")
+    );
+    assert!(
+        source.get("media_type").is_none(),
+        "URLPDFSource has no media_type, got {body}"
+    );
+}
+
+#[test]
 fn responses_input_file_part_round_trips_as_document() {
     let req = br#"{
         "model": "gpt-5",
@@ -8136,6 +8253,7 @@ fn converse_document_round_trips() {
                     source: IrDocumentSource::Base64(data),
                     media_type,
                     name: Some(name),
+                    ..
                 } if data == "AAAA" && media_type == "application/pdf" && name == "report"
             ))
         )),
@@ -8176,6 +8294,8 @@ fn converse_document_file_id_records_loss() {
                     source: IrDocumentSource::FileId("file-abc".into()),
                     media_type: "application/pdf".into(),
                     name: Some("report".into()),
+                    citations_enabled: None,
+                    context: None,
                 },
             ],
         }],
