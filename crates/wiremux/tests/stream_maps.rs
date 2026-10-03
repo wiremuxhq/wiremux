@@ -1913,6 +1913,54 @@ fn gemini_complete_keeps_executable_code() {
 }
 
 #[test]
+fn gemini_complete_keeps_function_response() {
+    let body = serde_json::to_vec(&json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "get_weather",
+                            "response": { "temp": "72" }
+                        }
+                    },
+                    {
+                        "toolCall": { "name": "lookup", "args": { "q": "x" } }
+                    }
+                ]
+            },
+            "finishReason": "STOP"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile())
+        .expect("decode dest Gemini complete function response");
+    let mapped = encode_response(Wire::Gemini, &events).expect("encode dest Gemini complete");
+    assert_eq!(
+        mapped
+            .pointer("/candidates/0/content/parts/0/functionResponse/name")
+            .and_then(Value::as_str),
+        Some("get_weather"),
+        "function response name must come back, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/candidates/0/content/parts/0/functionResponse/response/temp")
+            .and_then(Value::as_str),
+        Some("72"),
+        "function response body must come back, got {mapped}"
+    );
+    assert_eq!(
+        mapped
+            .pointer("/candidates/0/content/parts/1/toolCall/name")
+            .and_then(Value::as_str),
+        Some("lookup"),
+        "tool call name must come back, got {mapped}"
+    );
+}
+
+#[test]
 fn gemini_complete_keeps_block_reason_message() {
     let body = serde_json::to_vec(&json!({
         "promptFeedback": {
