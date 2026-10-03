@@ -7503,6 +7503,40 @@ fn dest_messages_complete_stop_sequence_remaps_dest_chat_finish_reason_stop() {
 }
 
 #[test]
+fn responses_complete_keeps_message_item_id() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "id": "msg_abc",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "hi" }]
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile()).expect("decode");
+    let encoded = encode_response(Wire::Responses, &events).expect("encode");
+    assert_eq!(
+        encoded.pointer("/output/0/id").and_then(Value::as_str),
+        Some("msg_abc"),
+        "message item id missing: {encoded}"
+    );
+    assert_eq!(
+        encoded.pointer("/id").and_then(Value::as_str),
+        Some("resp_1"),
+        "response id missing: {encoded}"
+    );
+    assert_eq!(
+        encoded.pointer("/output/0/status").and_then(Value::as_str),
+        Some("completed"),
+        "message item status missing: {encoded}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",

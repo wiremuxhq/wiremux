@@ -321,10 +321,29 @@ fn content_part_events(value: &Value) -> Vec<IrStreamEvent> {
 }
 
 fn message_content_events(item: &Value) -> Vec<IrStreamEvent> {
+    let mut out = message_item_identity_events(item);
     let Some(content) = item.get("content").and_then(Value::as_array) else {
-        return Vec::new();
+        return out;
     };
-    content.iter().flat_map(part_events).collect()
+    out.extend(content.iter().flat_map(part_events));
+    out
+}
+
+pub(super) fn message_item_identity_events(item: &Value) -> Vec<IrStreamEvent> {
+    let mut out = Vec::new();
+    if let Some(id) = str_field(item, "id").filter(|id| !id.is_empty()) {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "responses_message_id".into(),
+            payload: json!(id),
+        });
+    }
+    if let Some(status) = str_field(item, "status").filter(|status| !status.is_empty()) {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "responses_message_status".into(),
+            payload: json!(status),
+        });
+    }
+    out
 }
 
 fn part_events(part: &Value) -> Vec<IrStreamEvent> {
