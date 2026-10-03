@@ -84,31 +84,47 @@ pub(crate) fn from_chat(usage: &Value) -> IrStreamEvent {
 }
 
 pub(super) fn messages_web_search_events(usage: &Value) -> Vec<IrStreamEvent> {
-    let Some(count) = usage
-        .pointer("/server_tool_use/web_search_requests")
-        .and_then(Value::as_u64)
-        .filter(|count| *count > 0)
-        .and_then(|count| u32::try_from(count).ok())
-    else {
-        return Vec::new();
-    };
-    vec![IrStreamEvent::Protocol {
-        item_type: "messages_web_search_requests".into(),
-        payload: json!(count),
-    }]
+    let mut out = Vec::new();
+    for (key, item_type) in [
+        ("web_search_requests", "messages_web_search_requests"),
+        ("web_fetch_requests", "messages_web_fetch_requests"),
+    ] {
+        let Some(count) = usage
+            .get("server_tool_use")
+            .and_then(|tools| tools.get(key))
+            .and_then(Value::as_u64)
+            .filter(|count| *count > 0)
+            .and_then(|count| u32::try_from(count).ok())
+        else {
+            continue;
+        };
+        out.push(IrStreamEvent::Protocol {
+            item_type: item_type.into(),
+            payload: json!(count),
+        });
+    }
+    out
 }
 
-pub(super) fn insert_messages_web_search_requests(usage: &mut Value, count: Option<u32>) {
-    let Some(count) = count else {
+pub(super) fn insert_messages_server_tool_counts(
+    usage: &mut Value,
+    search: Option<u32>,
+    fetch: Option<u32>,
+) {
+    if search.is_none() && fetch.is_none() {
         return;
-    };
+    }
+    let mut tools = serde_json::Map::new();
+    if let Some(count) = search {
+        tools.insert("web_search_requests".into(), json!(count));
+    }
+    if let Some(count) = fetch {
+        tools.insert("web_fetch_requests".into(), json!(count));
+    }
     let Some(obj) = usage.as_object_mut() else {
         return;
     };
-    obj.insert(
-        "server_tool_use".into(),
-        json!({ "web_search_requests": count }),
-    );
+    obj.insert("server_tool_use".into(), Value::Object(tools));
 }
 
 pub(super) fn from_anthropic(usage: &Value) -> IrStreamEvent {

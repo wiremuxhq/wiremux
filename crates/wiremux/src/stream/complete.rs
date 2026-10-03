@@ -319,6 +319,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut finish = None;
     let mut messages_id = None;
     let mut web_search_requests = None;
+    let mut web_fetch_requests = None;
     let mut usage = None;
     let mut service_tier = None;
     let mut diagnostics = None;
@@ -424,9 +425,15 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 }
             }
             IrStreamEvent::Protocol { item_type, payload }
-                if item_type == "messages_web_search_requests" =>
+                if item_type == "messages_web_search_requests"
+                    || item_type == "messages_web_fetch_requests" =>
             {
-                web_search_requests = payload.as_u64().and_then(|count| u32::try_from(count).ok());
+                let count = payload.as_u64().and_then(|count| u32::try_from(count).ok());
+                if item_type == "messages_web_search_requests" {
+                    web_search_requests = count;
+                } else {
+                    web_fetch_requests = count;
+                }
             }
             _ => {}
         }
@@ -489,7 +496,11 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
         );
         if let Some(u) = encoded.get("usage").cloned() {
             let mut usage_body = u;
-            super::usage::insert_messages_web_search_requests(&mut usage_body, web_search_requests);
+            super::usage::insert_messages_server_tool_counts(
+                &mut usage_body,
+                web_search_requests,
+                web_fetch_requests,
+            );
             out["usage"] = usage_body;
         }
     }
