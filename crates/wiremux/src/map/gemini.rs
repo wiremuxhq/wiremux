@@ -400,6 +400,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         max_reasoning_tokens: None,
         json_schema,
         json_schema_name,
+        json_schema_description: None,
         json_schema_strict: None,
         json_object,
         include: Vec::new(),
@@ -1076,6 +1077,13 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
+    }
+    if s.json_schema_description.is_some() {
+        report.record(
+            "sampling.json_schema_description",
+            LossAction::Drop,
+            "no slot",
+        );
     }
     if let Some(max) = s.max_tokens {
         cfg["maxOutputTokens"] = json!(max);

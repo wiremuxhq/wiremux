@@ -927,6 +927,13 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
     }
+    if s.json_schema_description.is_some() {
+        report.record(
+            "sampling.json_schema_description",
+            LossAction::Drop,
+            "no slot",
+        );
+    }
     if !s.stop.is_empty() {
         cfg.insert("stopSequences".into(), json!(s.stop));
     }
