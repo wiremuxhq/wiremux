@@ -104,6 +104,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         if let Some(text) = str_field(audio, "transcript").filter(|s| !s.is_empty()) {
             media.push(IrStreamEvent::AudioTranscriptDelta { text });
         }
+        media.extend(audio_identity_events(audio));
     }
     let finish = choice
         .get("finish_reason")
@@ -252,6 +253,7 @@ pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> 
         if let Some(text) = str_field(audio, "transcript").filter(|s| !s.is_empty()) {
             out.push(IrStreamEvent::AudioTranscriptDelta { text });
         }
+        out.extend(audio_identity_events(audio));
     }
     if let Some(content) = logprobs_content(choice) {
         out.push(IrStreamEvent::Logprobs { content });
@@ -614,6 +616,26 @@ pub(super) fn system_fingerprint_event(value: &Value) -> Option<IrStreamEvent> {
     })
 }
 
+pub(super) fn audio_identity_events(audio: &Value) -> Vec<IrStreamEvent> {
+    let mut out = Vec::new();
+    if let Some(id) = str_field(audio, "id").filter(|id| !id.is_empty()) {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "chat_audio_id".into(),
+            payload: json!(id),
+        });
+    }
+    if let Some(expires) = audio
+        .get("expires_at")
+        .filter(|expires| expires.is_number())
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "chat_audio_expires".into(),
+            payload: expires.clone(),
+        });
+    }
+    out
+}
+
 pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
     let data = match ev {
         IrStreamEvent::TextDelta { text } => json!({
@@ -666,6 +688,14 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         IrStreamEvent::AudioDelta { data } => json!({
             "choices": [{ "index": 0, "delta": { "audio": { "data": data } } }]
         }),
+        IrStreamEvent::Protocol { item_type, payload } if item_type == "chat_audio_id" => json!({
+            "choices": [{ "index": 0, "delta": { "audio": { "id": payload } } }]
+        }),
+        IrStreamEvent::Protocol { item_type, payload } if item_type == "chat_audio_expires" => {
+            json!({
+                "choices": [{ "index": 0, "delta": { "audio": { "expires_at": payload } } }]
+            })
+        }
         IrStreamEvent::ImageDelta { media_type, data } => json!({
             "choices": [{
                 "index": 0,

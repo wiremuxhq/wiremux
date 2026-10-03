@@ -950,7 +950,13 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                 || (wire == Wire::Responses
                     && (item_type == "responses_id" || responses_output_item(item_type, payload)))
                 || (wire == Wire::ChatCompletions
-                    && (item_type == "system_fingerprint" || item_type == "chat_completion_id"))
+                    && matches!(
+                        item_type.as_str(),
+                        "system_fingerprint"
+                            | "chat_completion_id"
+                            | "chat_audio_id"
+                            | "chat_audio_expires"
+                    ))
                 || (wire == Wire::Gemini
                     && matches!(
                         item_type.as_str(),
@@ -998,7 +1004,12 @@ pub fn encode_stream_event(wire: Wire, ev: &IrStreamEvent) -> Result<RawSse, Map
             if wire == Wire::Responses && responses_output_item(item_type, payload) {
                 return Ok(responses_output_item_frame(payload));
             }
-            if wire == Wire::ChatCompletions && item_type == "system_fingerprint" {
+            if wire == Wire::ChatCompletions
+                && matches!(
+                    item_type.as_str(),
+                    "system_fingerprint" | "chat_audio_id" | "chat_audio_expires"
+                )
+            {
                 return chat::encode(ev);
             }
             if wire == Wire::Converse && item_type == "converse_frame" {

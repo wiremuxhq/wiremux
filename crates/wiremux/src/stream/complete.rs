@@ -45,6 +45,8 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut annotations = Vec::new();
     let mut audio_data = String::new();
     let mut audio_transcript = String::new();
+    let mut audio_id = None;
+    let mut audio_expires = None;
     let mut images = Vec::new();
     let mut tool_calls = Vec::new();
     let mut logprobs_content = Vec::new();
@@ -86,7 +88,11 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
                         system_fingerprint = Some(text.to_string());
                     } else if item_type == "chat_completion_id" {
                         chat_completion_id = Some(text.to_string());
+                    } else if item_type == "chat_audio_id" {
+                        audio_id = Some(text.to_string());
                     }
+                } else if item_type == "chat_audio_expires" && payload.is_number() {
+                    audio_expires = Some(payload.clone());
                 }
             }
             IrStreamEvent::Metadata { metadata: meta } => metadata = Some(meta.clone()),
@@ -170,8 +176,18 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     if !annotations.is_empty() {
         message["annotations"] = Value::Array(annotations);
     }
-    if !audio_data.is_empty() || !audio_transcript.is_empty() {
+    if !audio_data.is_empty()
+        || !audio_transcript.is_empty()
+        || audio_id.is_some()
+        || audio_expires.is_some()
+    {
         let mut audio = serde_json::Map::new();
+        if let Some(id) = audio_id {
+            audio.insert("id".into(), json!(id));
+        }
+        if let Some(expires) = audio_expires {
+            audio.insert("expires_at".into(), expires);
+        }
         if !audio_data.is_empty() {
             audio.insert("data".into(), json!(audio_data));
         }
@@ -1218,6 +1234,7 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
                 if let Some(text) = str_field(audio, "transcript").filter(|s| !s.is_empty()) {
                     out.push(IrStreamEvent::AudioTranscriptDelta { text });
                 }
+                out.extend(super::chat::audio_identity_events(audio));
             }
             if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
