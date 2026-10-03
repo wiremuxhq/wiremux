@@ -536,6 +536,7 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
     }
     out.extend(usage::gemini_traffic_type_events(value));
     out.extend(usage::gemini_tool_use_prompt_events(value));
+    out.extend(usage::gemini_modality_detail_events(value));
     if let Some(ev) = gemini::usage_from_chunk(value) {
         out.push(ev);
     }
@@ -578,6 +579,13 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_candidate_tokens"
         )
     });
+    let has_modality_details = out.iter().any(|ev| {
+        matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_prompt_token_details"
+                || item_type == "gemini_candidate_token_details"
+        )
+    });
     let only_search_entry = matches!(out.as_slice(), [IrStreamEvent::SearchEntryPoint { .. }]);
     if out.is_empty()
         || (out.len() < 2
@@ -588,7 +596,8 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             && !has_citation
             && !has_prompt_safety
             && !has_avg_logprobs
-            && !has_candidate_tokens)
+            && !has_candidate_tokens
+            && !has_modality_details)
     {
         *call_seq = seq_at_entry;
         return None;
@@ -1016,6 +1025,8 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                             | "gemini_tool_use_prompt_tokens"
                             | "gemini_avg_logprobs"
                             | "gemini_candidate_tokens"
+                            | "gemini_prompt_token_details"
+                            | "gemini_candidate_token_details"
                     ))
                 || (wire == Wire::Converse
                     && matches!(

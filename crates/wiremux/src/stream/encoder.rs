@@ -69,6 +69,8 @@ pub struct StreamEncoder {
     gemini_tool_use_prompt_tokens: Option<u32>,
     gemini_avg_logprobs: Option<f64>,
     gemini_candidate_tokens: Option<u32>,
+    gemini_prompt_token_details: Option<Value>,
+    gemini_candidate_token_details: Option<Value>,
     gemini_url_context: Option<Value>,
     gemini_citation_metadata: Option<Value>,
     converse_passthrough: Vec<(String, Value)>,
@@ -133,6 +135,8 @@ impl StreamEncoder {
             gemini_tool_use_prompt_tokens: None,
             gemini_avg_logprobs: None,
             gemini_candidate_tokens: None,
+            gemini_prompt_token_details: None,
+            gemini_candidate_token_details: None,
             gemini_url_context: None,
             gemini_citation_metadata: None,
             converse_passthrough: Vec::new(),
@@ -311,6 +315,21 @@ impl StreamEncoder {
                 Ok(Vec::new())
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_prompt_token_details"
+                    || item_type == "gemini_candidate_token_details" =>
+            {
+                if self.wire == Wire::Gemini
+                    && payload.as_array().is_some_and(|rows| !rows.is_empty())
+                {
+                    if item_type == "gemini_prompt_token_details" {
+                        self.gemini_prompt_token_details = Some(payload);
+                    } else {
+                        self.gemini_candidate_token_details = Some(payload);
+                    }
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if self.wire == Wire::Converse
                     && matches!(
                         item_type.as_str(),
@@ -407,6 +426,8 @@ impl StreamEncoder {
             && self.gemini_tool_use_prompt_tokens.is_none()
             && self.gemini_avg_logprobs.is_none()
             && self.gemini_candidate_tokens.is_none()
+            && self.gemini_prompt_token_details.is_none()
+            && self.gemini_candidate_token_details.is_none()
         {
             return frame;
         }
@@ -462,6 +483,18 @@ impl StreamEncoder {
             && let Some(usage) = value.get_mut("usageMetadata")
         {
             usage::insert_gemini_tool_use_prompt_tokens(usage, Some(count));
+        }
+        if let Some(usage) = value.get_mut("usageMetadata") {
+            usage::insert_gemini_modality_details(
+                usage,
+                "promptTokensDetails",
+                self.gemini_prompt_token_details.as_ref(),
+            );
+            usage::insert_gemini_modality_details(
+                usage,
+                "candidatesTokensDetails",
+                self.gemini_candidate_token_details.as_ref(),
+            );
         }
         if let Some(score) = self.gemini_avg_logprobs
             && value.pointer("/candidates/0/finishReason").is_some()

@@ -1985,6 +1985,70 @@ fn gemini_complete_keeps_candidate_token_count() {
 }
 
 #[test]
+fn gemini_complete_keeps_non_image_modality_details() {
+    let body = serde_json::to_vec(&json!({
+        "usageMetadata": {
+            "promptTokenCount": 50,
+            "candidatesTokenCount": 9,
+            "totalTokenCount": 59,
+            "promptTokensDetails": [
+                { "modality": "TEXT", "tokenCount": 10 },
+                { "modality": "AUDIO", "tokenCount": 40 },
+                { "modality": "IMAGE", "tokenCount": 8 }
+            ],
+            "candidatesTokensDetails": [
+                { "modality": "TEXT", "tokenCount": 2 },
+                { "modality": "AUDIO", "tokenCount": 7 },
+                { "modality": "IMAGE", "tokenCount": 3 }
+            ]
+        },
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "hi" }] },
+            "finishReason": "STOP"
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile()).expect("decode");
+    let encoded = encode_response(Wire::Gemini, &events).expect("encode");
+    let prompt = encoded
+        .pointer("/usageMetadata/promptTokensDetails")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        prompt.iter().any(|row| {
+            row.get("modality").and_then(Value::as_str) == Some("TEXT")
+                && row.get("tokenCount").and_then(Value::as_u64) == Some(10)
+        }),
+        "text prompt modality missing: {encoded}"
+    );
+    assert!(
+        prompt
+            .iter()
+            .all(|row| row.get("modality").and_then(Value::as_str) != Some("IMAGE")),
+        "image prompt modality must stay absent: {encoded}"
+    );
+    let candidates = encoded
+        .pointer("/usageMetadata/candidatesTokensDetails")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        candidates.iter().any(|row| {
+            row.get("modality").and_then(Value::as_str) == Some("TEXT")
+                && row.get("tokenCount").and_then(Value::as_u64) == Some(2)
+        }),
+        "text candidate modality missing: {encoded}"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|row| row.get("modality").and_then(Value::as_str) != Some("IMAGE")),
+        "image candidate modality must stay absent: {encoded}"
+    );
+}
+
+#[test]
 fn dest_gemini_complete_citation_sources_remaps_dest_chat_url_citation() {
     let body = serde_json::to_vec(&json!({
         "candidates": [{

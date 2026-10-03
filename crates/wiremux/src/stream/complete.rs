@@ -572,6 +572,8 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut gemini_tool_use_prompt_tokens = None;
     let mut gemini_avg_logprobs = None;
     let mut gemini_candidate_tokens = None;
+    let mut gemini_prompt_token_details = None;
+    let mut gemini_candidate_token_details = None;
     let mut url_context = None;
     let mut citation_metadata = None;
     let mut current: Option<(String, String, String, Option<String>)> = None;
@@ -740,6 +742,16 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     payload.as_u64().and_then(|count| u32::try_from(count).ok());
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_prompt_token_details" && payload.is_array() =>
+            {
+                gemini_prompt_token_details = Some(payload.clone());
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_candidate_token_details" && payload.is_array() =>
+            {
+                gemini_candidate_token_details = Some(payload.clone());
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "gemini_url_context" && payload.is_object() =>
             {
                 url_context = Some(payload.clone());
@@ -859,6 +871,16 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             super::usage::insert_gemini_tool_use_prompt_tokens(
                 &mut usage_body,
                 gemini_tool_use_prompt_tokens,
+            );
+            super::usage::insert_gemini_modality_details(
+                &mut usage_body,
+                "promptTokensDetails",
+                gemini_prompt_token_details.as_ref(),
+            );
+            super::usage::insert_gemini_modality_details(
+                &mut usage_body,
+                "candidatesTokensDetails",
+                gemini_candidate_token_details.as_ref(),
             );
             out["usageMetadata"] = usage_body;
         }
