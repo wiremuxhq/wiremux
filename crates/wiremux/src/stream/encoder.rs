@@ -504,6 +504,23 @@ impl StreamEncoder {
                 }
                 Ok(Vec::new())
             }
+            IrStreamEvent::Protocol { item_type, payload } if item_type == "gemini_code_part" => {
+                if self.wire != Wire::Gemini
+                    || (payload.get("executableCode").is_none()
+                        && payload.get("codeExecutionResult").is_none())
+                {
+                    return Ok(Vec::new());
+                }
+                let body = json!({
+                    "candidates": [{
+                        "content": { "role": "model", "parts": [payload] }
+                    }]
+                });
+                Ok(vec![self.attach_dest_model(RawSse {
+                    event: None,
+                    data: body.to_string(),
+                })])
+            }
             IrStreamEvent::Protocol { item_type, payload }
                 if item_type == "gemini_safety_ratings" =>
             {

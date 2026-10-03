@@ -772,6 +772,11 @@ fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> 
                 index,
             });
         }
+    } else if part.get("executableCode").is_some() || part.get("codeExecutionResult").is_some() {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "gemini_code_part".into(),
+            payload: part.clone(),
+        });
     } else if let Some(ev) = gemini::inline_data_event(part) {
         out.push(ev);
     } else if part.get("thought").and_then(Value::as_bool) != Some(true)
@@ -1060,6 +1065,7 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                             | "gemini_safety_ratings"
                             | "gemini_url_context"
                             | "gemini_citation_metadata"
+                            | "gemini_code_part"
                             | "gemini_prompt_safety"
                             | "gemini_block_reason_message"
                             | "gemini_traffic_type"

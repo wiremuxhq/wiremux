@@ -582,6 +582,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut gemini_candidate_token_details = None;
     let mut url_context = None;
     let mut citation_metadata = None;
+    let mut gemini_code_parts = Vec::new();
     let mut current: Option<(String, String, String, Option<String>)> = None;
     for ev in events {
         match ev {
@@ -776,6 +777,13 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             {
                 citation_metadata = Some(payload.clone());
             }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_code_part"
+                    && (payload.get("executableCode").is_some()
+                        || payload.get("codeExecutionResult").is_some()) =>
+            {
+                gemini_code_parts.push(payload.clone());
+            }
             _ => {}
         }
     }
@@ -800,6 +808,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
         media_parts.push(json!({ "text": text }));
     }
     parts.extend(media_parts);
+    parts.extend(gemini_code_parts);
     parts.extend(tool_calls);
 
     let mut candidate = json!({
