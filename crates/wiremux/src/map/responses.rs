@@ -242,7 +242,8 @@ fn parts_text(parts: &[IrPart]) -> String {
 }
 
 fn decode_sampling(value: &Value) -> IrSampling {
-    let (json_schema, json_schema_name, json_schema_strict) = responses_json_schema(value);
+    let (json_schema, json_schema_name, json_schema_strict, json_schema_description) =
+        responses_json_schema(value);
     let json_object = responses_json_object(value);
     IrSampling {
         temperature: f32_field(value, "temperature"),
@@ -272,6 +273,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
             .and_then(|r| u32_field(r, "max_tokens")),
         json_schema,
         json_schema_name,
+        json_schema_description,
         json_schema_strict,
         json_object,
         include: decode_include(value),
@@ -400,13 +402,15 @@ fn responses_json_object(value: &Value) -> Option<bool> {
     (format.get("type").and_then(Value::as_str) == Some("json_object")).then_some(true)
 }
 
-fn responses_json_schema(value: &Value) -> (Option<Value>, Option<String>, Option<bool>) {
+fn responses_json_schema(
+    value: &Value,
+) -> (Option<Value>, Option<String>, Option<bool>, Option<String>) {
     let format = value.get("text").and_then(|t| t.get("format"));
     let Some(format) = format else {
-        return (None, None, None);
+        return (None, None, None, None);
     };
     if format.get("type").and_then(Value::as_str) != Some("json_schema") {
-        return (None, None, None);
+        return (None, None, None, None);
     }
     let schema = format.get("schema").cloned();
     let name = format
@@ -415,7 +419,13 @@ fn responses_json_schema(value: &Value) -> (Option<Value>, Option<String>, Optio
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let strict = bool_field(format, "strict");
-    (schema, name, strict)
+    let description = format
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
+    (schema, name, strict, description)
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -1134,6 +1144,14 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         });
         if let Some(strict) = s.json_schema_strict {
             format["strict"] = json!(strict);
+        }
+        if let Some(description) = s
+            .json_schema_description
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            format["description"] = json!(description);
         }
         body["text"]["format"] = format;
     } else if s.json_object == Some(true) {

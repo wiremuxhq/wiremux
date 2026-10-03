@@ -4383,6 +4383,70 @@ fn chat_json_schema_round_trips() {
 }
 
 #[test]
+fn chat_json_schema_keeps_description() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "note",
+                "description": "A short note",
+                "strict": true,
+                "schema": {"type": "object", "properties": {"q": {"type": "string"}}}
+            }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(
+        ir.sampling.json_schema_description.as_deref(),
+        Some("A short note"),
+        "Chat must store json_schema.description"
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/response_format/json_schema/description")
+            .and_then(Value::as_str),
+        Some("A short note"),
+        "Chat must emit json_schema.description, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema_description"),
+        "Chat has a description slot, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_json_schema_keeps_description() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": "Hi",
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "note",
+                "description": "A short note",
+                "schema": {"type": "object", "properties": {"q": {"type": "string"}}}
+            }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    assert_eq!(
+        ir.sampling.json_schema_description.as_deref(),
+        Some("A short note")
+    );
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/text/format/description")
+            .and_then(Value::as_str),
+        Some("A short note"),
+        "Responses must emit text.format.description, got {body}"
+    );
+}
+
+#[test]
 fn responses_json_schema_round_trips() {
     let req = br#"{
         "model": "gpt-4",

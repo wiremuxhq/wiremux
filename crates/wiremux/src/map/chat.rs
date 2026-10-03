@@ -167,7 +167,8 @@ fn parts_text(parts: &[IrPart]) -> String {
 }
 
 fn decode_sampling(value: &Value) -> IrSampling {
-    let (json_schema, json_schema_name, json_schema_strict) = chat_json_schema(value);
+    let (json_schema, json_schema_name, json_schema_strict, json_schema_description) =
+        chat_json_schema(value);
     let json_object = chat_json_object(value);
     let top_logprobs = u32_field(value, "top_logprobs");
     let logprobs = bool_field(value, "logprobs").or(top_logprobs.is_some().then_some(true));
@@ -190,6 +191,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         max_reasoning_tokens: u32_field(value, "max_reasoning_tokens"),
         json_schema,
         json_schema_name,
+        json_schema_description,
         json_schema_strict,
         json_object,
         include: Vec::new(),
@@ -332,13 +334,15 @@ fn chat_json_object(value: &Value) -> Option<bool> {
     (format.get("type").and_then(Value::as_str) == Some("json_object")).then_some(true)
 }
 
-fn chat_json_schema(value: &Value) -> (Option<Value>, Option<String>, Option<bool>) {
+fn chat_json_schema(
+    value: &Value,
+) -> (Option<Value>, Option<String>, Option<bool>, Option<String>) {
     let format = value.get("response_format");
     let Some(format) = format else {
-        return (None, None, None);
+        return (None, None, None, None);
     };
     if format.get("type").and_then(Value::as_str) != Some("json_schema") {
-        return (None, None, None);
+        return (None, None, None, None);
     }
     let js = format.get("json_schema");
     let schema = js.and_then(|js| js.get("schema")).cloned();
@@ -348,7 +352,17 @@ fn chat_json_schema(value: &Value) -> (Option<Value>, Option<String>, Option<boo
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let strict = js.and_then(|js| bool_field(js, "strict"));
-    (schema, name, strict)
+    let description = js.and_then(schema_description);
+    (schema, name, strict, description)
+}
+
+fn schema_description(value: &Value) -> Option<String> {
+    value
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
 }
 
 fn decode_tool_choice(value: Option<&Value>) -> IrToolChoice {
@@ -1012,6 +1026,14 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         });
         if let Some(strict) = s.json_schema_strict {
             json_schema["strict"] = json!(strict);
+        }
+        if let Some(description) = s
+            .json_schema_description
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            json_schema["description"] = json!(description);
         }
         body["response_format"] = json!({
             "type": "json_schema",

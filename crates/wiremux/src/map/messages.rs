@@ -316,6 +316,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         max_reasoning_tokens,
         json_schema,
         json_schema_name,
+        json_schema_description: None,
         json_schema_strict: None,
         json_object: None,
         include: Vec::new(),
@@ -1446,6 +1447,13 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     omit_sampling_rejected_by_thinking(s, body, report);
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
+    }
+    if s.json_schema_description.is_some() {
+        report.record(
+            "sampling.json_schema_description",
+            LossAction::Drop,
+            "no slot",
+        );
     }
     if body.get("max_tokens").is_none() {
         body["max_tokens"] = json!(MESSAGES_DEFAULT_COMPLETION_TOKENS);
