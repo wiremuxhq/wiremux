@@ -68,6 +68,7 @@ pub struct StreamEncoder {
     gemini_traffic_type: Option<String>,
     gemini_tool_use_prompt_tokens: Option<u32>,
     gemini_avg_logprobs: Option<f64>,
+    gemini_candidate_tokens: Option<u32>,
     gemini_url_context: Option<Value>,
     gemini_citation_metadata: Option<Value>,
     converse_passthrough: Vec<(String, Value)>,
@@ -131,6 +132,7 @@ impl StreamEncoder {
             gemini_traffic_type: None,
             gemini_tool_use_prompt_tokens: None,
             gemini_avg_logprobs: None,
+            gemini_candidate_tokens: None,
             gemini_url_context: None,
             gemini_citation_metadata: None,
             converse_passthrough: Vec::new(),
@@ -296,6 +298,19 @@ impl StreamEncoder {
                 Ok(Vec::new())
             }
             IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "gemini_candidate_tokens" =>
+            {
+                if self.wire == Wire::Gemini
+                    && let Some(count) = payload
+                        .as_u64()
+                        .filter(|count| *count > 0)
+                        .and_then(|count| u32::try_from(count).ok())
+                {
+                    self.gemini_candidate_tokens = Some(count);
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
                 if self.wire == Wire::Converse
                     && matches!(
                         item_type.as_str(),
@@ -391,6 +406,7 @@ impl StreamEncoder {
             && self.gemini_traffic_type.is_none()
             && self.gemini_tool_use_prompt_tokens.is_none()
             && self.gemini_avg_logprobs.is_none()
+            && self.gemini_candidate_tokens.is_none()
         {
             return frame;
         }
@@ -454,6 +470,14 @@ impl StreamEncoder {
                 .and_then(Value::as_object_mut)
         {
             candidate.insert("avgLogprobs".into(), json!(score));
+        }
+        if let Some(count) = self.gemini_candidate_tokens.filter(|count| *count > 0)
+            && value.pointer("/candidates/0/finishReason").is_some()
+            && let Some(candidate) = value
+                .pointer_mut("/candidates/0")
+                .and_then(Value::as_object_mut)
+        {
+            candidate.insert("tokenCount".into(), json!(count));
         }
         RawSse {
             event: frame.event,

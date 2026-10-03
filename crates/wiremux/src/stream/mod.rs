@@ -510,6 +510,17 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             payload: Value::from(score),
         });
     }
+    if let Some(count) = value
+        .pointer("/candidates/0/tokenCount")
+        .and_then(Value::as_u64)
+        .filter(|count| *count > 0)
+        .and_then(|count| u32::try_from(count).ok())
+    {
+        out.push(IrStreamEvent::Protocol {
+            item_type: "gemini_candidate_tokens".into(),
+            payload: Value::from(count),
+        });
+    }
     if let Some(reason) = value
         .pointer("/candidates/0/finishReason")
         .and_then(Value::as_str)
@@ -561,6 +572,12 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_avg_logprobs"
         )
     });
+    let has_candidate_tokens = out.iter().any(|ev| {
+        matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, .. } if item_type == "gemini_candidate_tokens"
+        )
+    });
     let only_search_entry = matches!(out.as_slice(), [IrStreamEvent::SearchEntryPoint { .. }]);
     if out.is_empty()
         || (out.len() < 2
@@ -570,7 +587,8 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
             && !has_url_context
             && !has_citation
             && !has_prompt_safety
-            && !has_avg_logprobs)
+            && !has_avg_logprobs
+            && !has_candidate_tokens)
     {
         *call_seq = seq_at_entry;
         return None;
@@ -997,6 +1015,7 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                             | "gemini_traffic_type"
                             | "gemini_tool_use_prompt_tokens"
                             | "gemini_avg_logprobs"
+                            | "gemini_candidate_tokens"
                     ))
                 || (wire == Wire::Converse
                     && matches!(

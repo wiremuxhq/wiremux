@@ -1959,6 +1959,32 @@ fn gemini_complete_keeps_avg_logprobs() {
 }
 
 #[test]
+fn gemini_complete_keeps_candidate_token_count() {
+    let body = serde_json::to_vec(&json!({
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 4,
+            "totalTokenCount": 14
+        },
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "hi" }] },
+            "finishReason": "STOP",
+            "tokenCount": 4
+        }]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Gemini, &body, &gemini_profile()).expect("decode");
+    let encoded = encode_response(Wire::Gemini, &events).expect("encode");
+    assert_eq!(
+        encoded
+            .pointer("/candidates/0/tokenCount")
+            .and_then(Value::as_u64),
+        Some(4),
+        "candidate tokenCount missing: {encoded}"
+    );
+}
+
+#[test]
 fn dest_gemini_complete_citation_sources_remaps_dest_chat_url_citation() {
     let body = serde_json::to_vec(&json!({
         "candidates": [{
