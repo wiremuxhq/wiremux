@@ -127,6 +127,42 @@ pub(super) fn insert_messages_server_tool_counts(
     obj.insert("server_tool_use".into(), Value::Object(tools));
 }
 
+pub(super) fn messages_cache_creation_events(usage: &Value) -> Vec<IrStreamEvent> {
+    let Some(creation) = usage
+        .get("cache_creation")
+        .filter(|value| value.is_object())
+    else {
+        return Vec::new();
+    };
+    let mut kept = serde_json::Map::new();
+    for key in ["ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"] {
+        if let Some(count) = creation
+            .get(key)
+            .and_then(Value::as_u64)
+            .filter(|count| *count > 0)
+        {
+            kept.insert(key.into(), json!(count));
+        }
+    }
+    if kept.is_empty() {
+        return Vec::new();
+    }
+    vec![IrStreamEvent::Protocol {
+        item_type: "messages_cache_creation".into(),
+        payload: Value::Object(kept),
+    }]
+}
+
+pub(super) fn insert_messages_cache_creation(usage: &mut Value, creation: Option<&Value>) {
+    let Some(creation) = creation.filter(|value| value.is_object()) else {
+        return;
+    };
+    let Some(obj) = usage.as_object_mut() else {
+        return;
+    };
+    obj.insert("cache_creation".into(), creation.clone());
+}
+
 pub(super) fn from_anthropic(usage: &Value) -> IrStreamEvent {
     let reasoning = nested_u32(usage, "output_tokens_details", "thinking_tokens").unwrap_or(0);
     IrStreamEvent::Usage {

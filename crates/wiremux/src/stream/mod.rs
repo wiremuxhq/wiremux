@@ -356,6 +356,7 @@ fn decode_stream_events_seq(
         out.push(first);
         if let Some(usage) = usage {
             out.extend(usage::messages_web_search_events(usage));
+            out.extend(usage::messages_cache_creation_events(usage));
         }
         if add_delta_usage && let Some(usage) = usage {
             out.push(usage::from_anthropic(usage));
@@ -952,7 +953,8 @@ pub(crate) fn event_has_slot(wire: Wire, ev: &IrStreamEvent) -> bool {
                 && (messages_protocol_reemits(item_type)
                     || item_type == "messages_id"
                     || item_type == "messages_web_search_requests"
-                    || item_type == "messages_web_fetch_requests"))
+                    || item_type == "messages_web_fetch_requests"
+                    || item_type == "messages_cache_creation"))
                 || (wire == Wire::Responses
                     && (item_type == "responses_id" || responses_output_item(item_type, payload)))
                 || (wire == Wire::ChatCompletions

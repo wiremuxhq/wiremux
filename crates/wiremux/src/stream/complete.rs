@@ -320,6 +320,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut messages_id = None;
     let mut web_search_requests = None;
     let mut web_fetch_requests = None;
+    let mut cache_creation = None;
     let mut usage = None;
     let mut service_tier = None;
     let mut diagnostics = None;
@@ -435,6 +436,11 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     web_fetch_requests = count;
                 }
             }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "messages_cache_creation" && payload.is_object() =>
+            {
+                cache_creation = Some(payload.clone());
+            }
             _ => {}
         }
     }
@@ -501,6 +507,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 web_search_requests,
                 web_fetch_requests,
             );
+            super::usage::insert_messages_cache_creation(&mut usage_body, cache_creation.as_ref());
             out["usage"] = usage_body;
         }
     }
@@ -1455,6 +1462,7 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
         }
         out.push(from_anthropic(usage));
         out.extend(super::usage::messages_web_search_events(usage));
+        out.extend(super::usage::messages_cache_creation_events(usage));
     }
     if let Some(id) = value
         .get("id")
