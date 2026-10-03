@@ -67,6 +67,8 @@ pub struct StreamEncoder {
     responses_reasoning_id: Option<String>,
     responses_reasoning_status: Option<String>,
     responses_reasoning_content: Option<Value>,
+    responses_tool_status_pending: BTreeMap<u32, String>,
+    responses_tool_status: BTreeMap<u32, String>,
     gemini_response_id: Option<String>,
     gemini_safety_ratings: Option<Value>,
     gemini_prompt_safety: Option<Value>,
@@ -139,6 +141,8 @@ impl StreamEncoder {
             responses_reasoning_id: None,
             responses_reasoning_status: None,
             responses_reasoning_content: None,
+            responses_tool_status_pending: BTreeMap::new(),
+            responses_tool_status: BTreeMap::new(),
             gemini_response_id: None,
             gemini_safety_ratings: None,
             gemini_prompt_safety: None,
@@ -302,6 +306,30 @@ impl StreamEncoder {
                     || self.responses_reasoning_content.is_some()
                 {
                     return Ok(self.ensure_item(BlockKind::Thinking));
+                }
+                Ok(Vec::new())
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_tool_status" =>
+            {
+                if self.wire != Wire::Responses {
+                    return Ok(Vec::new());
+                }
+                if let Some(status) = payload
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .filter(|status| !status.is_empty())
+                    && let Some(index) = payload
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .and_then(|index| u32::try_from(index).ok())
+                {
+                    if let Some(enc) = self.last_tool.get(&index).copied() {
+                        self.responses_tool_status.insert(enc, status.to_string());
+                    } else {
+                        self.responses_tool_status_pending
+                            .insert(index, status.to_string());
+                    }
                 }
                 Ok(Vec::new())
             }
@@ -1304,6 +1332,9 @@ impl StreamEncoder {
                 self.tool_ids.insert(enc, id.clone());
                 self.tool_items
                     .insert(enc, (id.clone(), name.clone(), String::new()));
+                if let Some(status) = self.responses_tool_status_pending.remove(&index) {
+                    self.responses_tool_status.insert(enc, status);
+                }
                 self.open = Some((enc, BlockKind::Tool));
             }
             IrStreamEvent::AnnotationAdded { annotation } => {
@@ -1415,6 +1446,9 @@ impl StreamEncoder {
                 ));
                 self.tool_items
                     .insert(enc, (id.clone(), name.clone(), String::new()));
+                if let Some(status) = self.responses_tool_status_pending.remove(&index) {
+                    self.responses_tool_status.insert(enc, status);
+                }
                 self.open = Some((enc, BlockKind::CustomTool));
             }
             IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
@@ -1627,23 +1661,35 @@ impl StreamEncoder {
                 item
             }
             BlockKind::Tool => match self.tool_items.remove(&index) {
-                Some((id, name, arguments)) => json!({
-                    "type": "function_call",
-                    "id": id,
-                    "call_id": id,
-                    "name": name,
-                    "arguments": arguments
-                }),
+                Some((id, name, arguments)) => {
+                    let mut item = json!({
+                        "type": "function_call",
+                        "id": id,
+                        "call_id": id,
+                        "name": name,
+                        "arguments": arguments
+                    });
+                    if let Some(status) = self.responses_tool_status.remove(&index) {
+                        item["status"] = json!(status);
+                    }
+                    item
+                }
                 None => json!({ "type": "function_call" }),
             },
             BlockKind::CustomTool => match self.tool_items.remove(&index) {
-                Some((id, name, input)) => json!({
-                    "type": "custom_tool_call",
-                    "id": id,
-                    "call_id": id,
-                    "name": name,
-                    "input": input
-                }),
+                Some((id, name, input)) => {
+                    let mut item = json!({
+                        "type": "custom_tool_call",
+                        "id": id,
+                        "call_id": id,
+                        "name": name,
+                        "input": input
+                    });
+                    if let Some(status) = self.responses_tool_status.remove(&index) {
+                        item["status"] = json!(status);
+                    }
+                    item
+                }
                 None => json!({ "type": "custom_tool_call" }),
             },
         };

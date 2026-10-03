@@ -967,6 +967,8 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut metadata = None;
     let mut moderation = None;
     let mut tool_calls = Vec::new();
+    let mut tool_status: BTreeMap<u32, String> = BTreeMap::new();
+    let mut open_tool: Option<u32> = None;
     let mut replay_items = Vec::new();
     let mut saw_reasoning_item = false;
     let mut current: Option<(String, String, String, bool)> = None;
@@ -1026,16 +1028,30 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     *audio_tokens,
                 ));
             }
-            IrStreamEvent::ToolCallStart { id, name, .. } => {
+            IrStreamEvent::ToolCallStart {
+                id, name, index, ..
+            } => {
                 if let Some((id, name, args, custom)) = current.take() {
-                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom));
+                    let status = open_tool
+                        .take()
+                        .and_then(|idx| tool_status.get(&idx))
+                        .map(String::as_str);
+                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, status));
                 }
+                open_tool = Some(*index);
                 current = Some((id.clone(), name.clone(), String::new(), false));
             }
-            IrStreamEvent::CustomToolCallStart { id, name, .. } => {
+            IrStreamEvent::CustomToolCallStart {
+                id, name, index, ..
+            } => {
                 if let Some((id, name, args, custom)) = current.take() {
-                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom));
+                    let status = open_tool
+                        .take()
+                        .and_then(|idx| tool_status.get(&idx))
+                        .map(String::as_str);
+                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, status));
                 }
+                open_tool = Some(*index);
                 current = Some((id.clone(), name.clone(), String::new(), true));
             }
             IrStreamEvent::ToolCallArgDelta { delta, .. }
@@ -1046,7 +1062,26 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::ToolCallEnd => {
                 if let Some((id, name, args, custom)) = current.take() {
-                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom));
+                    let status = open_tool
+                        .take()
+                        .and_then(|idx| tool_status.get(&idx))
+                        .map(String::as_str);
+                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, status));
+                }
+            }
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "responses_tool_status" =>
+            {
+                if let Some(status) = payload
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .filter(|status| !status.is_empty())
+                    && let Some(index) = payload
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .and_then(|index| u32::try_from(index).ok())
+                {
+                    tool_status.insert(index, status.to_string());
                 }
             }
             IrStreamEvent::Protocol { item_type, payload } if item_type == "responses_id" => {
@@ -1103,7 +1138,11 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
         }
     }
     if let Some((id, name, args, custom)) = current.take() {
-        tool_calls.push(responses_tool_call_value(&id, &name, &args, custom));
+        let status = open_tool
+            .take()
+            .and_then(|idx| tool_status.get(&idx))
+            .map(String::as_str);
+        tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, status));
     }
 
     let mut output = Vec::new();
@@ -1253,8 +1292,14 @@ fn responses_complete_status(reason: &str) -> &str {
     }
 }
 
-fn responses_tool_call_value(id: &str, name: &str, args: &str, custom: bool) -> Value {
-    if custom {
+fn responses_tool_call_value(
+    id: &str,
+    name: &str,
+    args: &str,
+    custom: bool,
+    status: Option<&str>,
+) -> Value {
+    let mut item = if custom {
         json!({
             "type": "custom_tool_call",
             "id": id,
@@ -1270,7 +1315,11 @@ fn responses_tool_call_value(id: &str, name: &str, args: &str, custom: bool) -> 
             "name": name,
             "arguments": args,
         })
+    };
+    if let Some(status) = status.filter(|status| !status.is_empty()) {
+        item["status"] = json!(status);
     }
+    item
 }
 
 /// Decode a complete (non-SSE) vendor body into IR stream events.
@@ -1916,6 +1965,9 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
             Some("function_call") => {
                 let index = tool_index;
                 tool_index = tool_index.saturating_add(1);
+                if let Some(ev) = super::responses::tool_item_status_event(item, index) {
+                    out.push(ev);
+                }
                 out.push(IrStreamEvent::ToolCallStart {
                     id: str_field(item, "call_id")
                         .or_else(|| str_field(item, "id"))
@@ -1932,6 +1984,9 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
             Some("custom_tool_call") => {
                 let index = tool_index;
                 tool_index = tool_index.saturating_add(1);
+                if let Some(ev) = super::responses::tool_item_status_event(item, index) {
+                    out.push(ev);
+                }
                 out.push(IrStreamEvent::CustomToolCallStart {
                     id: str_field(item, "call_id")
                         .or_else(|| str_field(item, "id"))

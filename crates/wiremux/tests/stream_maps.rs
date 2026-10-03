@@ -7587,6 +7587,76 @@ fn responses_complete_keeps_reasoning_item_id() {
 }
 
 #[test]
+fn responses_complete_keeps_function_call_status() {
+    let body = serde_json::to_vec(&json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "get_weather",
+                "arguments": "{}",
+                "status": "incomplete"
+            },
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_2",
+                "name": "echo",
+                "input": "x",
+                "status": "completed"
+            }
+        ]
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Responses, &body, &responses_profile())
+        .expect("decode dest Responses complete tools");
+    let mapped = encode_response(Wire::Responses, &events).expect("encode dest Responses complete");
+    let output = mapped
+        .get("output")
+        .and_then(Value::as_array)
+        .expect("output");
+    let function = output
+        .iter()
+        .find(|item| item.get("type").and_then(Value::as_str) == Some("function_call"));
+    let custom = output
+        .iter()
+        .find(|item| item.get("type").and_then(Value::as_str) == Some("custom_tool_call"));
+    assert_eq!(
+        function
+            .and_then(|item| item.get("status"))
+            .and_then(Value::as_str),
+        Some("incomplete"),
+        "function_call status must stay incomplete, got {mapped}"
+    );
+    assert_eq!(
+        function
+            .and_then(|item| item.get("name"))
+            .and_then(Value::as_str),
+        Some("get_weather"),
+        "function name must stay, got {mapped}"
+    );
+    assert_eq!(
+        custom
+            .and_then(|item| item.get("status"))
+            .and_then(Value::as_str),
+        Some("completed"),
+        "custom_tool_call status must stay completed, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/id").and_then(Value::as_str),
+        Some("resp_1"),
+        "response id stays on /id, got {mapped}"
+    );
+    assert_eq!(
+        mapped.pointer("/status").and_then(Value::as_str),
+        Some("completed"),
+        "response status stays completed, got {mapped}"
+    );
+}
+
+#[test]
 fn dest_responses_complete_output_text_logprobs_remaps_dest_chat_complete() {
     let body = serde_json::to_vec(&json!({
         "id": "resp_1",
