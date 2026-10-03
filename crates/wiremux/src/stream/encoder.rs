@@ -510,7 +510,8 @@ impl StreamEncoder {
                         && payload.get("codeExecutionResult").is_none()
                         && payload.get("functionResponse").is_none()
                         && payload.get("toolCall").is_none()
-                        && payload.get("toolResponse").is_none())
+                        && payload.get("toolResponse").is_none()
+                        && payload.get("fileData").is_none())
                 {
                     return Ok(Vec::new());
                 }

@@ -783,7 +783,8 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                         || payload.get("codeExecutionResult").is_some()
                         || payload.get("functionResponse").is_some()
                         || payload.get("toolCall").is_some()
-                        || payload.get("toolResponse").is_some()) =>
+                        || payload.get("toolResponse").is_some()
+                        || payload.get("fileData").is_some()) =>
             {
                 gemini_code_parts.push(payload.clone());
             }
