@@ -296,6 +296,8 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
                         "converse_guard_content" => Some("guardContent"),
                         "converse_document" => Some("document"),
                         "converse_video" => Some("video"),
+                        "converse_image" => Some("image"),
+                        "converse_audio" => Some("audio"),
                         _ => None,
                     } =>
             {
@@ -441,15 +443,25 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
                 signature: signature.to_string(),
             });
         }
-        if let Some(audio) = block.get("audio")
-            && let Some(ev) = audio_delta_from_block(audio)
-        {
-            out.push(ev);
+        if let Some(audio) = block.get("audio") {
+            if let Some(ev) = audio_delta_from_block(audio) {
+                out.push(ev);
+            } else if audio.is_object() {
+                out.push(IrStreamEvent::Protocol {
+                    item_type: "converse_audio".into(),
+                    payload: audio.clone(),
+                });
+            }
         }
-        if let Some(image) = block.get("image")
-            && let Some(ev) = image_delta_from_converse(image)
-        {
-            out.push(ev);
+        if let Some(image) = block.get("image") {
+            if let Some(ev) = image_delta_from_converse(image) {
+                out.push(ev);
+            } else if image.is_object() {
+                out.push(IrStreamEvent::Protocol {
+                    item_type: "converse_image".into(),
+                    payload: image.clone(),
+                });
+            }
         }
         if let Some(guard) = block.get("guardContent").filter(|guard| guard.is_object()) {
             out.push(IrStreamEvent::Protocol {

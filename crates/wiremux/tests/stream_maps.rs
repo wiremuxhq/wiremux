@@ -6394,6 +6394,56 @@ fn converse_complete_keeps_video_block() {
 }
 
 #[test]
+fn converse_complete_keeps_image_s3_location() {
+    let image = json!({
+        "format": "png",
+        "source": { "s3Location": { "uri": "s3://bucket/cat.png" } }
+    });
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{ "image": image }]
+            }
+        },
+        "stopReason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile()).expect("decode");
+    let encoded = encode_response(Wire::Converse, &events).expect("encode");
+    assert_eq!(
+        encoded.pointer("/output/message/content/0/image"),
+        Some(&image),
+        "image location missing: {encoded}"
+    );
+}
+
+#[test]
+fn converse_complete_keeps_audio_s3_location() {
+    let audio = json!({
+        "format": "mp3",
+        "source": { "s3Location": { "uri": "s3://bucket/clip.mp3" } }
+    });
+    let body = serde_json::to_vec(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{ "audio": audio }]
+            }
+        },
+        "stopReason": "end_turn"
+    }))
+    .expect("json");
+    let events = decode_response(Wire::Converse, &body, &converse_profile()).expect("decode");
+    let encoded = encode_response(Wire::Converse, &events).expect("encode");
+    assert_eq!(
+        encoded.pointer("/output/message/content/0/audio"),
+        Some(&audio),
+        "audio location missing: {encoded}"
+    );
+}
+
+#[test]
 fn dest_converse_complete_citations_content_does_not_duplicate_sibling_text() {
     let body = serde_json::to_vec(&json!({
         "output": {
