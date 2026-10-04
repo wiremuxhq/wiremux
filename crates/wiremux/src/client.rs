@@ -712,6 +712,10 @@ async fn pull_live(
                     Ok(None) => {}
                     Err(err) => {
                         if !live.saw_frame {
+                            if promote_non_stream_completion(&mut live) {
+                                live.eof = true;
+                                continue;
+                            }
                             let text = String::from_utf8_lossy(&live.leftover);
                             return Some((
                                 Err(classify_empty_stream(live.http_status, &text)),
@@ -725,6 +729,10 @@ async fn pull_live(
                     }
                 }
                 if !live.saw_frame {
+                    if promote_non_stream_completion(&mut live) {
+                        live.eof = true;
+                        continue;
+                    }
                     let text = String::from_utf8_lossy(&live.leftover);
                     return Some((
                         Err(classify_empty_stream(live.http_status, &text)),
@@ -920,6 +928,34 @@ fn classify_aws_exception_type(
         return transient(Some(status), full.to_string(), TransientKind::Http);
     }
     classify_error_payload(Some(status), None, None, message, full, None)
+}
+
+/// A stream request sometimes comes back as one JSON completion.
+/// Keep that text. An error object with no completion stays an error.
+fn promote_non_stream_completion(live: &mut LiveStream) -> bool {
+    if live.saw_frame || live.leftover.is_empty() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&live.leftover);
+    if classify_http(live.http_status, &text, None).is_some() {
+        return false;
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(&live.leftover) else {
+        return false;
+    };
+    if !success_body_has_completion(Some(&value)) {
+        return false;
+    }
+    let Ok(events) = decode_response(live.wire, &live.leftover, &live.profile) else {
+        return false;
+    };
+    if events.is_empty() {
+        return false;
+    }
+    live.pending.extend(events);
+    live.saw_frame = true;
+    live.saw_terminal = true;
+    true
 }
 
 fn classify_empty_stream(status: u16, body: &str) -> ClientError {

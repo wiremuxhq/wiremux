@@ -2184,6 +2184,38 @@ async fn stream_401_oauth_retries_once_before_body() {
 }
 
 #[tokio::test]
+async fn stream_json_completion_with_error_object_yields_text() {
+    let body = r#"{"choices":[{"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"error":{"message":"please wait","type":"rate_limit_error"}}"#;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let _ = read_http_request(&mut stream);
+        write_http(&mut stream, 200, "OK", "", body);
+    });
+    let client = client_for(&format!("http://{addr}"), "sk-test");
+    let mut stream = std::pin::pin!(client.stream(simple_ir("gpt-4")));
+    let mut text = String::new();
+    let mut err = None;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(IrStreamEvent::TextDelta { text: delta }) => text.push_str(&delta),
+            Err(e) => {
+                err = Some(e.to_string());
+                break;
+            }
+            _ => {}
+        }
+    }
+    handle.join().expect("upstream");
+    assert!(
+        err.is_none(),
+        "completion text must not become an error, got {err:?} text={text}"
+    );
+    assert!(text.contains("Hi"), "{text}");
+}
+
+#[tokio::test]
 async fn read_timeout_secs_is_transient() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
