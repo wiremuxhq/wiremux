@@ -1163,19 +1163,77 @@ fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
     }))
 }
 
-/// Cross-wire JSON body whose vendor failure has no output text.
+/// Cross-wire JSON success body that is only a vendor failure.
 ///
-/// `wiremux map` still turns that body into finish_reason stop. A Chat
-/// client behind the proxy would read the blank completion as success.
+/// Responses uses `status: failed` with no output. Chat uses an `error`
+/// object and no `choices`. Messages uses `type: error` and no content
+/// blocks. `wiremux map` still translates those bodies, so a client
+/// behind the proxy would read a blank completion as success.
 fn cross_wire_vendor_failure(from: Wire, target: Wire, stream: bool, body: &[u8]) -> Option<Bytes> {
     if target == from {
         return None;
     }
-    let detail = responses_complete_vendor_failure(target, body)?;
+    let detail = responses_complete_vendor_failure(target, body)
+        .or_else(|| chat_complete_vendor_failure(target, body))
+        .or_else(|| messages_complete_vendor_failure(target, body))?;
     if stream {
         Some(dest_error_bytes(from, detail))
     } else {
         Some(Bytes::from(dest_error_json(from, &detail).to_string()))
+    }
+}
+
+fn chat_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
+    if target != Wire::ChatCompletions {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let choices = value.get("choices").and_then(serde_json::Value::as_array);
+    if choices.is_some_and(|items| !items.is_empty()) {
+        return None;
+    }
+    let err = value.get("error").filter(|item| item.is_object())?;
+    vendor_error_detail(err)
+}
+
+fn messages_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
+    if target != Wire::Messages {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("error") {
+        return None;
+    }
+    let content = value.get("content").and_then(serde_json::Value::as_array);
+    if content.is_some_and(|items| !items.is_empty()) {
+        return None;
+    }
+    let err = value.get("error").filter(|item| item.is_object())?;
+    vendor_error_detail(err)
+}
+
+fn vendor_error_detail(err: &serde_json::Value) -> Option<String> {
+    let message = err
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    let code = ["code", "type", "status"].iter().find_map(|key| {
+        let value = err.get(*key)?;
+        if let Some(text) = value.as_str() {
+            let text = text.trim();
+            if text.is_empty() || (*key == "type" && text == "error") {
+                return None;
+            }
+            return Some(text.to_string());
+        }
+        value.as_i64().map(|number| number.to_string())
+    });
+    match (code, message) {
+        (Some(code), Some(message)) => Some(format!("{code}: {message}")),
+        (None, Some(message)) => Some(message.to_string()),
+        (Some(code), None) => Some(code),
+        (None, None) => None,
     }
 }
 
@@ -1205,24 +1263,7 @@ fn responses_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String
     let err = ["error", "last_error"]
         .iter()
         .find_map(|key| response.get(*key).filter(|item| item.is_object()))?;
-    let message = err
-        .get("message")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty());
-    let code = err.get("code").and_then(|code| {
-        code.as_str()
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(str::to_string)
-            .or_else(|| code.as_i64().map(|n| n.to_string()))
-    });
-    match (code, message) {
-        (Some(code), Some(message)) => Some(format!("{code}: {message}")),
-        (None, Some(message)) => Some(message.to_string()),
-        (Some(code), None) => Some(code),
-        (None, None) => None,
-    }
+    vendor_error_detail(err)
 }
 
 fn format_sse(raw: &RawSse) -> String {
@@ -1978,5 +2019,75 @@ anthropic-beta = "context-1m-2025-08-07"
         assert_eq!(value["type"], "error");
         assert_eq!(value["error"]["type"], "rate_limit_exceeded");
         assert_eq!(value["error"]["message"], "please wait");
+    }
+
+    #[test]
+    fn cross_wire_chat_and_messages_error_objects_are_dest_errors() {
+        let chat = wiremux_auth::Wire::ChatCompletions;
+        let messages = wiremux_auth::Wire::Messages;
+        let gemini = wiremux_auth::Wire::Gemini;
+        let chat_error = br#"{"error":{"message":"please wait","type":"rate_limit_error","code":"rate_limit_exceeded"}}"#;
+        let value: serde_json::Value = serde_json::from_slice(
+            &super::cross_wire_vendor_failure(messages, chat, false, chat_error)
+                .expect("chat error object is not a completion"),
+        )
+        .expect("json");
+        assert_eq!(value["type"], "error");
+        assert_eq!(value["error"]["type"], "rate_limit_exceeded");
+        assert_eq!(value["error"]["message"], "please wait");
+        assert!(value.get("content").is_none());
+
+        let empty_choices =
+            br#"{"choices":[],"error":{"message":"please wait","type":"rate_limit_error"}}"#;
+        let value: serde_json::Value = serde_json::from_slice(
+            &super::cross_wire_vendor_failure(messages, chat, false, empty_choices)
+                .expect("empty choices are not completion text"),
+        )
+        .expect("json");
+        assert_eq!(value["error"]["type"], "rate_limit_error");
+        assert_eq!(value["error"]["message"], "please wait");
+
+        let kept = br#"{"choices":[{"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"error":{"message":"please wait","type":"rate_limit_error"}}"#;
+        assert!(
+            super::cross_wire_vendor_failure(messages, chat, false, kept).is_none(),
+            "a choice stays on the map path"
+        );
+        assert!(
+            super::cross_wire_vendor_failure(chat, chat, false, chat_error).is_none(),
+            "same-wire stays a passthrough"
+        );
+
+        let messages_error =
+            br#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
+        let value: serde_json::Value = serde_json::from_slice(
+            &super::cross_wire_vendor_failure(chat, messages, false, messages_error)
+                .expect("messages error is not a message"),
+        )
+        .expect("json");
+        assert_eq!(value["error"]["type"], "overloaded_error");
+        assert_eq!(value["error"]["message"], "Overloaded");
+        assert!(value.get("choices").is_none());
+
+        let with_text = br#"{"type":"error","content":[{"type":"text","text":"Hi"}],"error":{"type":"api_error","message":"nope"}}"#;
+        assert!(
+            super::cross_wire_vendor_failure(chat, messages, false, with_text).is_none(),
+            "content text stays on the map path"
+        );
+
+        let gemini_error = br#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"please wait"}}"#;
+        assert!(
+            super::cross_wire_vendor_failure(chat, gemini, false, gemini_error).is_none(),
+            "gemini complete errors stay HardError on the decode path"
+        );
+
+        let text = String::from_utf8(
+            super::cross_wire_vendor_failure(chat, messages, true, messages_error)
+                .expect("stream framing")
+                .to_vec(),
+        )
+        .expect("utf8");
+        assert!(text.starts_with("event: error\n"), "{text}");
+        assert!(text.contains("overloaded_error"), "{text}");
+        assert!(!text.contains("[DONE]"), "{text}");
     }
 }
