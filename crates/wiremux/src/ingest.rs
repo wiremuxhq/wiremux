@@ -798,7 +798,7 @@ fn split_openai_compat_api(raw: &str, wire: EmitWire) -> Result<(String, String)
 
 fn catalog_authority_has_userinfo(rest: &str) -> bool {
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-    authority.contains('@')
+    authority.contains('@') || authority.to_ascii_lowercase().contains("%40")
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -1315,6 +1315,19 @@ mod tests {
             EmitWire::ChatCompletions,
         )
         .expect("at sign in query");
+        assert_eq!(origin, "https://api.example.com");
+        let err = split_openai_compat_api(
+            "https://user:s3cret%40api.example.com/v1",
+            EmitWire::ChatCompletions,
+        )
+        .expect_err("encoded at");
+        assert!(err.contains("userinfo"), "{err}");
+        assert!(!err.contains("s3cret"), "{err}");
+        let (origin, _) = split_openai_compat_api(
+            "https://api.example.com/v1?next=%40",
+            EmitWire::ChatCompletions,
+        )
+        .expect("encoded at in query");
         assert_eq!(origin, "https://api.example.com");
     }
 
