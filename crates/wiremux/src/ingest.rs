@@ -739,6 +739,12 @@ impl EmitWire {
 
 fn split_openai_compat_api(raw: &str, wire: EmitWire) -> Result<(String, String), String> {
     let raw = raw.trim().trim_end_matches('/');
+    if raw
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '"' | '\\' | '<' | '>' | ' '))
+    {
+        return Err("URL contains a character that is not allowed".into());
+    }
     let (scheme, rest) = raw
         .split_once("://")
         .ok_or_else(|| format!("not an absolute URL: {raw}"))?;
@@ -1241,6 +1247,17 @@ mod tests {
         .to_string();
         assert!(err.contains("no-such-vendor"), "{err}");
         assert!(err.contains("not in catalog"), "{err}");
+    }
+
+    #[test]
+    fn split_openai_compat_rejects_quote() {
+        let err = split_openai_compat_api(
+            "https://example.test/v1\"\nchat_path = \"/owned",
+            EmitWire::ChatCompletions,
+        )
+        .expect_err("quote");
+        assert!(err.contains("not allowed"), "{err}");
+        assert!(!err.contains("chat_path"));
     }
 
     #[test]
