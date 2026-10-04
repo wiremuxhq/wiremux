@@ -1199,7 +1199,7 @@ fn responses_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String
     }
     match response.get("output") {
         Some(serde_json::Value::Array(items)) if items.is_empty() => {}
-        None => {}
+        Some(serde_json::Value::Null) | None => {}
         _ => return None,
     }
     let err = ["error", "last_error"]
@@ -1945,6 +1945,15 @@ anthropic-beta = "context-1m-2025-08-07"
         );
         let empty_err = br#"{"status":"failed","error":{},"output":[]}"#;
         assert!(super::cross_wire_vendor_failure(chat, responses, false, empty_err).is_none());
+        let null_output = br#"{"status":"failed","error":{"code":"rate_limit_exceeded","message":"please wait"},"output":null}"#;
+        let value: serde_json::Value = serde_json::from_slice(
+            &super::cross_wire_vendor_failure(chat, responses, false, null_output)
+                .expect("null output is still no text")
+                .to_vec(),
+        )
+        .expect("json");
+        assert_eq!(value["error"]["type"], "rate_limit_exceeded");
+        assert_eq!(value["error"]["message"], "please wait");
 
         let text = String::from_utf8(
             super::cross_wire_vendor_failure(chat, responses, true, body)
