@@ -338,6 +338,10 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
     }
 
+    if let Some(route) = count_route(&path) {
+        return handle_count(state, route, &method, &path, &inbound_headers, &collected).await;
+    }
+
     let (mut ir, mut dec_loss) = match decode(state.from, &collected) {
         Ok(v) => v,
         Err(err) => return text(StatusCode::BAD_REQUEST, format!("{err}\n")),
@@ -485,6 +489,160 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         StatusCode::NOT_IMPLEMENTED,
         "non-stream cross-dialect responses are not mapped\n",
     )
+}
+
+enum CountRoute {
+    Messages,
+    Gemini,
+}
+
+#[derive(Debug)]
+enum CountUrlError {
+    NoEndpoint,
+    Upstream(String),
+}
+
+fn count_route(path: &str) -> Option<CountRoute> {
+    let path = path.trim_end_matches('/');
+    if path.ends_with("/count_tokens") {
+        Some(CountRoute::Messages)
+    } else if path.ends_with(":countTokens") {
+        Some(CountRoute::Gemini)
+    } else {
+        None
+    }
+}
+
+fn count_model(
+    from: Wire,
+    path: &str,
+    body: &[u8],
+    override_model: Option<&str>,
+) -> Option<String> {
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body)
+        && let Some(model) = value.get("model").and_then(|value| value.as_str())
+        && !model.is_empty()
+    {
+        return Some(model.to_string());
+    }
+    let lookup = path.trim_end_matches('/');
+    let lookup = lookup
+        .strip_suffix(":countTokens")
+        .map(|prefix| format!("{prefix}:generateContent"))
+        .unwrap_or_else(|| lookup.to_string());
+    if let Some(model) = model_from_dest_path(from, &lookup) {
+        return Some(model);
+    }
+    override_model
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+}
+
+fn rewrite_count_url(url: &str, route: CountRoute) -> Option<String> {
+    let (base, query) = match url.split_once('?') {
+        Some((base, query)) => (base, Some(query)),
+        None => (url, None),
+    };
+    let trimmed = base.trim_end_matches('/');
+    let rewritten = match route {
+        CountRoute::Messages if trimmed.ends_with("/messages") => {
+            format!("{trimmed}/count_tokens")
+        }
+        CountRoute::Gemini => {
+            let prefix = trimmed.strip_suffix(":generateContent")?;
+            format!("{prefix}:countTokens")
+        }
+        CountRoute::Messages => return None,
+    };
+    Some(match query {
+        Some(query) => format!("{rewritten}?{query}"),
+        None => rewritten,
+    })
+}
+
+fn count_upstream_url(
+    profile: &ResolvedProfile,
+    model: Option<&str>,
+    route: CountRoute,
+) -> Result<String, CountUrlError> {
+    let url = upstream_url_for_model(profile, model, false).map_err(CountUrlError::Upstream)?;
+    rewrite_count_url(&url, route).ok_or(CountUrlError::NoEndpoint)
+}
+
+async fn handle_count(
+    state: Arc<ProxyState>,
+    route: CountRoute,
+    method: &str,
+    path: &str,
+    inbound_headers: &hyper::HeaderMap,
+    body: &Bytes,
+) -> Response<ProxyBody> {
+    let route_wire = match route {
+        CountRoute::Messages => Wire::Messages,
+        CountRoute::Gemini => Wire::Gemini,
+    };
+    let target = match state.profile.dialect.wire {
+        Some(wire) => wire,
+        None => {
+            return text(
+                StatusCode::BAD_REQUEST,
+                "profile has no wire; cannot encode\n",
+            );
+        }
+    };
+    if state.from != route_wire || target != route_wire {
+        return text(
+            StatusCode::NOT_IMPLEMENTED,
+            "token count is not mapped across dialects\n",
+        );
+    }
+    let mut header_profile = state.profile.clone();
+    let mut loss = LossReport::default();
+    let anthropic_version =
+        forward_inbound_headers(&mut header_profile, &mut loss, target, inbound_headers);
+    let model = count_model(state.from, path, body, state.model_override.as_deref());
+    let url = match count_upstream_url(&state.profile, model.as_deref(), route) {
+        Ok(url) => url,
+        Err(CountUrlError::NoEndpoint) => {
+            return text(
+                StatusCode::NOT_IMPLEMENTED,
+                "this profile has no count endpoint\n",
+            );
+        }
+        Err(CountUrlError::Upstream(err)) => {
+            return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
+        }
+    };
+    let resp = match send_upstream(
+        &state,
+        &header_profile,
+        anthropic_version.as_deref(),
+        &url,
+        body,
+    )
+    .await
+    {
+        Ok(resp) => resp,
+        Err(resp) => return resp,
+    };
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let upstream_body = match read_capped_upstream(resp, MAX_UPSTREAM_BODY).await {
+        Ok(bytes) => bytes,
+        Err(err) => return text(StatusCode::BAD_GATEWAY, format!("{err}\n")),
+    };
+    eprintln!(
+        "{method} {path} profile={} upstream={} loss={}",
+        state.profile.id,
+        status.as_u16(),
+        loss_summary(&loss, &LossReport::default())
+    );
+    bytes_response(status_from_reqwest(status), &content_type, upstream_body)
 }
 
 fn models_list(state: &ProxyState) -> Response<ProxyBody> {
@@ -1315,8 +1473,68 @@ fn status_from_reqwest(status: reqwest::StatusCode) -> StatusCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        host_is_loopback, is_json_content_type, read_capped_body, same_wire_success_is_json,
+        CountRoute, CountUrlError, count_route, count_upstream_url, host_is_loopback,
+        is_json_content_type, read_capped_body, same_wire_success_is_json,
     };
+
+    fn count_profile(wire: &str, chat_path: Option<&str>) -> wiremux_auth::ResolvedProfile {
+        let path = chat_path
+            .map(|value| format!("\nchat_path = \"{value}\"\n"))
+            .unwrap_or_default();
+        crate::parse_profile_str(&format!(
+            "schema_version = 1\nid = \"c\"\nwire = \"{wire}\"\nbase_url = \"http://127.0.0.1:9\"{path}"
+        ))
+        .expect("profile")
+    }
+
+    #[test]
+    fn count_upstream_messages_appends_count_tokens() {
+        let profile = count_profile("messages", Some("/v1/messages"));
+        let url = count_upstream_url(&profile, Some("m"), CountRoute::Messages).expect("url");
+        assert_eq!(url, "http://127.0.0.1:9/v1/messages/count_tokens");
+    }
+
+    #[test]
+    fn count_upstream_messages_trailing_slash_appends_once() {
+        let profile = count_profile("messages", Some("/v1/messages/"));
+        let url = count_upstream_url(&profile, Some("m"), CountRoute::Messages).expect("url");
+        assert_eq!(url, "http://127.0.0.1:9/v1/messages/count_tokens");
+    }
+
+    #[test]
+    fn count_upstream_gemini_replaces_generate_content() {
+        let profile = count_profile("gemini", None);
+        let url = count_upstream_url(&profile, Some("gemini-2.0-flash"), CountRoute::Gemini)
+            .expect("url");
+        assert_eq!(
+            url,
+            "http://127.0.0.1:9/v1beta/models/gemini-2.0-flash:countTokens"
+        );
+    }
+
+    #[test]
+    fn count_upstream_raw_predict_has_no_endpoint() {
+        let profile = count_profile(
+            "messages",
+            Some("/v1/projects/p/locations/l/publishers/anthropic/models/m:rawPredict"),
+        );
+        let err = count_upstream_url(&profile, None, CountRoute::Messages).expect_err("endpoint");
+        assert!(matches!(err, CountUrlError::NoEndpoint));
+    }
+
+    #[test]
+    fn count_route_ignores_generation_paths() {
+        assert!(count_route("/v1/messages").is_none());
+        assert!(count_route("/v1beta/models/m:generateContent").is_none());
+        assert!(matches!(
+            count_route("/v1/messages/count_tokens/"),
+            Some(CountRoute::Messages)
+        ));
+        assert!(matches!(
+            count_route("/v1beta/models/m:countTokens"),
+            Some(CountRoute::Gemini)
+        ));
+    }
 
     #[test]
     fn messages_document_citation_reaches_messages_not_chat() {

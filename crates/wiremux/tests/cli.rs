@@ -669,6 +669,287 @@ chat_path = "/v1/responses"
 }
 
 #[test]
+fn proxy_count_messages_forwards_original_body() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        let body = req.split("\r\n\r\n").nth(1).unwrap_or("");
+        assert!(
+            req.contains("POST /v1/messages/count_tokens"),
+            "upstream path: {req}"
+        );
+        assert!(
+            !body.contains("max_tokens"),
+            "count body must stay original, got: {body}"
+        );
+        let resp_body = r#"{"input_tokens":3}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
+            resp_body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "count-messages.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "count-messages"
+wire = "messages"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/messages"
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "messages",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"claude-haiku","messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/messages/count_tokens HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("input_tokens"),
+        "proxy should return the count body, got: {resp}"
+    );
+}
+
+#[test]
+fn proxy_count_gemini_forwards_count_tokens_url() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        let body = req.split("\r\n\r\n").nth(1).unwrap_or("");
+        assert!(
+            req.contains("gemini-2.0-flash:countTokens"),
+            "upstream path: {req}"
+        );
+        assert!(
+            !req.contains(":generateContent"),
+            "count must not generate, got: {req}"
+        );
+        assert!(
+            body.contains("\"contents\""),
+            "original body must be forwarded, got: {body}"
+        );
+        let resp_body = r#"{"totalTokens":4}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
+            resp_body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "count-gemini.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "count-gemini"
+wire = "gemini"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "gemini",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"contents":[{"parts":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /v1beta/models/gemini-2.0-flash:countTokens HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("totalTokens"),
+        "proxy should return the count body, got: {resp}"
+    );
+}
+
+#[test]
+fn proxy_count_cross_wire_does_not_call_upstream() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    upstream.set_nonblocking(true).expect("nonblocking");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "count-cross.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "count-cross"
+wire = "responses"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/responses"
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "messages",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"claude-haiku","messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/messages/count_tokens HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    match upstream.accept() {
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
+        other => panic!("upstream must not be contacted, got {other:?}"),
+    }
+    assert!(resp.contains("501"), "expected 501, got: {resp}");
+    assert!(
+        resp.contains("not mapped"),
+        "expected not mapped, got: {resp}"
+    );
+}
+
+#[test]
+fn proxy_count_vertex_raw_predict_has_no_count_endpoint() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    upstream.set_nonblocking(true).expect("nonblocking");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "count-vertex.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "count-vertex"
+wire = "messages"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/projects/p/locations/l/publishers/anthropic/models/m:rawPredict"
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "messages",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"claude-haiku","messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/messages/count_tokens HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    match upstream.accept() {
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
+        other => panic!("upstream must not be contacted, got {other:?}"),
+    }
+    assert!(resp.contains("501"), "expected 501, got: {resp}");
+    assert!(
+        resp.contains("no count endpoint"),
+        "expected no count endpoint, got: {resp}"
+    );
+}
+
+#[test]
 fn proxy_forwards_upstream_error_on_cross_dialect() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
