@@ -757,7 +757,19 @@ impl MappedStream {
             }
             let events = match self.decoder.decode(self.target, &raw, &self.profile) {
                 Ok(events) => events,
-                Err(err) => return (out, Some(format!("decode stream: {err}"))),
+                Err(err) => {
+                    // `response.failed` is already `code: message`. A
+                    // `decode stream:` prefix hides that code from
+                    // `dest_error_bytes`, so Chat sees `server_error`.
+                    let shown = if self.target == Wire::Responses
+                        && frame_event_name(self.target, &raw) == "response.failed"
+                    {
+                        err.to_string()
+                    } else {
+                        format!("decode stream: {err}")
+                    };
+                    return (out, Some(shown));
+                }
             };
             for ev in events.into_iter().flat_map(|ev| self.assembler.push(ev)) {
                 if !event_has_slot(self.from, &ev) {
@@ -1747,5 +1759,69 @@ anthropic-beta = "context-1m-2025-08-07"
         assert!(text.contains("Hi"), "{text}");
         assert!(text.contains("The server had an error"), "{text}");
         assert!(!text.contains("unknown stream event"), "{text}");
+    }
+
+    #[test]
+    fn responses_failed_after_text_keeps_vendor_code() {
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"resp\"\nwire = \"responses\"\n")
+                .expect("profile");
+        let official = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n",
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"please wait\"}}}\n\n",
+        );
+        assert_failed_vendor_code(&profile, official);
+        let older = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n",
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"last_error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"please wait\"}}}\n\n",
+        );
+        assert_failed_vendor_code(&profile, older);
+        let message_only = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n",
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"last_error\":{\"message\":\"The model is currently at capacity due to high demand.\"}}}\n\n",
+        );
+        let bytes = super::map_sse_bytes(
+            wiremux_auth::Wire::ChatCompletions,
+            wiremux_auth::Wire::Responses,
+            &profile,
+            "gpt-4o",
+            message_only.as_bytes(),
+        );
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(text.contains("Hi"), "{text}");
+        assert!(text.contains("at capacity due to high demand"), "{text}");
+        assert!(!text.contains("decode stream"), "{text}");
+    }
+
+    fn assert_failed_vendor_code(profile: &wiremux_auth::ResolvedProfile, sse: &str) {
+        let bytes = super::map_sse_bytes(
+            wiremux_auth::Wire::ChatCompletions,
+            wiremux_auth::Wire::Responses,
+            profile,
+            "gpt-4o",
+            sse.as_bytes(),
+        );
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(text.contains("Hi"), "{text}");
+        assert!(
+            !text.contains("decode stream"),
+            "vendor failure must not look like a decode bug, got {text}"
+        );
+        assert!(!text.contains("[DONE]"), "{text}");
+        let data = text
+            .lines()
+            .find(|line| line.starts_with("data:") && line.contains("\"error\""))
+            .expect("error data")
+            .trim_start_matches("data:")
+            .trim();
+        let value: serde_json::Value = serde_json::from_str(data).expect("error json");
+        assert_eq!(value["error"]["type"], "rate_limit_exceeded", "{text}");
+        assert_eq!(value["error"]["message"], "please wait", "{text}");
     }
 }
