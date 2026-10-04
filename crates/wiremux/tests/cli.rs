@@ -921,6 +921,28 @@ chat_path = "/v1/messages"
 }
 
 #[test]
+fn proxy_count_model_override_inserts_missing_messages_model() {
+    let (resp, req, err) = proxy_http_exchange(ProxyExchange {
+        profile_id: "count-insert",
+        wire: "messages",
+        chat_path: Some("/v1/messages"),
+        from: "messages",
+        extra_args: &["--model", "claude-override", "--dump-loss"],
+        request_path: "/v1/messages/count_tokens",
+        request_body: r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+        upstream_body: r#"{"input_tokens":3}"#,
+    });
+    assert!(req.contains("POST /v1/messages/count_tokens"), "{req}");
+    let body = req.split("\r\n\r\n").nth(1).unwrap_or("");
+    let parsed: serde_json::Value = serde_json::from_str(body).expect("count json");
+    assert_eq!(parsed["model"], "claude-override", "{body}");
+    assert_eq!(parsed["messages"][0]["content"], "hi", "{body}");
+    assert!(parsed.get("max_tokens").is_none(), "{body}");
+    assert!(resp.contains("input_tokens"), "{resp}");
+    assert!(err.contains("proxy --model"), "{err}");
+}
+
+#[test]
 fn proxy_count_model_override_replaces_gemini_url() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
@@ -1283,6 +1305,170 @@ chat_path = "/v1/responses"
         resp.starts_with("HTTP/1.1 400"),
         "a vendor failure inside HTTP 200 must not stay 200, got: {resp}"
     );
+}
+
+struct ProxyExchange<'a> {
+    profile_id: &'a str,
+    wire: &'a str,
+    chat_path: Option<&'a str>,
+    from: &'a str,
+    extra_args: &'a [&'a str],
+    request_path: &'a str,
+    request_body: &'a str,
+    upstream_body: &'a str,
+}
+
+fn proxy_http_exchange(spec: ProxyExchange<'_>) -> (String, String, String) {
+    let ProxyExchange {
+        profile_id,
+        wire,
+        chat_path,
+        from,
+        extra_args,
+        request_path,
+        request_body,
+        upstream_body,
+    } = spec;
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let upstream_body = upstream_body.to_string();
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 16384];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]).to_string();
+        let _ = tx.send(req);
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{upstream_body}",
+            upstream_body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+    let chat_line = match chat_path {
+        Some(path) => format!("chat_path = \"{path}\"\n"),
+        None => String::new(),
+    };
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "exchange.toml",
+        &format!(
+            "schema_version = 1\nid = \"{profile_id}\"\nwire = \"{wire}\"\nauth_scheme = \"none\"\nbase_url = \"http://{upstream_addr}\"\n{chat_line}"
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut args = vec![
+        "proxy".to_string(),
+        "--listen".into(),
+        "127.0.0.1:0".into(),
+        "--from".into(),
+        from.to_string(),
+    ];
+    args.extend(extra_args.iter().map(|arg| (*arg).to_string()));
+    args.push("--profile".into());
+    args.push(profile.to_str().expect("utf8").to_string());
+    let mut child = cmd
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let req = format!(
+        "POST {request_path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{request_body}",
+        request_body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut err = String::new();
+    let _ = child
+        .stderr
+        .take()
+        .expect("stderr")
+        .read_to_string(&mut err);
+    upstream_thread.join().expect("upstream");
+    let upstream_req = rx.recv().expect("upstream request");
+    (resp, upstream_req, err)
+}
+
+#[test]
+fn proxy_same_wire_chat_error_is_http_400() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "chat-err",
+        wire: "chat-completions",
+        chat_path: Some("/v1/chat/completions"),
+        from: "chat",
+        extra_args: &[],
+        request_path: "/v1/chat/completions",
+        request_body: r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#,
+        upstream_body: r#"{"error":{"message":"please wait","type":"rate_limit_error","code":"rate_limit_exceeded"}}"#,
+    });
+    assert!(resp.starts_with("HTTP/1.1 400"), "{resp}");
+    assert!(resp.contains("please wait"), "{resp}");
+    assert!(resp.contains("rate_limit_error"), "{resp}");
+    assert!(resp.contains("rate_limit_exceeded"), "{resp}");
+    assert!(!resp.contains("finish_reason"), "{resp}");
+}
+
+#[test]
+fn proxy_same_wire_chat_choices_stay_http_200() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "chat-choice",
+        wire: "chat-completions",
+        chat_path: Some("/v1/chat/completions"),
+        from: "chat",
+        extra_args: &[],
+        request_path: "/v1/chat/completions",
+        request_body: r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#,
+        upstream_body: r#"{"choices":[{"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"error":{"message":"please wait","type":"rate_limit_error"}}"#,
+    });
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+    assert!(resp.contains("Hi"), "{resp}");
+    assert!(resp.contains("finish_reason"), "{resp}");
+}
+
+#[test]
+fn proxy_same_wire_stream_error_stays_http_200() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "chat-stream-err",
+        wire: "chat-completions",
+        chat_path: Some("/v1/chat/completions"),
+        from: "chat",
+        extra_args: &[],
+        request_path: "/v1/chat/completions",
+        request_body: r#"{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+        upstream_body: r#"{"error":{"message":"please wait","type":"rate_limit_error","code":"rate_limit_exceeded"}}"#,
+    });
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+    assert!(resp.contains("event: error"), "{resp}");
+    assert!(resp.contains("please wait"), "{resp}");
+}
+
+#[test]
+fn proxy_gemini_error_object_is_http_400() {
+    let (resp, req, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "gemini-err",
+        wire: "gemini",
+        chat_path: Some("/v1beta/models/{model}:generateContent"),
+        from: "chat",
+        extra_args: &[],
+        request_path: "/v1/chat/completions",
+        request_body: r#"{"model":"gemini-2.0-flash","messages":[{"role":"user","content":"hi"}]}"#,
+        upstream_body: r#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"please wait"}}"#,
+    });
+    assert!(req.contains(":generateContent"), "{req}");
+    assert!(resp.starts_with("HTTP/1.1 400"), "{resp}");
+    assert!(resp.contains("please wait"), "{resp}");
+    assert!(resp.contains("RESOURCE_EXHAUSTED"), "{resp}");
+    assert!(!resp.contains("\"choices\""), "{resp}");
 }
 
 #[test]

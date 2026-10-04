@@ -745,9 +745,16 @@ fn split_openai_compat_api(raw: &str, wire: EmitWire) -> Result<(String, String)
     {
         return Err("URL contains a character that is not allowed".into());
     }
-    let (scheme, rest) = raw
-        .split_once("://")
-        .ok_or_else(|| format!("not an absolute URL: {raw}"))?;
+    let (scheme, rest) = raw.split_once("://").ok_or_else(|| {
+        if raw.contains('@') {
+            "not an absolute URL".to_string()
+        } else {
+            format!("not an absolute URL: {raw}")
+        }
+    })?;
+    if catalog_authority_has_userinfo(rest) {
+        return Err("api URL must not include userinfo".into());
+    }
     if scheme != "https" && scheme != "http" {
         return Err(format!(
             "URL scheme must be https (or http on loopback): {raw}"
@@ -787,6 +794,11 @@ fn split_openai_compat_api(raw: &str, wire: EmitWire) -> Result<(String, String)
         format!("{path}{}", wire.chat_suffix())
     };
     Ok((origin, suffix))
+}
+
+fn catalog_authority_has_userinfo(rest: &str) -> bool {
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    authority.contains('@')
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -1258,6 +1270,52 @@ mod tests {
         .expect_err("quote");
         assert!(err.contains("not allowed"), "{err}");
         assert!(!err.contains("chat_path"));
+    }
+
+    #[test]
+    fn split_openai_compat_rejects_userinfo() {
+        let err = split_openai_compat_api(
+            "https://user:s3cret@api.example.com/v1",
+            EmitWire::ChatCompletions,
+        )
+        .expect_err("userinfo");
+        assert!(err.contains("userinfo"), "{err}");
+        assert!(err.contains("api URL"), "{err}");
+        assert!(!err.contains("s3cret"), "{err}");
+        assert!(!err.contains("user:"), "{err}");
+        let err =
+            split_openai_compat_api("user:s3cret@api.example.com/v1", EmitWire::ChatCompletions)
+                .expect_err("no scheme");
+        assert!(err.contains("absolute"), "{err}");
+        assert!(!err.contains("s3cret"), "{err}");
+        let err = profile_toml(&CatalogVendor {
+            id: "evilauth".into(),
+            display_name: "evilauth".into(),
+            api: Some("https://User:S3cret@api.example.com/v1".into()),
+            env: vec!["EVIL_KEY".into()],
+            npm: Some("@ai-sdk/openai-compatible".into()),
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("evilauth"), "{err}");
+        assert!(err.contains("userinfo"), "{err}");
+        assert!(!err.contains("S3cret"), "{err}");
+        let (origin, path) =
+            split_openai_compat_api("https://api.example.com/v1", EmitWire::ChatCompletions)
+                .expect("plain https");
+        assert_eq!(origin, "https://api.example.com");
+        assert_eq!(path, "/v1/chat/completions");
+        let (origin, path) =
+            split_openai_compat_api("https://{env:HOST}/v1", EmitWire::ChatCompletions)
+                .expect("env placeholder");
+        assert_eq!(origin, "https://{env:HOST}");
+        assert_eq!(path, "/v1/chat/completions");
+        let (origin, _) = split_openai_compat_api(
+            "https://api.example.com/v1?user=a@b",
+            EmitWire::ChatCompletions,
+        )
+        .expect("at sign in query");
+        assert_eq!(origin, "https://api.example.com");
     }
 
     #[test]

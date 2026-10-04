@@ -542,13 +542,23 @@ fn count_model(
 }
 
 /// Replace a top-level string `model` when `--model` names a different one.
-/// Leave bodies that have no `model` field unchanged.
-fn rewrite_count_body_model(body: &[u8], model: &str) -> Option<Vec<u8>> {
+///
+/// Messages count has no model in the URL, so a missing or non-string
+/// `model` is written when `insert_if_missing` is set. Gemini carries
+/// the model in the `:countTokens` URL, so a body with no `model`
+/// field is left unchanged.
+fn rewrite_count_body_model(body: &[u8], model: &str, insert_if_missing: bool) -> Option<Vec<u8>> {
     let mut value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
     let obj = value.as_object_mut()?;
-    let existing = obj.get("model")?.as_str()?;
-    if existing == model {
-        return None;
+    match obj.get("model") {
+        Some(existing) => match existing.as_str() {
+            Some(text) if text == model => return None,
+            Some(_) => {}
+            None if insert_if_missing => {}
+            None => return None,
+        },
+        None if insert_if_missing => {}
+        None => return None,
     }
     obj.insert(
         "model".to_string(),
@@ -623,9 +633,10 @@ async fn handle_count(
     let untouched = count_model(state.from, path, body, None);
     let model = count_model(state.from, path, body, override_model);
     let overridden = override_model.is_some_and(|model| !model.is_empty());
+    let insert_missing_model = matches!(route, CountRoute::Messages);
     let send_body = if overridden
         && let Some(model) = model.as_deref()
-        && let Some(rewritten) = rewrite_count_body_model(body, model)
+        && let Some(rewritten) = rewrite_count_body_model(body, model, insert_missing_model)
     {
         Bytes::from(rewritten)
     } else {
@@ -1359,24 +1370,40 @@ fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
     }))
 }
 
-/// Cross-wire JSON success body that is only a vendor failure.
+/// JSON success body that is only a vendor failure.
 ///
 /// Responses uses `status: failed` with no output. Chat uses an `error`
 /// object and no `choices`. Messages uses `type: error` and no content
-/// blocks. `wiremux map` still translates those bodies, so a client
-/// behind the proxy would read a blank completion as success.
+/// blocks. Gemini uses an `error` object and no candidates. A non-stream
+/// same-wire match keeps the vendor bytes. The proxy returns those bytes
+/// as HTTP 400. A stream match is an SSE error on the upstream status.
 fn cross_wire_vendor_failure(from: Wire, target: Wire, stream: bool, body: &[u8]) -> Option<Bytes> {
-    if target == from {
-        return None;
-    }
     let detail = responses_complete_vendor_failure(target, body)
         .or_else(|| chat_complete_vendor_failure(target, body))
-        .or_else(|| messages_complete_vendor_failure(target, body))?;
+        .or_else(|| messages_complete_vendor_failure(target, body))
+        .or_else(|| gemini_complete_vendor_failure(target, body))?;
     if stream {
         Some(dest_error_bytes(from, detail))
+    } else if target == from {
+        Some(Bytes::copy_from_slice(body))
     } else {
         Some(Bytes::from(dest_error_json(from, &detail).to_string()))
     }
+}
+
+fn gemini_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
+    if target != Wire::Gemini {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let candidates = value
+        .get("candidates")
+        .and_then(serde_json::Value::as_array);
+    if candidates.is_some_and(|items| !items.is_empty()) {
+        return None;
+    }
+    let err = value.get("error").filter(|item| item.is_object())?;
+    vendor_error_detail(err)
 }
 
 fn chat_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
@@ -1585,12 +1612,26 @@ mod tests {
             Some("from-flag"),
         );
         assert_eq!(chosen.as_deref(), Some("from-flag"));
-        let rewritten = rewrite_count_body_model(body, "from-flag").expect("rewrite");
+        let rewritten = rewrite_count_body_model(body, "from-flag", true).expect("rewrite");
         let value: serde_json::Value = serde_json::from_slice(&rewritten).expect("json");
         assert_eq!(value["model"], "from-flag");
         assert!(value.get("max_tokens").is_none());
         let gemini = br#"{"contents":[]}"#;
-        assert!(rewrite_count_body_model(gemini, "from-flag").is_none());
+        assert!(rewrite_count_body_model(gemini, "from-flag", false).is_none());
+        let missing = br#"{"messages":[{"role":"user","content":"hi"}]}"#;
+        let inserted = rewrite_count_body_model(missing, "from-flag", true).expect("insert model");
+        let value: serde_json::Value = serde_json::from_slice(&inserted).expect("json");
+        assert_eq!(value["model"], "from-flag");
+        assert_eq!(value["messages"][0]["content"], "hi");
+        assert!(value.get("max_tokens").is_none());
+        let numeric = br#"{"model":1,"messages":[]}"#;
+        let replaced =
+            rewrite_count_body_model(numeric, "from-flag", true).expect("replace number");
+        let value: serde_json::Value = serde_json::from_slice(&replaced).expect("json");
+        assert_eq!(value["model"], "from-flag");
+        let same = br#"{"model":"from-flag","messages":[]}"#;
+        assert!(rewrite_count_body_model(same, "from-flag", true).is_none());
+        assert!(rewrite_count_body_model(numeric, "from-flag", false).is_none());
         let path_model = count_model(
             wiremux_auth::Wire::Gemini,
             "/v1beta/models/gemini-2.0-flash:countTokens",
@@ -2262,10 +2303,15 @@ anthropic-beta = "context-1m-2025-08-07"
             super::cross_wire_vendor_failure(chat, responses, false, partial).is_none(),
             "partial text stays on the map path"
         );
-        assert!(
-            super::cross_wire_vendor_failure(responses, responses, false, body).is_none(),
-            "same-wire stays a passthrough"
-        );
+        let same: serde_json::Value = serde_json::from_slice(
+            &super::cross_wire_vendor_failure(responses, responses, false, body)
+                .expect("same-wire empty failure is still a failure"),
+        )
+        .expect("json");
+        assert_eq!(same["status"], "failed");
+        assert_eq!(same["error"]["code"], "rate_limit_exceeded");
+        assert_eq!(same["error"]["message"], "please wait");
+        assert_eq!(same["id"], "resp_1");
         let empty_err = br#"{"status":"failed","error":{},"output":[]}"#;
         assert!(super::cross_wire_vendor_failure(chat, responses, false, empty_err).is_none());
         let null_output = br#"{"status":"failed","error":{"code":"rate_limit_exceeded","message":"please wait"},"output":null}"#;
@@ -2334,10 +2380,23 @@ anthropic-beta = "context-1m-2025-08-07"
             super::cross_wire_vendor_failure(messages, chat, false, kept).is_none(),
             "a choice stays on the map path"
         );
-        assert!(
-            super::cross_wire_vendor_failure(chat, chat, false, chat_error).is_none(),
-            "same-wire stays a passthrough"
-        );
+        let same: serde_json::Value = serde_json::from_slice(
+            &super::cross_wire_vendor_failure(chat, chat, false, chat_error)
+                .expect("same-wire error-only body is still a failure"),
+        )
+        .expect("json");
+        assert_eq!(same["error"]["type"], "rate_limit_error");
+        assert_eq!(same["error"]["code"], "rate_limit_exceeded");
+        assert_eq!(same["error"]["message"], "please wait");
+        assert!(same.get("choices").is_none());
+        let same_stream = String::from_utf8(
+            super::cross_wire_vendor_failure(chat, chat, true, chat_error)
+                .expect("same-wire stream stays an event")
+                .to_vec(),
+        )
+        .expect("utf8");
+        assert!(same_stream.starts_with("event: error\n"), "{same_stream}");
+        assert!(same_stream.contains("please wait"), "{same_stream}");
 
         let messages_error =
             br#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
@@ -2349,6 +2408,14 @@ anthropic-beta = "context-1m-2025-08-07"
         assert_eq!(value["error"]["type"], "overloaded_error");
         assert_eq!(value["error"]["message"], "Overloaded");
         assert!(value.get("choices").is_none());
+        let same_messages: serde_json::Value = serde_json::from_slice(
+            &super::cross_wire_vendor_failure(messages, messages, false, messages_error)
+                .expect("same-wire messages error"),
+        )
+        .expect("json");
+        assert_eq!(same_messages["type"], "error");
+        assert_eq!(same_messages["error"]["type"], "overloaded_error");
+        assert_eq!(same_messages["error"]["message"], "Overloaded");
 
         let with_text = br#"{"type":"error","content":[{"type":"text","text":"Hi"}],"error":{"type":"api_error","message":"nope"}}"#;
         assert!(
@@ -2357,10 +2424,39 @@ anthropic-beta = "context-1m-2025-08-07"
         );
 
         let gemini_error = br#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"please wait"}}"#;
+        let value: serde_json::Value = serde_json::from_slice(
+            &super::cross_wire_vendor_failure(chat, gemini, false, gemini_error)
+                .expect("gemini error object is not a completion"),
+        )
+        .expect("json");
+        assert_eq!(value["error"]["type"], "RESOURCE_EXHAUSTED");
+        assert_eq!(value["error"]["message"], "please wait");
+        assert!(value.get("choices").is_none());
+        let with_candidates = br#"{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}],"error":{"status":"RESOURCE_EXHAUSTED","message":"please wait"}}"#;
         assert!(
-            super::cross_wire_vendor_failure(chat, gemini, false, gemini_error).is_none(),
-            "gemini complete errors stay HardError on the decode path"
+            super::cross_wire_vendor_failure(chat, gemini, false, with_candidates).is_none(),
+            "candidates stay on the map path"
         );
+        let empty_candidates =
+            br#"{"candidates":[],"error":{"status":"RESOURCE_EXHAUSTED","message":"please wait"}}"#;
+        let value: serde_json::Value = serde_json::from_slice(
+            &super::cross_wire_vendor_failure(chat, gemini, false, empty_candidates)
+                .expect("empty candidates are not completion text"),
+        )
+        .expect("json");
+        assert_eq!(value["error"]["message"], "please wait");
+        let prompt_only = br#"{"promptFeedback":{"blockReason":"SAFETY"}}"#;
+        assert!(
+            super::cross_wire_vendor_failure(chat, gemini, false, prompt_only).is_none(),
+            "blockReason without an error object stays on the decode path"
+        );
+        let same_gemini: serde_json::Value = serde_json::from_slice(
+            &super::cross_wire_vendor_failure(gemini, gemini, false, gemini_error)
+                .expect("same-wire gemini error"),
+        )
+        .expect("json");
+        assert_eq!(same_gemini["error"]["status"], "RESOURCE_EXHAUSTED");
+        assert_eq!(same_gemini["error"]["message"], "please wait");
 
         let text = String::from_utf8(
             super::cross_wire_vendor_failure(chat, messages, true, messages_error)
