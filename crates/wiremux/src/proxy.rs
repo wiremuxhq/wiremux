@@ -691,6 +691,12 @@ async fn handle_count(
         status.as_u16(),
         loss_summary(&loss, &LossReport::default())
     );
+    if status.is_success() && !same_wire_success_is_json(&content_type, &upstream_body) {
+        return text(
+            StatusCode::BAD_GATEWAY,
+            "upstream success body is not JSON\n",
+        );
+    }
     bytes_response(status_from_reqwest(status), &content_type, upstream_body)
 }
 
