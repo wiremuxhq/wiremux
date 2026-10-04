@@ -1948,8 +1948,7 @@ anthropic-beta = "context-1m-2025-08-07"
         let null_output = br#"{"status":"failed","error":{"code":"rate_limit_exceeded","message":"please wait"},"output":null}"#;
         let value: serde_json::Value = serde_json::from_slice(
             &super::cross_wire_vendor_failure(chat, responses, false, null_output)
-                .expect("null output is still no text")
-                .to_vec(),
+                .expect("null output is still no text"),
         )
         .expect("json");
         assert_eq!(value["error"]["type"], "rate_limit_exceeded");
