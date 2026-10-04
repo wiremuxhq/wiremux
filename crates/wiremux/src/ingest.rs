@@ -760,9 +760,17 @@ fn split_openai_compat_api(raw: &str, wire: EmitWire) -> Result<(String, String)
             "URL scheme must be https (or http on loopback): {raw}"
         ));
     }
-    let (host_port, path) = match rest.split_once('/') {
-        Some((h, p)) => (h, format!("/{p}")),
-        None => (rest, String::new()),
+    let (path_part, query) = split_catalog_query(rest);
+    let (host_port, path) = match path_part.split_once('/') {
+        Some((h, p)) => {
+            let p = p.trim_end_matches('/');
+            if p.is_empty() {
+                (h, String::new())
+            } else {
+                (h, format!("/{p}"))
+            }
+        }
+        None => (path_part, String::new()),
     };
     let host = host_port
         .split(':')
@@ -793,7 +801,24 @@ fn split_openai_compat_api(raw: &str, wire: EmitWire) -> Result<(String, String)
     } else {
         format!("{path}{}", wire.chat_suffix())
     };
+    let suffix = match query {
+        Some(query) => format!("{suffix}?{query}"),
+        None => suffix,
+    };
     Ok((origin, suffix))
+}
+
+/// Path before `?`, and the query without a fragment.
+///
+/// The fragment is not sent on the wire. A query has to stay after the
+/// chat suffix, or `/v1?api-version=1/chat/completions` never matches.
+fn split_catalog_query(rest: &str) -> (&str, Option<&str>) {
+    let no_frag = rest.split_once('#').map(|(path, _)| path).unwrap_or(rest);
+    match no_frag.split_once('?') {
+        Some((path, query)) if !query.is_empty() => (path, Some(query)),
+        Some((path, _)) => (path, None),
+        None => (no_frag, None),
+    }
 }
 
 fn catalog_authority_has_userinfo(rest: &str) -> bool {
@@ -1310,12 +1335,13 @@ mod tests {
                 .expect("env placeholder");
         assert_eq!(origin, "https://{env:HOST}");
         assert_eq!(path, "/v1/chat/completions");
-        let (origin, _) = split_openai_compat_api(
+        let (origin, path) = split_openai_compat_api(
             "https://api.example.com/v1?user=a@b",
             EmitWire::ChatCompletions,
         )
         .expect("at sign in query");
         assert_eq!(origin, "https://api.example.com");
+        assert_eq!(path, "/v1/chat/completions?user=a@b");
         let err = split_openai_compat_api(
             "https://user:s3cret%40api.example.com/v1",
             EmitWire::ChatCompletions,
@@ -1323,12 +1349,21 @@ mod tests {
         .expect_err("encoded at");
         assert!(err.contains("userinfo"), "{err}");
         assert!(!err.contains("s3cret"), "{err}");
-        let (origin, _) = split_openai_compat_api(
+        let (origin, path) = split_openai_compat_api(
             "https://api.example.com/v1?next=%40",
             EmitWire::ChatCompletions,
         )
         .expect("encoded at in query");
         assert_eq!(origin, "https://api.example.com");
+        assert_eq!(path, "/v1/chat/completions?next=%40");
+        let (origin, path) = split_openai_compat_api(
+            "https://api.example.com/v1?api-version=2024-10-21#ignored",
+            EmitWire::ChatCompletions,
+        )
+        .expect("query and fragment");
+        assert_eq!(origin, "https://api.example.com");
+        assert_eq!(path, "/v1/chat/completions?api-version=2024-10-21");
+        assert!(!path.contains('#'));
     }
 
     #[test]
