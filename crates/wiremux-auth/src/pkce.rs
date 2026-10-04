@@ -113,6 +113,8 @@ pub fn build_auth_url(
 
 /// Overlay extras must not overwrite engine OAuth fields or attach
 /// credential material to the browser authorize URL. Case-insensitive.
+/// `code` is a prior authorization code. It is not `code_challenge`
+/// or `response_type`. The token request still sends `client_secret`.
 fn is_reserved_authorize_param(key: &str) -> bool {
     matches!(
         key.to_ascii_lowercase().as_str(),
@@ -129,6 +131,12 @@ fn is_reserved_authorize_param(key: &str) -> bool {
             | "access_token"
             | "refresh_token"
             | "id_token"
+            | "password"
+            | "client_assertion"
+            | "client_assertion_type"
+            | "assertion"
+            | "device_code"
+            | "code"
     )
 }
 
@@ -358,6 +366,49 @@ mod tests {
         assert!(!url.contains("header.payload.sig"), "{url}");
         assert!(url.contains("audience=inference"), "{url}");
         assert!(url.contains("client_id=client-1"), "{url}");
+    }
+
+    #[test]
+    fn build_auth_url_drops_other_credential_params() {
+        let pkce = PkceChallenge {
+            code_verifier: "v".into(),
+            code_challenge: "challenge-stays".into(),
+            state: "s".into(),
+        };
+        let mut extra = BTreeMap::new();
+        extra.insert("password".into(), "pw-leak".into());
+        extra.insert("Password".into(), "Pw-Leak".into());
+        extra.insert("client_assertion".into(), "eyJ.leak.jwt".into());
+        extra.insert("CLIENT_ASSERTION".into(), "EYJ-LEAK".into());
+        extra.insert("client_assertion_type".into(), "assertion-type-leak".into());
+        extra.insert("assertion".into(), "assertion-leak".into());
+        extra.insert("device_code".into(), "device-code-leak".into());
+        extra.insert("code".into(), "auth-code-leak".into());
+        extra.insert("audience".into(), "inference".into());
+        extra.insert("resource".into(), "api".into());
+        let url = build_auth_url(
+            "https://auth.example.invalid/authorize",
+            "client-1",
+            "http://localhost:9/cb",
+            Some("openid"),
+            &pkce,
+            &extra,
+        );
+        assert!(!url.contains("pw-leak"), "{url}");
+        assert!(!url.contains("Pw-Leak"), "{url}");
+        assert!(!url.contains("eyJ.leak.jwt"), "{url}");
+        assert!(!url.contains("EYJ-LEAK"), "{url}");
+        assert!(!url.contains("assertion-type-leak"), "{url}");
+        assert!(!url.contains("assertion-leak"), "{url}");
+        assert!(!url.contains("device-code-leak"), "{url}");
+        assert!(!url.contains("auth-code-leak"), "{url}");
+        assert!(!url.contains("password="), "{url}");
+        assert!(!url.contains("client_assertion="), "{url}");
+        assert!(!url.contains("device_code="), "{url}");
+        assert!(url.contains("code_challenge=challenge-stays"), "{url}");
+        assert!(url.contains("response_type=code"), "{url}");
+        assert!(url.contains("audience=inference"), "{url}");
+        assert!(url.contains("resource=api"), "{url}");
     }
 
     #[test]
