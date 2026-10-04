@@ -519,6 +519,9 @@ fn count_model(
     body: &[u8],
     override_model: Option<&str>,
 ) -> Option<String> {
+    if let Some(model) = override_model.filter(|model| !model.is_empty()) {
+        return Some(model.to_string());
+    }
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body)
         && let Some(model) = value.get("model").and_then(|value| value.as_str())
         && !model.is_empty()
@@ -530,12 +533,23 @@ fn count_model(
         .strip_suffix(":countTokens")
         .map(|prefix| format!("{prefix}:generateContent"))
         .unwrap_or_else(|| lookup.to_string());
-    if let Some(model) = model_from_dest_path(from, &lookup) {
-        return Some(model);
+    model_from_dest_path(from, &lookup)
+}
+
+/// Replace a top-level string `model` when `--model` names a different one.
+/// Leave bodies that have no `model` field unchanged.
+fn rewrite_count_body_model(body: &[u8], model: &str) -> Option<Vec<u8>> {
+    let mut value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let obj = value.as_object_mut()?;
+    let existing = obj.get("model")?.as_str()?;
+    if existing == model {
+        return None;
     }
-    override_model
-        .filter(|model| !model.is_empty())
-        .map(str::to_string)
+    obj.insert(
+        "model".to_string(),
+        serde_json::Value::String(model.to_string()),
+    );
+    serde_json::to_vec(&value).ok()
 }
 
 fn rewrite_count_url(url: &str, route: CountRoute) -> Option<String> {
@@ -600,7 +614,26 @@ async fn handle_count(
     let mut loss = LossReport::default();
     let anthropic_version =
         forward_inbound_headers(&mut header_profile, &mut loss, target, inbound_headers);
-    let model = count_model(state.from, path, body, state.model_override.as_deref());
+    let override_model = state.model_override.as_deref();
+    let untouched = count_model(state.from, path, body, None);
+    let model = count_model(state.from, path, body, override_model);
+    let overridden = override_model.is_some_and(|model| !model.is_empty());
+    let send_body = if overridden
+        && let Some(model) = model.as_deref()
+        && let Some(rewritten) = rewrite_count_body_model(body, model)
+    {
+        Bytes::from(rewritten)
+    } else {
+        body.clone()
+    };
+    if overridden && untouched.as_deref() != model.as_deref() {
+        loss.record("model", LossAction::Degrade, "proxy --model");
+    }
+    if state.dump_loss {
+        for event in loss.lossy() {
+            eprintln!("loss.decode: {event}");
+        }
+    }
     let url = match count_upstream_url(&state.profile, model.as_deref(), route) {
         Ok(url) => url,
         Err(CountUrlError::NoEndpoint) => {
@@ -618,7 +651,7 @@ async fn handle_count(
         &header_profile,
         anthropic_version.as_deref(),
         &url,
-        body,
+        &send_body,
     )
     .await
     {
@@ -1473,8 +1506,9 @@ fn status_from_reqwest(status: reqwest::StatusCode) -> StatusCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        CountRoute, CountUrlError, count_route, count_upstream_url, host_is_loopback,
-        is_json_content_type, read_capped_body, same_wire_success_is_json,
+        CountRoute, CountUrlError, count_model, count_route, count_upstream_url, host_is_loopback,
+        is_json_content_type, read_capped_body, rewrite_count_body_model,
+        same_wire_success_is_json,
     };
 
     fn count_profile(wire: &str, chat_path: Option<&str>) -> wiremux_auth::ResolvedProfile {
@@ -1534,6 +1568,31 @@ mod tests {
             count_route("/v1beta/models/m:countTokens"),
             Some(CountRoute::Gemini)
         ));
+    }
+
+    #[test]
+    fn count_model_override_wins_over_body_and_path() {
+        let body = br#"{"model":"from-body","messages":[]}"#;
+        let chosen = count_model(
+            wiremux_auth::Wire::Messages,
+            "/v1/messages/count_tokens",
+            body,
+            Some("from-flag"),
+        );
+        assert_eq!(chosen.as_deref(), Some("from-flag"));
+        let rewritten = rewrite_count_body_model(body, "from-flag").expect("rewrite");
+        let value: serde_json::Value = serde_json::from_slice(&rewritten).expect("json");
+        assert_eq!(value["model"], "from-flag");
+        assert!(value.get("max_tokens").is_none());
+        let gemini = br#"{"contents":[]}"#;
+        assert!(rewrite_count_body_model(gemini, "from-flag").is_none());
+        let path_model = count_model(
+            wiremux_auth::Wire::Gemini,
+            "/v1beta/models/gemini-2.0-flash:countTokens",
+            gemini,
+            Some("from-flag"),
+        );
+        assert_eq!(path_model.as_deref(), Some("from-flag"));
     }
 
     #[test]
