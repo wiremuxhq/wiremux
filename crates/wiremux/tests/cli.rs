@@ -931,6 +931,7 @@ fn proxy_count_model_override_inserts_missing_messages_model() {
         request_path: "/v1/messages/count_tokens",
         request_body: r#"{"messages":[{"role":"user","content":"hi"}]}"#,
         upstream_body: r#"{"input_tokens":3}"#,
+        upstream_content_type: "application/json",
     });
     assert!(req.contains("POST /v1/messages/count_tokens"), "{req}");
     let body = req.split("\r\n\r\n").nth(1).unwrap_or("");
@@ -940,6 +941,24 @@ fn proxy_count_model_override_inserts_missing_messages_model() {
     assert!(parsed.get("max_tokens").is_none(), "{body}");
     assert!(resp.contains("input_tokens"), "{resp}");
     assert!(err.contains("proxy --model"), "{err}");
+}
+
+#[test]
+fn proxy_count_html_success_is_bad_gateway() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "count-html",
+        wire: "messages",
+        chat_path: Some("/v1/messages"),
+        from: "messages",
+        extra_args: &[],
+        request_path: "/v1/messages/count_tokens",
+        request_body: r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+        upstream_body: "<html>login</html>",
+        upstream_content_type: "text/html",
+    });
+    assert!(resp.starts_with("HTTP/1.1 502"), "{resp}");
+    assert!(resp.contains("not JSON"), "{resp}");
+    assert!(!resp.contains("<html>"), "{resp}");
 }
 
 #[test]
@@ -1316,6 +1335,7 @@ struct ProxyExchange<'a> {
     request_path: &'a str,
     request_body: &'a str,
     upstream_body: &'a str,
+    upstream_content_type: &'a str,
 }
 
 fn proxy_http_exchange(spec: ProxyExchange<'_>) -> (String, String, String) {
@@ -1328,11 +1348,13 @@ fn proxy_http_exchange(spec: ProxyExchange<'_>) -> (String, String, String) {
         request_path,
         request_body,
         upstream_body,
+        upstream_content_type,
     } = spec;
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let upstream_body = upstream_body.to_string();
+    let upstream_content_type = upstream_content_type.to_string();
     let upstream_thread = std::thread::spawn(move || {
         let (mut stream, _) = upstream.accept().expect("accept");
         let mut buf = [0u8; 16384];
@@ -1340,7 +1362,7 @@ fn proxy_http_exchange(spec: ProxyExchange<'_>) -> (String, String, String) {
         let req = String::from_utf8_lossy(&buf[..n]).to_string();
         let _ = tx.send(req);
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{upstream_body}",
+            "HTTP/1.1 200 OK\r\nContent-Type: {upstream_content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{upstream_body}",
             upstream_body.len()
         );
         let _ = stream.write_all(resp.as_bytes());
@@ -1410,6 +1432,7 @@ fn proxy_same_wire_chat_error_is_http_400() {
         request_path: "/v1/chat/completions",
         request_body: r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#,
         upstream_body: r#"{"error":{"message":"please wait","type":"rate_limit_error","code":"rate_limit_exceeded"}}"#,
+        upstream_content_type: "application/json",
     });
     assert!(resp.starts_with("HTTP/1.1 400"), "{resp}");
     assert!(resp.contains("please wait"), "{resp}");
@@ -1429,6 +1452,7 @@ fn proxy_same_wire_chat_choices_stay_http_200() {
         request_path: "/v1/chat/completions",
         request_body: r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#,
         upstream_body: r#"{"choices":[{"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"error":{"message":"please wait","type":"rate_limit_error"}}"#,
+        upstream_content_type: "application/json",
     });
     assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
     assert!(resp.contains("Hi"), "{resp}");
@@ -1446,6 +1470,7 @@ fn proxy_same_wire_stream_error_stays_http_200() {
         request_path: "/v1/chat/completions",
         request_body: r#"{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
         upstream_body: r#"{"error":{"message":"please wait","type":"rate_limit_error","code":"rate_limit_exceeded"}}"#,
+        upstream_content_type: "application/json",
     });
     assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
     assert!(resp.contains("event: error"), "{resp}");
@@ -1463,6 +1488,7 @@ fn proxy_gemini_error_object_is_http_400() {
         request_path: "/v1/chat/completions",
         request_body: r#"{"model":"gemini-2.0-flash","messages":[{"role":"user","content":"hi"}]}"#,
         upstream_body: r#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"please wait"}}"#,
+        upstream_content_type: "application/json",
     });
     assert!(req.contains(":generateContent"), "{req}");
     assert!(resp.starts_with("HTTP/1.1 400"), "{resp}");
