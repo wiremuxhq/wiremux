@@ -441,12 +441,17 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         && let Some(mapped) =
             cross_wire_vendor_failure(state.from, target, ir.sampling.stream == Some(true), &body)
     {
-        let failure_type = if ir.sampling.stream == Some(true) {
-            dest_stream_content_type(state.from)
-        } else {
-            "application/json"
-        };
-        return bytes_response(status_from_reqwest(status), failure_type, mapped);
+        if ir.sampling.stream == Some(true) {
+            return bytes_response(
+                status_from_reqwest(status),
+                dest_stream_content_type(state.from),
+                mapped,
+            );
+        }
+        // 5xx is retried as a transient HTTP failure. A billing or
+        // request error that arrived inside HTTP 200 must stay a
+        // client error so the caller surfaces the vendor message.
+        return bytes_response(StatusCode::BAD_REQUEST, "application/json", mapped);
     }
     if ir.sampling.stream == Some(true)
         && status.is_success()
