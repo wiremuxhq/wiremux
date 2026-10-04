@@ -433,6 +433,17 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
             return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
         }
     };
+    if status.is_success()
+        && let Some(mapped) =
+            cross_wire_vendor_failure(state.from, target, ir.sampling.stream == Some(true), &body)
+    {
+        let failure_type = if ir.sampling.stream == Some(true) {
+            dest_stream_content_type(state.from)
+        } else {
+            "application/json"
+        };
+        return bytes_response(status_from_reqwest(status), failure_type, mapped);
+    }
     if ir.sampling.stream == Some(true)
         && status.is_success()
         && let Some(sse) =
@@ -1102,16 +1113,12 @@ fn split_error_prefix(msg: &str) -> (Option<&str>, &str) {
     }
 }
 
-fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
+fn dest_error_json(from: Wire, msg: &str) -> serde_json::Value {
     if matches!(from, Wire::Converse) {
-        let payload = serde_json::json!({ "message": msg }).to_string();
-        return Bytes::from(encode_eventstream_exception(
-            "internalServerException",
-            payload.as_bytes(),
-        ));
+        return serde_json::json!({ "message": msg });
     }
-    let (code, text) = split_error_prefix(&msg);
-    let data = match from {
+    let (code, text) = split_error_prefix(msg);
+    match from {
         Wire::Messages => {
             let ty = code.unwrap_or("api_error");
             serde_json::json!({
@@ -1139,11 +1146,83 @@ fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
                 "error": { "type": ty, "message": text }
             })
         }
-    };
+    }
+}
+
+fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
+    if matches!(from, Wire::Converse) {
+        let payload = dest_error_json(from, &msg).to_string();
+        return Bytes::from(encode_eventstream_exception(
+            "internalServerException",
+            payload.as_bytes(),
+        ));
+    }
     Bytes::from(format_sse(&RawSse {
         event: Some("error".into()),
-        data: data.to_string(),
+        data: dest_error_json(from, &msg).to_string(),
     }))
+}
+
+/// Cross-wire JSON body whose vendor failure has no output text.
+///
+/// `wiremux map` still turns that body into finish_reason stop. A Chat
+/// client behind the proxy would read the blank completion as success.
+fn cross_wire_vendor_failure(from: Wire, target: Wire, stream: bool, body: &[u8]) -> Option<Bytes> {
+    if target == from {
+        return None;
+    }
+    let detail = responses_complete_vendor_failure(target, body)?;
+    if stream {
+        Some(dest_error_bytes(from, detail))
+    } else {
+        Some(Bytes::from(dest_error_json(from, &detail).to_string()))
+    }
+}
+
+fn responses_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
+    if target != Wire::Responses {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let wrapped = value.get("type").and_then(serde_json::Value::as_str) == Some("response.failed");
+    let response = if wrapped {
+        value
+            .get("response")
+            .filter(|inner| inner.is_object())
+            .unwrap_or(&value)
+    } else {
+        &value
+    };
+    let status = response.get("status").and_then(serde_json::Value::as_str);
+    if status != Some("failed") {
+        return None;
+    }
+    match response.get("output") {
+        Some(serde_json::Value::Array(items)) if items.is_empty() => {}
+        None => {}
+        _ => return None,
+    }
+    let err = ["error", "last_error"]
+        .iter()
+        .find_map(|key| response.get(*key).filter(|item| item.is_object()))?;
+    let message = err
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    let code = err.get("code").and_then(|code| {
+        code.as_str()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+            .or_else(|| code.as_i64().map(|n| n.to_string()))
+    });
+    match (code, message) {
+        (Some(code), Some(message)) => Some(format!("{code}: {message}")),
+        (None, Some(message)) => Some(message.to_string()),
+        (Some(code), None) => Some(code),
+        (None, None) => None,
+    }
 }
 
 fn format_sse(raw: &RawSse) -> String {
@@ -1823,5 +1902,73 @@ anthropic-beta = "context-1m-2025-08-07"
         let value: serde_json::Value = serde_json::from_str(data).expect("error json");
         assert_eq!(value["error"]["type"], "rate_limit_exceeded", "{text}");
         assert_eq!(value["error"]["message"], "please wait", "{text}");
+    }
+
+    #[test]
+    fn cross_wire_failed_response_is_dest_error() {
+        let body = br#"{"id":"resp_1","object":"response","status":"failed","error":{"code":"rate_limit_exceeded","message":"please wait"},"output":[]}"#;
+        let chat = wiremux_auth::Wire::ChatCompletions;
+        let responses = wiremux_auth::Wire::Responses;
+        let bytes = super::cross_wire_vendor_failure(chat, responses, false, body)
+            .expect("empty failed response is an error");
+        let value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(value["error"]["type"], "rate_limit_exceeded");
+        assert_eq!(value["error"]["message"], "please wait");
+        assert!(value.get("choices").is_none());
+
+        let older = br#"{"status":"failed","last_error":{"code":"rate_limit_exceeded","message":"please wait"}}"#;
+        let value: serde_json::Value = serde_json::from_slice(
+            &super::cross_wire_vendor_failure(chat, responses, false, older).expect("last_error"),
+        )
+        .expect("json");
+        assert_eq!(value["error"]["type"], "rate_limit_exceeded");
+        assert_eq!(value["error"]["message"], "please wait");
+
+        let message_only = br#"{"status":"failed","error":{"message":"The model is currently at capacity due to high demand."},"output":[]}"#;
+        let text = String::from_utf8(
+            super::cross_wire_vendor_failure(chat, responses, false, message_only)
+                .expect("message only")
+                .to_vec(),
+        )
+        .expect("utf8");
+        assert!(text.contains("at capacity due to high demand"), "{text}");
+        assert!(!text.contains("decode"), "{text}");
+
+        let partial = br#"{"status":"failed","error":{"code":"server_error","message":"nope"},"output":[{"type":"message","content":[{"type":"output_text","text":"Hi"}]}]}"#;
+        assert!(
+            super::cross_wire_vendor_failure(chat, responses, false, partial).is_none(),
+            "partial text stays on the map path"
+        );
+        assert!(
+            super::cross_wire_vendor_failure(responses, responses, false, body).is_none(),
+            "same-wire stays a passthrough"
+        );
+        let empty_err = br#"{"status":"failed","error":{},"output":[]}"#;
+        assert!(super::cross_wire_vendor_failure(chat, responses, false, empty_err).is_none());
+
+        let text = String::from_utf8(
+            super::cross_wire_vendor_failure(chat, responses, true, body)
+                .expect("stream framing")
+                .to_vec(),
+        )
+        .expect("utf8");
+        assert!(text.starts_with("event: error\n"), "{text}");
+        assert!(text.contains("rate_limit_exceeded"), "{text}");
+        assert!(!text.contains("[DONE]"), "{text}");
+
+        let wrapped = br#"{"type":"response.failed","response":{"status":"failed","error":{"code":"rate_limit_exceeded","message":"please wait"},"output":[]}}"#;
+        let value: serde_json::Value = serde_json::from_slice(
+            &super::cross_wire_vendor_failure(
+                wiremux_auth::Wire::Messages,
+                responses,
+                false,
+                wrapped,
+            )
+            .expect("wrapped event"),
+        )
+        .expect("json");
+        assert_eq!(value["type"], "error");
+        assert_eq!(value["error"]["type"], "rate_limit_exceeded");
+        assert_eq!(value["error"]["message"], "please wait");
     }
 }
