@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.10.2](https://github.com/wiremuxhq/wiremux/compare/v0.10.1...v0.10.2) (2026-10-04)
+
+
+### Bug Fixes
+
+* keep a catalog API query after the chat path ([#518](https://github.com/wiremuxhq/wiremux/issues/518)) ([cc31df9](https://github.com/wiremuxhq/wiremux/commit/cc31df9677a3cddeec735f18a2500ac6d06a82ca))
+* keep completion text when a 200 body also has an error ([#519](https://github.com/wiremuxhq/wiremux/issues/519)) ([75cfd0f](https://github.com/wiremuxhq/wiremux/commit/75cfd0fa0c40a56d62c0bc650b54caea95c398cd))
+* refuse encoded userinfo and non-JSON count replies ([#517](https://github.com/wiremuxhq/wiremux/issues/517)) ([28f9d02](https://github.com/wiremuxhq/wiremux/commit/28f9d028d7e3172e521e452122566ff33468c299))
+* return HTTP 400 for vendor errors and drop leaked credentials ([#515](https://github.com/wiremuxhq/wiremux/issues/515)) ([15bbb11](https://github.com/wiremuxhq/wiremux/commit/15bbb1105504451bd7908c91c6686ac99163d0b2)), closes [#510](https://github.com/wiremuxhq/wiremux/issues/510) [#511](https://github.com/wiremuxhq/wiremux/issues/511) [#512](https://github.com/wiremuxhq/wiremux/issues/512) [#513](https://github.com/wiremuxhq/wiremux/issues/513) [#514](https://github.com/wiremuxhq/wiremux/issues/514)
+* yield text when a stream call gets a JSON completion ([#520](https://github.com/wiremuxhq/wiremux/issues/520)) ([6eacca4](https://github.com/wiremuxhq/wiremux/commit/6eacca45c5b95838e260e93e4a9e02176725b40d))
+
 ## [0.10.1](https://github.com/wiremuxhq/wiremux/compare/v0.10.0...v0.10.1) (2026-10-04)
 
 
