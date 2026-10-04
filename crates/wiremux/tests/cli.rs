@@ -1279,6 +1279,10 @@ chat_path = "/v1/responses"
         !resp.contains("finish_reason"),
         "blank completion must not look successful, got: {resp}"
     );
+    assert!(
+        resp.starts_with("HTTP/1.1 400"),
+        "a vendor failure inside HTTP 200 must not stay 200, got: {resp}"
+    );
 }
 
 #[test]
