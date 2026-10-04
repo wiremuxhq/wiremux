@@ -111,7 +111,8 @@ pub fn build_auth_url(
     url
 }
 
-/// Overlay extras must not overwrite engine OAuth fields. Case-insensitive.
+/// Overlay extras must not overwrite engine OAuth fields or attach
+/// credential material to the browser authorize URL. Case-insensitive.
 fn is_reserved_authorize_param(key: &str) -> bool {
     matches!(
         key.to_ascii_lowercase().as_str(),
@@ -124,6 +125,10 @@ fn is_reserved_authorize_param(key: &str) -> bool {
             | "code_verifier"
             | "grant_type"
             | "scope"
+            | "client_secret"
+            | "access_token"
+            | "refresh_token"
+            | "id_token"
     )
 }
 
@@ -321,6 +326,38 @@ mod tests {
         assert!(url.contains("audience=inference"), "{url}");
         assert!(url.contains("resource=api"), "{url}");
         assert!(url.contains("prompt=consent"), "{url}");
+    }
+
+    #[test]
+    fn build_auth_url_drops_credential_params() {
+        let pkce = PkceChallenge {
+            code_verifier: "v".into(),
+            code_challenge: "c".into(),
+            state: "s".into(),
+        };
+        let mut extra = BTreeMap::new();
+        extra.insert("client_secret".into(), "supersecret".into());
+        extra.insert("Client_Secret".into(), "SuperSecret".into());
+        extra.insert("access_token".into(), "sk-ant-leak".into());
+        extra.insert("refresh_token".into(), "rt-leak".into());
+        extra.insert("id_token".into(), "header.payload.sig".into());
+        extra.insert("audience".into(), "inference".into());
+        let url = build_auth_url(
+            "https://auth.example.invalid/authorize",
+            "client-1",
+            "http://localhost:9/cb",
+            Some("openid"),
+            &pkce,
+            &extra,
+        );
+        assert!(!url.contains("supersecret"), "{url}");
+        assert!(!url.contains("SuperSecret"), "{url}");
+        assert!(!url.contains("client_secret="), "{url}");
+        assert!(!url.contains("sk-ant-leak"), "{url}");
+        assert!(!url.contains("rt-leak"), "{url}");
+        assert!(!url.contains("header.payload.sig"), "{url}");
+        assert!(url.contains("audience=inference"), "{url}");
+        assert!(url.contains("client_id=client-1"), "{url}");
     }
 
     #[test]
