@@ -1001,7 +1001,7 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
     let code = error_obj.and_then(json_error_code);
 
     if (200..300).contains(&status) {
-        if error_obj.is_some() {
+        if error_obj.is_some() && !success_body_has_completion(parsed.as_ref()) {
             return Some(classify_error_payload(
                 Some(status),
                 code,
@@ -1061,6 +1061,22 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
         });
     }
     Some(transient(Some(status), message, TransientKind::Http))
+}
+
+/// A 200 body that already has completion text is not only a vendor error.
+/// Empty arrays still count as no text, matching the proxy.
+fn success_body_has_completion(value: Option<&Value>) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    ["choices", "content", "output", "candidates"]
+        .iter()
+        .any(|key| {
+            value
+                .get(*key)
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty())
+        })
 }
 
 fn classify_error_payload(
@@ -1460,6 +1476,32 @@ mod tests {
             }
             other => panic!("expected RateLimit, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn classify_http_keeps_completion_beside_an_error_object() {
+        let with_choice = r#"{"choices":[{"message":{"role":"assistant","content":"Hi"}}],"error":{"message":"please wait","type":"rate_limit_error"}}"#;
+        assert!(
+            classify_http(200, with_choice, None).is_none(),
+            "choice text must stay a completion"
+        );
+        let with_content = r#"{"type":"error","content":[{"type":"text","text":"Hi"}],"error":{"type":"api_error","message":"nope"}}"#;
+        assert!(
+            classify_http(200, with_content, None).is_none(),
+            "message text must stay a completion"
+        );
+        let with_output = r#"{"status":"failed","output":[{"type":"message"}],"error":{"message":"please wait"}}"#;
+        assert!(
+            classify_http(200, with_output, None).is_none(),
+            "response output must stay a completion"
+        );
+        let with_candidates = r#"{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}],"error":{"message":"please wait","status":"RESOURCE_EXHAUSTED"}}"#;
+        assert!(
+            classify_http(200, with_candidates, None).is_none(),
+            "candidates must stay a completion"
+        );
+        let only = r#"{"error":{"message":"please wait","type":"rate_limit_error"}}"#;
+        assert!(classify_http(200, only, None).is_some());
     }
 
     #[tokio::test]
