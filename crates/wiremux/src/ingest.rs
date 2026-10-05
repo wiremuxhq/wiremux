@@ -385,6 +385,9 @@ pub fn ingest_catalog(text: &str, req: &IngestRequest) -> Result<IngestReport, I
     let by_id: BTreeMap<String, CatalogVendor> =
         rows.into_iter().map(|v| (v.id.clone(), v)).collect();
     let wanted = wanted_ids(req, &by_id);
+    if wanted.is_empty() {
+        return Err(IngestError::Message("no catalog rows matched".into()));
+    }
     let dir = match &req.dir {
         Some(dir) => dir.clone(),
         None => ingest_profile_dir().ok_or_else(|| {
@@ -1628,6 +1631,24 @@ mod tests {
         assert!(!wrote.iter().any(|id| id.starts_with("azure")));
         assert!(!wrote.iter().any(|id| id == "amazon-bedrock"));
         assert!(!wrote.iter().any(|id| id.starts_with("google-vertex")));
+    }
+
+    #[test]
+    fn all_compatible_with_no_matching_rows_errors_without_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let err = ingest_catalog(
+            "{}",
+            &IngestRequest {
+                all_compatible: true,
+                dir: Some(out.clone()),
+                ..IngestRequest::default()
+            },
+        )
+        .unwrap_err();
+        let shown = err.to_string();
+        assert!(shown.contains("no catalog rows matched"), "{shown}");
+        assert!(!out.exists(), "out must not be created");
     }
 
     #[test]
