@@ -791,13 +791,10 @@ fn split_openai_compat_api(raw: &str, wire: EmitWire) -> Result<(String, String)
         }
         None => (path_part, String::new()),
     };
-    let host = host_port
-        .split(':')
-        .next()
-        .unwrap_or(host_port)
-        .split('{')
-        .next()
-        .unwrap_or(host_port);
+    let host = match catalog_host_label(host_port) {
+        Ok(host) => host,
+        Err(()) => return Err("URL has no host".into()),
+    };
     if scheme == "http" && !is_loopback_host(host) && !host.is_empty() {
         return Err("http is only allowed for loopback hosts".into());
     }
@@ -906,6 +903,30 @@ fn hex_nibble(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
+}
+
+fn catalog_host_label(host_port: &str) -> Result<&str, ()> {
+    if let Some(inner) = host_port.strip_prefix('[') {
+        let (host, rest) = inner.split_once(']').ok_or(())?;
+        let port_ok = rest.is_empty()
+            || rest.strip_prefix(':').is_some_and(|port| {
+                !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+            });
+        if !port_ok || host.is_empty() {
+            return Err(());
+        }
+        return Ok(host);
+    }
+    if host_port.matches(':').count() > 1 {
+        return Err(());
+    }
+    Ok(host_port
+        .split(':')
+        .next()
+        .unwrap_or(host_port)
+        .split('{')
+        .next()
+        .unwrap_or(host_port))
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -1557,6 +1578,41 @@ mod tests {
         };
         let err = profile_toml(&v).unwrap_err().to_string();
         assert!(err.contains("loopback"), "{err}");
+    }
+
+    #[test]
+    fn http_ipv6_loopback_is_allowed() {
+        let (origin, path) =
+            split_openai_compat_api("http://[::1]:11434/v1", EmitWire::ChatCompletions)
+                .expect("bracketed ipv6 loopback");
+        assert_eq!(origin, "http://[::1]:11434");
+        assert_eq!(path, "/v1/chat/completions");
+
+        let (origin, path) = split_openai_compat_api("http://[::1]/", EmitWire::ChatCompletions)
+            .expect("bracketed ipv6 without port");
+        assert_eq!(origin, "http://[::1]");
+        assert_eq!(path, "/v1/chat/completions");
+
+        let (origin, path) =
+            split_openai_compat_api("http://127.0.0.1:11434/v1", EmitWire::ChatCompletions)
+                .expect("ipv4 loopback keeps its port");
+        assert_eq!(origin, "http://127.0.0.1:11434");
+        assert_eq!(path, "/v1/chat/completions");
+
+        for raw in [
+            "http://::1",
+            "http://::1/v1",
+            "http://[::1]evil/v1",
+            "http://[::1]example.com/v1",
+            "http://[::1]:/v1",
+            "http://[::1]:abc/v1",
+            "http://[::1]:80x/v1",
+            "http://[]",
+            "http://[]:80/v1",
+        ] {
+            let err = split_openai_compat_api(raw, EmitWire::ChatCompletions).expect_err(raw);
+            assert!(err.contains("host"), "{raw}: {err}");
+        }
     }
 
     #[test]
