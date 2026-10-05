@@ -28,6 +28,8 @@ pub mod cli;
 pub mod client;
 #[cfg(any(feature = "proxy", feature = "client"))]
 mod completion;
+#[cfg(any(feature = "cli", feature = "proxy", feature = "client"))]
+mod profile_auth;
 #[cfg(any(feature = "proxy", feature = "client"))]
 mod headers;
 #[cfg(feature = "cli")]

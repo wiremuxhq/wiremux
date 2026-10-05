@@ -90,15 +90,7 @@ pub(crate) fn apply_profile_headers(
     req
 }
 
-pub(crate) fn is_profile_auth_header(profile: &ResolvedProfile, name: &str) -> bool {
-    if name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("x-api-key") {
-        return true;
-    }
-    matches!(
-        &profile.http.auth_scheme,
-        Some(AuthScheme::Header(header)) if name.eq_ignore_ascii_case(header)
-    )
-}
+pub(crate) use crate::profile_auth::is_profile_auth_header;
 
 /// Provider-derived headers after profile headers. Profile keys win.
 pub(crate) fn apply_provider_headers(

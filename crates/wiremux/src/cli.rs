@@ -474,7 +474,7 @@ pub fn token_status(profile: &ResolvedProfile) -> TokenStatus {
 }
 
 fn is_profile_auth_header(profile: &ResolvedProfile, name: &str) -> bool {
-    crate::headers::is_profile_auth_header(profile, name)
+    crate::profile_auth::is_profile_auth_header(profile, name)
 }
 
 /// Format status without leaking the token.
