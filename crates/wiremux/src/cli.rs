@@ -475,13 +475,17 @@ pub struct TokenStatus {
 }
 
 /// Check local credential sources. Does not print secrets.
-pub fn token_status(profile: &ResolvedProfile) -> TokenStatus {
-    if matches!(profile.http.auth_scheme, Some(AuthScheme::None)) && profile.oauth.is_none() {
-        return TokenStatus {
-            id: profile.id.clone(),
-            available: true,
-            detail: "auth_scheme is none".into(),
-        };
+pub async fn token_status(profile: &ResolvedProfile) -> TokenStatus {
+    let aws = profile
+        .http
+        .aws_service
+        .as_deref()
+        .is_some_and(|service| !service.is_empty());
+    // Auth none with aws_service still signs. SigV4 replaces Authorization
+    // because bearer_token_applied is false for AuthScheme::None.
+    if matches!(profile.http.auth_scheme, Some(AuthScheme::None)) && profile.oauth.is_none() && aws
+    {
+        return aws_chain_status(profile).await;
     }
     if profile
         .http
@@ -495,24 +499,80 @@ pub fn token_status(profile: &ResolvedProfile) -> TokenStatus {
             detail: "header credential present".into(),
         };
     }
-    if profile.oauth.is_some() || !profile.access_env.is_empty() {
-        return match provider_from_profile(profile) {
-            Ok(_) => TokenStatus {
-                id: profile.id.clone(),
-                available: true,
-                detail: "credentials loaded".into(),
-            },
-            Err(err) => TokenStatus {
-                id: profile.id.clone(),
-                available: false,
-                detail: redact_secret_looking(&err.to_string()),
-            },
+    if matches!(profile.http.auth_scheme, Some(AuthScheme::None)) && profile.oauth.is_none() {
+        return TokenStatus {
+            id: profile.id.clone(),
+            available: true,
+            detail: "auth_scheme is none".into(),
         };
+    }
+    let gcp = profile
+        .http
+        .gcp_key_env
+        .as_deref()
+        .is_some_and(|name| !name.is_empty());
+    if profile.oauth.is_some() || !profile.access_env.is_empty() || gcp {
+        match provider_from_profile(profile) {
+            Ok(_) => {
+                return TokenStatus {
+                    id: profile.id.clone(),
+                    available: true,
+                    detail: "credentials loaded".into(),
+                };
+            }
+            Err(err) if !aws => {
+                return TokenStatus {
+                    id: profile.id.clone(),
+                    available: false,
+                    detail: redact_secret_looking(&err.to_string()),
+                };
+            }
+            Err(_) => {}
+        }
+    }
+    if aws {
+        return aws_chain_status(profile).await;
     }
     TokenStatus {
         id: profile.id.clone(),
         available: false,
         detail: "no credentials (set [headers] Authorization or x-api-key, [oauth], or auth_scheme = \"none\")".into(),
+    }
+}
+
+#[cfg(any(feature = "proxy", feature = "client"))]
+async fn aws_chain_status(profile: &ResolvedProfile) -> TokenStatus {
+    let service = profile.http.aws_service.as_deref().unwrap_or("bedrock");
+    match crate::aws_creds::resolve_aws_credentials().await {
+        Ok(Some(_)) => TokenStatus {
+            id: profile.id.clone(),
+            available: true,
+            detail: format!("aws sigv4 ({service})"),
+        },
+        Ok(None) => TokenStatus {
+            id: profile.id.clone(),
+            available: false,
+            detail: crate::aws_creds::missing_creds_message(profile),
+        },
+        Err(err) => TokenStatus {
+            id: profile.id.clone(),
+            available: false,
+            detail: redact_secret_looking(&err.to_string()),
+        },
+    }
+}
+
+/// `aws_creds` is compiled only for the proxy and client features.
+#[cfg(not(any(feature = "proxy", feature = "client")))]
+async fn aws_chain_status(profile: &ResolvedProfile) -> TokenStatus {
+    let service = profile.http.aws_service.as_deref().unwrap_or("bedrock");
+    TokenStatus {
+        id: profile.id.clone(),
+        available: false,
+        detail: format!(
+            "profile `{}` aws_service={service} needs a bearer token or IAM credentials",
+            profile.id
+        ),
     }
 }
 
@@ -1091,8 +1151,8 @@ chat_path = "/v1/projects/p/locations/us-central1/publishers/anthropic/models/{m
         assert!(parse_listen("[::1]:8787").is_err());
     }
 
-    #[test]
-    fn token_status_access_env_is_available() {
+    #[tokio::test]
+    async fn token_status_access_env_is_available() {
         let _home = IsolatedHome::new();
         _home.set_env("XAI_API_KEY", "xai-status-must-not-print");
         let profile = parse_profile_str(
@@ -1106,7 +1166,7 @@ base_url = "https://api.x.ai"
 "#,
         )
         .expect("parse");
-        let status = token_status(&profile);
+        let status = token_status(&profile).await;
         assert!(status.available, "{}", status.detail);
         assert!(
             !status.detail.contains("xai-status-must-not-print"),
@@ -1115,8 +1175,8 @@ base_url = "https://api.x.ai"
         );
     }
 
-    #[test]
-    fn token_status_no_credentials_names_what_to_set() {
+    #[tokio::test]
+    async fn token_status_no_credentials_names_what_to_set() {
         let profile = parse_profile_str(
             r#"
 schema_version = 1
@@ -1126,7 +1186,7 @@ base_url = "http://127.0.0.1:9"
 "#,
         )
         .expect("parse");
-        let status = token_status(&profile);
+        let status = token_status(&profile).await;
         assert!(!status.available);
         let detail = &status.detail;
         assert!(detail.contains("no credentials"), "{detail}");
@@ -1164,7 +1224,7 @@ x-goog-api-key = "goog-secret"
 "#,
         )
         .expect("parse");
-        let status = token_status(&profile);
+        let status = token_status(&profile).await;
         assert!(status.available, "{}", status.detail);
         assert_eq!(status.detail, "header credential present");
         assert!(!format_status(&status).contains("goog-secret"));
@@ -1173,8 +1233,8 @@ x-goog-api-key = "goog-secret"
         assert_eq!(token.as_deref(), Some("goog-secret"));
     }
 
-    #[test]
-    fn token_status_none_auth_is_available() {
+    #[tokio::test]
+    async fn token_status_none_auth_is_available() {
         let profile = parse_profile_str(
             r#"
 schema_version = 1
@@ -1185,13 +1245,228 @@ base_url = "http://127.0.0.1:9"
 "#,
         )
         .expect("parse");
-        let status = token_status(&profile);
+        let status = token_status(&profile).await;
         assert!(status.available);
         let text = format_status(&status);
         assert!(text.contains("token: not required"), "{text}");
         assert!(text.contains("auth_scheme is none"), "{text}");
         assert!(!text.contains("token: available"), "{text}");
         assert!(!text.contains("http://"));
+    }
+
+    #[cfg(any(feature = "proxy", feature = "client"))]
+    #[tokio::test]
+    async fn token_status_auth_none_with_aws_keys_is_sigv4() {
+        let home = IsolatedHome::new();
+        crate::aws_creds::clear_aws_credential_cache();
+        home.set_env("AWS_ACCESS_KEY_ID", "status-probe-key");
+        home.set_env("AWS_SECRET_ACCESS_KEY", "status-probe-secret");
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "bedrock-iam"
+wire = "converse"
+auth_scheme = "none"
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(status.available, "{}", status.detail);
+        assert!(
+            status.detail.contains("aws sigv4"),
+            "expected sigv4, got {}",
+            status.detail
+        );
+        let text = format_status(&status);
+        assert!(!text.contains("not required"), "{text}");
+        assert!(
+            !status.detail.contains("status-probe-key"),
+            "{}",
+            status.detail
+        );
+        let _ = home;
+    }
+
+    #[cfg(any(feature = "proxy", feature = "client"))]
+    #[tokio::test]
+    async fn token_status_auth_none_without_aws_keys_names_chain() {
+        let home = IsolatedHome::new();
+        crate::aws_creds::clear_aws_credential_cache();
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "bedrock-iam"
+wire = "converse"
+auth_scheme = "none"
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(!status.available, "{}", status.detail);
+        assert_eq!(
+            status.detail,
+            crate::aws_creds::missing_creds_message(&profile)
+        );
+        assert!(!status.detail.contains("not required"), "{}", status.detail);
+        assert!(
+            !status.detail.contains("auth_scheme is none"),
+            "{}",
+            status.detail
+        );
+        let _ = home;
+    }
+
+    #[cfg(any(feature = "proxy", feature = "client"))]
+    #[tokio::test]
+    async fn token_status_bedrock_bearer_falls_through_to_sigv4() {
+        let home = IsolatedHome::new();
+        crate::aws_creds::clear_aws_credential_cache();
+        home.set_env("AWS_ACCESS_KEY_ID", "status-probe-key");
+        home.set_env("AWS_SECRET_ACCESS_KEY", "status-probe-secret");
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "amazon-bedrock"
+wire = "converse"
+auth_scheme = "bearer"
+access_env = ["AWS_BEARER_TOKEN_BEDROCK"]
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(status.available, "{}", status.detail);
+        assert!(status.detail.contains("aws sigv4"), "{}", status.detail);
+        assert!(
+            !status.detail.contains("AWS_BEARER_TOKEN_BEDROCK"),
+            "{}",
+            status.detail
+        );
+        let _ = home;
+    }
+
+    #[cfg(any(feature = "proxy", feature = "client"))]
+    #[tokio::test]
+    async fn token_status_bedrock_bearer_wins_over_sigv4() {
+        let home = IsolatedHome::new();
+        crate::aws_creds::clear_aws_credential_cache();
+        home.set_env("AWS_BEARER_TOKEN_BEDROCK", "bearer-must-not-print");
+        home.set_env("AWS_ACCESS_KEY_ID", "status-probe-key");
+        home.set_env("AWS_SECRET_ACCESS_KEY", "status-probe-secret");
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "amazon-bedrock"
+wire = "converse"
+auth_scheme = "bearer"
+access_env = ["AWS_BEARER_TOKEN_BEDROCK"]
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(status.available, "{}", status.detail);
+        assert_eq!(status.detail, "credentials loaded");
+        assert!(!status.detail.contains("bearer-must-not-print"));
+        assert!(!status.detail.contains("status-probe-key"));
+        let _ = home;
+    }
+
+    #[cfg(any(feature = "proxy", feature = "client"))]
+    #[tokio::test]
+    async fn token_status_auth_none_aws_ignores_header() {
+        let home = IsolatedHome::new();
+        crate::aws_creds::clear_aws_credential_cache();
+        home.set_env("AWS_ACCESS_KEY_ID", "status-probe-key");
+        home.set_env("AWS_SECRET_ACCESS_KEY", "status-probe-secret");
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "bedrock-iam"
+wire = "converse"
+auth_scheme = "none"
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+[headers]
+Authorization = "Bearer header-secret"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(status.available, "{}", status.detail);
+        assert!(status.detail.contains("aws sigv4"), "{}", status.detail);
+        assert_ne!(status.detail, "header credential present");
+        assert!(!status.detail.contains("header-secret"));
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn token_status_none_auth_header_is_present() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "header-none"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://127.0.0.1:9"
+[headers]
+Authorization = "Bearer header-secret"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(status.available, "{}", status.detail);
+        assert_eq!(status.detail, "header credential present");
+        let text = format_status(&status);
+        assert!(!text.contains("not required"), "{text}");
+        assert!(!text.contains("header-secret"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn token_status_gcp_key_file_is_loaded() {
+        let home = IsolatedHome::new();
+        let path = home.path().join("adc.json");
+        std::fs::write(
+            &path,
+            r#"{"type":"authorized_user","client_id":"123.apps.googleusercontent.com","client_secret":"user-secret","refresh_token":"1//refresh-me"}"#,
+        )
+        .expect("write adc");
+        home.set_env(
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            path.to_str().expect("utf8"),
+        );
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "vertex-adc"
+wire = "gemini"
+gcp_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
+base_url = "https://example.googleapis.com"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(status.available, "{}", status.detail);
+        assert_eq!(status.detail, "credentials loaded");
+        assert!(!status.detail.contains("user-secret"), "{}", status.detail);
+        assert!(!status.detail.contains("refresh-me"), "{}", status.detail);
+        let _ = home;
     }
 
     #[test]

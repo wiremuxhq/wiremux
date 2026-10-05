@@ -174,7 +174,7 @@ async fn main() -> ExitCode {
         Command::Auth {
             command: AuthCommand::Status { profile, id },
         } => match pick_auth_profile(profile, id) {
-            Ok(profile) => cmd_status(&profile),
+            Ok(profile) => cmd_status(&profile).await,
             Err(err) => {
                 eprintln!("{err}");
                 EXIT_ERROR
@@ -302,10 +302,10 @@ async fn cmd_login(profile_arg: &str) -> i32 {
     }
 }
 
-fn cmd_status(profile_arg: &str) -> i32 {
+async fn cmd_status(profile_arg: &str) -> i32 {
     match load_cli_profile(profile_arg) {
         Ok(profile) => {
-            let status = token_status(&profile);
+            let status = token_status(&profile).await;
             println!("{}", format_status(&status));
             if status.available {
                 EXIT_OK
