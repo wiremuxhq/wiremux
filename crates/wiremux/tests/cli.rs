@@ -962,6 +962,83 @@ fn proxy_count_html_success_is_bad_gateway() {
 }
 
 #[test]
+fn proxy_count_messages_error_object_is_http_400() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "count-msg-err",
+        wire: "messages",
+        chat_path: Some("/v1/messages"),
+        from: "messages",
+        extra_args: &[],
+        request_path: "/v1/messages/count_tokens",
+        request_body: r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+        upstream_body: r#"{"type":"error","error":{"type":"invalid_request_error","message":"model not found"}}"#,
+        upstream_content_type: "application/json",
+    });
+    assert!(
+        resp.starts_with("HTTP/1.1 400"),
+        "a vendor failure inside HTTP 200 must not stay 200, got: {resp}"
+    );
+    assert!(resp.contains("model not found"), "{resp}");
+    assert!(resp.contains("invalid_request_error"), "{resp}");
+    assert!(resp.contains(r#""type":"error""#), "{resp}");
+}
+
+#[test]
+fn proxy_count_gemini_error_object_is_http_400() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "count-gem-err",
+        wire: "gemini",
+        chat_path: None,
+        from: "gemini",
+        extra_args: &[],
+        request_path: "/v1beta/models/gemini-2.0-flash:countTokens",
+        request_body: r#"{"contents":[{"parts":[{"text":"hi"}]}]}"#,
+        upstream_body: r#"{"error":{"message":"model not found","status":"INVALID_ARGUMENT"}}"#,
+        upstream_content_type: "application/json",
+    });
+    assert!(
+        resp.starts_with("HTTP/1.1 400"),
+        "a vendor failure inside HTTP 200 must not stay 200, got: {resp}"
+    );
+    assert!(resp.contains("model not found"), "{resp}");
+    assert!(resp.contains("INVALID_ARGUMENT"), "{resp}");
+}
+
+#[test]
+fn proxy_count_messages_token_count_beside_error_stays_http_200() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "count-msg-tokens",
+        wire: "messages",
+        chat_path: Some("/v1/messages"),
+        from: "messages",
+        extra_args: &[],
+        request_path: "/v1/messages/count_tokens",
+        request_body: r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+        upstream_body: r#"{"input_tokens":0,"type":"error","error":{"type":"invalid_request_error","message":"model not found"}}"#,
+        upstream_content_type: "application/json",
+    });
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+    assert!(resp.contains("input_tokens"), "{resp}");
+}
+
+#[test]
+fn proxy_count_gemini_token_count_beside_error_stays_http_200() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "count-gem-tokens",
+        wire: "gemini",
+        chat_path: None,
+        from: "gemini",
+        extra_args: &[],
+        request_path: "/v1beta/models/gemini-2.0-flash:countTokens",
+        request_body: r#"{"contents":[{"parts":[{"text":"hi"}]}]}"#,
+        upstream_body: r#"{"totalTokens":0,"error":{"message":"model not found","status":"INVALID_ARGUMENT"}}"#,
+        upstream_content_type: "application/json",
+    });
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+    assert!(resp.contains("totalTokens"), "{resp}");
+}
+
+#[test]
 fn proxy_count_model_override_replaces_gemini_url() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
