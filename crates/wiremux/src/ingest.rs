@@ -745,13 +745,19 @@ fn split_openai_compat_api(raw: &str, wire: EmitWire) -> Result<(String, String)
     {
         return Err("URL contains a character that is not allowed".into());
     }
-    let (scheme, rest) = raw.split_once("://").ok_or_else(|| {
-        if raw.contains('@') {
-            "not an absolute URL".to_string()
-        } else {
-            format!("not an absolute URL: {raw}")
+    let (scheme, rest) = match raw.split_once("://") {
+        Some(pair) => pair,
+        None => {
+            // A missing scheme still has to hide the password. `%2540`
+            // has no raw `@`, and a leading slash makes the first
+            // authority slice empty, so echoing `raw` would store it.
+            return Err(if scheme_less_hides_userinfo(raw) {
+                "not an absolute URL".to_string()
+            } else {
+                format!("not an absolute URL: {raw}")
+            });
         }
-    })?;
+    };
     if catalog_authority_has_userinfo(rest) {
         return Err("api URL must not include userinfo".into());
     }
@@ -821,9 +827,72 @@ fn split_catalog_query(rest: &str) -> (&str, Option<&str>) {
     }
 }
 
+fn scheme_less_hides_userinfo(raw: &str) -> bool {
+    if raw.contains('@') {
+        return true;
+    }
+    raw.trim_start_matches('/')
+        .split(['/', '?', '#'])
+        .any(catalog_authority_has_userinfo)
+}
+
 fn catalog_authority_has_userinfo(rest: &str) -> bool {
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-    authority.contains('@') || authority.to_ascii_lowercase().contains("%40")
+    // One `%40` check misses `%2540`. Each decode shrinks `%HH`, so the
+    // loop is bounded by the authority length and still sees another layer.
+    let mut current = authority.as_bytes().to_vec();
+    let mut guard = current.len().saturating_add(1);
+    loop {
+        if bytes_contain_userinfo(&current) {
+            return true;
+        }
+        if guard == 0 {
+            return false;
+        }
+        guard -= 1;
+        let decoded = percent_decode_bytes(&current);
+        if decoded == current {
+            return false;
+        }
+        current = decoded;
+    }
+}
+
+fn bytes_contain_userinfo(bytes: &[u8]) -> bool {
+    if bytes.contains(&b'@') {
+        return true;
+    }
+    bytes.windows(3).any(|window| {
+        window[0] == b'%' && window[1].eq_ignore_ascii_case(&b'4') && window[2] == b'0'
+    })
+}
+
+fn percent_decode_bytes(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        if input[index] == b'%'
+            && index + 2 < input.len()
+            && let (Some(hi), Some(lo)) =
+                (hex_nibble(input[index + 1]), hex_nibble(input[index + 2]))
+        {
+            out.push((hi << 4) | lo);
+            index += 3;
+            continue;
+        }
+        out.push(input[index]);
+        index += 1;
+    }
+    out
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -1364,6 +1433,104 @@ mod tests {
         assert_eq!(origin, "https://api.example.com");
         assert_eq!(path, "/v1/chat/completions?api-version=2024-10-21");
         assert!(!path.contains('#'));
+    }
+
+    /// `@` and one `%40` are not the whole class. Each extra `%25` is
+    /// still userinfo after another decode, and the error must not echo
+    /// the password when the URL has no raw `@`.
+    #[test]
+    fn split_openai_compat_rejects_nested_percent_userinfo() {
+        fn nest_at(layers: usize) -> String {
+            let mut token = "@".to_string();
+            for _ in 0..layers {
+                let mut encoded = String::new();
+                for byte in token.bytes() {
+                    match byte {
+                        b'%' => encoded.push_str("%25"),
+                        b'@' => encoded.push_str("%40"),
+                        other => encoded.push(other as char),
+                    }
+                }
+                token = encoded;
+            }
+            token
+        }
+
+        for layers in 2..=4 {
+            let url = format!("https://user:s3cret{}api.example.com/v1", nest_at(layers));
+            let err = split_openai_compat_api(&url, EmitWire::ChatCompletions).expect_err(&url);
+            assert!(err.contains("userinfo"), "{url}: {err}");
+            assert!(!err.contains("s3cret"), "{url}: {err}");
+            assert!(!err.contains("user:"), "{url}: {err}");
+        }
+
+        let mixed = "https://user:s3cret%2540api.example.com/v1";
+        let err = split_openai_compat_api(mixed, EmitWire::ChatCompletions).expect_err("mixed hex");
+        assert!(err.contains("userinfo"), "{err}");
+        assert!(!err.contains("s3cret"), "{err}");
+
+        let encoded_colon = "https://user%3As3cret%2540api.example.com/v1";
+        let err = split_openai_compat_api(encoded_colon, EmitWire::ChatCompletions)
+            .expect_err("encoded colon");
+        assert!(err.contains("userinfo"), "{err}");
+        assert!(!err.contains("s3cret"), "{err}");
+
+        let bare = "user:s3cret%2540api.example.com/v1";
+        let err = split_openai_compat_api(bare, EmitWire::ChatCompletions).expect_err("no scheme");
+        assert!(err.contains("absolute"), "{err}");
+        assert!(!err.contains("s3cret"), "{err}");
+        assert!(!err.contains("%2540"), "{err}");
+        for bare in [
+            "//user:s3cret%2540api.example.com/v1",
+            "http:/user:s3cret%2540api.example.com/v1",
+        ] {
+            let err = split_openai_compat_api(bare, EmitWire::ChatCompletions).expect_err(bare);
+            assert!(err.contains("absolute"), "{bare}: {err}");
+            assert!(!err.contains("s3cret"), "{bare}: {err}");
+            assert!(!err.contains("%2540"), "{bare}: {err}");
+        }
+        let err = split_openai_compat_api("example.com/v1", EmitWire::ChatCompletions)
+            .expect_err("host without scheme");
+        assert!(err.contains("example.com/v1"), "{err}");
+
+        let (origin, path) = split_openai_compat_api(
+            "https://api.example.com/v1?user=a%2540b",
+            EmitWire::ChatCompletions,
+        )
+        .expect("nested percent in query");
+        assert_eq!(origin, "https://api.example.com");
+        assert_eq!(path, "/v1/chat/completions?user=a%2540b");
+        let (origin, path) =
+            split_openai_compat_api("https://api%2Eexample.com/v1", EmitWire::ChatCompletions)
+                .expect("encoded dot is not userinfo");
+        assert_eq!(origin, "https://api%2Eexample.com");
+        assert_eq!(path, "/v1/chat/completions");
+        let (origin, path) = split_openai_compat_api(
+            "https://api.example.com/v1#user:s3cret@hidden",
+            EmitWire::ChatCompletions,
+        )
+        .expect("fragment is not authority");
+        assert_eq!(origin, "https://api.example.com");
+        assert!(!path.contains("s3cret"), "{path}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let err = ingest_catalog(
+            r#"{"evilpct":{"id":"evilpct","name":"Evil","env":["EVIL_KEY"],"npm":"@ai-sdk/openai-compatible","api":"https://user:s3cret%2540api.example.com/v1"}}"#,
+            &IngestRequest {
+                vendors: vec!["evilpct".into()],
+                dir: Some(dir.path().to_path_buf()),
+                ..IngestRequest::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("evilpct"), "{err}");
+        assert!(err.contains("userinfo"), "{err}");
+        assert!(!err.contains("s3cret"), "{err}");
+        assert!(
+            !dir.path().join("evilpct.toml").exists(),
+            "refused userinfo must not write a profile"
+        );
     }
 
     #[test]
