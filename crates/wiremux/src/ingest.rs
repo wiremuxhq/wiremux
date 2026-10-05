@@ -424,6 +424,19 @@ pub fn ingest_catalog(text: &str, req: &IngestRequest) -> Result<IngestReport, I
     Ok(IngestReport { actions })
 }
 
+/// models.dev/api.json is about 5.3 MiB. Stay above that, same ceiling as the proxy body cap.
+const MAX_CATALOG_BODY: usize = 16 * 1024 * 1024;
+
+async fn read_catalog_http_body(
+    url: &str,
+    response: reqwest::Response,
+    cap: usize,
+) -> Result<String, IngestError> {
+    crate::capped_body::read_capped_text(response, cap)
+        .await
+        .map_err(|err| IngestError::Message(format!("fetch {url}: {err}")))
+}
+
 /// Fetch an allowlisted catalog URL.
 pub async fn fetch_catalog_url(url: &str) -> Result<String, IngestError> {
     if url != MODELS_DEV_URL && url != LITELLM_PROVIDERS_URL {
@@ -446,10 +459,7 @@ pub async fn fetch_catalog_url(url: &str) -> Result<String, IngestError> {
     if !status.is_success() {
         return Err(IngestError::Message(format!("fetch {url}: HTTP {status}")));
     }
-    response
-        .text()
-        .await
-        .map_err(|e| IngestError::Message(format!("fetch {url}: {e}")))
+    read_catalog_http_body(url, response, MAX_CATALOG_BODY).await
 }
 
 fn wanted_ids(req: &IngestRequest, by_id: &BTreeMap<String, CatalogVendor>) -> Vec<String> {
@@ -1710,5 +1720,61 @@ mod tests {
             err.contains("GOOGLE_VERTEX_PROJECT") || err.contains("PROJECT"),
             "{err}"
         );
+    }
+
+    #[tokio::test]
+    async fn catalog_body_over_caller_cap_is_an_error() {
+        use std::io::{Read, Write};
+
+        assert_eq!(MAX_CATALOG_BODY, 16 * 1024 * 1024);
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut body = "a".repeat(80);
+        body.push_str("TAILMARK");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .ok();
+            let mut buf = [0u8; 1024];
+            let mut seen = Vec::new();
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        seen.extend_from_slice(&buf[..n]);
+                        if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let len = body.len();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}"
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+
+        let url = format!("http://{addr}/catalog");
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .build()
+            .unwrap();
+        let response = client.get(&url).send().await.unwrap();
+        let err = read_catalog_http_body(&url, response, 64)
+            .await
+            .expect_err("caller cap");
+        let shown = err.to_string();
+        assert!(
+            shown.contains("too large") || shown.contains("exceeds"),
+            "{shown}"
+        );
+        assert!(shown.contains("fetch "), "{shown}");
+        assert!(!shown.contains("TAILMARK"), "{shown}");
+        let _ = handle.join();
     }
 }
