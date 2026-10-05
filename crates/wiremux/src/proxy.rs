@@ -1379,8 +1379,11 @@ fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
 /// JSON success body that is only a vendor failure.
 ///
 /// Responses uses `status: failed` with no output. Chat uses an `error`
-/// object and no `choices`. Messages uses `type: error` and no content
-/// blocks. Gemini uses an `error` object and no candidates. A non-stream
+/// object and no visible choice. An empty string is not a choice.
+/// Messages uses `type: error` and no content blocks. Gemini uses an
+/// `error` object, or a `promptFeedback.blockReason`, when no candidate
+/// text, tool call, or inline data is present. A non-empty candidate
+/// list with no `error` object stays on the decode path. A non-stream
 /// same-wire match keeps the vendor bytes. The proxy returns those bytes
 /// as HTTP 400. A stream match is an SSE error on the upstream status.
 fn cross_wire_vendor_failure(from: Wire, target: Wire, stream: bool, body: &[u8]) -> Option<Bytes> {
@@ -1402,14 +1405,42 @@ fn gemini_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
         return None;
     }
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    let candidates = value
-        .get("candidates")
-        .and_then(serde_json::Value::as_array);
-    if candidates.is_some_and(|items| !items.is_empty()) {
+    if crate::completion::json_has_completion(&value) {
         return None;
     }
-    let err = value.get("error").filter(|item| item.is_object())?;
-    vendor_error_detail(err)
+    if let Some(err) = value.get("error").filter(|item| item.is_object())
+        && let Some(detail) = vendor_error_detail(err)
+    {
+        return Some(detail);
+    }
+    // A candidate list with no visible payload stays on the decode path
+    // when the error object has nothing to say. blockReason is the
+    // failure only when that list is missing or empty.
+    if value
+        .get("candidates")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|items| !items.is_empty())
+    {
+        return None;
+    }
+    gemini_block_detail(&value)
+}
+
+fn gemini_block_detail(value: &serde_json::Value) -> Option<String> {
+    let reason = value
+        .pointer("/promptFeedback/blockReason")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())?;
+    let message = value
+        .pointer("/promptFeedback/blockReasonMessage")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty());
+    Some(match message {
+        Some(message) => format!("{reason}: {message}"),
+        None => reason.to_string(),
+    })
 }
 
 fn chat_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
@@ -1417,8 +1448,7 @@ fn chat_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
         return None;
     }
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    let choices = value.get("choices").and_then(serde_json::Value::as_array);
-    if choices.is_some_and(|items| !items.is_empty()) {
+    if crate::completion::json_has_completion(&value) {
         return None;
     }
     let err = value.get("error").filter(|item| item.is_object())?;
@@ -2452,10 +2482,13 @@ anthropic-beta = "context-1m-2025-08-07"
         .expect("json");
         assert_eq!(value["error"]["message"], "please wait");
         let prompt_only = br#"{"promptFeedback":{"blockReason":"SAFETY"}}"#;
-        assert!(
-            super::cross_wire_vendor_failure(chat, gemini, false, prompt_only).is_none(),
-            "blockReason without an error object stays on the decode path"
-        );
+        let text = String::from_utf8(
+            super::cross_wire_vendor_failure(chat, gemini, false, prompt_only)
+                .expect("blockReason without an error object is still a failure")
+                .to_vec(),
+        )
+        .expect("utf8");
+        assert!(text.contains("SAFETY"), "{text}");
         let same_gemini: serde_json::Value = serde_json::from_slice(
             &super::cross_wire_vendor_failure(gemini, gemini, false, gemini_error)
                 .expect("same-wire gemini error"),
@@ -2473,5 +2506,264 @@ anthropic-beta = "context-1m-2025-08-07"
         assert!(text.starts_with("event: error\n"), "{text}");
         assert!(text.contains("overloaded_error"), "{text}");
         assert!(!text.contains("[DONE]"), "{text}");
+    }
+
+    /// Empty arrays were tested. Empty strings inside a non-empty array
+    /// were not, and neither was a safety block that has no `error` object.
+    #[test]
+    fn disguised_vendor_success_is_still_a_failure() {
+        let chat = wiremux_auth::Wire::ChatCompletions;
+        let gemini = wiremux_auth::Wire::Gemini;
+        let messages = wiremux_auth::Wire::Messages;
+
+        let chat_cases = [
+            (
+                "empty choice text",
+                &br#"{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"error":{"message":"Provider returned error","code":502}}"#[..],
+                Some("502: Provider returned error"),
+            ),
+            (
+                "null content",
+                &br#"{"choices":[{"message":{"role":"assistant","content":null}}],"error":{"message":"Provider returned error","code":502}}"#[..],
+                Some("502: Provider returned error"),
+            ),
+            (
+                "empty text part",
+                &br#"{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":""}]}}],"error":{"message":"Provider returned error","code":502}}"#[..],
+                Some("502: Provider returned error"),
+            ),
+            (
+                "empty refusal and empty tools",
+                &br#"{"choices":[{"message":{"role":"assistant","content":"","refusal":"","tool_calls":[]}}],"error":{"message":"Provider returned error","code":502}}"#[..],
+                Some("502: Provider returned error"),
+            ),
+            (
+                "choice text wins",
+                &br#"{"choices":[{"message":{"role":"assistant","content":"Hi"}}],"error":{"message":"please wait"}}"#[..],
+                None,
+            ),
+            (
+                "whitespace is still text",
+                &br#"{"choices":[{"message":{"role":"assistant","content":" "}}],"error":{"message":"please wait"}}"#[..],
+                None,
+            ),
+            (
+                "refusal wins",
+                &br#"{"choices":[{"message":{"role":"assistant","content":"","refusal":"no"}}],"error":{"message":"please wait"}}"#[..],
+                None,
+            ),
+            (
+                "tool call wins",
+                &br#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"ping","arguments":"{}"}}]}}],"error":{"message":"please wait"}}"#[..],
+                None,
+            ),
+            (
+                "legacy function_call wins",
+                &br#"{"choices":[{"message":{"role":"assistant","content":"","function_call":{"name":"ping","arguments":"{}"}}}],"error":{"message":"please wait"}}"#[..],
+                None,
+            ),
+            (
+                "reasoning wins",
+                &br#"{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"because"}}],"error":{"message":"please wait"}}"#[..],
+                None,
+            ),
+            (
+                "audio wins",
+                &br#"{"choices":[{"message":{"role":"assistant","content":null,"audio":{"data":"aGk=","transcript":""}}}],"error":{"message":"please wait"}}"#[..],
+                None,
+            ),
+            (
+                "empty audio is not a completion",
+                &br#"{"choices":[{"message":{"role":"assistant","content":null,"audio":{"data":""}}}],"error":{"message":"Provider returned error","code":502}}"#[..],
+                Some("502: Provider returned error"),
+            ),
+            (
+                "image part wins",
+                &br#"{"choices":[{"message":{"content":[{"type":"image_url","image_url":{"url":"https://example.test/a.png"}}]}}],"error":{"message":"please wait"}}"#[..],
+                None,
+            ),
+            (
+                "text part wins",
+                &br#"{"choices":[{"message":{"content":[{"type":"text","text":"Hi"}]}}],"error":{"message":"please wait"}}"#[..],
+                None,
+            ),
+            (
+                "one real choice wins",
+                &br#"{"choices":[{"message":{"content":""}},{"message":{"content":"Hi"}}],"error":{"message":"please wait"}}"#[..],
+                None,
+            ),
+        ];
+        for (name, body, detail) in chat_cases {
+            assert_eq!(
+                super::chat_complete_vendor_failure(chat, body).as_deref(),
+                detail,
+                "{name}"
+            );
+            let mapped = super::cross_wire_vendor_failure(messages, chat, false, body);
+            if let Some(detail) = detail {
+                let text = String::from_utf8(mapped.expect(name).to_vec()).expect("utf8");
+                let message = detail
+                    .rsplit_once(": ")
+                    .map(|(_, msg)| msg)
+                    .unwrap_or(detail);
+                assert!(text.contains(message), "{name}: {text}");
+            } else {
+                assert!(mapped.is_none(), "{name} must stay on the map path");
+            }
+        }
+
+        let gemini_cases = [
+            (
+                "empty gemini part",
+                &br#"{"candidates":[{"content":{"parts":[{"text":""}]}}],"error":{"message":"blocked"}}"#[..],
+                Some("blocked"),
+            ),
+            (
+                "missing parts",
+                &br#"{"candidates":[{"content":{}}],"error":{"message":"blocked"}}"#[..],
+                Some("blocked"),
+            ),
+            (
+                "candidate text wins",
+                &br#"{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}],"error":{"message":"blocked"}}"#[..],
+                None,
+            ),
+            (
+                "function call wins",
+                &br#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"ping","args":{}}}]}}],"error":{"message":"blocked"}}"#[..],
+                None,
+            ),
+            (
+                "inline data wins",
+                &br#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"aGk="}}]}}],"error":{"message":"blocked"}}"#[..],
+                None,
+            ),
+            (
+                "file data wins",
+                &br#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"text/plain","fileUri":"https://example.test/a"}}]}}],"error":{"message":"blocked"}}"#[..],
+                None,
+            ),
+            (
+                "executable code wins",
+                &br#"{"candidates":[{"content":{"parts":[{"executableCode":{"language":"PYTHON","code":"print(1)"}}]}}],"error":{"message":"blocked"}}"#[..],
+                None,
+            ),
+            (
+                "code result wins",
+                &br#"{"candidates":[{"content":{"parts":[{"codeExecutionResult":{"outcome":"OUTCOME_OK","output":"1"}}]}}],"error":{"message":"blocked"}}"#[..],
+                None,
+            ),
+            (
+                "function response wins",
+                &br#"{"candidates":[{"content":{"parts":[{"functionResponse":{"name":"ping","response":{"ok":true}}}]}}],"error":{"message":"blocked"}}"#[..],
+                None,
+            ),
+            (
+                "tool call part wins",
+                &br#"{"candidates":[{"content":{"parts":[{"toolCall":{"name":"ping"}}]}}],"error":{"message":"blocked"}}"#[..],
+                None,
+            ),
+            (
+                "tool response wins",
+                &br#"{"candidates":[{"content":{"parts":[{"toolResponse":{"name":"ping"}}]}}],"error":{"message":"blocked"}}"#[..],
+                None,
+            ),
+            (
+                "finish message wins",
+                &br#"{"candidates":[{"content":{"parts":[{"text":""}]},"finishMessage":"blocked by safety"}],"error":{"message":"blocked"}}"#[..],
+                None,
+            ),
+            (
+                "safety block with no candidates",
+                &br#"{"promptFeedback":{"blockReason":"SAFETY"}}"#[..],
+                Some("SAFETY"),
+            ),
+            (
+                "safety block with empty candidates",
+                &br#"{"promptFeedback":{"blockReason":"SAFETY"},"candidates":[]}"#[..],
+                Some("SAFETY"),
+            ),
+            (
+                "safety block with null candidates",
+                &br#"{"promptFeedback":{"blockReason":"SAFETY"},"candidates":null}"#[..],
+                Some("SAFETY"),
+            ),
+            (
+                "safety block keeps the message",
+                &br#"{"promptFeedback":{"blockReason":"SAFETY","blockReasonMessage":"The prompt was blocked."},"candidates":[]}"#[..],
+                Some("SAFETY: The prompt was blocked."),
+            ),
+            (
+                "empty error object keeps the block reason",
+                &br#"{"promptFeedback":{"blockReason":"SAFETY"},"candidates":[],"error":{}}"#[..],
+                Some("SAFETY"),
+            ),
+            (
+                "empty block reason is not a block",
+                &br#"{"promptFeedback":{"blockReason":""},"candidates":[]}"#[..],
+                None,
+            ),
+            (
+                "blank block reason is not a block",
+                &br#"{"promptFeedback":{"blockReason":"  "},"candidates":[]}"#[..],
+                None,
+            ),
+            (
+                "padded block reason keeps the token",
+                &br#"{"promptFeedback":{"blockReason":" SAFETY "},"candidates":[]}"#[..],
+                Some("SAFETY"),
+            ),
+            (
+                "candidates keep the body",
+                &br#"{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}],"promptFeedback":{"blockReason":"SAFETY"}}"#[..],
+                None,
+            ),
+            (
+                "empty part with a block and no error stays",
+                &br#"{"candidates":[{"content":{"parts":[{"text":""}]}}],"promptFeedback":{"blockReason":"SAFETY"}}"#[..],
+                None,
+            ),
+            (
+                "empty part with an error object fails",
+                &br#"{"candidates":[{"content":{"parts":[{"text":""}]}}],"promptFeedback":{"blockReason":"SAFETY"},"error":{"message":"blocked"}}"#[..],
+                Some("blocked"),
+            ),
+        ];
+        for (name, body, detail) in gemini_cases {
+            assert_eq!(
+                super::gemini_complete_vendor_failure(gemini, body).as_deref(),
+                detail,
+                "{name}"
+            );
+            let mapped = super::cross_wire_vendor_failure(chat, gemini, false, body);
+            if let Some(detail) = detail {
+                let text = String::from_utf8(mapped.expect(name).to_vec()).expect("utf8");
+                let needle = detail.split(": ").next().unwrap_or(detail);
+                assert!(text.contains(needle), "{name}: {text}");
+            } else {
+                assert!(mapped.is_none(), "{name} must stay on the map path");
+            }
+        }
+
+        let shell = br#"{"type":"error","content":[{"type":"text","text":""}],"error":{"type":"api_error","message":"nope"}}"#;
+        assert!(
+            super::messages_complete_vendor_failure(messages, shell).is_none(),
+            "a non-empty Messages content array stays a completion"
+        );
+        let output = br#"{"status":"failed","output":[{"type":"message"}],"error":{"message":"please wait"}}"#;
+        assert!(
+            super::responses_complete_vendor_failure(wiremux_auth::Wire::Responses, output)
+                .is_none(),
+            "a Responses message shell stays a completion"
+        );
+        let same = super::cross_wire_vendor_failure(
+            gemini,
+            gemini,
+            false,
+            br#"{"promptFeedback":{"blockReason":"SAFETY"},"candidates":[]}"#,
+        )
+        .expect("same-wire safety block is still a failure");
+        let text = String::from_utf8(same.to_vec()).expect("utf8");
+        assert!(text.contains("SAFETY"), "{text}");
     }
 }

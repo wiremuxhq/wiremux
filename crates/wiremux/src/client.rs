@@ -931,19 +931,16 @@ fn classify_aws_exception_type(
 }
 
 /// A stream request sometimes comes back as one JSON completion.
-/// Keep that text. An error object with no completion stays an error.
+///
+/// `classify_http` already rejects an error object that has no visible
+/// text. A 200 body whose choice text is empty can still carry a finish
+/// reason, so this decodes that body instead of reporting it as a vendor error.
 fn promote_non_stream_completion(live: &mut LiveStream) -> bool {
     if live.saw_frame || live.leftover.is_empty() {
         return false;
     }
     let text = String::from_utf8_lossy(&live.leftover);
     if classify_http(live.http_status, &text, None).is_some() {
-        return false;
-    }
-    let Ok(value) = serde_json::from_slice::<Value>(&live.leftover) else {
-        return false;
-    };
-    if !success_body_has_completion(Some(&value)) {
         return false;
     }
     let Ok(events) = decode_response(live.wire, &live.leftover, &live.profile) else {
@@ -1100,19 +1097,12 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
 }
 
 /// A 200 body that already has completion text is not only a vendor error.
-/// Empty arrays still count as no text, matching the proxy.
+///
+/// Empty arrays and empty strings count as no text. A refusal or a tool
+/// call still counts. Responses `output` and Messages `content` stay
+/// non-empty arrays, matching the proxy.
 fn success_body_has_completion(value: Option<&Value>) -> bool {
-    let Some(value) = value else {
-        return false;
-    };
-    ["choices", "content", "output", "candidates"]
-        .iter()
-        .any(|key| {
-            value
-                .get(*key)
-                .and_then(Value::as_array)
-                .is_some_and(|items| !items.is_empty())
-        })
+    value.is_some_and(crate::completion::json_has_completion)
 }
 
 fn classify_error_payload(
@@ -1538,6 +1528,106 @@ mod tests {
         );
         let only = r#"{"error":{"message":"please wait","type":"rate_limit_error"}}"#;
         assert!(classify_http(200, only, None).is_some());
+    }
+
+    /// The same class as the proxy table: an empty string is not
+    /// completion text, and a refusal or a tool call still is.
+    #[test]
+    fn classify_http_empty_payload_stays_an_error() {
+        let cases = [
+            (
+                r#"{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"error":{"message":"Provider returned error","code":502}}"#,
+                true,
+                "Provider returned error",
+            ),
+            (
+                r#"{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":""}]}}],"error":{"message":"Provider returned error","code":502}}"#,
+                true,
+                "Provider returned error",
+            ),
+            (
+                r#"{"candidates":[{"content":{"parts":[{"text":""}]}}],"error":{"message":"blocked"}}"#,
+                true,
+                "blocked",
+            ),
+            (
+                r#"{"choices":[{"message":{"role":"assistant","content":"Hi"}}],"error":{"message":"please wait"}}"#,
+                false,
+                "",
+            ),
+            (
+                r#"{"choices":[{"message":{"role":"assistant","content":"","refusal":"no"}}],"error":{"message":"please wait"}}"#,
+                false,
+                "",
+            ),
+            (
+                r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"ping","arguments":"{}"}}]}}],"error":{"message":"please wait"}}"#,
+                false,
+                "",
+            ),
+            (
+                r#"{"choices":[{"message":{"role":"assistant","content":null,"audio":{"transcript":"hello"}}}],"error":{"message":"please wait"}}"#,
+                false,
+                "",
+            ),
+            (
+                r#"{"status":"failed","output":[{"type":"message"}],"error":{"message":"please wait"}}"#,
+                false,
+                "",
+            ),
+            (
+                r#"{"type":"error","content":[{"type":"text","text":""}],"error":{"type":"api_error","message":"nope"}}"#,
+                false,
+                "",
+            ),
+        ];
+        for (body, is_err, needle) in cases {
+            let classified = classify_http(200, body, None);
+            if is_err {
+                let text = classified.expect(body).to_string();
+                assert!(text.contains(needle), "{text}");
+            } else {
+                assert!(classified.is_none(), "{body}");
+            }
+        }
+    }
+
+    #[test]
+    fn promote_keeps_a_finished_empty_choice_without_an_error() {
+        fn live(body: &str) -> LiveStream {
+            let profile =
+                parse_profile_str("schema_version = 1\nid = \"c\"\nwire = \"chat-completions\"\n")
+                    .expect("parse");
+            let wire = profile_wire(&profile).expect("wire");
+            LiveStream {
+                bytes: Box::pin(futures_util::stream::iter(Vec::<
+                    Result<Bytes, reqwest::Error>,
+                >::new())),
+                reader: UpstreamFrames::for_wire(wire),
+                decoder: StreamDecoder::new(),
+                assembler: ToolCallAssembler::new(),
+                pending: VecDeque::new(),
+                wire,
+                profile,
+                eof: false,
+                saw_frame: false,
+                saw_terminal: false,
+                leftover: body.as_bytes().to_vec(),
+                http_status: 200,
+                stop_error: None,
+            }
+        }
+
+        let mut finished = live(
+            r#"{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}"#,
+        );
+        assert!(promote_non_stream_completion(&mut finished));
+        assert!(finished.saw_terminal);
+
+        let mut rejected = live(
+            r#"{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"error":{"message":"Provider returned error","code":502}}"#,
+        );
+        assert!(!promote_non_stream_completion(&mut rejected));
     }
 
     #[tokio::test]
