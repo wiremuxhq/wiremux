@@ -262,28 +262,29 @@ async fn run_pkce(oauth: &OauthPack, listener: TcpListener) -> Result<(), String
     let first = req.lines().next().unwrap_or("");
     let target = first.split_whitespace().nth(1).unwrap_or("");
     let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
-    let parsed = pkce_callback_from_query(query);
-    let _ = stream.write_all(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nok, you can close this tab\n",
-    );
-    let (code, state) = parsed?;
-    if state != pkce.state {
-        return Err("callback state mismatch".into());
-    }
+    let code = reply_to_pkce_callback(&mut stream, query, &pkce.state)?;
     let redirect = oauth.redirect_uri.as_deref().unwrap_or("");
     let client_id = oauth.client_id.as_deref().unwrap_or("");
-    let tokens = exchange_auth_code(
-        &oauth.token_url,
-        client_id,
-        &code,
-        redirect,
-        &pkce.code_verifier,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    persist_login_tokens(oauth, &tokens)
+    let saved = async {
+        let tokens = exchange_auth_code(
+            &oauth.token_url,
+            client_id,
+            &code,
+            redirect,
+            &pkce.code_verifier,
+        )
         .await
         .map_err(|e| e.to_string())?;
+        persist_login_tokens(oauth, &tokens)
+            .await
+            .map_err(|e| e.to_string())
+    }
+    .await;
+    let (ok, body) = pkce_browser_after_save(saved.map(|_| ()));
+    write_pkce_browser(&mut stream, ok, &body);
+    if !ok {
+        return Err(body);
+    }
     println!("login saved");
     Ok(())
 }
@@ -336,6 +337,48 @@ async fn run_device(profile: &ResolvedProfile) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     println!("login saved");
     Ok(())
+}
+
+/// Browser page for a PKCE callback. A bad query is HTTP 400 and `Err`.
+/// A matching code does not write; the success page waits until the token is saved.
+fn reply_to_pkce_callback(
+    stream: &mut impl Write,
+    query: &str,
+    expected_state: &str,
+) -> Result<String, String> {
+    match pkce_callback_code(query, expected_state) {
+        Ok(code) => Ok(code),
+        Err(err) => {
+            write_pkce_browser(stream, false, &err);
+            Err(err)
+        }
+    }
+}
+
+/// Authorization code when `query` matches `expected_state`.
+pub(crate) fn pkce_callback_code(query: &str, expected_state: &str) -> Result<String, String> {
+    let (code, state) = pkce_callback_from_query(query)?;
+    if state != expected_state {
+        return Err("callback state mismatch".into());
+    }
+    Ok(code)
+}
+
+fn pkce_browser_after_save(saved: Result<(), String>) -> (bool, String) {
+    match saved {
+        Ok(()) => (true, "ok, you can close this tab".into()),
+        Err(err) => (false, redact_secret_looking(&err)),
+    }
+}
+
+fn pkce_browser_response(ok: bool, body: &str) -> Vec<u8> {
+    let status = if ok { "200 OK" } else { "400 Bad Request" };
+    format!("HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{body}\n")
+        .into_bytes()
+}
+
+fn write_pkce_browser(stream: &mut impl Write, ok: bool, body: &str) {
+    let _ = stream.write_all(&pkce_browser_response(ok, body));
 }
 
 /// Read `code`/`state` from a PKCE loopback query. Surfaces vendor `error`.
@@ -1190,6 +1233,69 @@ base_url = "http://127.0.0.1:9"
         let (code, state) = pkce_callback_from_query("code=abc&state=xyz").expect("code and state");
         assert_eq!(code, "abc");
         assert_eq!(state, "xyz");
+    }
+
+    #[test]
+    fn pkce_vendor_error_is_http_400_not_the_success_page() {
+        let mut body = Vec::new();
+        let err = reply_to_pkce_callback(
+            &mut body,
+            "error=access_denied&error_description=user+denied",
+            "xyz",
+        )
+        .expect_err("vendor error");
+        let text = String::from_utf8(body).expect("utf8");
+        assert!(text.starts_with("HTTP/1.1 400 "), "{text}");
+        assert!(text.contains("access_denied"), "{text}");
+        assert!(
+            !text.contains("ok, you can close this tab"),
+            "failed login must not tell the browser to close, got {text}"
+        );
+        assert!(err.contains("access_denied"), "{err}");
+    }
+
+    #[test]
+    fn pkce_state_mismatch_is_http_400() {
+        let mut body = Vec::new();
+        let err =
+            reply_to_pkce_callback(&mut body, "code=abc&state=other", "xyz").expect_err("state");
+        assert_eq!(err, "callback state mismatch");
+        let text = String::from_utf8(body).expect("utf8");
+        assert!(text.starts_with("HTTP/1.1 400 "), "{text}");
+        assert!(text.contains("callback state mismatch"), "{text}");
+        assert!(!text.contains("ok, you can close this tab"), "{text}");
+    }
+
+    #[test]
+    fn pkce_matching_callback_does_not_write_the_success_page() {
+        let mut body = Vec::new();
+        let code = reply_to_pkce_callback(&mut body, "code=abc&state=xyz", "xyz").expect("code");
+        assert_eq!(code, "abc");
+        assert!(
+            body.is_empty(),
+            "success page waits until the token is saved, wrote {body:?}"
+        );
+    }
+
+    #[test]
+    fn pkce_success_page_follows_a_saved_token() {
+        let (ok, body) = pkce_browser_after_save(Ok(()));
+        assert!(ok);
+        assert_eq!(body, "ok, you can close this tab");
+        let text = String::from_utf8(pkce_browser_response(ok, &body)).expect("utf8");
+        assert!(text.starts_with("HTTP/1.1 200 "), "{text}");
+    }
+
+    #[test]
+    fn pkce_save_failure_page_redacts_and_is_not_success() {
+        let (ok, body) = pkce_browser_after_save(Err("token sk-live-secret".into()));
+        assert!(!ok);
+        assert!(!body.contains("sk-live-secret"), "{body}");
+        assert!(body.contains("[redacted]"), "{body}");
+        let text = String::from_utf8(pkce_browser_response(ok, &body)).expect("utf8");
+        assert!(text.starts_with("HTTP/1.1 400 "), "{text}");
+        assert!(!text.contains("ok, you can close this tab"), "{text}");
+        assert!(!text.contains("sk-live-secret"), "{text}");
     }
 
     #[test]
