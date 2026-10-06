@@ -734,6 +734,28 @@ pub(super) fn encode(
                 }
                 push_role_part(&mut contents, "model", part);
             }
+            IrItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+                ..
+            } => {
+                call_names.push((call_id.as_str(), name.as_str()));
+                let args = super::json_object_or_raw(
+                    input,
+                    "functionCall.args",
+                    report,
+                    "tool arguments are not a JSON object",
+                    "raw",
+                );
+                push_role_part(
+                    &mut contents,
+                    "model",
+                    json!({
+                        "functionCall": { "id": call_id, "name": name, "args": args }
+                    }),
+                );
+            }
             IrItem::FunctionOutput {
                 call_id,
                 output,

@@ -310,6 +310,7 @@ jobs:
           cp target/nextest/ci/junit.xml "${out}/default.xml"
           cargo test --locked -p wiremux --no-default-features --test request_maps --test stream_maps --test response_maps --test stream_grammar
           cargo test --locked -p wiremux --no-default-features --features client --lib --test client --test consume_notes --test response_maps
+          cargo check --locked -p wiremux --no-default-features --features cli
           cargo check --locked -p wiremux --no-default-features --features proxy
           bash scripts/assert-maps-only-deps.sh
       - name: Doc tests

@@ -593,6 +593,18 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 }));
                 idx += 1;
             }
+            IrItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+                ..
+            } => {
+                messages.push(json!({
+                    "role": "assistant",
+                    "content": [tool_use_block(call_id, name, input, format!("items[{idx}]"), report)],
+                }));
+                idx += 1;
+            }
             IrItem::FunctionOutput {
                 call_id,
                 output,
@@ -693,7 +705,9 @@ fn push_alternating_message(
 fn messages_need_continue(ir: &IrRequest) -> bool {
     matches!(
         ir.items.last(),
-        Some(IrItem::Assistant { .. } | IrItem::FunctionCall { .. })
+        Some(
+            IrItem::Assistant { .. } | IrItem::FunctionCall { .. } | IrItem::CustomToolCall { .. },
+        )
     )
 }
 
@@ -758,6 +772,21 @@ fn encode_assistant(
                     call_id,
                     name,
                     arguments,
+                    format!("items[{}]", start + consumed),
+                    report,
+                ));
+                consumed += 1;
+            }
+            Some(IrItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+                ..
+            }) => {
+                content.push(tool_use_block(
+                    call_id,
+                    name,
+                    input,
                     format!("items[{}]", start + consumed),
                     report,
                 ));

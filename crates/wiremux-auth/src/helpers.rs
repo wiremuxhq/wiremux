@@ -403,6 +403,12 @@ fn redact_prefix(s: &str, prefix: &str) -> String {
 }
 
 /// Scheme + host/port only. Drops userinfo, path, query, and fragment.
+///
+/// Percent-encoded `@` is decoded until a pass stops shrinking, then
+/// userinfo is cut at the last `@`. A slash, question mark, or hash that
+/// decoding reveals ends the host. An authority that never contains `@`
+/// is kept as written. Host bytes that are not UTF-8 are lossy-replaced
+/// so a non-UTF-8 host cannot fall back to the original userinfo.
 pub fn redact_url_origin(raw: &str) -> String {
     let (scheme, rest) = match raw.split_once("://") {
         Some((scheme, rest)) => (Some(scheme), rest),
@@ -410,13 +416,80 @@ pub fn redact_url_origin(raw: &str) -> String {
     };
     let cut = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..cut];
-    let host = match authority.find('@') {
-        Some(at) => &authority[at + 1..],
-        None => authority,
-    };
+    let host = host_after_userinfo(authority);
     match scheme {
         Some(scheme) => format!("{scheme}://{host}"),
-        None => host.to_string(),
+        None => host,
+    }
+}
+
+/// Bytes after the last `@` once percent-decoding stops shrinking.
+///
+/// Callers that never observe `@` get the original authority, not a
+/// rewritten host (`api%2Eexample.com` stays encoded). A slash, question
+/// mark, or hash that decoding reveals is the end of the host.
+fn host_after_userinfo(authority: &str) -> String {
+    let decoded = percent_decode_until_stable(authority.as_bytes());
+    let Some(at) = decoded.iter().rposition(|byte| *byte == b'@') else {
+        return authority.to_string();
+    };
+    let host = &decoded[at + 1..];
+    let end = host
+        .iter()
+        .position(|byte| matches!(*byte, b'/' | b'?' | b'#'))
+        .unwrap_or(host.len());
+    String::from_utf8_lossy(&host[..end]).into_owned()
+}
+
+/// Repeat [`percent_decode`] until a pass does not shrink.
+///
+/// Each successful `%HH` shortens the buffer, so `len + 1` passes cannot
+/// loop forever.
+fn percent_decode_until_stable(input: &[u8]) -> Vec<u8> {
+    let mut current = input.to_vec();
+    let passes = current.len().saturating_add(1);
+    for _ in 0..passes {
+        let decoded = percent_decode(&current);
+        if decoded.len() >= current.len() {
+            break;
+        }
+        current = decoded;
+    }
+    current
+}
+
+/// Decode one `%HH` pass. Invalid `%` sequences are copied unchanged.
+fn percent_decode(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        if let Some(byte) = percent_encoded_byte(input, index) {
+            out.push(byte);
+            index += 3;
+        } else {
+            out.push(input[index]);
+            index += 1;
+        }
+    }
+    out
+}
+
+fn percent_encoded_byte(input: &[u8], index: usize) -> Option<u8> {
+    let bytes = input.get(index..index.checked_add(3)?)?;
+    if bytes[0] != b'%' {
+        return None;
+    }
+    let hi = hex_nibble(bytes[1])?;
+    let lo = hex_nibble(bytes[2])?;
+    Some((hi << 4) | lo)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -845,6 +918,72 @@ mod tests {
         assert!(!redacted.contains("s3cret"));
         assert!(!redacted.contains("supersecret"));
         assert!(!redacted.contains("/oauth"));
+    }
+
+    #[test]
+    fn redact_url_origin_strips_percent_encoded_userinfo() {
+        let once = redact_url_origin("https://user:s3cret%40api.example.invalid/v1");
+        assert_eq!(once, "https://api.example.invalid");
+        assert!(!once.contains("s3cret"), "{once}");
+
+        let twice = redact_url_origin("https://user:s3cret%2540api.example.invalid:8443/v1");
+        assert_eq!(twice, "https://api.example.invalid:8443");
+        assert!(!twice.contains("s3cret"), "{twice}");
+
+        let thrice = redact_url_origin("https://user:s3cret%252540api.example.invalid/v1");
+        assert_eq!(thrice, "https://api.example.invalid");
+        assert!(!thrice.contains("s3cret"), "{thrice}");
+
+        let encoded_dot = redact_url_origin("https://api%2Eexample.com/v1");
+        assert_eq!(encoded_dot, "https://api%2Eexample.com");
+
+        let ipv6 = redact_url_origin("https://user:s3cret%40[::1]/v1");
+        assert_eq!(ipv6, "https://[::1]");
+        assert!(!ipv6.contains("s3cret"), "{ipv6}");
+
+        let last = redact_url_origin("https://user:name%40extra:s3cret%40host.example/v1");
+        assert_eq!(last, "https://host.example");
+        assert!(!last.contains("s3cret"), "{last}");
+
+        let no_scheme = redact_url_origin("user:s3cret%40api.example.invalid/v1");
+        assert_eq!(no_scheme, "api.example.invalid");
+        assert!(!no_scheme.contains("s3cret"), "{no_scheme}");
+
+        let with_query = redact_url_origin(
+            "https://user:s3cret%40api.example.invalid/v1?client_secret=s3cret#frag",
+        );
+        assert_eq!(with_query, "https://api.example.invalid");
+        assert!(!with_query.contains("s3cret"), "{with_query}");
+        assert!(!with_query.contains('?'), "{with_query}");
+        assert!(!with_query.contains('#'), "{with_query}");
+
+        let raw_last = redact_url_origin("https://user@name:s3cret@host.example/v1");
+        assert_eq!(raw_last, "https://host.example");
+        assert!(!raw_last.contains("s3cret"), "{raw_last}");
+
+        let lossy = redact_url_origin("https://user:s3cret%40%ff/v1");
+        assert!(!lossy.contains("s3cret"), "{lossy}");
+        assert_eq!(lossy, "https://\u{FFFD}");
+        let lossy_upper = redact_url_origin("https://user:s3cret%40%FF/v1");
+        assert!(!lossy_upper.contains("s3cret"), "{lossy_upper}");
+        assert_eq!(lossy_upper, "https://\u{FFFD}");
+
+        // Decoding userinfo must not restore a query or path secret.
+        let encoded_query =
+            redact_url_origin("https://user:s3cret%40api.example.invalid%3Ftoken%3Ds3cret");
+        assert_eq!(encoded_query, "https://api.example.invalid");
+        assert!(!encoded_query.contains("s3cret"), "{encoded_query}");
+
+        let encoded_path =
+            redact_url_origin("https://user:s3cret%40api.example.invalid%2Fv1%2Fsecret-path");
+        assert_eq!(encoded_path, "https://api.example.invalid");
+        assert!(!encoded_path.contains("secret-path"), "{encoded_path}");
+
+        let twice_query = redact_url_origin(
+            "https://user:s3cret%2540api.example.invalid:8443%253Ftoken%253Ds3cret",
+        );
+        assert_eq!(twice_query, "https://api.example.invalid:8443");
+        assert!(!twice_query.contains("s3cret"), "{twice_query}");
     }
 
     #[test]

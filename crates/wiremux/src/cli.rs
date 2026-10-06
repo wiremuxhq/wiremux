@@ -262,28 +262,29 @@ async fn run_pkce(oauth: &OauthPack, listener: TcpListener) -> Result<(), String
     let first = req.lines().next().unwrap_or("");
     let target = first.split_whitespace().nth(1).unwrap_or("");
     let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
-    let parsed = pkce_callback_from_query(query);
-    let _ = stream.write_all(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nok, you can close this tab\n",
-    );
-    let (code, state) = parsed?;
-    if state != pkce.state {
-        return Err("callback state mismatch".into());
-    }
+    let code = reply_to_pkce_callback(&mut stream, query, &pkce.state)?;
     let redirect = oauth.redirect_uri.as_deref().unwrap_or("");
     let client_id = oauth.client_id.as_deref().unwrap_or("");
-    let tokens = exchange_auth_code(
-        &oauth.token_url,
-        client_id,
-        &code,
-        redirect,
-        &pkce.code_verifier,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    persist_login_tokens(oauth, &tokens)
+    let saved = async {
+        let tokens = exchange_auth_code(
+            &oauth.token_url,
+            client_id,
+            &code,
+            redirect,
+            &pkce.code_verifier,
+        )
         .await
         .map_err(|e| e.to_string())?;
+        persist_login_tokens(oauth, &tokens)
+            .await
+            .map_err(|e| e.to_string())
+    }
+    .await;
+    let (ok, body) = pkce_browser_after_save(saved.map(|_| ()));
+    write_pkce_browser(&mut stream, ok, &body);
+    if !ok {
+        return Err(body);
+    }
     println!("login saved");
     Ok(())
 }
@@ -336,6 +337,48 @@ async fn run_device(profile: &ResolvedProfile) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     println!("login saved");
     Ok(())
+}
+
+/// Browser page for a PKCE callback. A bad query is HTTP 400 and `Err`.
+/// A matching code does not write; the success page waits until the token is saved.
+fn reply_to_pkce_callback(
+    stream: &mut impl Write,
+    query: &str,
+    expected_state: &str,
+) -> Result<String, String> {
+    match pkce_callback_code(query, expected_state) {
+        Ok(code) => Ok(code),
+        Err(err) => {
+            write_pkce_browser(stream, false, &err);
+            Err(err)
+        }
+    }
+}
+
+/// Authorization code when `query` matches `expected_state`.
+pub(crate) fn pkce_callback_code(query: &str, expected_state: &str) -> Result<String, String> {
+    let (code, state) = pkce_callback_from_query(query)?;
+    if state != expected_state {
+        return Err("callback state mismatch".into());
+    }
+    Ok(code)
+}
+
+fn pkce_browser_after_save(saved: Result<(), String>) -> (bool, String) {
+    match saved {
+        Ok(()) => (true, "ok, you can close this tab".into()),
+        Err(err) => (false, redact_secret_looking(&err)),
+    }
+}
+
+fn pkce_browser_response(ok: bool, body: &str) -> Vec<u8> {
+    let status = if ok { "200 OK" } else { "400 Bad Request" };
+    format!("HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{body}\n")
+        .into_bytes()
+}
+
+fn write_pkce_browser(stream: &mut impl Write, ok: bool, body: &str) {
+    let _ = stream.write_all(&pkce_browser_response(ok, body));
 }
 
 /// Read `code`/`state` from a PKCE loopback query. Surfaces vendor `error`.
@@ -432,13 +475,17 @@ pub struct TokenStatus {
 }
 
 /// Check local credential sources. Does not print secrets.
-pub fn token_status(profile: &ResolvedProfile) -> TokenStatus {
-    if matches!(profile.http.auth_scheme, Some(AuthScheme::None)) && profile.oauth.is_none() {
-        return TokenStatus {
-            id: profile.id.clone(),
-            available: true,
-            detail: "auth_scheme is none".into(),
-        };
+pub async fn token_status(profile: &ResolvedProfile) -> TokenStatus {
+    let aws = profile
+        .http
+        .aws_service
+        .as_deref()
+        .is_some_and(|service| !service.is_empty());
+    // Auth none with aws_service still signs. SigV4 replaces Authorization
+    // because bearer_token_applied is false for AuthScheme::None.
+    if matches!(profile.http.auth_scheme, Some(AuthScheme::None)) && profile.oauth.is_none() && aws
+    {
+        return aws_chain_status(profile).await;
     }
     if profile
         .http
@@ -452,19 +499,39 @@ pub fn token_status(profile: &ResolvedProfile) -> TokenStatus {
             detail: "header credential present".into(),
         };
     }
-    if profile.oauth.is_some() || !profile.access_env.is_empty() {
-        return match provider_from_profile(profile) {
-            Ok(_) => TokenStatus {
-                id: profile.id.clone(),
-                available: true,
-                detail: "credentials loaded".into(),
-            },
-            Err(err) => TokenStatus {
-                id: profile.id.clone(),
-                available: false,
-                detail: redact_secret_looking(&err.to_string()),
-            },
+    if matches!(profile.http.auth_scheme, Some(AuthScheme::None)) && profile.oauth.is_none() {
+        return TokenStatus {
+            id: profile.id.clone(),
+            available: true,
+            detail: "auth_scheme is none".into(),
         };
+    }
+    let gcp = profile
+        .http
+        .gcp_key_env
+        .as_deref()
+        .is_some_and(|name| !name.is_empty());
+    if profile.oauth.is_some() || !profile.access_env.is_empty() || gcp {
+        match provider_from_profile(profile) {
+            Ok(_) => {
+                return TokenStatus {
+                    id: profile.id.clone(),
+                    available: true,
+                    detail: "credentials loaded".into(),
+                };
+            }
+            Err(err) if !aws => {
+                return TokenStatus {
+                    id: profile.id.clone(),
+                    available: false,
+                    detail: redact_secret_looking(&err.to_string()),
+                };
+            }
+            Err(_) => {}
+        }
+    }
+    if aws {
+        return aws_chain_status(profile).await;
     }
     TokenStatus {
         id: profile.id.clone(),
@@ -473,8 +540,44 @@ pub fn token_status(profile: &ResolvedProfile) -> TokenStatus {
     }
 }
 
+#[cfg(any(feature = "proxy", feature = "client"))]
+async fn aws_chain_status(profile: &ResolvedProfile) -> TokenStatus {
+    let service = profile.http.aws_service.as_deref().unwrap_or("bedrock");
+    match crate::aws_creds::resolve_aws_credentials().await {
+        Ok(Some(_)) => TokenStatus {
+            id: profile.id.clone(),
+            available: true,
+            detail: format!("aws sigv4 ({service})"),
+        },
+        Ok(None) => TokenStatus {
+            id: profile.id.clone(),
+            available: false,
+            detail: crate::aws_creds::missing_creds_message(profile),
+        },
+        Err(err) => TokenStatus {
+            id: profile.id.clone(),
+            available: false,
+            detail: redact_secret_looking(&err.to_string()),
+        },
+    }
+}
+
+/// `aws_creds` is compiled only for the proxy and client features.
+#[cfg(not(any(feature = "proxy", feature = "client")))]
+async fn aws_chain_status(profile: &ResolvedProfile) -> TokenStatus {
+    let service = profile.http.aws_service.as_deref().unwrap_or("bedrock");
+    TokenStatus {
+        id: profile.id.clone(),
+        available: false,
+        detail: format!(
+            "profile `{}` aws_service={service} needs a bearer token or IAM credentials",
+            profile.id
+        ),
+    }
+}
+
 fn is_profile_auth_header(profile: &ResolvedProfile, name: &str) -> bool {
-    crate::headers::is_profile_auth_header(profile, name)
+    crate::profile_auth::is_profile_auth_header(profile, name)
 }
 
 /// Format status without leaking the token.
@@ -1048,8 +1151,8 @@ chat_path = "/v1/projects/p/locations/us-central1/publishers/anthropic/models/{m
         assert!(parse_listen("[::1]:8787").is_err());
     }
 
-    #[test]
-    fn token_status_access_env_is_available() {
+    #[tokio::test]
+    async fn token_status_access_env_is_available() {
         let _home = IsolatedHome::new();
         _home.set_env("XAI_API_KEY", "xai-status-must-not-print");
         let profile = parse_profile_str(
@@ -1063,7 +1166,7 @@ base_url = "https://api.x.ai"
 "#,
         )
         .expect("parse");
-        let status = token_status(&profile);
+        let status = token_status(&profile).await;
         assert!(status.available, "{}", status.detail);
         assert!(
             !status.detail.contains("xai-status-must-not-print"),
@@ -1072,8 +1175,8 @@ base_url = "https://api.x.ai"
         );
     }
 
-    #[test]
-    fn token_status_no_credentials_names_what_to_set() {
+    #[tokio::test]
+    async fn token_status_no_credentials_names_what_to_set() {
         let profile = parse_profile_str(
             r#"
 schema_version = 1
@@ -1083,7 +1186,7 @@ base_url = "http://127.0.0.1:9"
 "#,
         )
         .expect("parse");
-        let status = token_status(&profile);
+        let status = token_status(&profile).await;
         assert!(!status.available);
         let detail = &status.detail;
         assert!(detail.contains("no credentials"), "{detail}");
@@ -1121,7 +1224,7 @@ x-goog-api-key = "goog-secret"
 "#,
         )
         .expect("parse");
-        let status = token_status(&profile);
+        let status = token_status(&profile).await;
         assert!(status.available, "{}", status.detail);
         assert_eq!(status.detail, "header credential present");
         assert!(!format_status(&status).contains("goog-secret"));
@@ -1130,8 +1233,8 @@ x-goog-api-key = "goog-secret"
         assert_eq!(token.as_deref(), Some("goog-secret"));
     }
 
-    #[test]
-    fn token_status_none_auth_is_available() {
+    #[tokio::test]
+    async fn token_status_none_auth_is_available() {
         let profile = parse_profile_str(
             r#"
 schema_version = 1
@@ -1142,13 +1245,228 @@ base_url = "http://127.0.0.1:9"
 "#,
         )
         .expect("parse");
-        let status = token_status(&profile);
+        let status = token_status(&profile).await;
         assert!(status.available);
         let text = format_status(&status);
         assert!(text.contains("token: not required"), "{text}");
         assert!(text.contains("auth_scheme is none"), "{text}");
         assert!(!text.contains("token: available"), "{text}");
         assert!(!text.contains("http://"));
+    }
+
+    #[cfg(any(feature = "proxy", feature = "client"))]
+    #[tokio::test]
+    async fn token_status_auth_none_with_aws_keys_is_sigv4() {
+        let home = IsolatedHome::new();
+        crate::aws_creds::clear_aws_credential_cache();
+        home.set_env("AWS_ACCESS_KEY_ID", "status-probe-key");
+        home.set_env("AWS_SECRET_ACCESS_KEY", "status-probe-secret");
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "bedrock-iam"
+wire = "converse"
+auth_scheme = "none"
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(status.available, "{}", status.detail);
+        assert!(
+            status.detail.contains("aws sigv4"),
+            "expected sigv4, got {}",
+            status.detail
+        );
+        let text = format_status(&status);
+        assert!(!text.contains("not required"), "{text}");
+        assert!(
+            !status.detail.contains("status-probe-key"),
+            "{}",
+            status.detail
+        );
+        let _ = home;
+    }
+
+    #[cfg(any(feature = "proxy", feature = "client"))]
+    #[tokio::test]
+    async fn token_status_auth_none_without_aws_keys_names_chain() {
+        let home = IsolatedHome::new();
+        crate::aws_creds::clear_aws_credential_cache();
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "bedrock-iam"
+wire = "converse"
+auth_scheme = "none"
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(!status.available, "{}", status.detail);
+        assert_eq!(
+            status.detail,
+            crate::aws_creds::missing_creds_message(&profile)
+        );
+        assert!(!status.detail.contains("not required"), "{}", status.detail);
+        assert!(
+            !status.detail.contains("auth_scheme is none"),
+            "{}",
+            status.detail
+        );
+        let _ = home;
+    }
+
+    #[cfg(any(feature = "proxy", feature = "client"))]
+    #[tokio::test]
+    async fn token_status_bedrock_bearer_falls_through_to_sigv4() {
+        let home = IsolatedHome::new();
+        crate::aws_creds::clear_aws_credential_cache();
+        home.set_env("AWS_ACCESS_KEY_ID", "status-probe-key");
+        home.set_env("AWS_SECRET_ACCESS_KEY", "status-probe-secret");
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "amazon-bedrock"
+wire = "converse"
+auth_scheme = "bearer"
+access_env = ["AWS_BEARER_TOKEN_BEDROCK"]
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(status.available, "{}", status.detail);
+        assert!(status.detail.contains("aws sigv4"), "{}", status.detail);
+        assert!(
+            !status.detail.contains("AWS_BEARER_TOKEN_BEDROCK"),
+            "{}",
+            status.detail
+        );
+        let _ = home;
+    }
+
+    #[cfg(any(feature = "proxy", feature = "client"))]
+    #[tokio::test]
+    async fn token_status_bedrock_bearer_wins_over_sigv4() {
+        let home = IsolatedHome::new();
+        crate::aws_creds::clear_aws_credential_cache();
+        home.set_env("AWS_BEARER_TOKEN_BEDROCK", "bearer-must-not-print");
+        home.set_env("AWS_ACCESS_KEY_ID", "status-probe-key");
+        home.set_env("AWS_SECRET_ACCESS_KEY", "status-probe-secret");
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "amazon-bedrock"
+wire = "converse"
+auth_scheme = "bearer"
+access_env = ["AWS_BEARER_TOKEN_BEDROCK"]
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(status.available, "{}", status.detail);
+        assert_eq!(status.detail, "credentials loaded");
+        assert!(!status.detail.contains("bearer-must-not-print"));
+        assert!(!status.detail.contains("status-probe-key"));
+        let _ = home;
+    }
+
+    #[cfg(any(feature = "proxy", feature = "client"))]
+    #[tokio::test]
+    async fn token_status_auth_none_aws_ignores_header() {
+        let home = IsolatedHome::new();
+        crate::aws_creds::clear_aws_credential_cache();
+        home.set_env("AWS_ACCESS_KEY_ID", "status-probe-key");
+        home.set_env("AWS_SECRET_ACCESS_KEY", "status-probe-secret");
+        home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "bedrock-iam"
+wire = "converse"
+auth_scheme = "none"
+aws_service = "bedrock"
+aws_region = "us-east-1"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+[headers]
+Authorization = "Bearer header-secret"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(status.available, "{}", status.detail);
+        assert!(status.detail.contains("aws sigv4"), "{}", status.detail);
+        assert_ne!(status.detail, "header credential present");
+        assert!(!status.detail.contains("header-secret"));
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn token_status_none_auth_header_is_present() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "header-none"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://127.0.0.1:9"
+[headers]
+Authorization = "Bearer header-secret"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(status.available, "{}", status.detail);
+        assert_eq!(status.detail, "header credential present");
+        let text = format_status(&status);
+        assert!(!text.contains("not required"), "{text}");
+        assert!(!text.contains("header-secret"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn token_status_gcp_key_file_is_loaded() {
+        let home = IsolatedHome::new();
+        let path = home.path().join("adc.json");
+        std::fs::write(
+            &path,
+            r#"{"type":"authorized_user","client_id":"123.apps.googleusercontent.com","client_secret":"user-secret","refresh_token":"1//refresh-me"}"#,
+        )
+        .expect("write adc");
+        home.set_env(
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            path.to_str().expect("utf8"),
+        );
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "vertex-adc"
+wire = "gemini"
+gcp_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
+base_url = "https://example.googleapis.com"
+"#,
+        )
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(status.available, "{}", status.detail);
+        assert_eq!(status.detail, "credentials loaded");
+        assert!(!status.detail.contains("user-secret"), "{}", status.detail);
+        assert!(!status.detail.contains("refresh-me"), "{}", status.detail);
+        let _ = home;
     }
 
     #[test]
@@ -1190,6 +1508,69 @@ base_url = "http://127.0.0.1:9"
         let (code, state) = pkce_callback_from_query("code=abc&state=xyz").expect("code and state");
         assert_eq!(code, "abc");
         assert_eq!(state, "xyz");
+    }
+
+    #[test]
+    fn pkce_vendor_error_is_http_400_not_the_success_page() {
+        let mut body = Vec::new();
+        let err = reply_to_pkce_callback(
+            &mut body,
+            "error=access_denied&error_description=user+denied",
+            "xyz",
+        )
+        .expect_err("vendor error");
+        let text = String::from_utf8(body).expect("utf8");
+        assert!(text.starts_with("HTTP/1.1 400 "), "{text}");
+        assert!(text.contains("access_denied"), "{text}");
+        assert!(
+            !text.contains("ok, you can close this tab"),
+            "failed login must not tell the browser to close, got {text}"
+        );
+        assert!(err.contains("access_denied"), "{err}");
+    }
+
+    #[test]
+    fn pkce_state_mismatch_is_http_400() {
+        let mut body = Vec::new();
+        let err =
+            reply_to_pkce_callback(&mut body, "code=abc&state=other", "xyz").expect_err("state");
+        assert_eq!(err, "callback state mismatch");
+        let text = String::from_utf8(body).expect("utf8");
+        assert!(text.starts_with("HTTP/1.1 400 "), "{text}");
+        assert!(text.contains("callback state mismatch"), "{text}");
+        assert!(!text.contains("ok, you can close this tab"), "{text}");
+    }
+
+    #[test]
+    fn pkce_matching_callback_does_not_write_the_success_page() {
+        let mut body = Vec::new();
+        let code = reply_to_pkce_callback(&mut body, "code=abc&state=xyz", "xyz").expect("code");
+        assert_eq!(code, "abc");
+        assert!(
+            body.is_empty(),
+            "success page waits until the token is saved, wrote {body:?}"
+        );
+    }
+
+    #[test]
+    fn pkce_success_page_follows_a_saved_token() {
+        let (ok, body) = pkce_browser_after_save(Ok(()));
+        assert!(ok);
+        assert_eq!(body, "ok, you can close this tab");
+        let text = String::from_utf8(pkce_browser_response(ok, &body)).expect("utf8");
+        assert!(text.starts_with("HTTP/1.1 200 "), "{text}");
+    }
+
+    #[test]
+    fn pkce_save_failure_page_redacts_and_is_not_success() {
+        let (ok, body) = pkce_browser_after_save(Err("token sk-live-secret".into()));
+        assert!(!ok);
+        assert!(!body.contains("sk-live-secret"), "{body}");
+        assert!(body.contains("[redacted]"), "{body}");
+        let text = String::from_utf8(pkce_browser_response(ok, &body)).expect("utf8");
+        assert!(text.starts_with("HTTP/1.1 400 "), "{text}");
+        assert!(!text.contains("ok, you can close this tab"), "{text}");
+        assert!(!text.contains("sk-live-secret"), "{text}");
     }
 
     #[test]

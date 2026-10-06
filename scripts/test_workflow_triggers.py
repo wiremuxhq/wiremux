@@ -43,6 +43,27 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("--test response_maps", text)
         self.assertIn("--test client", text)
 
+    def test_make_check_proxy_feature_denies_warnings(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        recipe = (
+            '\tRUSTFLAGS="-D warnings" cargo check --locked -p wiremux'
+            " --no-default-features --features proxy"
+        )
+        self.assertIn(recipe, makefile.splitlines())
+
+    def test_make_check_cli_feature_denies_warnings(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        recipe = (
+            '\tRUSTFLAGS="-D warnings" cargo check --locked -p wiremux'
+            " --no-default-features --features cli"
+        )
+        self.assertIn(recipe, makefile.splitlines())
+        ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "cargo check --locked -p wiremux --no-default-features --features cli",
+            ci,
+        )
+
     def test_ci_runs_release_script_unit_tests(self) -> None:
         text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("python3 scripts/test_package_release_binary.py", text)

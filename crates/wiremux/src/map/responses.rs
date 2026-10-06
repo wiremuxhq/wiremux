@@ -71,6 +71,14 @@ fn decode_input_item(item: &Value) -> Vec<IrItem> {
                 .unwrap_or_else(|| "{}".into()),
             thought_signature: None,
         }],
+        "custom_tool_call" => vec![IrItem::CustomToolCall {
+            call_id: str_field(item, "call_id")
+                .or_else(|| str_field(item, "id"))
+                .unwrap_or_default(),
+            name: str_field(item, "name").unwrap_or_default(),
+            input: item.get("input").map(value_as_string).unwrap_or_default(),
+            responses_item: Some(item.clone()),
+        }],
         "function_call_output" => vec![decode_function_output(item)],
         "reasoning" => vec![IrItem::Reasoning {
             encrypted: str_field(item, "encrypted_content"),
@@ -545,6 +553,22 @@ fn encode_items(
                     arguments,
                     restore_calls,
                 ));
+            }
+            IrItem::CustomToolCall {
+                call_id,
+                name,
+                input: tool_input,
+                responses_item,
+            } => {
+                let mut item = match responses_item {
+                    Some(value) if value.is_object() => value.clone(),
+                    _ => json!({ "type": "custom_tool_call" }),
+                };
+                item["type"] = json!("custom_tool_call");
+                item["call_id"] = json!(call_id);
+                item["name"] = json!(name);
+                item["input"] = json!(tool_input);
+                input.push(item);
             }
             IrItem::FunctionOutput {
                 call_id,

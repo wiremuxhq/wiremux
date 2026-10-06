@@ -19,6 +19,7 @@ use tokio::time::timeout;
 use wiremux_auth::{AwsCredentials, ResolvedProfile};
 
 use crate::aws_sign::AwsSignError;
+use crate::capped_body::{CappedBodyError, read_capped_text};
 
 const DEFAULT_REGION: &str = "us-east-1";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -26,6 +27,7 @@ const METADATA_CONNECT: Duration = Duration::from_millis(200);
 const METADATA_TOTAL: Duration = Duration::from_secs(2);
 const SSO_CONNECT: Duration = Duration::from_secs(2);
 const SSO_TOTAL: Duration = Duration::from_secs(10);
+const MAX_CREDENTIAL_BODY: usize = 1024 * 1024;
 
 struct CachedCreds {
     creds: AwsCredentials,
@@ -874,12 +876,16 @@ async fn http_send(
         ))
     })?;
     let status = resp.status().as_u16();
-    let body = resp.text().await.map_err(|_| {
-        auth_err(format!(
-            "aws credential body failed via {}",
-            wiremux_auth::redact_url_origin(url)
-        ))
-    })?;
+    let body = match read_capped_text(resp, MAX_CREDENTIAL_BODY).await {
+        Ok(body) => body,
+        Err(CappedBodyError::TooLarge(err)) => return Err(auth_err(err)),
+        Err(CappedBodyError::Read) => {
+            return Err(auth_err(format!(
+                "aws credential body failed via {}",
+                wiremux_auth::redact_url_origin(url)
+            )));
+        }
+    };
     Ok((status, body))
 }
 
@@ -1390,5 +1396,44 @@ mod tests {
         assert!(!text.contains("secret-ecs-token"), "{text}");
         assert!(!text.contains("sig="), "{text}");
         let _ = home;
+    }
+
+    #[tokio::test]
+    async fn credential_http_body_over_cap_is_an_error() {
+        let cap = 1024 * 1024;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+            stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+            let _ = read_headers(&mut stream);
+            // Advertise a body over the cap, but do not write that many
+            // bytes. The cap check must fail before the socket buffer fills.
+            let advertised = cap + "TAILMARK".len();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {advertised}\r\nConnection: close\r\n\r\nTAILMARK"
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+        let err = http_get(
+            &format!("http://{addr}/secret-token"),
+            &[],
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+            true,
+        )
+        .await
+        .expect_err("a credential body over 1 MiB must fail");
+        let shown = err.to_string();
+        assert!(
+            shown.contains("too large") || shown.contains("exceeds"),
+            "{shown}"
+        );
+        assert!(!shown.contains("TAILMARK"), "{shown}");
+        assert!(!shown.contains("secret-token"), "{shown}");
+        let _ = handle.join();
     }
 }

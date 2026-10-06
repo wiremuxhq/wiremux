@@ -82,6 +82,15 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>) {
 }
 
 fn decode_tool_call(call: &Value) -> IrItem {
+    if is_custom_tool_call(call) {
+        let custom = call.get("custom").unwrap_or(call);
+        return IrItem::CustomToolCall {
+            call_id: str_field(call, "id").unwrap_or_default(),
+            name: str_field(custom, "name").unwrap_or_default(),
+            input: custom.get("input").map(value_as_string).unwrap_or_default(),
+            responses_item: None,
+        };
+    }
     let func = call.get("function").unwrap_or(call);
     IrItem::FunctionCall {
         call_id: str_field(call, "id").unwrap_or_default(),
@@ -91,6 +100,15 @@ fn decode_tool_call(call: &Value) -> IrItem {
             .map(value_as_string)
             .unwrap_or_else(|| "{}".into()),
         thought_signature: None,
+    }
+}
+
+/// `type: custom`, or a call that only carries `custom`.
+fn is_custom_tool_call(call: &Value) -> bool {
+    match call.get("type").and_then(Value::as_str) {
+        Some("custom") => true,
+        Some(_) => false,
+        None => call.get("custom").is_some() && call.get("function").is_none(),
     }
 }
 
@@ -433,7 +451,7 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 messages.push(msg);
                 idx += consumed;
             }
-            IrItem::FunctionCall { .. } => {
+            IrItem::FunctionCall { .. } | IrItem::CustomToolCall { .. } => {
                 let (msg, consumed) = encode_standalone_function_calls(ir, idx, report);
                 messages.push(msg);
                 idx += consumed;
@@ -547,22 +565,35 @@ fn take_function_calls(
 ) -> (Vec<Value>, usize) {
     let mut consumed = 0;
     let mut calls = Vec::new();
-    while let Some(IrItem::FunctionCall {
-        call_id,
-        name,
-        arguments,
-        thought_signature,
-    }) = ir.items.get(start + consumed)
-    {
-        if thought_signature.is_some() {
-            report.record(
-                format!("items[{}]", start + consumed),
-                LossAction::Drop,
-                "thoughtSignature has no Chat Completions slot",
-            );
+    while let Some(item) = ir.items.get(start + consumed) {
+        match item {
+            IrItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+                thought_signature,
+            } => {
+                if thought_signature.is_some() {
+                    report.record(
+                        format!("items[{}]", start + consumed),
+                        LossAction::Drop,
+                        "thoughtSignature has no Chat Completions slot",
+                    );
+                }
+                calls.push(function_call_json(call_id, name, arguments));
+                consumed += 1;
+            }
+            IrItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+                ..
+            } => {
+                calls.push(custom_tool_call_json(call_id, name, input));
+                consumed += 1;
+            }
+            _ => break,
         }
-        calls.push(function_call_json(call_id, name, arguments));
-        consumed += 1;
     }
     (calls, consumed)
 }
@@ -574,6 +605,17 @@ fn function_call_json(call_id: &str, name: &str, arguments: &str) -> Value {
         "function": {
             "name": name,
             "arguments": arguments,
+        }
+    })
+}
+
+fn custom_tool_call_json(call_id: &str, name: &str, input: &str) -> Value {
+    json!({
+        "id": call_id,
+        "type": "custom",
+        "custom": {
+            "name": name,
+            "input": input,
         }
     })
 }

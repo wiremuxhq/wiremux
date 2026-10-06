@@ -20,6 +20,8 @@
 mod aws_creds;
 #[cfg(any(feature = "proxy", feature = "client"))]
 mod aws_sign;
+#[cfg(any(feature = "cli", feature = "proxy", feature = "client"))]
+mod capped_body;
 #[cfg(feature = "cli")]
 pub mod cli;
 #[cfg(feature = "client")]
@@ -32,6 +34,8 @@ mod headers;
 pub mod ingest;
 pub mod ir;
 pub mod map;
+#[cfg(any(feature = "cli", feature = "proxy", feature = "client"))]
+mod profile_auth;
 #[cfg(feature = "proxy")]
 pub mod proxy;
 pub mod stream;

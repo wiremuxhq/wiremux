@@ -385,6 +385,9 @@ pub fn ingest_catalog(text: &str, req: &IngestRequest) -> Result<IngestReport, I
     let by_id: BTreeMap<String, CatalogVendor> =
         rows.into_iter().map(|v| (v.id.clone(), v)).collect();
     let wanted = wanted_ids(req, &by_id);
+    if wanted.is_empty() {
+        return Err(IngestError::Message("no catalog rows matched".into()));
+    }
     let dir = match &req.dir {
         Some(dir) => dir.clone(),
         None => ingest_profile_dir().ok_or_else(|| {
@@ -421,6 +424,19 @@ pub fn ingest_catalog(text: &str, req: &IngestRequest) -> Result<IngestReport, I
     Ok(IngestReport { actions })
 }
 
+/// models.dev/api.json is about 5.3 MiB. Stay above that, same ceiling as the proxy body cap.
+const MAX_CATALOG_BODY: usize = 16 * 1024 * 1024;
+
+async fn read_catalog_http_body(
+    url: &str,
+    response: reqwest::Response,
+    cap: usize,
+) -> Result<String, IngestError> {
+    crate::capped_body::read_capped_text(response, cap)
+        .await
+        .map_err(|err| IngestError::Message(format!("fetch {url}: {err}")))
+}
+
 /// Fetch an allowlisted catalog URL.
 pub async fn fetch_catalog_url(url: &str) -> Result<String, IngestError> {
     if url != MODELS_DEV_URL && url != LITELLM_PROVIDERS_URL {
@@ -443,10 +459,7 @@ pub async fn fetch_catalog_url(url: &str) -> Result<String, IngestError> {
     if !status.is_success() {
         return Err(IngestError::Message(format!("fetch {url}: HTTP {status}")));
     }
-    response
-        .text()
-        .await
-        .map_err(|e| IngestError::Message(format!("fetch {url}: {e}")))
+    read_catalog_http_body(url, response, MAX_CATALOG_BODY).await
 }
 
 fn wanted_ids(req: &IngestRequest, by_id: &BTreeMap<String, CatalogVendor>) -> Vec<String> {
@@ -778,13 +791,10 @@ fn split_openai_compat_api(raw: &str, wire: EmitWire) -> Result<(String, String)
         }
         None => (path_part, String::new()),
     };
-    let host = host_port
-        .split(':')
-        .next()
-        .unwrap_or(host_port)
-        .split('{')
-        .next()
-        .unwrap_or(host_port);
+    let host = match catalog_host_label(host_port) {
+        Ok(host) => host,
+        Err(()) => return Err("URL has no host".into()),
+    };
     if scheme == "http" && !is_loopback_host(host) && !host.is_empty() {
         return Err("http is only allowed for loopback hosts".into());
     }
@@ -893,6 +903,30 @@ fn hex_nibble(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
+}
+
+fn catalog_host_label(host_port: &str) -> Result<&str, ()> {
+    if let Some(inner) = host_port.strip_prefix('[') {
+        let (host, rest) = inner.split_once(']').ok_or(())?;
+        let port_ok = rest.is_empty()
+            || rest.strip_prefix(':').is_some_and(|port| {
+                !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+            });
+        if !port_ok || host.is_empty() {
+            return Err(());
+        }
+        return Ok(host);
+    }
+    if host_port.matches(':').count() > 1 {
+        return Err(());
+    }
+    Ok(host_port
+        .split(':')
+        .next()
+        .unwrap_or(host_port)
+        .split('{')
+        .next()
+        .unwrap_or(host_port))
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -1547,6 +1581,41 @@ mod tests {
     }
 
     #[test]
+    fn http_ipv6_loopback_is_allowed() {
+        let (origin, path) =
+            split_openai_compat_api("http://[::1]:11434/v1", EmitWire::ChatCompletions)
+                .expect("bracketed ipv6 loopback");
+        assert_eq!(origin, "http://[::1]:11434");
+        assert_eq!(path, "/v1/chat/completions");
+
+        let (origin, path) = split_openai_compat_api("http://[::1]/", EmitWire::ChatCompletions)
+            .expect("bracketed ipv6 without port");
+        assert_eq!(origin, "http://[::1]");
+        assert_eq!(path, "/v1/chat/completions");
+
+        let (origin, path) =
+            split_openai_compat_api("http://127.0.0.1:11434/v1", EmitWire::ChatCompletions)
+                .expect("ipv4 loopback keeps its port");
+        assert_eq!(origin, "http://127.0.0.1:11434");
+        assert_eq!(path, "/v1/chat/completions");
+
+        for raw in [
+            "http://::1",
+            "http://::1/v1",
+            "http://[::1]evil/v1",
+            "http://[::1]example.com/v1",
+            "http://[::1]:/v1",
+            "http://[::1]:abc/v1",
+            "http://[::1]:80x/v1",
+            "http://[]",
+            "http://[]:80/v1",
+        ] {
+            let err = split_openai_compat_api(raw, EmitWire::ChatCompletions).expect_err(raw);
+            assert!(err.contains("host"), "{raw}: {err}");
+        }
+    }
+
+    #[test]
     fn refuse_unknown_fetch_url() {
         let err = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1631,6 +1700,24 @@ mod tests {
     }
 
     #[test]
+    fn all_compatible_with_no_matching_rows_errors_without_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let err = ingest_catalog(
+            "{}",
+            &IngestRequest {
+                all_compatible: true,
+                dir: Some(out.clone()),
+                ..IngestRequest::default()
+            },
+        )
+        .unwrap_err();
+        let shown = err.to_string();
+        assert!(shown.contains("no catalog rows matched"), "{shown}");
+        assert!(!out.exists(), "out must not be created");
+    }
+
+    #[test]
     fn explicit_vendor_azure_still_writes() {
         let dir = tempfile::tempdir().unwrap();
         ingest_catalog(
@@ -1689,5 +1776,61 @@ mod tests {
             err.contains("GOOGLE_VERTEX_PROJECT") || err.contains("PROJECT"),
             "{err}"
         );
+    }
+
+    #[tokio::test]
+    async fn catalog_body_over_caller_cap_is_an_error() {
+        use std::io::{Read, Write};
+
+        assert_eq!(MAX_CATALOG_BODY, 16 * 1024 * 1024);
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut body = "a".repeat(80);
+        body.push_str("TAILMARK");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .ok();
+            let mut buf = [0u8; 1024];
+            let mut seen = Vec::new();
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        seen.extend_from_slice(&buf[..n]);
+                        if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let len = body.len();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}"
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+
+        let url = format!("http://{addr}/catalog");
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .build()
+            .unwrap();
+        let response = client.get(&url).send().await.unwrap();
+        let err = read_catalog_http_body(&url, response, 64)
+            .await
+            .expect_err("caller cap");
+        let shown = err.to_string();
+        assert!(
+            shown.contains("too large") || shown.contains("exceeds"),
+            "{shown}"
+        );
+        assert!(shown.contains("fetch "), "{shown}");
+        assert!(!shown.contains("TAILMARK"), "{shown}");
+        let _ = handle.join();
     }
 }

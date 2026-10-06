@@ -477,25 +477,24 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         return bytes_response(status_from_reqwest(status), &content_type, body);
     }
     match decode_response(target, &body, &state.profile) {
-        Ok(events) => {
-            if let Ok(mapped) = encode_response_with_model(state.from, &events, &ir.model) {
+        Ok(events) => match encode_response_with_model(state.from, &events, &ir.model) {
+            Ok(mapped) => {
                 let bytes = Bytes::from(mapped.to_string());
-                return bytes_response(status_from_reqwest(status), "application/json", bytes);
+                bytes_response(status_from_reqwest(status), "application/json", bytes)
             }
-        }
-        Err(err) => {
-            return text(
+            Err(err) => text(
                 StatusCode::BAD_GATEWAY,
-                format!("decode upstream body: {err}\n"),
-            );
-        }
+                format!("encode client body: {err}\n"),
+            ),
+        },
+        Err(err) => text(
+            StatusCode::BAD_GATEWAY,
+            format!("decode upstream body: {err}\n"),
+        ),
     }
-    text(
-        StatusCode::NOT_IMPLEMENTED,
-        "non-stream cross-dialect responses are not mapped\n",
-    )
 }
 
+#[derive(Clone, Copy)]
 enum CountRoute {
     Messages,
     Gemini,
@@ -587,6 +586,34 @@ fn rewrite_count_url(url: &str, route: CountRoute) -> Option<String> {
         Some(query) => format!("{rewritten}?{query}"),
         None => rewritten,
     })
+}
+
+fn count_body_hides_vendor_error(route: CountRoute, body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    if !value.is_object() {
+        return false;
+    }
+    let token_key = match route {
+        CountRoute::Messages => "input_tokens",
+        CountRoute::Gemini => "totalTokens",
+    };
+    if value
+        .get(token_key)
+        .is_some_and(serde_json::Value::is_number)
+    {
+        return false;
+    }
+    if matches!(route, CountRoute::Messages)
+        && value.get("type").and_then(serde_json::Value::as_str) != Some("error")
+    {
+        return false;
+    }
+    let Some(err) = value.get("error").filter(|item| item.is_object()) else {
+        return false;
+    };
+    vendor_error_detail(err).is_some()
 }
 
 fn count_upstream_url(
@@ -696,6 +723,11 @@ async fn handle_count(
             StatusCode::BAD_GATEWAY,
             "upstream success body is not JSON\n",
         );
+    }
+    if status.is_success() && count_body_hides_vendor_error(route, &upstream_body) {
+        // 5xx is retried as a transient HTTP failure. A vendor error
+        // that arrived inside HTTP 200 must stay a client error.
+        return bytes_response(StatusCode::BAD_REQUEST, "application/json", upstream_body);
     }
     bytes_response(status_from_reqwest(status), &content_type, upstream_body)
 }
@@ -868,8 +900,9 @@ fn json_completion_to_sse(
         if !event_has_slot(from, &ev) {
             continue;
         }
+        // Skipping the error still lets finish() emit a stop.
         let Ok(frames) = encoder.push(ev) else {
-            continue;
+            return None;
         };
         for raw in frames {
             out.extend_from_slice(&dest_frame_bytes(from, &raw));
@@ -1574,9 +1607,9 @@ fn status_from_reqwest(status: reqwest::StatusCode) -> StatusCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        CountRoute, CountUrlError, count_model, count_route, count_upstream_url, host_is_loopback,
-        is_json_content_type, read_capped_body, rewrite_count_body_model,
-        same_wire_success_is_json,
+        CountRoute, CountUrlError, count_body_hides_vendor_error, count_model, count_route,
+        count_upstream_url, host_is_loopback, is_json_content_type, read_capped_body,
+        rewrite_count_body_model, same_wire_success_is_json,
     };
 
     fn count_profile(wire: &str, chat_path: Option<&str>) -> wiremux_auth::ResolvedProfile {
@@ -1847,6 +1880,122 @@ anthropic-beta = "context-1m-2025-08-07"
             b" {\"id\":\"x\"}"
         ));
         assert!(same_wire_success_is_json("", b"[1]"));
+    }
+
+    #[test]
+    fn count_error_without_a_token_number_is_a_vendor_failure() {
+        let cases = [
+            (
+                CountRoute::Messages,
+                r#"{"type":"error","error":{"type":"invalid_request_error","message":"model not found"}}"#,
+                true,
+                "messages type and message",
+            ),
+            (
+                CountRoute::Messages,
+                r#"{"type":"error","error":{"type":"invalid_request_error"}}"#,
+                true,
+                "messages code only",
+            ),
+            (
+                CountRoute::Messages,
+                r#"{"input_tokens":"3","type":"error","error":{"message":"model not found"}}"#,
+                true,
+                "messages string token",
+            ),
+            (
+                CountRoute::Messages,
+                r#"{"input_tokens":null,"type":"error","error":{"message":"model not found"}}"#,
+                true,
+                "messages null token",
+            ),
+            (
+                CountRoute::Messages,
+                r#"{"input_tokens":3}"#,
+                false,
+                "messages token count",
+            ),
+            (
+                CountRoute::Messages,
+                r#"{"input_tokens":0}"#,
+                false,
+                "messages zero tokens",
+            ),
+            (
+                CountRoute::Messages,
+                r#"{"input_tokens":0,"type":"error","error":{"message":"model not found"}}"#,
+                false,
+                "messages zero beside error",
+            ),
+            (
+                CountRoute::Messages,
+                r#"{"type":"error","error":{}}"#,
+                false,
+                "messages empty error",
+            ),
+            (
+                CountRoute::Messages,
+                r#"{"type":"error","error":{"message":"  "}}"#,
+                false,
+                "messages blank message",
+            ),
+            (
+                CountRoute::Messages,
+                r#"{"error":{"message":"model not found"}}"#,
+                false,
+                "messages missing type",
+            ),
+            (CountRoute::Messages, "not-json", false, "messages not json"),
+            (
+                CountRoute::Gemini,
+                r#"{"error":{"message":"model not found","status":"INVALID_ARGUMENT"}}"#,
+                true,
+                "gemini status and message",
+            ),
+            (
+                CountRoute::Gemini,
+                r#"{"error":{"message":"model not found"}}"#,
+                true,
+                "gemini message only",
+            ),
+            (
+                CountRoute::Gemini,
+                r#"{"totalTokens":4}"#,
+                false,
+                "gemini token count",
+            ),
+            (
+                CountRoute::Gemini,
+                r#"{"totalTokens":0}"#,
+                false,
+                "gemini zero tokens",
+            ),
+            (
+                CountRoute::Gemini,
+                r#"{"totalTokens":0,"error":{"message":"model not found","status":"INVALID_ARGUMENT"}}"#,
+                false,
+                "gemini zero beside error",
+            ),
+            (
+                CountRoute::Gemini,
+                r#"{"error":{}}"#,
+                false,
+                "gemini empty error",
+            ),
+            (
+                CountRoute::Gemini,
+                r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#,
+                false,
+                "gemini prompt feedback",
+            ),
+        ];
+        for (route, body, want, name) in cases {
+            assert_eq!(
+                count_body_hides_vendor_error(route, body.as_bytes()),
+                want,
+                "{name}"
+            );
+        }
     }
 
     #[test]

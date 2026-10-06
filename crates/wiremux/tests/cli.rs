@@ -962,6 +962,83 @@ fn proxy_count_html_success_is_bad_gateway() {
 }
 
 #[test]
+fn proxy_count_messages_error_object_is_http_400() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "count-msg-err",
+        wire: "messages",
+        chat_path: Some("/v1/messages"),
+        from: "messages",
+        extra_args: &[],
+        request_path: "/v1/messages/count_tokens",
+        request_body: r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+        upstream_body: r#"{"type":"error","error":{"type":"invalid_request_error","message":"model not found"}}"#,
+        upstream_content_type: "application/json",
+    });
+    assert!(
+        resp.starts_with("HTTP/1.1 400"),
+        "a vendor failure inside HTTP 200 must not stay 200, got: {resp}"
+    );
+    assert!(resp.contains("model not found"), "{resp}");
+    assert!(resp.contains("invalid_request_error"), "{resp}");
+    assert!(resp.contains(r#""type":"error""#), "{resp}");
+}
+
+#[test]
+fn proxy_count_gemini_error_object_is_http_400() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "count-gem-err",
+        wire: "gemini",
+        chat_path: None,
+        from: "gemini",
+        extra_args: &[],
+        request_path: "/v1beta/models/gemini-2.0-flash:countTokens",
+        request_body: r#"{"contents":[{"parts":[{"text":"hi"}]}]}"#,
+        upstream_body: r#"{"error":{"message":"model not found","status":"INVALID_ARGUMENT"}}"#,
+        upstream_content_type: "application/json",
+    });
+    assert!(
+        resp.starts_with("HTTP/1.1 400"),
+        "a vendor failure inside HTTP 200 must not stay 200, got: {resp}"
+    );
+    assert!(resp.contains("model not found"), "{resp}");
+    assert!(resp.contains("INVALID_ARGUMENT"), "{resp}");
+}
+
+#[test]
+fn proxy_count_messages_token_count_beside_error_stays_http_200() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "count-msg-tokens",
+        wire: "messages",
+        chat_path: Some("/v1/messages"),
+        from: "messages",
+        extra_args: &[],
+        request_path: "/v1/messages/count_tokens",
+        request_body: r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+        upstream_body: r#"{"input_tokens":0,"type":"error","error":{"type":"invalid_request_error","message":"model not found"}}"#,
+        upstream_content_type: "application/json",
+    });
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+    assert!(resp.contains("input_tokens"), "{resp}");
+}
+
+#[test]
+fn proxy_count_gemini_token_count_beside_error_stays_http_200() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "count-gem-tokens",
+        wire: "gemini",
+        chat_path: None,
+        from: "gemini",
+        extra_args: &[],
+        request_path: "/v1beta/models/gemini-2.0-flash:countTokens",
+        request_body: r#"{"contents":[{"parts":[{"text":"hi"}]}]}"#,
+        upstream_body: r#"{"totalTokens":0,"error":{"message":"model not found","status":"INVALID_ARGUMENT"}}"#,
+        upstream_content_type: "application/json",
+    });
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+    assert!(resp.contains("totalTokens"), "{resp}");
+}
+
+#[test]
 fn proxy_count_model_override_replaces_gemini_url() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
@@ -2245,6 +2322,151 @@ chat_path = "/v1/messages"
     assert!(
         !resp.contains("not mapped"),
         "must not 501 a successful Messages JSON body, got: {resp}"
+    );
+}
+
+#[test]
+fn proxy_converse_names_unsupported_gemini_image() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/heic","data":"AAA"}}]}}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "gemini-heic.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "gemini-heic"
+wire = "gemini"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body =
+        r#"{"modelId":"gemini-2.0-flash","messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /model/gemini-2.0-flash/converse HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("502") && resp.contains("image/heic"),
+        "Converse client must see the unsupported Gemini image, got: {resp}"
+    );
+    assert!(
+        !resp.contains("not mapped"),
+        "an image mime must not be reported as an unmapped dialect, got: {resp}"
+    );
+}
+
+#[test]
+fn proxy_converse_stream_names_unsupported_gemini_image() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/heic","data":"AAA"}}]}}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "gemini-heic-stream.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "gemini-heic-stream"
+wire = "gemini"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body =
+        r#"{"modelId":"gemini-2.0-flash","messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /model/gemini-2.0-flash/converse-stream HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut buf = Vec::new();
+    let _ = client.read_to_end(&mut buf);
+    let resp = String::from_utf8_lossy(&buf);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("502") && resp.contains("image/heic"),
+        "Converse stream client must see the unsupported Gemini image, got: {resp}"
+    );
+    assert!(
+        !resp.contains("not mapped"),
+        "an image mime must not be reported as an unmapped dialect, got: {resp}"
     );
 }
 
