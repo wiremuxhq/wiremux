@@ -848,6 +848,7 @@ impl StreamEncoder {
     }
 
     fn push_messages(&mut self, ev: IrStreamEvent) -> Result<Vec<RawSse>, MapError> {
+        let ev = custom_tool_as_function(ev);
         if let IrStreamEvent::ServiceTier { ref tier } = ev {
             self.service_tier = Some(tier.clone());
         }
@@ -1969,6 +1970,7 @@ impl StreamEncoder {
     }
 
     fn push_converse(&mut self, ev: IrStreamEvent) -> Result<Vec<RawSse>, MapError> {
+        let ev = custom_tool_as_function(ev);
         let mut out = Vec::new();
         match ev {
             IrStreamEvent::TextDelta { text } => {
@@ -2269,6 +2271,23 @@ impl StreamEncoder {
             event: None,
             data: value.to_string(),
         }))
+    }
+}
+
+/// Messages and Converse have no custom-tool frame, so those encoders
+/// reuse the function-tool block. Chat and Responses keep the custom event.
+fn custom_tool_as_function(ev: IrStreamEvent) -> IrStreamEvent {
+    match ev {
+        IrStreamEvent::CustomToolCallStart { id, name, index } => IrStreamEvent::ToolCallStart {
+            id,
+            name,
+            thought_signature: None,
+            index,
+        },
+        IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
+            IrStreamEvent::ToolCallArgDelta { delta, index }
+        }
+        other => other,
     }
 }
 
@@ -3121,6 +3140,195 @@ mod tests {
             Some("content_filter"),
             "content_filter stays after a custom tool, got {filtered_frames:?}"
         );
+    }
+
+    #[test]
+    fn messages_encoder_custom_tool_after_text_is_its_own_block() {
+        let mut enc = StreamEncoder::new(Wire::Messages);
+        let mut frames = Vec::new();
+        frames.extend(
+            enc.push(IrStreamEvent::TextDelta { text: "hi".into() })
+                .expect("text"),
+        );
+        frames.extend(
+            enc.push(IrStreamEvent::CustomToolCallStart {
+                id: "call_c".into(),
+                name: "widget".into(),
+                index: 0,
+            })
+            .expect("custom start"),
+        );
+        frames.extend(
+            enc.push(IrStreamEvent::CustomToolCallInputDelta {
+                delta: "print(1)".into(),
+                index: 0,
+            })
+            .expect("custom input"),
+        );
+        frames.extend(enc.finish().expect("finish"));
+        let events = message_events(&frames);
+        let starts = block_starts(&events);
+        assert_eq!(
+            starts,
+            vec![(0, "text"), (1, "tool_use")],
+            "a custom tool must take the next Messages block, got {events:?}"
+        );
+        assert_eq!(
+            block_name(&events, 1),
+            Some("widget"),
+            "tool block must keep the custom tool name, got {events:?}"
+        );
+        assert_eq!(
+            json_delta_index(&events),
+            Some(1),
+            "custom input must land on the tool block, got {events:?}"
+        );
+        assert_eq!(
+            stop_reason_of(&events).as_deref(),
+            Some("tool_use"),
+            "a custom tool must finish as tool_use, got {events:?}"
+        );
+        assert!(
+            block_stopped_before_delta(&events, 0),
+            "the text block must stop before message_delta, got {events:?}"
+        );
+        assert!(
+            block_stopped_before_delta(&events, 1),
+            "the tool block must stop before message_delta, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn converse_encoder_custom_tool_after_text_has_its_own_block_index() {
+        let mut enc = StreamEncoder::new(Wire::Converse);
+        enc.push(IrStreamEvent::TextDelta { text: "hi".into() })
+            .expect("text");
+        let start = enc
+            .push(IrStreamEvent::CustomToolCallStart {
+                id: "call_c".into(),
+                name: "widget".into(),
+                index: 0,
+            })
+            .expect("custom start");
+        let input = enc
+            .push(IrStreamEvent::CustomToolCallInputDelta {
+                delta: "print(1)".into(),
+                index: 0,
+            })
+            .expect("custom input");
+        let start_frame = frame_with_key(&start, "contentBlockStart");
+        assert_eq!(
+            start_frame
+                .pointer("/contentBlockStart/contentBlockIndex")
+                .and_then(Value::as_u64),
+            Some(1),
+            "custom tool must not reuse the text block index, got {start:?}"
+        );
+        assert_eq!(
+            start_frame
+                .pointer("/contentBlockStart/start/toolUse/name")
+                .and_then(Value::as_str),
+            Some("widget"),
+            "custom tool name must reach toolUse, got {start_frame}"
+        );
+        let input_frame = frame_with_key(&input, "contentBlockDelta");
+        assert_eq!(
+            input_frame
+                .pointer("/contentBlockDelta/contentBlockIndex")
+                .and_then(Value::as_u64),
+            Some(1),
+            "custom input must stay on the tool block, got {input:?}"
+        );
+        assert_eq!(
+            input_frame
+                .pointer("/contentBlockDelta/delta/toolUse/input")
+                .and_then(Value::as_str),
+            Some("print(1)"),
+            "custom input must stay the tool argument, got {input_frame}"
+        );
+    }
+
+    fn message_events(frames: &[RawSse]) -> Vec<(String, Value)> {
+        frames
+            .iter()
+            .filter_map(|frame| {
+                let name = frame.event.clone()?;
+                let value = serde_json::from_str::<Value>(&frame.data).ok()?;
+                Some((name, value))
+            })
+            .collect()
+    }
+
+    fn block_starts(events: &[(String, Value)]) -> Vec<(u64, &str)> {
+        events
+            .iter()
+            .filter_map(|(name, value)| {
+                if name != "content_block_start" {
+                    return None;
+                }
+                let index = value.get("index")?.as_u64()?;
+                let kind = value.pointer("/content_block/type")?.as_str()?;
+                Some((index, kind))
+            })
+            .collect()
+    }
+
+    fn block_name(events: &[(String, Value)], index: u64) -> Option<&str> {
+        events.iter().find_map(|(name, value)| {
+            if name != "content_block_start" || value.get("index")?.as_u64()? != index {
+                return None;
+            }
+            value.pointer("/content_block/name")?.as_str()
+        })
+    }
+
+    fn json_delta_index(events: &[(String, Value)]) -> Option<u64> {
+        events.iter().find_map(|(name, value)| {
+            if name != "content_block_delta" {
+                return None;
+            }
+            if value.pointer("/delta/type")?.as_str()? != "input_json_delta" {
+                return None;
+            }
+            value.get("index").and_then(Value::as_u64)
+        })
+    }
+
+    fn stop_reason_of(events: &[(String, Value)]) -> Option<String> {
+        events.iter().find_map(|(name, value)| {
+            if name != "message_delta" {
+                return None;
+            }
+            value
+                .pointer("/delta/stop_reason")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+    }
+
+    fn block_stopped_before_delta(events: &[(String, Value)], index: u64) -> bool {
+        let mut saw_stop = false;
+        for (name, value) in events {
+            if name == "message_delta" {
+                return saw_stop;
+            }
+            if name == "content_block_stop"
+                && value.get("index").and_then(Value::as_u64) == Some(index)
+            {
+                saw_stop = true;
+            }
+        }
+        false
+    }
+
+    fn frame_with_key(frames: &[RawSse], key: &str) -> Value {
+        frames
+            .iter()
+            .find_map(|frame| {
+                let value: Value = serde_json::from_str(&frame.data).ok()?;
+                value.get(key).is_some().then_some(value)
+            })
+            .unwrap_or_else(|| json!({ "missing": key, "frames": frames.len() }))
     }
 
     #[test]
