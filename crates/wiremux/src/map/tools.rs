@@ -156,6 +156,9 @@ pub(super) fn prepare_tools(
             IrTool::Hosted { kind, raw } => {
                 push_hosted(&mut out, kind, raw, &path, policy, wire, report)?;
             }
+            IrTool::Unknown { type_name, raw } if type_name == "custom" => {
+                push_custom_tool(&mut out, raw, &path, wire, case, report)?;
+            }
             IrTool::Unknown { type_name, raw } => match policy {
                 ToolTypePolicy::Passthrough => {
                     report.record(&path, LossAction::Preserve, "unknown tool passthrough");
@@ -244,6 +247,41 @@ fn push_namespace(out: &mut Vec<PreparedTool>, args: NsPush<'_>) -> Result<(), M
             ))
         }
     }
+}
+
+fn push_custom_tool(
+    out: &mut Vec<PreparedTool>,
+    raw: &Value,
+    path: &str,
+    wire: Wire,
+    case: Option<ToolNameCase>,
+    report: &mut LossReport,
+) -> Result<(), MapError> {
+    let name = raw.get("name").and_then(Value::as_str).unwrap_or("");
+    if name.trim().is_empty() {
+        return Err(MapError::hard(path, "custom tool name is empty"));
+    }
+    if matches!(wire, Wire::ChatCompletions | Wire::Responses) {
+        report.record(path, LossAction::Preserve, "custom tool");
+        out.push(PreparedTool::Raw(raw.clone()));
+        return Ok(());
+    }
+    report.record(
+        path,
+        LossAction::Degrade,
+        "custom tool became a function tool",
+    );
+    out.push(PreparedTool::Function {
+        name: apply_tool_name_case(name, case),
+        description: raw
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        parameters: json!({"type": "object", "properties": {}}),
+        strict: None,
+    });
+    Ok(())
 }
 
 fn push_hosted(

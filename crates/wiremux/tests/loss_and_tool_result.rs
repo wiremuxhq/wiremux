@@ -847,3 +847,98 @@ fn loss_event_display_skips_preserve() {
     assert_eq!(lossy.len(), 1);
     assert_eq!(lossy[0].action, LossAction::Drop);
 }
+
+#[test]
+fn chat_custom_tool_history_keeps_name_and_input() {
+    let raw = br#"{
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_c",
+                "type": "custom",
+                "custom": {"name": "widget", "input": "print(1)"}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, raw).expect("decode");
+    let (messages, _) = encode_value(Wire::Messages, &ir);
+    let block = &messages["messages"][0]["content"][0];
+    assert_eq!(
+        block["name"], "widget",
+        "custom tool name must survive, got {messages}"
+    );
+    let input = block["input"].to_string();
+    assert!(
+        input.contains("print(1)"),
+        "custom tool input must survive, got {messages}"
+    );
+    let (chat, _) = encode_value(Wire::ChatCompletions, &ir);
+    let call = &chat["messages"][0]["tool_calls"][0];
+    assert_eq!(
+        call["type"], "custom",
+        "dest Chat must keep type custom, got {chat}"
+    );
+    assert_eq!(call["custom"]["name"], "widget", "{chat}");
+    assert_eq!(call["custom"]["input"], "print(1)", "{chat}");
+    let (responses, _) = encode_value(Wire::Responses, &ir);
+    let item = &responses["input"][0];
+    assert_eq!(item["type"], "custom_tool_call", "{responses}");
+    assert_eq!(item["name"], "widget", "{responses}");
+    assert_eq!(item["input"], "print(1)", "{responses}");
+}
+
+#[test]
+fn responses_custom_tool_call_keeps_name_on_messages() {
+    let raw = br#"{
+        "model": "gpt-4o",
+        "input": [{
+            "type": "custom_tool_call",
+            "call_id": "call_c",
+            "name": "widget",
+            "input": "print(1)"
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, raw).expect("decode");
+    let (messages, _) = encode_value(Wire::Messages, &ir);
+    let block = &messages["messages"][0]["content"][0];
+    assert_eq!(
+        block["name"].as_str(),
+        Some("widget"),
+        "a Responses custom tool must stay a tool call, got {messages}"
+    );
+    assert!(
+        block["input"].to_string().contains("print(1)"),
+        "custom input must survive, got {messages}"
+    );
+    let (responses, _) = encode_value(Wire::Responses, &ir);
+    let item = &responses["input"][0];
+    assert_eq!(item["type"], "custom_tool_call", "{responses}");
+    assert_eq!(item["call_id"], "call_c", "{responses}");
+    assert_eq!(item["name"], "widget", "{responses}");
+    assert_eq!(item["input"], "print(1)", "{responses}");
+}
+
+#[test]
+fn chat_custom_tool_definition_reaches_the_upstream() {
+    let raw = br#"{
+        "model": "gpt-4o",
+        "tools": [{
+            "type": "custom",
+            "name": "widget",
+            "description": "Run a widget"
+        }],
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, raw).expect("decode");
+    let (chat, _) = encode_value(Wire::ChatCompletions, &ir);
+    assert_eq!(chat["tools"][0]["type"], "custom", "{chat}");
+    assert_eq!(chat["tools"][0]["name"], "widget", "{chat}");
+    assert_eq!(chat["tools"][0]["description"], "Run a widget", "{chat}");
+    let (messages, _) = encode_value(Wire::Messages, &ir);
+    assert_eq!(messages["tools"][0]["name"], "widget", "{messages}");
+    assert!(
+        messages["tools"][0].get("type").is_none(),
+        "Messages must not keep type custom, got {messages}"
+    );
+}

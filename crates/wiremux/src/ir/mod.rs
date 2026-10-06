@@ -369,6 +369,14 @@ pub enum IrItem {
         /// Gemini `thoughtSignature` on the same functionCall part.
         thought_signature: Option<String>,
     },
+    /// Chat `type: custom` and Responses `custom_tool_call`.
+    /// Messages, Converse, and Gemini have no custom-tool frame, so
+    /// those encoders reuse the function tool and keep this name and input.
+    CustomToolCall {
+        call_id: String,
+        name: String,
+        input: String,
+    },
     FunctionOutput {
         call_id: String,
         /// Joined text. Images and other blocks live in `parts`.

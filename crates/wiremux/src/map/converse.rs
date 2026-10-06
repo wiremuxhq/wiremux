@@ -567,6 +567,34 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 }
                 messages.push(json!({ "role": "assistant", "content": [block] }));
             }
+            IrItem::CustomToolCall {
+                call_id,
+                name,
+                input: tool_input,
+            } => {
+                let input = super::json_object_or_raw(
+                    tool_input,
+                    "toolUse.input",
+                    report,
+                    "tool arguments are not a JSON object",
+                    "raw",
+                );
+                let block = json!({
+                    "toolUse": {
+                        "toolUseId": call_id,
+                        "name": name,
+                        "input": input
+                    }
+                });
+                if let Some(last) = messages.last_mut()
+                    && last.get("role").and_then(Value::as_str) == Some("assistant")
+                    && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)
+                {
+                    arr.push(block);
+                    continue;
+                }
+                messages.push(json!({ "role": "assistant", "content": [block] }));
+            }
             IrItem::FunctionOutput {
                 call_id,
                 output,
