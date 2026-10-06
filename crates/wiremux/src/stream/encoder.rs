@@ -20,6 +20,14 @@ enum BlockKind {
     CustomTool,
 }
 
+/// One dest Gemini function call while its argument fragments are still open.
+struct GeminiHeldCall {
+    id: String,
+    name: String,
+    args: String,
+    thought_signature: Option<String>,
+}
+
 /// Accumulates IR events into dialect-correct SSE frames.
 pub struct StreamEncoder {
     wire: Wire,
@@ -98,6 +106,12 @@ pub struct StreamEncoder {
     /// Non-tool events that arrived while a tool block was still open.
     deferred: Vec<IrStreamEvent>,
     closed_tools: HashSet<u32>,
+    /// Gemini `functionCall.args` is one JSON object, so fragments stay
+    /// buffered until the call closes.
+    gemini_open_calls: BTreeMap<u32, GeminiHeldCall>,
+    /// Frames that arrived while a Gemini function call was open.
+    /// Emitted after that call so a later text part does not jump ahead of it.
+    gemini_deferred: Vec<RawSse>,
 }
 
 impl StreamEncoder {
@@ -172,6 +186,8 @@ impl StreamEncoder {
             held_tools: BTreeMap::new(),
             deferred: Vec::new(),
             closed_tools: HashSet::new(),
+            gemini_open_calls: BTreeMap::new(),
+            gemini_deferred: Vec::new(),
         }
     }
 
@@ -573,10 +589,7 @@ impl StreamEncoder {
                 Wire::Responses => self.push_responses(other),
                 Wire::ChatCompletions => self.push_chat(other),
                 Wire::Converse => self.push_converse(other),
-                Wire::Gemini => {
-                    let frame = encode_stream_event(self.wire, &other)?;
-                    Ok(vec![self.attach_dest_model(frame)])
-                }
+                Wire::Gemini => self.push_gemini(other),
                 _ => Ok(vec![encode_stream_event(self.wire, &other)?]),
             },
         }
@@ -593,7 +606,9 @@ impl StreamEncoder {
             Wire::Responses => Ok(self.finish_responses()),
             Wire::ChatCompletions => Ok(self.finish_chat()),
             Wire::Gemini => {
-                encode_stream_event(self.wire, &IrStreamEvent::Done).map(|frame| vec![frame])
+                let mut frames = self.flush_gemini_calls();
+                frames.push(encode_stream_event(self.wire, &IrStreamEvent::Done)?);
+                Ok(frames)
             }
             Wire::Converse => self.finish_converse(),
             _ => Ok(Vec::new()),
@@ -2112,6 +2127,148 @@ impl StreamEncoder {
             },
         )?);
         Ok(out)
+    }
+
+    fn push_gemini(&mut self, ev: IrStreamEvent) -> Result<Vec<RawSse>, MapError> {
+        match ev {
+            IrStreamEvent::ToolCallStart {
+                id,
+                name,
+                thought_signature,
+                index,
+            } => Ok(self.hold_gemini_start(index, id, name, thought_signature)),
+            IrStreamEvent::CustomToolCallStart { id, name, index } => {
+                Ok(self.hold_gemini_start(index, id, name, None))
+            }
+            IrStreamEvent::ToolCallArgDelta { delta, index }
+            | IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
+                self.append_gemini_args(index, &delta);
+                Ok(Vec::new())
+            }
+            IrStreamEvent::ToolCallEnd => Ok(self.flush_gemini_calls()),
+            finish @ IrStreamEvent::FinishReason { .. } => {
+                let mut frames = self.flush_gemini_calls();
+                let frame = encode_stream_event(self.wire, &finish)?;
+                frames.push(self.attach_dest_model(frame));
+                Ok(frames)
+            }
+            other => {
+                let frame = self.attach_dest_model(encode_stream_event(self.wire, &other)?);
+                if self.gemini_open_calls.is_empty() {
+                    Ok(vec![frame])
+                } else {
+                    self.gemini_deferred.push(frame);
+                    Ok(Vec::new())
+                }
+            }
+        }
+    }
+
+    /// Keep argument bytes that arrived before the name. A later start at
+    /// the same index fills this call. A second named start replaces it.
+    fn hold_gemini_start(
+        &mut self,
+        index: u32,
+        id: String,
+        name: String,
+        thought_signature: Option<String>,
+    ) -> Vec<RawSse> {
+        if let Some(prev) = self.gemini_open_calls.get_mut(&index)
+            && prev.id.is_empty()
+            && prev.name.is_empty()
+        {
+            prev.id = id;
+            prev.name = name;
+            if thought_signature.is_some() {
+                prev.thought_signature = thought_signature;
+            }
+            return Vec::new();
+        }
+        let mut frames = Vec::new();
+        if let Some(prev) = self.gemini_open_calls.remove(&index)
+            && let Some(frame) = self.gemini_call_frame(prev)
+        {
+            frames.push(frame);
+        }
+        self.gemini_open_calls.insert(
+            index,
+            GeminiHeldCall {
+                id,
+                name,
+                args: String::new(),
+                thought_signature,
+            },
+        );
+        frames
+    }
+
+    fn append_gemini_args(&mut self, index: u32, delta: &str) {
+        if let Some(call) = self.gemini_open_calls.get_mut(&index) {
+            call.args.push_str(delta);
+            return;
+        }
+        if self.gemini_open_calls.len() == 1 {
+            if let Some(call) = self.gemini_open_calls.values_mut().next() {
+                call.args.push_str(delta);
+            }
+            return;
+        }
+        self.gemini_open_calls.insert(
+            index,
+            GeminiHeldCall {
+                id: String::new(),
+                name: String::new(),
+                args: delta.to_string(),
+                thought_signature: None,
+            },
+        );
+    }
+
+    fn flush_gemini_calls(&mut self) -> Vec<RawSse> {
+        let mut frames: Vec<RawSse> = std::mem::take(&mut self.gemini_open_calls)
+            .into_values()
+            .filter_map(|call| self.gemini_call_frame(call))
+            .collect();
+        frames.append(&mut self.gemini_deferred);
+        frames
+    }
+
+    fn gemini_call_frame(&self, call: GeminiHeldCall) -> Option<RawSse> {
+        let GeminiHeldCall {
+            id,
+            name,
+            args,
+            thought_signature,
+        } = call;
+        if name.is_empty() && id.is_empty() {
+            return None;
+        }
+        let display = if name.is_empty() { id.clone() } else { name };
+        let parsed = if args.is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str::<Value>(&args).unwrap_or_else(|_| json!({}))
+        };
+        let mut function_call = json!({ "name": display, "args": parsed });
+        if !id.is_empty() {
+            function_call["id"] = json!(id);
+        }
+        let mut part = json!({ "functionCall": function_call });
+        if let Some(sig) = thought_signature.filter(|sig| !sig.is_empty()) {
+            part["thoughtSignature"] = json!(sig);
+        }
+        let value = json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [part]
+                }
+            }]
+        });
+        Some(self.attach_dest_model(RawSse {
+            event: None,
+            data: value.to_string(),
+        }))
     }
 }
 

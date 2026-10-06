@@ -3085,6 +3085,151 @@ fn dest_chat_stream_function_call_remaps_dest_messages_and_gemini() {
         Some("get_weather"),
         "dest Chat STREAM function_call remapped dest Gemini STREAM must emit functionCall name, got {gemini:?}"
     );
+    let named = gemini_bodies.iter().find(|body| {
+        body.pointer("/candidates/0/content/parts/0/functionCall/name")
+            .and_then(Value::as_str)
+            == Some("get_weather")
+    });
+    assert_eq!(
+        named.and_then(|body| {
+            body.pointer("/candidates/0/content/parts/0/functionCall/args/city")
+                .and_then(Value::as_str)
+        }),
+        Some("Paris"),
+        "dest Gemini STREAM functionCall must keep arguments on the named call, got {gemini:?}"
+    );
+    assert!(
+        gemini_bodies.iter().all(|body| {
+            body.pointer("/candidates/0/content/parts/0/functionCall/name")
+                .and_then(Value::as_str)
+                != Some("")
+        }),
+        "dest Gemini STREAM must not emit an empty functionCall name, got {gemini:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_stream_joins_split_function_call_arguments() {
+    let events = [
+        IrStreamEvent::ToolCallStart {
+            id: "call_1".into(),
+            name: "get_weather".into(),
+            thought_signature: None,
+            index: 0,
+        },
+        IrStreamEvent::ToolCallArgDelta {
+            delta: "{\"ci".into(),
+            index: 0,
+        },
+        IrStreamEvent::ToolCallArgDelta {
+            delta: "ty\":\"Paris\"}".into(),
+            index: 0,
+        },
+    ];
+    let frames = encode_all(Wire::Gemini, &events);
+    let bodies = sse_json_frames(&frames);
+    let calls: Vec<&Value> = bodies
+        .iter()
+        .filter(|body| {
+            body.pointer("/candidates/0/content/parts/0/functionCall")
+                .is_some()
+        })
+        .collect();
+    assert_eq!(calls.len(), 1, "one functionCall, got {frames:?}");
+    assert_eq!(
+        calls[0]
+            .pointer("/candidates/0/content/parts/0/functionCall/name")
+            .and_then(Value::as_str),
+        Some("get_weather")
+    );
+    assert_eq!(
+        calls[0]
+            .pointer("/candidates/0/content/parts/0/functionCall/args/city")
+            .and_then(Value::as_str),
+        Some("Paris")
+    );
+    assert_eq!(
+        calls[0]
+            .pointer("/candidates/0/content/parts/0/functionCall/id")
+            .and_then(Value::as_str),
+        Some("call_1")
+    );
+}
+
+#[test]
+fn dest_gemini_stream_emits_function_call_before_text_that_follows_it() {
+    let events = [
+        IrStreamEvent::ToolCallStart {
+            id: "call_1".into(),
+            name: "lookup".into(),
+            thought_signature: None,
+            index: 0,
+        },
+        IrStreamEvent::ToolCallArgDelta {
+            delta: "{\"q\":\"x\"}".into(),
+            index: 0,
+        },
+        IrStreamEvent::TextDelta {
+            text: "after".into(),
+        },
+    ];
+    let frames = encode_all(Wire::Gemini, &events);
+    let bodies = sse_json_frames(&frames);
+    let call_at = bodies.iter().position(|body| {
+        body.pointer("/candidates/0/content/parts/0/functionCall/name")
+            .and_then(Value::as_str)
+            == Some("lookup")
+            && body
+                .pointer("/candidates/0/content/parts/0/functionCall/args/q")
+                .and_then(Value::as_str)
+                == Some("x")
+    });
+    let text_at = bodies.iter().position(|body| {
+        body.pointer("/candidates/0/content/parts/0/text")
+            .and_then(Value::as_str)
+            == Some("after")
+    });
+    assert_eq!(
+        (call_at, text_at),
+        (Some(0), Some(1)),
+        "function call must stay ahead of text that arrived while it was open, got {frames:?}"
+    );
+}
+
+#[test]
+fn dest_gemini_stream_keeps_text_that_arrives_before_a_function_call() {
+    let events = [
+        IrStreamEvent::TextDelta {
+            text: "before".into(),
+        },
+        IrStreamEvent::ToolCallStart {
+            id: "call_1".into(),
+            name: "lookup".into(),
+            thought_signature: None,
+            index: 0,
+        },
+        IrStreamEvent::ToolCallArgDelta {
+            delta: "{\"q\":\"x\"}".into(),
+            index: 0,
+        },
+    ];
+    let frames = encode_all(Wire::Gemini, &events);
+    let bodies = sse_json_frames(&frames);
+    let text_at = bodies.iter().position(|body| {
+        body.pointer("/candidates/0/content/parts/0/text")
+            .and_then(Value::as_str)
+            == Some("before")
+    });
+    let call_at = bodies.iter().position(|body| {
+        body.pointer("/candidates/0/content/parts/0/functionCall/name")
+            .and_then(Value::as_str)
+            == Some("lookup")
+    });
+    assert_eq!(
+        (text_at, call_at),
+        (Some(0), Some(1)),
+        "text that arrived before the function call must stay first, got {frames:?}"
+    );
 }
 
 #[test]
