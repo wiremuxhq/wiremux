@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.3](https://github.com/wiremuxhq/wiremux/compare/v0.10.2...v0.10.3) (2026-10-06)
+
+
+### Bug Fixes
+
+* reject count vendor errors and strip encoded userinfo ([#526](https://github.com/wiremuxhq/wiremux/issues/526)) ([d650770](https://github.com/wiremuxhq/wiremux/commit/d6507708512a61d19630703617ba36a2ca6909d1))
+* reject nested userinfo and empty completion stubs ([#524](https://github.com/wiremuxhq/wiremux/issues/524)) ([d5e943f](https://github.com/wiremuxhq/wiremux/commit/d5e943f4b0e2b413f08a2b6af17e99e2593180a3))
+
 ## [0.10.2](https://github.com/wiremuxhq/wiremux/compare/v0.10.1...v0.10.2) (2026-10-04)
 
 
