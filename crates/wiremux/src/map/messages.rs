@@ -597,6 +597,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 call_id,
                 name,
                 input,
+                ..
             } => {
                 messages.push(json!({
                     "role": "assistant",
@@ -780,6 +781,7 @@ fn encode_assistant(
                 call_id,
                 name,
                 input,
+                ..
             }) => {
                 content.push(tool_use_block(
                     call_id,

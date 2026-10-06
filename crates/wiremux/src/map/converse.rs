@@ -571,6 +571,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 call_id,
                 name,
                 input: tool_input,
+                ..
             } => {
                 let input = super::json_object_or_raw(
                     tool_input,

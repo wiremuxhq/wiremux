@@ -88,6 +88,7 @@ fn decode_tool_call(call: &Value) -> IrItem {
             call_id: str_field(call, "id").unwrap_or_default(),
             name: str_field(custom, "name").unwrap_or_default(),
             input: custom.get("input").map(value_as_string).unwrap_or_default(),
+            responses_item: None,
         };
     }
     let func = call.get("function").unwrap_or(call);
@@ -586,6 +587,7 @@ fn take_function_calls(
                 call_id,
                 name,
                 input,
+                ..
             } => {
                 calls.push(custom_tool_call_json(call_id, name, input));
                 consumed += 1;

@@ -920,6 +920,43 @@ fn responses_custom_tool_call_keeps_name_on_messages() {
 }
 
 #[test]
+fn responses_custom_tool_call_keeps_namespace_and_created_by() {
+    let raw = br#"{
+        "model": "gpt-4o",
+        "input": [{
+            "type": "custom_tool_call",
+            "id": "ctc_1",
+            "call_id": "call_c",
+            "name": "widget",
+            "namespace": "crm",
+            "created_by": "agent_7",
+            "status": "completed",
+            "caller": {"type": "user"},
+            "input": "print(1)"
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, raw).expect("decode");
+    let (messages, _) = encode_value(Wire::Messages, &ir);
+    let block = &messages["messages"][0]["content"][0];
+    assert_eq!(block["name"], "widget", "{messages}");
+    assert!(
+        block["input"].to_string().contains("print(1)"),
+        "{messages}"
+    );
+    assert!(block.get("namespace").is_none(), "{messages}");
+    let (body, _) = encode_value(Wire::Responses, &ir);
+    let item = &body["input"][0];
+    assert_eq!(item["namespace"], "crm", "{body}");
+    assert_eq!(item["created_by"], "agent_7", "{body}");
+    assert_eq!(item["id"], "ctc_1", "{body}");
+    assert_eq!(item["status"], "completed", "{body}");
+    assert_eq!(item["caller"]["type"], "user", "{body}");
+    assert_eq!(item["call_id"], "call_c", "{body}");
+    assert_eq!(item["name"], "widget", "{body}");
+    assert_eq!(item["input"], "print(1)", "{body}");
+}
+
+#[test]
 fn chat_custom_tool_definition_reaches_the_upstream() {
     let raw = br#"{
         "model": "gpt-4o",

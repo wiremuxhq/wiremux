@@ -738,6 +738,7 @@ pub(super) fn encode(
                 call_id,
                 name,
                 input,
+                ..
             } => {
                 call_names.push((call_id.as_str(), name.as_str()));
                 let args = super::json_object_or_raw(
