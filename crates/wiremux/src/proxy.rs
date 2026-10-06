@@ -900,8 +900,9 @@ fn json_completion_to_sse(
         if !event_has_slot(from, &ev) {
             continue;
         }
+        // Skipping the error still lets finish() emit a stop.
         let Ok(frames) = encoder.push(ev) else {
-            continue;
+            return None;
         };
         for raw in frames {
             out.extend_from_slice(&dest_frame_bytes(from, &raw));

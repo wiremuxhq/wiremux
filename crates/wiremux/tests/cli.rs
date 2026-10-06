@@ -2398,6 +2398,79 @@ base_url = "http://{upstream_addr}"
 }
 
 #[test]
+fn proxy_converse_stream_names_unsupported_gemini_image() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/heic","data":"AAA"}}]}}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "gemini-heic-stream.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "gemini-heic-stream"
+wire = "gemini"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body =
+        r#"{"modelId":"gemini-2.0-flash","messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /model/gemini-2.0-flash/converse-stream HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut buf = Vec::new();
+    let _ = client.read_to_end(&mut buf);
+    let resp = String::from_utf8_lossy(&buf);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("502") && resp.contains("image/heic"),
+        "Converse stream client must see the unsupported Gemini image, got: {resp}"
+    );
+    assert!(
+        !resp.contains("not mapped"),
+        "an image mime must not be reported as an unmapped dialect, got: {resp}"
+    );
+}
+
+#[test]
 fn proxy_cross_dialect_messages_from_chat_json() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
