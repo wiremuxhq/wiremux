@@ -477,23 +477,21 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         return bytes_response(status_from_reqwest(status), &content_type, body);
     }
     match decode_response(target, &body, &state.profile) {
-        Ok(events) => {
-            if let Ok(mapped) = encode_response_with_model(state.from, &events, &ir.model) {
+        Ok(events) => match encode_response_with_model(state.from, &events, &ir.model) {
+            Ok(mapped) => {
                 let bytes = Bytes::from(mapped.to_string());
-                return bytes_response(status_from_reqwest(status), "application/json", bytes);
+                bytes_response(status_from_reqwest(status), "application/json", bytes)
             }
-        }
-        Err(err) => {
-            return text(
+            Err(err) => text(
                 StatusCode::BAD_GATEWAY,
-                format!("decode upstream body: {err}\n"),
-            );
-        }
+                format!("encode client body: {err}\n"),
+            ),
+        },
+        Err(err) => text(
+            StatusCode::BAD_GATEWAY,
+            format!("decode upstream body: {err}\n"),
+        ),
     }
-    text(
-        StatusCode::NOT_IMPLEMENTED,
-        "non-stream cross-dialect responses are not mapped\n",
-    )
 }
 
 #[derive(Clone, Copy)]
