@@ -377,9 +377,19 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         | IrStreamEvent::Moderation { .. } => {
             json!({ "candidates": [] })
         }
-        IrStreamEvent::ToolCallArgDelta { delta, .. }
-        | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
+        IrStreamEvent::ToolCallArgDelta { delta, .. } => {
             let args: Value = serde_json::from_str(delta).unwrap_or_else(|_| json!({}));
+            json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{ "functionCall": { "name": "", "args": args } }]
+                    }
+                }]
+            })
+        }
+        IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
+            let args = crate::map::response_custom_tool_input(delta);
             json!({
                 "candidates": [{
                     "content": {

@@ -185,10 +185,17 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
             }
             Ok(json!({ "metadata": metadata }))
         }
-        IrStreamEvent::ToolCallArgDelta { delta, .. }
-        | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => Ok(json!({
+        IrStreamEvent::ToolCallArgDelta { delta, .. } => Ok(json!({
             "contentBlockDelta": { "delta": { "toolUse": { "input": delta } } }
         })),
+        // Delta `input` is a string of JSON text. Custom input is the same
+        // object the complete body writes, so a client can parse the fragment.
+        IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
+            let text = crate::map::response_custom_tool_input(delta).to_string();
+            Ok(json!({
+                "contentBlockDelta": { "delta": { "toolUse": { "input": text } } }
+            }))
+        }
         IrStreamEvent::ToolCallEnd => Ok(json!({ "contentBlockStop": {} })),
         IrStreamEvent::FinishReason { reason, .. } => Ok(json!({
             "messageStop": { "stopReason": finish_reason(reason) }
@@ -219,7 +226,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
 pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapError> {
     let mut text = String::new();
     let mut content = Vec::new();
-    let mut current_tool: Option<(String, String, String)> = None;
+    let mut current_tool: Option<(String, String, String, bool)> = None;
     let mut citations = Vec::new();
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
@@ -265,21 +272,22 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
             }
             IrStreamEvent::ToolCallStart { id, name, .. }
             | IrStreamEvent::CustomToolCallStart { id, name, .. } => {
+                let custom = matches!(ev, IrStreamEvent::CustomToolCallStart { .. });
                 flush_text(&mut text, &mut content);
-                if let Some((id, name, args)) = current_tool.take() {
-                    content.push(tool_use(&id, &name, &args));
+                if let Some((id, name, args, custom)) = current_tool.take() {
+                    content.push(tool_use(&id, &name, &args, custom));
                 }
-                current_tool = Some((id.clone(), name.clone(), String::new()));
+                current_tool = Some((id.clone(), name.clone(), String::new(), custom));
             }
             IrStreamEvent::ToolCallArgDelta { delta, .. }
             | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
-                if let Some((_, _, args)) = current_tool.as_mut() {
+                if let Some((_, _, args, _)) = current_tool.as_mut() {
                     args.push_str(delta);
                 }
             }
             IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args)) = current_tool.take() {
-                    content.push(tool_use(&id, &name, &args));
+                if let Some((id, name, args, custom)) = current_tool.take() {
+                    content.push(tool_use(&id, &name, &args, custom));
                     stop = "tool_use";
                 }
             }
@@ -405,8 +413,8 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
         content = kept;
     }
     flush_text(&mut text, &mut content);
-    if let Some((id, name, args)) = current_tool.take() {
-        content.push(tool_use(&id, &name, &args));
+    if let Some((id, name, args, custom)) = current_tool.take() {
+        content.push(tool_use(&id, &name, &args, custom));
         if stop == "end_turn" {
             stop = "tool_use";
         }
@@ -722,8 +730,12 @@ fn flush_text(text: &mut String, content: &mut Vec<Value>) {
     }
 }
 
-fn tool_use(id: &str, name: &str, args: &str) -> Value {
-    let input: Value = serde_json::from_str(args).unwrap_or_else(|_| json!(args));
+fn tool_use(id: &str, name: &str, args: &str, custom: bool) -> Value {
+    let input = if custom {
+        crate::map::response_custom_tool_input(args)
+    } else {
+        serde_json::from_str(args).unwrap_or_else(|_| json!(args))
+    };
     json!({
         "toolUse": {
             "toolUseId": id,
