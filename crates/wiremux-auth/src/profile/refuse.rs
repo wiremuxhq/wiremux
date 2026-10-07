@@ -128,9 +128,15 @@ pub(crate) fn is_loopback_http(url: &str) -> bool {
     let Some(after_slashes) = rest.strip_prefix("//") else {
         return false;
     };
-    let without_userinfo = match after_slashes.rfind('@') {
-        Some(i) => &after_slashes[i + 1..],
-        None => after_slashes,
+    // Authority ends at the first path, query, or fragment. An `@` after
+    // that is not userinfo. `http://evil.com#@127.0.0.1` is host evil.com.
+    let authority = after_slashes
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_slashes);
+    let without_userinfo = match authority.rfind('@') {
+        Some(i) => &authority[i + 1..],
+        None => authority,
     };
     let hostport = without_userinfo
         .split(['/', '?', '#'])
@@ -206,6 +212,18 @@ mod tests {
         assert!(is_loopback_http("http://[::1]:80/cb"));
         assert!(!is_loopback_http("http://192.0.2.1"));
         assert!(!is_loopback_http("http://127.0.0.1.example"));
+        assert!(
+            !is_loopback_http("http://evil.com#@127.0.0.1"),
+            "fragment @ is not userinfo"
+        );
+        assert!(
+            !is_loopback_http("http://evil.com?@127.0.0.1"),
+            "query @ is not userinfo"
+        );
+        assert!(is_loopback_http("http://127.0.0.1#@evil.com"));
+        assert!(is_loopback_http("http://user:pass@127.0.0.1/cb"));
+        let err = check_url("base_url", "http://evil.com#@127.0.0.1").unwrap_err();
+        assert!(matches!(err, ProfileError::DisallowedUrl { .. }), "{err}");
     }
 
     #[test]
