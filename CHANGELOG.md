@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.4](https://github.com/wiremuxhq/wiremux/compare/v0.10.3...v0.10.4) (2026-10-07)
+
+
+### Bug Fixes
+
+* close strict OpenAI tool schemas ([#533](https://github.com/wiremuxhq/wiremux/issues/533)) ([6442a66](https://github.com/wiremuxhq/wiremux/commit/6442a6699e70c9c308d615dc2e69b4a54ae36b6d))
+* close strict response json schemas ([#534](https://github.com/wiremuxhq/wiremux/issues/534)) ([d9ef99d](https://github.com/wiremuxhq/wiremux/commit/d9ef99d5e0d930a22be8f8a4bc212292f284d269))
+* fill properties on object tool schemas ([#532](https://github.com/wiremuxhq/wiremux/issues/532)) ([a2feac6](https://github.com/wiremuxhq/wiremux/commit/a2feac6fa8a4fe498ab62100fd68e29c4cf974df))
+* harden proxy, profiles, and chat encode ([#530](https://github.com/wiremuxhq/wiremux/issues/530)) ([bbb9f0a](https://github.com/wiremuxhq/wiremux/commit/bbb9f0a63691691805ebd9f5317302e6660f0338))
+* keep non-JSON custom tool input on the response ([#528](https://github.com/wiremuxhq/wiremux/issues/528)) ([2aa087d](https://github.com/wiremuxhq/wiremux/commit/2aa087d33e005b963dfe8fd56eda0a6fbbe5793c)), closes [#527](https://github.com/wiremuxhq/wiremux/issues/527)
+* reject public http hosts disguised as loopback ([#531](https://github.com/wiremuxhq/wiremux/issues/531)) ([96c8cba](https://github.com/wiremuxhq/wiremux/commit/96c8cbae7b8d394a3a5aa05ece070f3501da9bb1))
+* relax Gemini responseSchema the same way as tools ([#535](https://github.com/wiremuxhq/wiremux/issues/535)) ([43f04a6](https://github.com/wiremuxhq/wiremux/commit/43f04a6353bb8352ba28a2ae403c3c784a2b75e2))
+
 ## [0.10.3](https://github.com/wiremuxhq/wiremux/compare/v0.10.2...v0.10.3) (2026-10-06)
 
 
