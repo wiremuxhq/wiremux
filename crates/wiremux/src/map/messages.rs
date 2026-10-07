@@ -1349,25 +1349,66 @@ fn encode_tool(tool: &PreparedTool) -> Value {
 
 /// Grok Build Messages rejects `required: null` (and treats a missing
 /// `required` the same way): HTTP 400 `/required: null is not of type "array"`.
+/// OpenAI rejects an object schema with no `properties` key:
+/// `object schema missing properties`.
 pub(super) fn normalize_object_schema_required(schema: &mut Value) {
+    fill_object_schema(schema);
+}
+
+fn fill_object_schema(schema: &mut Value) {
     let Some(obj) = schema.as_object_mut() else {
         return;
     };
     let is_object =
         obj.get("type").and_then(Value::as_str) == Some("object") || obj.contains_key("properties");
-    if !is_object {
-        if matches!(obj.get("required"), Some(Value::Null)) {
-            obj.insert("required".into(), json!([]));
+    if is_object {
+        match obj.get("required") {
+            None | Some(Value::Null) => {
+                obj.insert("required".into(), json!([]));
+            }
+            Some(Value::Array(_)) => {}
+            Some(_) => {
+                obj.insert("required".into(), json!([]));
+            }
         }
-        return;
+        if !obj.contains_key("properties") {
+            obj.insert("properties".into(), json!({}));
+        }
+    } else if matches!(obj.get("required"), Some(Value::Null)) {
+        obj.insert("required".into(), json!([]));
     }
-    match obj.get("required") {
-        None | Some(Value::Null) => {
-            obj.insert("required".into(), json!([]));
+    if let Some(props) = obj.get_mut("properties").and_then(Value::as_object_mut) {
+        for child in props.values_mut() {
+            fill_object_schema(child);
         }
-        Some(Value::Array(_)) => {}
-        Some(_) => {
-            obj.insert("required".into(), json!([]));
+    }
+    for key in ["$defs", "definitions"] {
+        if let Some(defs) = obj.get_mut(key).and_then(Value::as_object_mut) {
+            for child in defs.values_mut() {
+                fill_object_schema(child);
+            }
+        }
+    }
+    if let Some(items) = obj.get_mut("items") {
+        match items {
+            Value::Array(list) => {
+                for item in list.iter_mut() {
+                    fill_object_schema(item);
+                }
+            }
+            other => fill_object_schema(other),
+        }
+    }
+    for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
+        if let Some(Value::Array(list)) = obj.get_mut(key) {
+            for item in list.iter_mut() {
+                fill_object_schema(item);
+            }
+        }
+    }
+    for key in ["additionalProperties", "not"] {
+        if let Some(child) = obj.get_mut(key).filter(|value| value.is_object()) {
+            fill_object_schema(child);
         }
     }
 }

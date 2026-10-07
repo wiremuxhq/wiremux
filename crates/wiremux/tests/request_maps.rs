@@ -8833,6 +8833,52 @@ fn messages_encode_object_tool_schema_emits_required_array() {
 }
 
 #[test]
+fn openai_object_tool_schema_without_properties_is_filled() {
+    let ir = IrRequest::new(
+        "gpt-4o",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_tools(vec![
+        IrTool::Function {
+            name: "fetch_docs".into(),
+            description: "fetch".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            strict: None,
+        },
+        IrTool::Function {
+            name: "nested".into(),
+            description: "nested".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"child": {"type": "object"}}
+            }),
+            strict: None,
+        },
+    ]);
+    let (chat_bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    assert_eq!(
+        chat.pointer("/tools/0/function/parameters/properties"),
+        Some(&serde_json::json!({})),
+        "OpenAI 400s on an object schema with no properties, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/tools/1/function/parameters/properties/child/properties"),
+        Some(&serde_json::json!({})),
+        "nested object schema must gain properties, got {chat}"
+    );
+    let (resp_bytes, _) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("responses");
+    let resp: Value = serde_json::from_slice(&resp_bytes).expect("json");
+    assert_eq!(
+        resp.pointer("/tools/0/parameters/properties"),
+        Some(&serde_json::json!({})),
+        "Responses 400s on an object schema with no properties, got {resp}"
+    );
+}
+
+#[test]
 fn non_array_required_becomes_empty_array() {
     for required in [serde_json::json!("q"), serde_json::json!({"bad": true})] {
         let req = serde_json::json!({
