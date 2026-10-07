@@ -1327,10 +1327,13 @@ fn encode_tool(tool: &PreparedTool) -> Value {
             name,
             description,
             parameters,
-            strict: _,
+            strict,
         } => {
             let mut schema = parameters.clone();
             normalize_object_schema_required(&mut schema);
+            if *strict == Some(true) {
+                strict_object_schema(&mut schema);
+            }
             json!({
                 "name": name,
                 "description": description,
@@ -1414,15 +1417,26 @@ fn fill_object_schema(schema: &mut Value) {
 }
 
 /// OpenAI rejects a strict tool unless `additionalProperties` is false
-/// and `required` lists every key in `properties`.
+/// and `required` lists every key in `properties`, on every object.
 pub(super) fn strict_object_schema(schema: &mut Value) {
+    close_objects(schema, true);
+}
+
+/// Gemini accepts `required` and rejects `additionalProperties`.
+pub(super) fn require_every_property(schema: &mut Value) {
+    close_objects(schema, false);
+}
+
+fn close_objects(schema: &mut Value, close_additional: bool) {
     let Some(obj) = schema.as_object_mut() else {
         return;
     };
     let is_object =
         obj.get("type").and_then(Value::as_str) == Some("object") || obj.contains_key("properties");
     if is_object {
-        obj.insert("additionalProperties".into(), json!(false));
+        if close_additional {
+            obj.insert("additionalProperties".into(), json!(false));
+        }
         let names: Vec<Value> = obj
             .get("properties")
             .and_then(Value::as_object)
@@ -1434,11 +1448,37 @@ pub(super) fn strict_object_schema(schema: &mut Value) {
     }
     if let Some(props) = obj.get_mut("properties").and_then(Value::as_object_mut) {
         for child in props.values_mut() {
-            strict_object_schema(child);
+            close_objects(child, close_additional);
         }
     }
-    if let Some(items) = obj.get_mut("items").filter(|value| value.is_object()) {
-        strict_object_schema(items);
+    for key in ["$defs", "definitions"] {
+        if let Some(defs) = obj.get_mut(key).and_then(Value::as_object_mut) {
+            for child in defs.values_mut() {
+                close_objects(child, close_additional);
+            }
+        }
+    }
+    if let Some(items) = obj.get_mut("items") {
+        match items {
+            Value::Array(list) => {
+                for item in list {
+                    close_objects(item, close_additional);
+                }
+            }
+            other => close_objects(other, close_additional),
+        }
+    }
+    for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
+        if let Some(Value::Array(list)) = obj.get_mut(key) {
+            for item in list {
+                close_objects(item, close_additional);
+            }
+        }
+    }
+    for key in ["additionalProperties", "not"] {
+        if let Some(child) = obj.get_mut(key).filter(|value| value.is_object()) {
+            close_objects(child, close_additional);
+        }
     }
 }
 

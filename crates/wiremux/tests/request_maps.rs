@@ -1099,12 +1099,24 @@ fn gemini_tool_schema_drops_prefix_items() {
         .pointer("/tools/0/functionDeclarations/0/parameters/properties/n")
         .expect("n");
     assert!(bound.get("exclusiveMinimum").is_none(), "{bound}");
-    assert_eq!(bound.get("minimum"), Some(&serde_json::json!(0)), "{bound}");
+    assert!(
+        bound.get("minimum").is_none(),
+        "exclusiveMinimum must not become minimum, got {bound}"
+    );
     let upper = body
         .pointer("/tools/0/functionDeclarations/0/parameters/properties/hi")
         .expect("hi");
     assert!(upper.get("exclusiveMaximum").is_none(), "{upper}");
-    assert_eq!(upper.get("maximum"), Some(&serde_json::json!(1)), "{upper}");
+    assert!(
+        upper.get("maximum").is_none(),
+        "exclusiveMaximum must not become maximum, got {upper}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.contains("exclusive bound")
+        }),
+        "{report:?}"
+    );
     assert!(
         report.events.iter().any(|event| {
             event.action == LossAction::Drop && event.detail.contains("prefixItems")
@@ -9127,6 +9139,218 @@ fn strict_openai_tool_lists_properties_and_closes_the_object() {
         resp.pointer("/tools/0/parameters/required"),
         Some(&serde_json::json!(["q"])),
         "{resp}"
+    );
+}
+
+fn assert_object_closed(schema: &Value) {
+    assert_eq!(
+        schema.get("additionalProperties"),
+        Some(&serde_json::json!(false)),
+        "{schema}"
+    );
+    let props = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .expect("properties");
+    let required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .expect("required");
+    for key in props.keys() {
+        assert!(
+            required.iter().any(|value| value.as_str() == Some(key)),
+            "required must list {key}, got {schema}"
+        );
+    }
+}
+
+fn strict_tool(parameters: serde_json::Value) -> IrRequest {
+    IrRequest::new(
+        "gpt-4o",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_tools(vec![IrTool::Function {
+        name: "lookup".into(),
+        description: "lookup".into(),
+        parameters,
+        strict: Some(true),
+    }])
+}
+
+#[test]
+fn strict_schema_closes_defs_combinators_and_tuple_items() {
+    let defs = strict_tool(serde_json::json!({
+        "type": "object",
+        "properties": { "child": { "$ref": "#/$defs/Child" } },
+        "$defs": {
+            "Child": {
+                "type": "object",
+                "properties": { "n": { "type": "integer" } }
+            }
+        }
+    }));
+    let (chat_bytes, _) = encode(Wire::ChatCompletions, &defs, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    let params = chat
+        .pointer("/tools/0/function/parameters")
+        .expect("parameters");
+    assert_object_closed(params);
+    assert_object_closed(params.pointer("/$defs/Child").expect("child"));
+
+    let (resp_bytes, _) = encode(Wire::Responses, &defs, &hard_error_profile()).expect("responses");
+    let resp: Value = serde_json::from_slice(&resp_bytes).expect("json");
+    let resp_schema = resp.pointer("/tools/0/parameters").expect("parameters");
+    assert_object_closed(resp_schema);
+    assert_object_closed(resp_schema.pointer("/$defs/Child").expect("child"));
+
+    let any_of = strict_tool(serde_json::json!({
+        "anyOf": [{
+            "type": "object",
+            "properties": { "a": { "type": "string" } }
+        }]
+    }));
+    let (any_bytes, _) = encode(Wire::ChatCompletions, &any_of, &chat_profile()).expect("anyOf");
+    let any: Value = serde_json::from_slice(&any_bytes).expect("json");
+    assert_object_closed(
+        any.pointer("/tools/0/function/parameters/anyOf/0")
+            .expect("branch"),
+    );
+
+    let tuple = strict_tool(serde_json::json!({
+        "type": "object",
+        "properties": {
+            "pair": {
+                "type": "array",
+                "items": [{
+                    "type": "object",
+                    "properties": { "n": { "type": "integer" } }
+                }]
+            }
+        }
+    }));
+    let (tuple_bytes, _) = encode(Wire::ChatCompletions, &tuple, &chat_profile()).expect("tuple");
+    let tuple_body: Value = serde_json::from_slice(&tuple_bytes).expect("json");
+    assert_object_closed(
+        tuple_body
+            .pointer("/tools/0/function/parameters/properties/pair/items/0")
+            .expect("tuple item"),
+    );
+}
+
+#[test]
+fn strict_messages_and_converse_close_the_object() {
+    let nested = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "child": {
+                "type": "object",
+                "properties": { "n": { "type": "integer" } }
+            }
+        }
+    });
+    let ir = IrRequest::new(
+        "claude",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_tools(vec![IrTool::Function {
+        name: "lookup".into(),
+        description: "lookup".into(),
+        parameters: nested,
+        strict: Some(true),
+    }]);
+    let (msg_bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("messages");
+    let msg: Value = serde_json::from_slice(&msg_bytes).expect("json");
+    let schema = msg.pointer("/tools/0/input_schema").expect("schema");
+    assert_object_closed(schema);
+    assert_object_closed(schema.pointer("/properties/child").expect("child"));
+
+    let bare = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_tools(vec![IrTool::Function {
+        name: "lookup".into(),
+        description: "lookup".into(),
+        parameters: serde_json::json!({"type": "object"}),
+        strict: None,
+    }]);
+    let (bare_bytes, _) = encode(Wire::Converse, &bare, &converse_profile()).expect("bare");
+    let bare_body: Value = serde_json::from_slice(&bare_bytes).expect("json");
+    assert_eq!(
+        bare_body.pointer("/toolConfig/tools/0/toolSpec/inputSchema/json/properties"),
+        Some(&serde_json::json!({})),
+        "bare object must gain properties, got {bare_body}"
+    );
+
+    let (closed_bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("closed");
+    let closed: Value = serde_json::from_slice(&closed_bytes).expect("json");
+    let converse_schema = closed
+        .pointer("/toolConfig/tools/0/toolSpec/inputSchema/json")
+        .expect("schema");
+    assert_object_closed(converse_schema);
+    assert_object_closed(converse_schema.pointer("/properties/child").expect("child"));
+}
+
+#[test]
+fn gemini_strict_lists_required_and_drops_additional_properties() {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_tools(vec![IrTool::Function {
+        name: "lookup".into(),
+        description: "lookup".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "child": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "n": { "type": "integer" } }
+                }
+            }
+        }),
+        strict: Some(true),
+    }]);
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let params = body
+        .pointer("/tools/0/functionDeclarations/0/parameters")
+        .expect("parameters");
+    assert!(params.get("additionalProperties").is_none(), "{params}");
+    assert_eq!(
+        params.get("required"),
+        Some(&serde_json::json!(["child"])),
+        "{params}"
+    );
+    let child = params.pointer("/properties/child").expect("child");
+    assert!(child.get("additionalProperties").is_none(), "{child}");
+    assert_eq!(
+        child.get("required"),
+        Some(&serde_json::json!(["n"])),
+        "{child}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Drop
+                && event.detail.contains("additionalProperties has no Gemini slot")
+        }),
+        "{report:?}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.contains("strict additionalProperties")
+        }),
+        "{report:?}"
     );
 }
 

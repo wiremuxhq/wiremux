@@ -294,7 +294,7 @@ fn load_profile_xai_grok_build_from_shipped_catalog() {
             .headers
             .get("x-grok-client-version")
             .map(String::as_str),
-        Some("0.1.202"),
+        Some("1.0.46"),
         "cli-chat-proxy rejects requests with no Grok CLI version (HTTP 426)"
     );
     assert_eq!(
@@ -342,7 +342,7 @@ fn load_profile_xai_grok_build_messages_from_shipped_catalog() {
             .headers
             .get("x-grok-client-version")
             .map(String::as_str),
-        Some("0.1.202")
+        Some("1.0.46")
     );
     assert_eq!(
         profile

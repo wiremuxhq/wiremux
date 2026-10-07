@@ -19,7 +19,8 @@ pub(crate) fn default_http_client(profile: &ResolvedProfile) -> Result<reqwest::
 }
 
 const GROK_BUILD_PROXY_HOST: &str = "cli-chat-proxy.grok.com";
-const GROK_CLIENT_VERSION: &str = "0.1.202";
+// Proxy floor in the HTTP 426 body is 1.0.13. 1.0.46 is a current Grok CLI version.
+const GROK_CLIENT_VERSION: &str = "1.0.46";
 const GROK_CLIENT_IDENTIFIER: &str = "wiremux";
 
 pub(crate) fn apply_profile_headers(
@@ -169,7 +170,7 @@ chat_path = "/v1/chat/completions"
         );
         let extra = grok_build_default_headers(&p);
         assert!(
-            extra.contains(&("x-grok-client-version", "0.1.202")),
+            extra.contains(&("x-grok-client-version", "1.0.46")),
             "missing version, got {extra:?}"
         );
         assert!(
@@ -191,7 +192,7 @@ chat_path = "/v1/chat/completions"
         );
         let extra = grok_build_default_headers(&p);
         assert!(
-            extra.contains(&("x-grok-client-version", "0.1.202")),
+            extra.contains(&("x-grok-client-version", "1.0.46")),
             "trailing-dot host must match, got {extra:?}"
         );
     }

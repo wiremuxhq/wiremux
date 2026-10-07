@@ -313,8 +313,8 @@ Also shipped: `grok-ollama`,
 `xai-oauth` (`https://api.x.ai`), `xai-grok-build` (Grok Build CLI
 proxy `https://cli-chat-proxy.grok.com`, Chat Completions, same
 empty-client `oidc-auth-json` pack as `xai-oauth`, plus
-`x-grok-client-version = 0.1.202` so the proxy does not return HTTP
-426), and `xai-grok-build-messages` (same host and pack, Messages at
+`x-grok-client-version = 1.0.46` so the proxy does not return HTTP
+426; the 426 body names 1.0.13 as the floor), and `xai-grok-build-messages` (same host and pack, Messages at
 `/v1/messages`). crates.io `0.6.0` also ships Bedrock, Azure,
 Vertex, Groq, Together, Mistral, DashScope, Moonshot, Zhipu, and
 the rest of `shipped_profile_ids()`. Lock that function on a
@@ -324,6 +324,21 @@ non-default sxs / composer model set `x-grok-model-override` on
 top-level `access_env` (first non-empty wins). `lmstudio` and
 `vllm` are `auth_scheme = none`. Do not ship a product client id
 on either xAI OAuth profile.
+
+## Strict tools and Gemini bounds
+
+A strict Chat or Responses tool, and a strict `json_schema` response,
+sets `additionalProperties` to false and lists every property in
+`required` on every object. That includes `$defs`, combinators, and
+tuple `items`, not only the root.
+
+Messages and Converse do the same when `strict` is true. Converse
+also fills `properties: {}` on a bare object. Gemini has no
+`additionalProperties` slot. A strict Gemini tool lists every
+property in `required` and the loss report drops
+`strict additionalProperties`. Gemini also drops
+`exclusiveMinimum` and `exclusiveMaximum`. It does not write that
+number as `minimum` or `maximum`.
 
 ## Out of scope
 

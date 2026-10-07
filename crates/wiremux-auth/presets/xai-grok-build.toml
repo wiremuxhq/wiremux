@@ -9,10 +9,11 @@ auth_scheme = "bearer"
 header_merge = "union"
 
 # cli-chat-proxy.grok.com returns HTTP 426 when this header is absent
-# ("Grok CLI version (none)"). 0.1.202 is the live floor. Identifier is
-# this crate, not a Grok product client id.
+# or older than the proxy floor (the 426 body named 1.0.13).
+# 1.0.46 is a current Grok CLI version that floor accepts.
+# Identifier is this crate, not a Grok product client id.
 [headers]
-x-grok-client-version = "0.1.202"
+x-grok-client-version = "1.0.46"
 x-grok-client-identifier = "wiremux"
 
 [oauth]
