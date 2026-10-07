@@ -1329,8 +1329,10 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if let Some(schema) = &s.json_schema {
         if schema.is_object() {
+            let mut schema = schema.clone();
+            relax_gemini_schema(&mut schema, report, "sampling.json_schema");
             cfg["responseMimeType"] = json!("application/json");
-            cfg["responseSchema"] = schema.clone();
+            cfg["responseSchema"] = schema;
         } else {
             report.record(
                 "sampling.json_schema",
