@@ -1072,11 +1072,13 @@ fn gemini_tool_schema_drops_prefix_items() {
         description: "coords".into(),
         parameters: serde_json::json!({
             "type": "object",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
             "properties": {
                 "coords": {
                     "type": "array",
                     "prefixItems": [{"type": "number"}, {"type": "number"}]
-                }
+                },
+                "n": {"type": "number", "exclusiveMinimum": 0}
             }
         }),
         strict: None,
@@ -1088,6 +1090,15 @@ fn gemini_tool_schema_drops_prefix_items() {
         .expect("coords");
     assert!(coords.get("prefixItems").is_none(), "{coords}");
     assert!(coords.get("items").is_some(), "{coords}");
+    let root = body
+        .pointer("/tools/0/functionDeclarations/0/parameters")
+        .expect("parameters");
+    assert!(root.get("$schema").is_none(), "{root}");
+    let bound = body
+        .pointer("/tools/0/functionDeclarations/0/parameters/properties/n")
+        .expect("n");
+    assert!(bound.get("exclusiveMinimum").is_none(), "{bound}");
+    assert_eq!(bound.get("minimum"), Some(&serde_json::json!(0)), "{bound}");
     assert!(
         report.events.iter().any(|event| {
             event.action == LossAction::Drop && event.detail.contains("prefixItems")
@@ -1120,11 +1131,19 @@ fn gemini_tool_schema_drops_prefix_items() {
     }]);
     let (nested_bytes, _) = encode(Wire::Gemini, &nested, &gemini_profile()).expect("encode");
     let nested_body: Value = serde_json::from_slice(&nested_bytes).expect("json");
-    let pair = nested_body
-        .pointer("/tools/0/functionDeclarations/0/parameters/$defs/pair")
-        .expect("pair");
-    assert!(pair.get("prefixItems").is_none(), "{pair}");
-    assert!(pair.get("items").is_some(), "{pair}");
+    let parameters = nested_body
+        .pointer("/tools/0/functionDeclarations/0/parameters")
+        .expect("parameters");
+    assert!(parameters.get("$defs").is_none(), "{parameters}");
+    let inlined = parameters.pointer("/properties/coords").expect("coords");
+    assert!(inlined.get("$ref").is_none(), "{inlined}");
+    assert!(inlined.get("prefixItems").is_none(), "{inlined}");
+    assert_eq!(
+        inlined.get("type").and_then(Value::as_str),
+        Some("array"),
+        "{inlined}"
+    );
+    assert!(inlined.get("items").is_some(), "{inlined}");
 }
 
 #[test]
