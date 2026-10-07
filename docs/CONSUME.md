@@ -174,7 +174,8 @@ last IR item is Assistant, FunctionCall, or CustomToolCall. xAI
 sxs-claude on the Grok Build proxy rejects assistant-last. Empty and
 user-last IR stay unchanged. Chat Completions, Gemini, and Responses
 do not append. Locked by
-`messages_encode_appends_continue_on_assistant_last`.
+`messages_encode_appends_continue_on_assistant_last` and
+`messages_encode_appends_continue_on_custom_tool_call_last`.
 
 ## Stay in the host
 
