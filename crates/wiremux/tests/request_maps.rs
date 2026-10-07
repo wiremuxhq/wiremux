@@ -9342,7 +9342,9 @@ fn gemini_strict_lists_required_and_drops_additional_properties() {
     assert!(
         report.events.iter().any(|event| {
             event.action == LossAction::Drop
-                && event.detail.contains("additionalProperties has no Gemini slot")
+                && event
+                    .detail
+                    .contains("additionalProperties has no Gemini slot")
         }),
         "{report:?}"
     );
