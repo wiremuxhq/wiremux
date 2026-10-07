@@ -890,14 +890,21 @@ fn encode_tool(tool: &PreparedTool) -> Option<Value> {
             name,
             description,
             parameters,
-            strict: _,
-        } => Some(json!({
-            "toolSpec": {
-                "name": name,
-                "description": description,
-                "inputSchema": { "json": parameters }
+            strict,
+        } => {
+            let mut schema = parameters.clone();
+            super::messages::normalize_object_schema_required(&mut schema);
+            if *strict == Some(true) {
+                super::messages::strict_object_schema(&mut schema);
             }
-        })),
+            Some(json!({
+                "toolSpec": {
+                    "name": name,
+                    "description": description,
+                    "inputSchema": { "json": schema }
+                }
+            }))
+        }
         PreparedTool::Raw(raw) => Some(raw.clone()),
     }
 }

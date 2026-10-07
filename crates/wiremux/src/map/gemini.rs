@@ -969,20 +969,13 @@ fn relax_gemini_node(
             "$schema has no Gemini slot",
         );
     }
-    for (key, plain) in [
-        ("exclusiveMinimum", "minimum"),
-        ("exclusiveMaximum", "maximum"),
-    ] {
-        let Some(bound) = obj.remove(key) else {
-            continue;
-        };
-        report.record(
-            format!("{path}.{key}"),
-            LossAction::Drop,
-            "exclusive bound has no Gemini slot",
-        );
-        if bound.is_number() && !obj.contains_key(plain) {
-            obj.insert(plain.into(), bound);
+    for key in ["exclusiveMinimum", "exclusiveMaximum"] {
+        if obj.remove(key).is_some() {
+            report.record(
+                format!("{path}.{key}"),
+                LossAction::Drop,
+                "exclusive bound has no Gemini slot",
+            );
         }
     }
     if let Some(props) = obj.get_mut("properties").and_then(Value::as_object_mut) {
@@ -1013,10 +1006,15 @@ fn relax_gemini_node(
             }
         }
     }
-    for key in ["additionalProperties", "not"] {
-        if let Some(child) = obj.get_mut(key).filter(|value| value.is_object()) {
-            relax_gemini_node(child, report, &format!("{path}.{key}"), defs, stack);
-        }
+    if obj.remove("additionalProperties").is_some() {
+        report.record(
+            format!("{path}.additionalProperties"),
+            LossAction::Drop,
+            "additionalProperties has no Gemini slot",
+        );
+    }
+    if let Some(child) = obj.get_mut("not").filter(|value| value.is_object()) {
+        relax_gemini_node(child, report, &format!("{path}.not"), defs, stack);
     }
     obj.remove("$defs");
     obj.remove("definitions");
@@ -1031,10 +1029,19 @@ fn encode_prepared_tools(prepared: &[PreparedTool], report: &mut LossReport) -> 
                 name,
                 description,
                 parameters,
-                strict: _,
+                strict,
             } => {
                 let mut parameters = parameters.clone();
-                relax_gemini_schema(&mut parameters, report, &format!("tools[{i}].parameters"));
+                let path = format!("tools[{i}].parameters");
+                relax_gemini_schema(&mut parameters, report, &path);
+                if *strict == Some(true) {
+                    super::messages::require_every_property(&mut parameters);
+                    report.record(
+                        path,
+                        LossAction::Drop,
+                        "strict additionalProperties has no Gemini slot",
+                    );
+                }
                 decls.push(json!({
                     "name": name,
                     "description": description,

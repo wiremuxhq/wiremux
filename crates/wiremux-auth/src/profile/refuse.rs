@@ -102,11 +102,26 @@ fn scheme_of(s: &str) -> Option<&str> {
 
 fn check_url(field: &str, raw: &str) -> Result<(), ProfileError> {
     let s = raw.trim();
+    // This parser strips ASCII tab and newline before the scheme.
+    // `scheme_of` does not, so those bytes must not skip the loopback gate.
+    if let Ok(parsed) = url::Url::parse(s) {
+        let http = parsed.scheme().eq_ignore_ascii_case("http");
+        let allowed =
+            parsed.scheme().eq_ignore_ascii_case("https") || (http && loopback_host(&parsed));
+        if allowed {
+            return Ok(());
+        }
+        return Err(ProfileError::DisallowedUrl {
+            field: field.to_string(),
+            url: raw.to_string(),
+        });
+    }
+    // `{env:VAR}` in a host does not parse. https stays allowed.
+    // A cleartext http URL that does not parse is still refused.
     let Some(scheme) = scheme_of(s) else {
         return Ok(());
     };
-    let scheme_l = scheme.to_ascii_lowercase();
-    let allowed = match scheme_l.as_str() {
+    let allowed = match scheme.to_ascii_lowercase().as_str() {
         "https" => true,
         "http" => is_loopback_http(s),
         _ => false,
@@ -122,34 +137,21 @@ fn check_url(field: &str, raw: &str) -> Result<(), ProfileError> {
 }
 
 pub(crate) fn is_loopback_http(url: &str) -> bool {
-    let Some((_, rest)) = url.split_once(':') else {
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
         return false;
     };
-    let Some(after_slashes) = rest.strip_prefix("//") else {
+    parsed.scheme().eq_ignore_ascii_case("http") && loopback_host(&parsed)
+}
+
+fn loopback_host(parsed: &url::Url) -> bool {
+    let Some(host) = parsed.host_str() else {
         return false;
     };
-    // Authority ends at the first path, query, or fragment. An `@` after
-    // that is not userinfo. `http://evil.com#@127.0.0.1` is host evil.com.
-    let authority = after_slashes
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(after_slashes);
-    let without_userinfo = match authority.rfind('@') {
-        Some(i) => &authority[i + 1..],
-        None => authority,
-    };
-    let hostport = without_userinfo
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(without_userinfo);
-    let host = if let Some(inner) = hostport.strip_prefix('[') {
-        match inner.split_once(']') {
-            Some((h, _)) => h,
-            None => return false,
-        }
-    } else {
-        hostport.split(':').next().unwrap_or(hostport)
-    };
+    // `host_str` puts IPv6 in brackets (`[::1]`).
+    let host = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
     host.eq_ignore_ascii_case("localhost")
         || host.eq_ignore_ascii_case("localhost.")
         || host == "127.0.0.1"
@@ -208,6 +210,7 @@ mod tests {
     #[test]
     fn loopback_hosts() {
         assert!(is_loopback_http("http://localhost:11434"));
+        assert!(is_loopback_http("http://localhost."));
         assert!(is_loopback_http("http://127.0.0.1"));
         assert!(is_loopback_http("http://[::1]:80/cb"));
         assert!(!is_loopback_http("http://192.0.2.1"));
@@ -222,8 +225,37 @@ mod tests {
         );
         assert!(is_loopback_http("http://127.0.0.1#@evil.com"));
         assert!(is_loopback_http("http://user:pass@127.0.0.1/cb"));
+        assert!(
+            is_loopback_http(r"http://127.0.0.1\@evil.com"),
+            "backslash is a path separator, host stays loopback"
+        );
+        assert!(
+            !is_loopback_http(r"http://evil.com\@127.0.0.1"),
+            "backslash is a path separator, host is evil.com"
+        );
         let err = check_url("base_url", "http://evil.com#@127.0.0.1").unwrap_err();
         assert!(matches!(err, ProfileError::DisallowedUrl { .. }), "{err}");
+        let slash = check_url("base_url", r"http://evil.com\@127.0.0.1").unwrap_err();
+        assert!(
+            matches!(slash, ProfileError::DisallowedUrl { .. }),
+            "{slash}"
+        );
+        for raw in ["ht\ttp://evil.example/v1", "http\t://evil.example/v1"] {
+            let err = check_url("base_url", raw).unwrap_err();
+            assert!(
+                matches!(err, ProfileError::DisallowedUrl { .. }),
+                "{raw} parsed as cleartext and must be refused, got {err}"
+            );
+        }
+        assert!(check_url("base_url", "/v1/messages").is_ok());
+        assert!(
+            check_url(
+                "base_url",
+                "https://bedrock-runtime.{env:AWS_REGION}.amazonaws.com"
+            )
+            .is_ok(),
+            "an https host template is expanded later"
+        );
     }
 
     #[test]
