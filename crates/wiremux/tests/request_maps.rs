@@ -1153,6 +1153,44 @@ fn gemini_tool_schema_drops_prefix_items() {
 }
 
 #[test]
+fn gemini_response_schema_drops_prefix_items() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "coords",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "coords": {
+                            "type": "array",
+                            "prefixItems": [{"type": "number"}, {"type": "number"}]
+                        }
+                    }
+                }
+            }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let coords = body
+        .pointer("/generationConfig/responseSchema/properties/coords")
+        .expect("coords");
+    assert!(coords.get("prefixItems").is_none(), "{coords}");
+    assert!(coords.get("items").is_some(), "{coords}");
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.action == LossAction::Drop && event.detail.contains("prefixItems")),
+        "{report:?}"
+    );
+}
+
+#[test]
 fn dest_gemini_function_response_reuses_function_call_id() {
     let req = br#"{
         "contents": [
