@@ -88,6 +88,14 @@ fn is_url_field(key: &str) -> bool {
             | "redirectUri"
             | "chat_path"
             | "chatPath"
+            | "messages_path"
+            | "messagesPath"
+            | "responses_path"
+            | "responsesPath"
+            | "gemini_path"
+            | "geminiPath"
+            | "converse_path"
+            | "conversePath"
     )
 }
 

@@ -46,7 +46,10 @@ pub fn upstream_url_for_model(
     {
         path = format!("{path}-stream");
     }
-    if path.starts_with("http://") || path.starts_with("https://") {
+    // Same absolute-URL rule as profile `check_url`: scheme case does not
+    // matter. A lowercase prefix left `HTTPS://...` joined onto base_url.
+    let path = path.trim().to_string();
+    if is_absolute_http_url(&path) {
         return Ok(rewrite_vertex_global_host(path));
     }
     Ok(rewrite_vertex_global_host(format!(
@@ -63,6 +66,13 @@ pub fn upstream_url_for_model(
 /// Encode `{model}` as one path segment. Keep `:` so Bedrock model ids
 /// stay readable. Encode `/ ? # % \\` and controls so the name cannot
 /// change the path, query, or fragment.
+fn is_absolute_http_url(path: &str) -> bool {
+    let Some((scheme, _)) = path.split_once("://") else {
+        return false;
+    };
+    scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+}
+
 pub(crate) fn encode_model_segment(model: &str) -> String {
     let mut out = String::with_capacity(model.len());
     for byte in model.bytes() {

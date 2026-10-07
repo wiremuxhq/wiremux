@@ -690,6 +690,33 @@ mod tests {
     }
 
     #[test]
+    fn wire_paths_refuse_cleartext_public_hosts() {
+        for (wire, key) in [
+            ("messages", "messages_path"),
+            ("responses", "responses_path"),
+            ("gemini", "gemini_path"),
+            ("converse", "converse_path"),
+        ] {
+            let text = format!(
+                "schema_version = 1\nid = \"x\"\nwire = \"{wire}\"\n{key} = \"http://192.0.2.1/v1\"\n"
+            );
+            let err = parse_profile_str(&text).unwrap_err();
+            assert!(
+                matches!(err, ProfileError::DisallowedUrl { .. }),
+                "{key} must refuse a public http URL, got {err}"
+            );
+        }
+        let err = parse_profile_str(
+            r#"{"schemaVersion":1,"id":"x","wire":"messages","messagesPath":"http://192.0.2.1/v1"}"#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ProfileError::DisallowedUrl { .. }),
+            "messagesPath must refuse a public http URL, got {err}"
+        );
+    }
+
+    #[test]
     fn wire_path_keys_do_not_alias_across_wires() {
         let both = parse_profile_str(
             "schema_version = 1\nid = \"x\"\nwire = \"responses\"\nchat_path = \"/v1/chat\"\nresponses_path = \"/v1/responses\"\n",
