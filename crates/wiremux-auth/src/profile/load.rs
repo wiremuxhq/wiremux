@@ -268,6 +268,7 @@ fn discover_user_profile_dirs() -> Vec<PathBuf> {
 fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
+        .filter(|raw| !raw.is_empty())
         .map(PathBuf::from)
 }
 
@@ -342,6 +343,21 @@ mod tests {
             include_shipped: false,
             include_user_config: false,
         }
+    }
+
+    #[test]
+    fn blank_home_is_not_a_profile_root() {
+        let _home = crate::isolated_home::IsolatedHome::new();
+        // SAFETY: IsolatedHome holds HOME_TEST_LOCK for this test.
+        unsafe {
+            std::env::set_var("HOME", "");
+            std::env::set_var("USERPROFILE", "");
+        }
+        let dirs = super::discover_user_profile_dirs();
+        assert!(
+            dirs.iter().all(|path| path.is_absolute()),
+            "blank HOME must not yield a relative profile dir: {dirs:?}"
+        );
     }
 
     #[test]

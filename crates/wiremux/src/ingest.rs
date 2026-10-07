@@ -984,6 +984,7 @@ fn user_overlay_dirs() -> Vec<PathBuf> {
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|raw| !raw.is_empty())
         .map(PathBuf::from)
 }
 
@@ -1715,6 +1716,45 @@ mod tests {
         let shown = err.to_string();
         assert!(shown.contains("no catalog rows matched"), "{shown}");
         assert!(!out.exists(), "out must not be created");
+    }
+
+    #[test]
+    fn unknown_npm_package_is_not_a_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = ingest_catalog(
+            r#"{"odd":{"id":"odd","name":"Odd","env":["ODD_API_KEY"],"npm":"@ai-sdk/not-a-dialect","api":"https://odd.example"}}"#,
+            &IngestRequest {
+                vendors: vec!["odd".into()],
+                dir: Some(dir.path().to_path_buf()),
+                ..IngestRequest::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("not a known HTTP dialect"),
+            "{err}"
+        );
+        assert!(!dir.path().join("odd.toml").exists());
+    }
+
+    #[test]
+    fn blank_home_does_not_write_a_relative_profile_dir() {
+        let _home = wiremux_auth::IsolatedHome::new();
+        // SAFETY: IsolatedHome holds HOME_TEST_LOCK for this test.
+        unsafe {
+            std::env::set_var("HOME", "");
+            std::env::set_var("USERPROFILE", "");
+        }
+        let err = ingest_catalog(
+            r#"{"groq":{"id":"groq","name":"Groq","env":["GROQ_API_KEY"],"npm":"@ai-sdk/groq"}}"#,
+            &IngestRequest {
+                vendors: vec!["groq".into()],
+                dir: None,
+                ..IngestRequest::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no user profile dir"), "{err}");
     }
 
     #[test]
