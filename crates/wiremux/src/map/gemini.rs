@@ -883,6 +883,13 @@ fn relax_gemini_schema(schema: &mut Value, report: &mut LossReport, path: &str) 
             relax_gemini_schema(child, report, &format!("{path}.properties.{name}"));
         }
     }
+    for key in ["$defs", "definitions"] {
+        if let Some(defs) = obj.get_mut(key).and_then(Value::as_object_mut) {
+            for (name, child) in defs.iter_mut() {
+                relax_gemini_schema(child, report, &format!("{path}.{key}.{name}"));
+            }
+        }
+    }
     if let Some(items) = obj.get_mut("items") {
         match items {
             Value::Array(list) => {
@@ -891,6 +898,18 @@ fn relax_gemini_schema(schema: &mut Value, report: &mut LossReport, path: &str) 
                 }
             }
             other => relax_gemini_schema(other, report, &format!("{path}.items")),
+        }
+    }
+    for key in ["anyOf", "oneOf", "allOf"] {
+        if let Some(Value::Array(list)) = obj.get_mut(key) {
+            for (index, item) in list.iter_mut().enumerate() {
+                relax_gemini_schema(item, report, &format!("{path}.{key}[{index}]"));
+            }
+        }
+    }
+    for key in ["additionalProperties", "not"] {
+        if let Some(child) = obj.get_mut(key).filter(|value| value.is_object()) {
+            relax_gemini_schema(child, report, &format!("{path}.{key}"));
         }
     }
 }

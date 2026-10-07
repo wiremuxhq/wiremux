@@ -1094,6 +1094,37 @@ fn gemini_tool_schema_drops_prefix_items() {
         }),
         "{report:?}"
     );
+
+    let nested = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_tools(vec![IrTool::Function {
+        name: "coords".into(),
+        description: "coords".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "$defs": {
+                "pair": {
+                    "type": "array",
+                    "prefixItems": [{"type": "number"}, {"type": "number"}]
+                }
+            },
+            "properties": {
+                "coords": {"$ref": "#/$defs/pair"}
+            }
+        }),
+        strict: None,
+    }]);
+    let (nested_bytes, _) = encode(Wire::Gemini, &nested, &gemini_profile()).expect("encode");
+    let nested_body: Value = serde_json::from_slice(&nested_bytes).expect("json");
+    let pair = nested_body
+        .pointer("/tools/0/functionDeclarations/0/parameters/$defs/pair")
+        .expect("pair");
+    assert!(pair.get("prefixItems").is_none(), "{pair}");
+    assert!(pair.get("items").is_some(), "{pair}");
 }
 
 #[test]
