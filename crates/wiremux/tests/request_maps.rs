@@ -4476,6 +4476,51 @@ fn chat_json_schema_round_trips() {
 }
 
 #[test]
+fn strict_json_schema_response_format_closes_the_object() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "strict": true,
+                "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+            }
+        }
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    assert_eq!(ir.sampling.json_schema_strict, Some(true));
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let schema = body
+        .pointer("/response_format/json_schema/schema")
+        .expect("schema");
+    assert_eq!(
+        schema.get("additionalProperties"),
+        Some(&serde_json::json!(false)),
+        "{schema}"
+    );
+    assert_eq!(
+        schema.get("required"),
+        Some(&serde_json::json!(["ok"])),
+        "{schema}"
+    );
+    let (resp_bytes, _) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("responses");
+    let resp: Value = serde_json::from_slice(&resp_bytes).expect("json");
+    assert_eq!(
+        resp.pointer("/text/format/schema/additionalProperties"),
+        Some(&serde_json::json!(false)),
+        "{resp}"
+    );
+    assert_eq!(
+        resp.pointer("/text/format/schema/required"),
+        Some(&serde_json::json!(["ok"])),
+        "{resp}"
+    );
+}
+
+#[test]
 fn chat_json_schema_keeps_description() {
     let req = br#"{
         "model": "gpt-4o",

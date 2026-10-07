@@ -1181,6 +1181,11 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         if !body.get("text").is_some_and(Value::is_object) {
             body["text"] = json!({});
         }
+        let mut schema = schema.clone();
+        if s.json_schema_strict == Some(true) {
+            super::messages::normalize_object_schema_required(&mut schema);
+            super::messages::strict_object_schema(&mut schema);
+        }
         let mut format = json!({
             "type": "json_schema",
             "name": name,
