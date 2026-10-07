@@ -632,11 +632,23 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                 );
                 false
             }
-            IrPart::Raw { .. } => {
-                if super::plain_media_part(part).is_some() {
+            IrPart::Raw { .. } => match super::plain_media_part(part) {
+                Some(IrPart::Document {
+                    source: IrDocumentSource::Url(_),
+                    ..
+                }) => {
+                    report.record(
+                        "part.document",
+                        LossAction::Drop,
+                        "document url has no Chat Completions slot",
+                    );
+                    false
+                }
+                Some(_) => {
                     report.record("part.media_hint", LossAction::Drop, "no slot");
                     true
-                } else {
+                }
+                None => {
                     report.record(
                         "part.raw",
                         LossAction::Drop,
@@ -644,7 +656,7 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                     );
                     false
                 }
-            }
+            },
             IrPart::Document {
                 source: IrDocumentSource::Url(_),
                 ..
@@ -698,6 +710,17 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                         "type": "image_url",
                         "image_url": {"url": format!("data:{media_type};base64,{data}")}
                     }),
+                    IrPart::Document {
+                        source: IrDocumentSource::Url(_),
+                        ..
+                    } => {
+                        report.record(
+                            "part.document",
+                            LossAction::Drop,
+                            "document url has no Chat Completions slot",
+                        );
+                        json!({"type": "text", "text": ""})
+                    }
                     IrPart::Document {
                         source,
                         media_type,
@@ -754,7 +777,14 @@ fn encode_document(
             }
             json!({ "type": "file", "file": file })
         }
-        IrDocumentSource::Url(_) => unreachable!("filtered"),
+        IrDocumentSource::Url(_) => {
+            report.record(
+                "part.document",
+                LossAction::Drop,
+                "document url has no Chat Completions slot",
+            );
+            json!({"type": "text", "text": ""})
+        }
     }
 }
 
@@ -1267,5 +1297,35 @@ fn encode_tool_choice(choice: &IrToolChoice, body: &mut Value) {
                 "function": {"name": name}
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_parts;
+    use crate::ir::{IrPart, LossAction};
+    use serde_json::json;
+
+    #[test]
+    fn gemini_pdf_url_with_media_hint_is_dropped() {
+        let part = IrPart::Raw {
+            type_name: "fileData".into(),
+            raw: json!({
+                "fileData": {
+                    "mimeType": "application/pdf",
+                    "fileUri": "https://example.com/a.pdf"
+                },
+                "mediaResolution": {"level": "MEDIA_RESOLUTION_LOW"}
+            }),
+        };
+        let mut report = crate::ir::LossReport::default();
+        let value = encode_parts(&[IrPart::Text("hello".into()), part], &mut report);
+        assert_eq!(value, json!("hello"));
+        assert!(
+            report.events.iter().any(|event| {
+                event.action == LossAction::Drop && event.detail.contains("document url")
+            }),
+            "{report:?}"
+        );
     }
 }
