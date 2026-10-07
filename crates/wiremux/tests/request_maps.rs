@@ -8972,6 +8972,82 @@ fn openai_object_tool_schema_without_properties_is_filled() {
 }
 
 #[test]
+fn strict_openai_tool_lists_properties_and_closes_the_object() {
+    let strict_tool = IrTool::Function {
+        name: "lookup".into(),
+        description: "lookup".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {"q": {"type": "string"}}
+        }),
+        strict: Some(true),
+    };
+    let loose_tool = IrTool::Function {
+        name: "lookup".into(),
+        description: "lookup".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {"q": {"type": "string"}}
+        }),
+        strict: None,
+    };
+    let user = vec![IrItem::User {
+        parts: vec![IrPart::Text("hi".into())],
+    }];
+    let strict_ir = IrRequest::new("gpt-4o", user.clone()).with_tools(vec![strict_tool]);
+    let (chat_bytes, _) = encode(Wire::ChatCompletions, &strict_ir, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    let params = chat
+        .pointer("/tools/0/function/parameters")
+        .expect("parameters");
+    assert_eq!(
+        params.get("additionalProperties"),
+        Some(&serde_json::json!(false)),
+        "{params}"
+    );
+    assert_eq!(
+        params.get("required"),
+        Some(&serde_json::json!(["q"])),
+        "{params}"
+    );
+    assert_eq!(
+        chat.pointer("/tools/0/function/strict"),
+        Some(&serde_json::json!(true))
+    );
+
+    let loose_ir = IrRequest::new("gpt-4o", user).with_tools(vec![loose_tool]);
+    let (loose_bytes, _) =
+        encode(Wire::ChatCompletions, &loose_ir, &chat_profile()).expect("loose");
+    let loose: Value = serde_json::from_slice(&loose_bytes).expect("json");
+    let loose_params = loose
+        .pointer("/tools/0/function/parameters")
+        .expect("parameters");
+    assert!(
+        loose_params.get("additionalProperties").is_none(),
+        "{loose_params}"
+    );
+    assert_eq!(
+        loose_params.get("required"),
+        Some(&serde_json::json!([])),
+        "{loose_params}"
+    );
+
+    let (resp_bytes, _) =
+        encode(Wire::Responses, &strict_ir, &hard_error_profile()).expect("responses");
+    let resp: Value = serde_json::from_slice(&resp_bytes).expect("json");
+    assert_eq!(
+        resp.pointer("/tools/0/parameters/additionalProperties"),
+        Some(&serde_json::json!(false)),
+        "{resp}"
+    );
+    assert_eq!(
+        resp.pointer("/tools/0/parameters/required"),
+        Some(&serde_json::json!(["q"])),
+        "{resp}"
+    );
+}
+
+#[test]
 fn non_array_required_becomes_empty_array() {
     for required in [serde_json::json!("q"), serde_json::json!({"bad": true})] {
         let req = serde_json::json!({
