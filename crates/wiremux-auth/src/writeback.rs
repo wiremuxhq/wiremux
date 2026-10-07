@@ -242,9 +242,8 @@ pub async fn persist_login_tokens(
         .ok_or_else(|| AuthError::MissingField("oauth.creds_path".into()))?;
     let path = resolve_creds_path(raw)?;
     let existing = if path.is_file() {
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        let text = read_creds_string(&path).await?;
+        serde_json::from_str::<Value>(&text).ok()
     } else {
         None
     };
@@ -921,6 +920,46 @@ mod tests {
             "{err:?}"
         );
         assert!(!path.exists(), "must not invent a Claude credentials file");
+    }
+
+    #[tokio::test]
+    async fn persist_login_tokens_refuses_oversized_creds_file() {
+        let home = crate::isolated_home::IsolatedHome::new();
+        let path = home.path().join("creds.json");
+        let big = vec![b' '; usize::try_from(MAX_CREDS_BYTES).unwrap() + 1];
+        std::fs::write(&path, &big).unwrap();
+        let oauth = crate::parse_profile_str(&format!(
+            r#"
+schema_version = 1
+id = "p"
+[oauth]
+token_url = "https://auth.example.invalid/token"
+creds_path = "{}"
+access_token_ptr = "/access_token"
+login = "none"
+"#,
+            path.display().to_string().replace('\\', "/")
+        ))
+        .unwrap()
+        .oauth
+        .unwrap();
+        let tokens = TokenExchangeResponse {
+            access_token: "sk-new".into(),
+            refresh_token: None,
+            expires_in: Some(60),
+            token_type: None,
+            scope: None,
+        };
+        let err = persist_login_tokens(&oauth, &tokens).await.unwrap_err();
+        assert!(
+            err.to_string().contains("too large"),
+            "oversized creds must fail before rewrite, got {err}"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            MAX_CREDS_BYTES + 1,
+            "the existing file must stay untouched"
+        );
     }
 
     #[tokio::test]
