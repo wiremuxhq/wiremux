@@ -1777,15 +1777,31 @@ mod tests {
             sse.as_bytes(),
         );
         let text = String::from_utf8(mapped).expect("utf8");
+        let bodies = sse_json_bodies(&text);
+        let delta = bodies
+            .iter()
+            .find(|value| value["type"] == "response.output_text.delta")
+            .unwrap_or_else(|| panic!("missing output text delta in {text}"));
+        assert_eq!(delta["delta"], "hi", "{text}");
+        let item = bodies
+            .iter()
+            .find(|value| value["type"] == "response.output_item.added")
+            .unwrap_or_else(|| panic!("missing output item in {text}"));
+        assert_eq!(item["item"]["type"], "message", "{text}");
+        assert_eq!(item["item"]["role"], "assistant", "{text}");
         assert!(
-            text.contains("hi"),
-            "Responses client must still see the text, got {text}"
+            bodies
+                .iter()
+                .any(|value| value["type"] == "response.created"),
+            "{text}"
         );
         assert!(
             !text.contains("content_block_start")
+                && !text.contains("content_block_delta")
                 && !text.contains("content_block_stop")
-                && !text.contains("server_tool_use"),
-            "Responses client must not see Messages frames as output items, got {text}"
+                && !text.contains("server_tool_use")
+                && !text.contains("message_stop"),
+            "Responses client must not see Messages frames, got {text}"
         );
     }
 
@@ -2306,6 +2322,22 @@ anthropic-beta = "context-1m-2025-08-07"
         serde_json::from_str(data).expect("error JSON")
     }
 
+    fn sse_json_bodies(text: &str) -> Vec<serde_json::Value> {
+        text.lines()
+            .filter(|line| line.starts_with("data:"))
+            .filter_map(|line| {
+                let data = line.trim_start_matches("data:").trim();
+                if data == "[DONE]" {
+                    return None;
+                }
+                Some(
+                    serde_json::from_str(data)
+                        .unwrap_or_else(|err| panic!("sse json: {err} in {text}")),
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn chat_error_object_proxied_to_messages_keeps_type() {
         let profile = crate::parse_profile_str(
@@ -2384,8 +2416,31 @@ anthropic-beta = "context-1m-2025-08-07"
             sse.as_bytes(),
         );
         let text = String::from_utf8(bytes).expect("utf8");
-        assert!(text.contains("Hi"), "{text}");
-        assert!(text.contains("The server had an error"), "{text}");
+        let bodies = sse_json_bodies(&text);
+        let content = bodies
+            .iter()
+            .find(|value| value.pointer("/choices/0/delta/content").is_some())
+            .unwrap_or_else(|| panic!("missing chat content delta in {text}"));
+        assert_eq!(
+            content
+                .pointer("/choices/0/delta/content")
+                .and_then(|v| v.as_str()),
+            Some("Hi"),
+            "{text}"
+        );
+        assert_eq!(content["object"], "chat.completion.chunk", "{text}");
+        let err = bodies
+            .iter()
+            .find(|value| value.get("error").is_some())
+            .unwrap_or_else(|| panic!("missing chat error in {text}"));
+        assert_eq!(err["error"]["type"], "server_error", "{text}");
+        assert_eq!(err["error"]["message"], "The server had an error", "{text}");
+        assert!(
+            bodies
+                .iter()
+                .all(|value| value["type"] != "response.output_text.delta"),
+            "chat client must not see the Responses event, got {text}"
+        );
         assert!(!text.contains("unknown stream event"), "{text}");
     }
 
@@ -2422,8 +2477,33 @@ anthropic-beta = "context-1m-2025-08-07"
             message_only.as_bytes(),
         );
         let text = String::from_utf8(bytes).expect("utf8");
-        assert!(text.contains("Hi"), "{text}");
-        assert!(text.contains("at capacity due to high demand"), "{text}");
+        let bodies = sse_json_bodies(&text);
+        let content = bodies
+            .iter()
+            .find(|value| value.pointer("/choices/0/delta/content").is_some())
+            .unwrap_or_else(|| panic!("missing chat content delta in {text}"));
+        assert_eq!(
+            content
+                .pointer("/choices/0/delta/content")
+                .and_then(|v| v.as_str()),
+            Some("Hi"),
+            "{text}"
+        );
+        let err = bodies
+            .iter()
+            .find(|value| value.get("error").is_some())
+            .unwrap_or_else(|| panic!("missing chat error in {text}"));
+        assert_eq!(err["error"]["type"], "server_error", "{text}");
+        assert_eq!(
+            err["error"]["message"], "The model is currently at capacity due to high demand.",
+            "{text}"
+        );
+        assert!(
+            bodies.iter().all(|value| {
+                value["type"] != "response.output_text.delta" && value["type"] != "response.failed"
+            }),
+            "chat client must not see the Responses event, got {text}"
+        );
         assert!(!text.contains("decode stream"), "{text}");
     }
 

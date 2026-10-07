@@ -718,6 +718,7 @@ fn creds_path_escapes_home() -> AuthError {
 pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|raw| !raw.is_empty())
         .map(PathBuf::from)
 }
 
@@ -1079,6 +1080,23 @@ mod tests {
     fn percent_encode_reserved() {
         assert_eq!(percent_encode("a b"), "a%20b");
         assert_eq!(percent_encode("ok-._~"), "ok-._~");
+    }
+
+    #[test]
+    fn blank_home_does_not_expand_tilde_to_a_relative_path() {
+        let _home = crate::isolated_home::IsolatedHome::new();
+        // SAFETY: IsolatedHome holds HOME_TEST_LOCK for this test.
+        unsafe {
+            std::env::set_var("HOME", "");
+            std::env::set_var("USERPROFILE", "");
+        }
+        assert!(home_dir().is_none());
+        assert_eq!(expand_tilde("~/foo"), PathBuf::from("~/foo"));
+        let err = resolve_creds_path("~/foo").unwrap_err();
+        assert!(
+            err.to_string().contains("under home"),
+            "blank HOME must not accept a tilde path, got {err}"
+        );
     }
 
     #[test]

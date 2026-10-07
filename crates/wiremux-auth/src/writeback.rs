@@ -50,11 +50,12 @@ fn escape_pointer_token(token: &str) -> String {
     token.replace('~', "~0").replace('/', "~1")
 }
 
-/// Exact `{issuer}::{client_id}`, else `{issuer}::{client_id}@{name}`.
+/// Exact `{issuer}::{client_id}`, else the single `{issuer}::{client_id}@{name}`.
 ///
 /// Empty `client_id` (`want` ends with `::`) matches the single store
 /// key for that issuer. Zero matches keep `want`. Two or more fail
-/// closed so we do not guess a client.
+/// closed so we do not guess a client. Two or more `{want}@{name}`
+/// keys fail the same way. One named suffix still matches.
 pub(crate) fn select_oidc_entry_key(doc: Option<&Value>, want: &str) -> Result<String, AuthError> {
     let Some(obj) = doc.and_then(Value::as_object) else {
         return Ok(want.to_owned());
@@ -74,17 +75,24 @@ pub(crate) fn select_oidc_entry_key(doc: Option<&Value>, want: &str) -> Result<S
             ))),
         };
     }
-    Ok(obj
+    let named: Vec<&String> = obj
         .keys()
-        .find(|key| {
+        .filter(|key| {
             key.strip_prefix(want)
                 .and_then(|rest| rest.strip_prefix('@'))
                 .is_some_and(|suffix| {
                     !suffix.is_empty() && !suffix.contains("::") && !suffix.contains('/')
                 })
         })
-        .cloned()
-        .unwrap_or_else(|| want.to_owned()))
+        .collect();
+    match named.as_slice() {
+        [] => Ok(want.to_owned()),
+        [one] => Ok((*one).clone()),
+        many => Err(AuthError::MissingField(format!(
+            "oauth.client_id ({} named entries; set client_id to one store name)",
+            many.len()
+        ))),
+    }
 }
 
 fn oidc_issuer_and_client(oauth: &OauthPack) -> Result<(String, String), AuthError> {
@@ -234,9 +242,8 @@ pub async fn persist_login_tokens(
         .ok_or_else(|| AuthError::MissingField("oauth.creds_path".into()))?;
     let path = resolve_creds_path(raw)?;
     let existing = if path.is_file() {
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        let text = read_creds_string(&path).await?;
+        serde_json::from_str::<Value>(&text).ok()
     } else {
         None
     };
@@ -726,6 +733,33 @@ mod tests {
     }
 
     #[test]
+    fn oidc_two_named_suffixes_do_not_guess() {
+        let err = select_oidc_entry_key(
+            Some(&serde_json::json!({
+                "https://auth.openai.com::wiremux-cli@personal": {"key": "p"},
+                "https://auth.openai.com::wiremux-cli@work": {"key": "w"}
+            })),
+            "https://auth.openai.com::wiremux-cli",
+        )
+        .expect_err("two named entries");
+        assert!(
+            err.to_string().contains("client_id") && err.to_string().contains("named entries"),
+            "ambiguous named entries must name client_id, got {err}"
+        );
+        assert_eq!(
+            select_oidc_entry_key(
+                Some(&serde_json::json!({
+                    "https://auth.openai.com::wiremux-cli": {"key": "exact"},
+                    "https://auth.openai.com::wiremux-cli@work": {"key": "w"}
+                })),
+                "https://auth.openai.com::wiremux-cli",
+            )
+            .expect("exact key wins"),
+            "https://auth.openai.com::wiremux-cli"
+        );
+    }
+
+    #[test]
     fn apply_tokens_refuses_empty_access() {
         let mut doc = serde_json::json!({"access": "old"});
         let err = apply_tokens(
@@ -886,6 +920,46 @@ mod tests {
             "{err:?}"
         );
         assert!(!path.exists(), "must not invent a Claude credentials file");
+    }
+
+    #[tokio::test]
+    async fn persist_login_tokens_refuses_oversized_creds_file() {
+        let home = crate::isolated_home::IsolatedHome::new();
+        let path = home.path().join("creds.json");
+        let big = vec![b' '; usize::try_from(MAX_CREDS_BYTES).unwrap() + 1];
+        std::fs::write(&path, &big).unwrap();
+        let oauth = crate::parse_profile_str(&format!(
+            r#"
+schema_version = 1
+id = "p"
+[oauth]
+token_url = "https://auth.example.invalid/token"
+creds_path = "{}"
+access_token_ptr = "/access_token"
+login = "none"
+"#,
+            path.display().to_string().replace('\\', "/")
+        ))
+        .unwrap()
+        .oauth
+        .unwrap();
+        let tokens = TokenExchangeResponse {
+            access_token: "sk-new".into(),
+            refresh_token: None,
+            expires_in: Some(60),
+            token_type: None,
+            scope: None,
+        };
+        let err = persist_login_tokens(&oauth, &tokens).await.unwrap_err();
+        assert!(
+            err.to_string().contains("too large"),
+            "oversized creds must fail before rewrite, got {err}"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            MAX_CREDS_BYTES + 1,
+            "the existing file must stay untouched"
+        );
     }
 
     #[tokio::test]
