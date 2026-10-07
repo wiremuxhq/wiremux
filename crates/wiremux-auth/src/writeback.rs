@@ -50,11 +50,12 @@ fn escape_pointer_token(token: &str) -> String {
     token.replace('~', "~0").replace('/', "~1")
 }
 
-/// Exact `{issuer}::{client_id}`, else `{issuer}::{client_id}@{name}`.
+/// Exact `{issuer}::{client_id}`, else the single `{issuer}::{client_id}@{name}`.
 ///
 /// Empty `client_id` (`want` ends with `::`) matches the single store
 /// key for that issuer. Zero matches keep `want`. Two or more fail
-/// closed so we do not guess a client.
+/// closed so we do not guess a client. Two or more `{want}@{name}`
+/// keys fail the same way. One named suffix still matches.
 pub(crate) fn select_oidc_entry_key(doc: Option<&Value>, want: &str) -> Result<String, AuthError> {
     let Some(obj) = doc.and_then(Value::as_object) else {
         return Ok(want.to_owned());
@@ -74,17 +75,24 @@ pub(crate) fn select_oidc_entry_key(doc: Option<&Value>, want: &str) -> Result<S
             ))),
         };
     }
-    Ok(obj
+    let named: Vec<&String> = obj
         .keys()
-        .find(|key| {
+        .filter(|key| {
             key.strip_prefix(want)
                 .and_then(|rest| rest.strip_prefix('@'))
                 .is_some_and(|suffix| {
                     !suffix.is_empty() && !suffix.contains("::") && !suffix.contains('/')
                 })
         })
-        .cloned()
-        .unwrap_or_else(|| want.to_owned()))
+        .collect();
+    match named.as_slice() {
+        [] => Ok(want.to_owned()),
+        [one] => Ok((*one).clone()),
+        many => Err(AuthError::MissingField(format!(
+            "oauth.client_id ({} named entries; set client_id to one store name)",
+            many.len()
+        ))),
+    }
 }
 
 fn oidc_issuer_and_client(oauth: &OauthPack) -> Result<(String, String), AuthError> {
@@ -722,6 +730,33 @@ mod tests {
         assert!(
             err.to_string().contains("client_id"),
             "ambiguous issuer must name client_id, got {err}"
+        );
+    }
+
+    #[test]
+    fn oidc_two_named_suffixes_do_not_guess() {
+        let err = select_oidc_entry_key(
+            Some(&serde_json::json!({
+                "https://auth.openai.com::wiremux-cli@personal": {"key": "p"},
+                "https://auth.openai.com::wiremux-cli@work": {"key": "w"}
+            })),
+            "https://auth.openai.com::wiremux-cli",
+        )
+        .expect_err("two named entries");
+        assert!(
+            err.to_string().contains("client_id") && err.to_string().contains("named entries"),
+            "ambiguous named entries must name client_id, got {err}"
+        );
+        assert_eq!(
+            select_oidc_entry_key(
+                Some(&serde_json::json!({
+                    "https://auth.openai.com::wiremux-cli": {"key": "exact"},
+                    "https://auth.openai.com::wiremux-cli@work": {"key": "w"}
+                })),
+                "https://auth.openai.com::wiremux-cli",
+            )
+            .expect("exact key wins"),
+            "https://auth.openai.com::wiremux-cli"
         );
     }
 
