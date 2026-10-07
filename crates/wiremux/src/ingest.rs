@@ -624,33 +624,35 @@ fn endpoint_for(vendor: &CatalogVendor, wire: EmitWire) -> Result<(String, Strin
     split_openai_compat_api(&raw, wire).map_err(|reason| vendor_err(&vendor.id, &reason))
 }
 
-/// Catalog `${VAR}` (and `$VAR`) become `{env:VAR}` so load-time subst matches shipped profiles.
+/// Catalog `${VAR}` becomes `{env:VAR}` so load-time subst matches shipped profiles.
 fn rewrite_catalog_placeholders(input: &str) -> String {
     let mut out = String::new();
-    let mut i = 0;
-    let bytes = input.as_bytes();
-    while i < input.len() {
-        if input[i..].starts_with("{env:")
-            && let Some(end) = input[i + 5..].find('}')
+    let mut rest = input;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("{env:")
+            && let Some(end) = after.find('}')
         {
-            out.push_str(&input[i..i + 5 + end + 1]);
-            i += 5 + end + 1;
+            let take = 5 + end + 1;
+            out.push_str(&rest[..take]);
+            rest = &rest[take..];
             continue;
         }
-        if input[i..].starts_with("${")
-            && let Some(end) = input[i + 2..].find('}')
+        if let Some(after) = rest.strip_prefix("${")
+            && let Some(end) = after.find('}')
         {
-            let var = &input[i + 2..i + 2 + end];
+            let var = &after[..end];
             if is_env_ident(var) {
                 out.push_str("{env:");
                 out.push_str(var);
                 out.push('}');
-                i += 2 + end + 1;
+                let take = 2 + end + 1;
+                rest = &rest[take..];
                 continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        let ch = rest.chars().next().expect("rest is not empty");
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
     }
     out
 }
@@ -1248,6 +1250,18 @@ mod tests {
         );
         assert!(!toml.contains("${CLOUDFLARE_ACCOUNT_ID}"), "{toml}");
         parse_profile_str(&toml).unwrap();
+
+        let vendor = CatalogVendor {
+            id: "odd".into(),
+            display_name: "Odd".into(),
+            api: Some("https://exämple.com/${ODD_HOST}/v1".into()),
+            env: vec!["ODD_API_KEY".into()],
+            npm: Some("@ai-sdk/openai-compatible".into()),
+        };
+        let toml = profile_toml(&vendor).expect("non-ASCII catalog URL must not panic");
+        assert!(toml.contains("https://exämple.com"), "{toml}");
+        assert!(toml.contains("{env:ODD_HOST}"), "{toml}");
+        assert!(!toml.contains("${ODD_HOST}"), "{toml}");
 
         let db = rows.iter().find(|r| r.id == "databricks").unwrap();
         let toml = profile_toml(db).unwrap();
