@@ -863,6 +863,165 @@ pub(super) fn encode(
     Ok(body)
 }
 
+/// Gemini function declarations use an OpenAPI subset. `prefixItems`,
+/// `$ref`, `$defs`, and `$schema` are rejected. A local ref is inlined
+/// so the fields survive. A ref cycle is dropped.
+fn relax_gemini_schema(schema: &mut Value, report: &mut LossReport, path: &str) {
+    let defs = schema_defs(schema);
+    let mut stack = Vec::new();
+    relax_gemini_node(schema, report, path, &defs, &mut stack);
+}
+
+fn schema_defs(schema: &Value) -> serde_json::Map<String, Value> {
+    let mut defs = serde_json::Map::new();
+    let Some(obj) = schema.as_object() else {
+        return defs;
+    };
+    for key in ["$defs", "definitions"] {
+        if let Some(map) = obj.get(key).and_then(Value::as_object) {
+            for (name, value) in map {
+                defs.entry(name.clone()).or_insert_with(|| value.clone());
+            }
+        }
+    }
+    defs
+}
+
+fn local_ref_name(reference: &str) -> Option<&str> {
+    let name = reference
+        .strip_prefix("#/$defs/")
+        .or_else(|| reference.strip_prefix("#/definitions/"))?;
+    if name.is_empty() || name.contains('/') {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+fn relax_gemini_node(
+    schema: &mut Value,
+    report: &mut LossReport,
+    path: &str,
+    defs: &serde_json::Map<String, Value>,
+    stack: &mut Vec<String>,
+) {
+    let mut inline: Option<String> = None;
+    if let Some(obj) = schema.as_object_mut()
+        && let Some(reference) = obj.get("$ref").and_then(Value::as_str).map(str::to_owned)
+    {
+        obj.remove("$ref");
+        match local_ref_name(&reference) {
+            Some(name) if stack.iter().any(|seen| seen == name) => {
+                report.record(
+                    format!("{path}.$ref"),
+                    LossAction::Drop,
+                    "recursive schema ref has no Gemini slot",
+                );
+            }
+            Some(name) => match defs.get(name).cloned() {
+                Some(Value::Object(map)) => {
+                    for (key, value) in map {
+                        obj.entry(key).or_insert(value);
+                    }
+                    inline = Some(name.to_string());
+                }
+                Some(_) | None => {
+                    report.record(
+                        format!("{path}.$ref"),
+                        LossAction::Drop,
+                        "unresolved schema ref has no Gemini slot",
+                    );
+                }
+            },
+            None => {
+                report.record(
+                    format!("{path}.$ref"),
+                    LossAction::Drop,
+                    "schema ref has no Gemini slot",
+                );
+            }
+        }
+    }
+    if let Some(name) = inline {
+        stack.push(name);
+        relax_gemini_node(schema, report, path, defs, stack);
+        stack.pop();
+        return;
+    }
+
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+    if obj.remove("prefixItems").is_some() {
+        report.record(
+            format!("{path}.prefixItems"),
+            LossAction::Drop,
+            "prefixItems has no Gemini slot",
+        );
+        if !obj.contains_key("items") {
+            obj.insert("items".into(), json!({}));
+        }
+    }
+    if obj.remove("$schema").is_some() {
+        report.record(
+            format!("{path}.$schema"),
+            LossAction::Drop,
+            "$schema has no Gemini slot",
+        );
+    }
+    for (key, plain) in [
+        ("exclusiveMinimum", "minimum"),
+        ("exclusiveMaximum", "maximum"),
+    ] {
+        let Some(bound) = obj.remove(key) else {
+            continue;
+        };
+        report.record(
+            format!("{path}.{key}"),
+            LossAction::Drop,
+            "exclusive bound has no Gemini slot",
+        );
+        if bound.is_number() && !obj.contains_key(plain) {
+            obj.insert(plain.into(), bound);
+        }
+    }
+    if let Some(props) = obj.get_mut("properties").and_then(Value::as_object_mut) {
+        for (name, child) in props.iter_mut() {
+            relax_gemini_node(
+                child,
+                report,
+                &format!("{path}.properties.{name}"),
+                defs,
+                stack,
+            );
+        }
+    }
+    if let Some(items) = obj.get_mut("items") {
+        match items {
+            Value::Array(list) => {
+                for (index, item) in list.iter_mut().enumerate() {
+                    relax_gemini_node(item, report, &format!("{path}.items[{index}]"), defs, stack);
+                }
+            }
+            other => relax_gemini_node(other, report, &format!("{path}.items"), defs, stack),
+        }
+    }
+    for key in ["anyOf", "oneOf", "allOf"] {
+        if let Some(Value::Array(list)) = obj.get_mut(key) {
+            for (index, item) in list.iter_mut().enumerate() {
+                relax_gemini_node(item, report, &format!("{path}.{key}[{index}]"), defs, stack);
+            }
+        }
+    }
+    for key in ["additionalProperties", "not"] {
+        if let Some(child) = obj.get_mut(key).filter(|value| value.is_object()) {
+            relax_gemini_node(child, report, &format!("{path}.{key}"), defs, stack);
+        }
+    }
+    obj.remove("$defs");
+    obj.remove("definitions");
+}
+
 fn encode_prepared_tools(prepared: &[PreparedTool], report: &mut LossReport) -> Vec<Value> {
     let mut decls = Vec::new();
     let mut hosted = Vec::new();
@@ -873,11 +1032,15 @@ fn encode_prepared_tools(prepared: &[PreparedTool], report: &mut LossReport) -> 
                 description,
                 parameters,
                 strict: _,
-            } => decls.push(json!({
-                "name": name,
-                "description": description,
-                "parameters": parameters,
-            })),
+            } => {
+                let mut parameters = parameters.clone();
+                relax_gemini_schema(&mut parameters, report, &format!("tools[{i}].parameters"));
+                decls.push(json!({
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters,
+                }));
+            }
             PreparedTool::Raw(raw) if is_gemini_hosted_raw(raw) => hosted.push(raw.clone()),
             PreparedTool::Raw(_) => {
                 report.record(

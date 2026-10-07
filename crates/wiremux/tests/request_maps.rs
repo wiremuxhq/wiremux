@@ -1060,6 +1060,99 @@ wire = "gemini"
 }
 
 #[test]
+fn gemini_tool_schema_drops_prefix_items() {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_tools(vec![IrTool::Function {
+        name: "coords".into(),
+        description: "coords".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+                "coords": {
+                    "type": "array",
+                    "prefixItems": [{"type": "number"}, {"type": "number"}]
+                },
+                "n": {"type": "number", "exclusiveMinimum": 0},
+                "hi": {"type": "number", "exclusiveMaximum": 1}
+            }
+        }),
+        strict: None,
+    }]);
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let coords = body
+        .pointer("/tools/0/functionDeclarations/0/parameters/properties/coords")
+        .expect("coords");
+    assert!(coords.get("prefixItems").is_none(), "{coords}");
+    assert!(coords.get("items").is_some(), "{coords}");
+    let root = body
+        .pointer("/tools/0/functionDeclarations/0/parameters")
+        .expect("parameters");
+    assert!(root.get("$schema").is_none(), "{root}");
+    let bound = body
+        .pointer("/tools/0/functionDeclarations/0/parameters/properties/n")
+        .expect("n");
+    assert!(bound.get("exclusiveMinimum").is_none(), "{bound}");
+    assert_eq!(bound.get("minimum"), Some(&serde_json::json!(0)), "{bound}");
+    let upper = body
+        .pointer("/tools/0/functionDeclarations/0/parameters/properties/hi")
+        .expect("hi");
+    assert!(upper.get("exclusiveMaximum").is_none(), "{upper}");
+    assert_eq!(upper.get("maximum"), Some(&serde_json::json!(1)), "{upper}");
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.contains("prefixItems")
+        }),
+        "{report:?}"
+    );
+
+    let nested = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_tools(vec![IrTool::Function {
+        name: "coords".into(),
+        description: "coords".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "$defs": {
+                "pair": {
+                    "type": "array",
+                    "prefixItems": [{"type": "number"}, {"type": "number"}]
+                }
+            },
+            "properties": {
+                "coords": {"$ref": "#/$defs/pair"}
+            }
+        }),
+        strict: None,
+    }]);
+    let (nested_bytes, _) = encode(Wire::Gemini, &nested, &gemini_profile()).expect("encode");
+    let nested_body: Value = serde_json::from_slice(&nested_bytes).expect("json");
+    let parameters = nested_body
+        .pointer("/tools/0/functionDeclarations/0/parameters")
+        .expect("parameters");
+    assert!(parameters.get("$defs").is_none(), "{parameters}");
+    let inlined = parameters.pointer("/properties/coords").expect("coords");
+    assert!(inlined.get("$ref").is_none(), "{inlined}");
+    assert!(inlined.get("prefixItems").is_none(), "{inlined}");
+    assert_eq!(
+        inlined.get("type").and_then(Value::as_str),
+        Some("array"),
+        "{inlined}"
+    );
+    assert!(inlined.get("items").is_some(), "{inlined}");
+}
+
+#[test]
 fn dest_gemini_function_response_reuses_function_call_id() {
     let req = br#"{
         "contents": [
@@ -8829,6 +8922,52 @@ fn messages_encode_object_tool_schema_emits_required_array() {
         tools[2].pointer("/input_schema/required"),
         Some(&serde_json::json!(["q"])),
         "listed required must stay, got {body}"
+    );
+}
+
+#[test]
+fn openai_object_tool_schema_without_properties_is_filled() {
+    let ir = IrRequest::new(
+        "gpt-4o",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_tools(vec![
+        IrTool::Function {
+            name: "fetch_docs".into(),
+            description: "fetch".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            strict: None,
+        },
+        IrTool::Function {
+            name: "nested".into(),
+            description: "nested".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"child": {"type": "object"}}
+            }),
+            strict: None,
+        },
+    ]);
+    let (chat_bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("json");
+    assert_eq!(
+        chat.pointer("/tools/0/function/parameters/properties"),
+        Some(&serde_json::json!({})),
+        "OpenAI 400s on an object schema with no properties, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/tools/1/function/parameters/properties/child/properties"),
+        Some(&serde_json::json!({})),
+        "nested object schema must gain properties, got {chat}"
+    );
+    let (resp_bytes, _) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("responses");
+    let resp: Value = serde_json::from_slice(&resp_bytes).expect("json");
+    assert_eq!(
+        resp.pointer("/tools/0/parameters/properties"),
+        Some(&serde_json::json!({})),
+        "Responses 400s on an object schema with no properties, got {resp}"
     );
 }
 

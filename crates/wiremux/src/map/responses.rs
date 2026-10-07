@@ -897,6 +897,8 @@ fn encode_tool(tool: &PreparedTool) -> Value {
             parameters,
             strict,
         } => {
+            let mut parameters = parameters.clone();
+            super::messages::normalize_object_schema_required(&mut parameters);
             let mut tool = json!({
                 "type": "function",
                 "name": name,
