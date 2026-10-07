@@ -1095,6 +1095,11 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         && let Some((schema, name)) =
             super::official_json_schema(schema, s.json_schema_name.as_deref(), report)
     {
+        let mut schema = schema.clone();
+        if s.json_schema_strict == Some(true) {
+            super::messages::normalize_object_schema_required(&mut schema);
+            super::messages::strict_object_schema(&mut schema);
+        }
         let mut json_schema = json!({
             "name": name,
             "schema": schema,
