@@ -1060,6 +1060,43 @@ wire = "gemini"
 }
 
 #[test]
+fn gemini_tool_schema_drops_prefix_items() {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_tools(vec![IrTool::Function {
+        name: "coords".into(),
+        description: "coords".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "coords": {
+                    "type": "array",
+                    "prefixItems": [{"type": "number"}, {"type": "number"}]
+                }
+            }
+        }),
+        strict: None,
+    }]);
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let coords = body
+        .pointer("/tools/0/functionDeclarations/0/parameters/properties/coords")
+        .expect("coords");
+    assert!(coords.get("prefixItems").is_none(), "{coords}");
+    assert!(coords.get("items").is_some(), "{coords}");
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.contains("prefixItems")
+        }),
+        "{report:?}"
+    );
+}
+
+#[test]
 fn dest_gemini_function_response_reuses_function_call_id() {
     let req = br#"{
         "contents": [

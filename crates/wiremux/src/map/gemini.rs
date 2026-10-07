@@ -863,6 +863,38 @@ pub(super) fn encode(
     Ok(body)
 }
 
+/// Gemini function declarations reject JSON Schema `prefixItems`.
+fn relax_gemini_schema(schema: &mut Value, report: &mut LossReport, path: &str) {
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+    if obj.remove("prefixItems").is_some() {
+        report.record(
+            format!("{path}.prefixItems"),
+            LossAction::Drop,
+            "prefixItems has no Gemini slot",
+        );
+        if !obj.contains_key("items") {
+            obj.insert("items".into(), json!({}));
+        }
+    }
+    if let Some(props) = obj.get_mut("properties").and_then(Value::as_object_mut) {
+        for (name, child) in props.iter_mut() {
+            relax_gemini_schema(child, report, &format!("{path}.properties.{name}"));
+        }
+    }
+    if let Some(items) = obj.get_mut("items") {
+        match items {
+            Value::Array(list) => {
+                for (index, item) in list.iter_mut().enumerate() {
+                    relax_gemini_schema(item, report, &format!("{path}.items[{index}]"));
+                }
+            }
+            other => relax_gemini_schema(other, report, &format!("{path}.items")),
+        }
+    }
+}
+
 fn encode_prepared_tools(prepared: &[PreparedTool], report: &mut LossReport) -> Vec<Value> {
     let mut decls = Vec::new();
     let mut hosted = Vec::new();
@@ -873,11 +905,15 @@ fn encode_prepared_tools(prepared: &[PreparedTool], report: &mut LossReport) -> 
                 description,
                 parameters,
                 strict: _,
-            } => decls.push(json!({
-                "name": name,
-                "description": description,
-                "parameters": parameters,
-            })),
+            } => {
+                let mut parameters = parameters.clone();
+                relax_gemini_schema(&mut parameters, report, &format!("tools[{i}].parameters"));
+                decls.push(json!({
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters,
+                }));
+            }
             PreparedTool::Raw(raw) if is_gemini_hosted_raw(raw) => hosted.push(raw.clone()),
             PreparedTool::Raw(_) => {
                 report.record(
