@@ -1413,6 +1413,35 @@ fn fill_object_schema(schema: &mut Value) {
     }
 }
 
+/// OpenAI rejects a strict tool unless `additionalProperties` is false
+/// and `required` lists every key in `properties`.
+pub(super) fn strict_object_schema(schema: &mut Value) {
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+    let is_object =
+        obj.get("type").and_then(Value::as_str) == Some("object") || obj.contains_key("properties");
+    if is_object {
+        obj.insert("additionalProperties".into(), json!(false));
+        let names: Vec<Value> = obj
+            .get("properties")
+            .and_then(Value::as_object)
+            .map(|props| props.keys().cloned().map(Value::String).collect())
+            .unwrap_or_default();
+        if !names.is_empty() {
+            obj.insert("required".into(), Value::Array(names));
+        }
+    }
+    if let Some(props) = obj.get_mut("properties").and_then(Value::as_object_mut) {
+        for child in props.values_mut() {
+            strict_object_schema(child);
+        }
+    }
+    if let Some(items) = obj.get_mut("items").filter(|value| value.is_object()) {
+        strict_object_schema(items);
+    }
+}
+
 fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     let s = &ir.sampling;
     if let Some(t) = s.temperature {
