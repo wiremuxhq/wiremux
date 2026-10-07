@@ -1078,7 +1078,8 @@ fn gemini_tool_schema_drops_prefix_items() {
                     "type": "array",
                     "prefixItems": [{"type": "number"}, {"type": "number"}]
                 },
-                "n": {"type": "number", "exclusiveMinimum": 0}
+                "n": {"type": "number", "exclusiveMinimum": 0},
+                "hi": {"type": "number", "exclusiveMaximum": 1}
             }
         }),
         strict: None,
@@ -1099,6 +1100,11 @@ fn gemini_tool_schema_drops_prefix_items() {
         .expect("n");
     assert!(bound.get("exclusiveMinimum").is_none(), "{bound}");
     assert_eq!(bound.get("minimum"), Some(&serde_json::json!(0)), "{bound}");
+    let upper = body
+        .pointer("/tools/0/functionDeclarations/0/parameters/properties/hi")
+        .expect("hi");
+    assert!(upper.get("exclusiveMaximum").is_none(), "{upper}");
+    assert_eq!(upper.get("maximum"), Some(&serde_json::json!(1)), "{upper}");
     assert!(
         report.events.iter().any(|event| {
             event.action == LossAction::Drop && event.detail.contains("prefixItems")

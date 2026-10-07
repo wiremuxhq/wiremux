@@ -969,14 +969,20 @@ fn relax_gemini_node(
             "$schema has no Gemini slot",
         );
     }
-    if let Some(bound) = obj.remove("exclusiveMinimum") {
+    for (key, plain) in [
+        ("exclusiveMinimum", "minimum"),
+        ("exclusiveMaximum", "maximum"),
+    ] {
+        let Some(bound) = obj.remove(key) else {
+            continue;
+        };
         report.record(
-            format!("{path}.exclusiveMinimum"),
+            format!("{path}.{key}"),
             LossAction::Drop,
-            "exclusiveMinimum has no Gemini slot",
+            "exclusive bound has no Gemini slot",
         );
-        if bound.is_number() && !obj.contains_key("minimum") {
-            obj.insert("minimum".into(), bound);
+        if bound.is_number() && !obj.contains_key(plain) {
+            obj.insert(plain.into(), bound);
         }
     }
     if let Some(props) = obj.get_mut("properties").and_then(Value::as_object_mut) {
