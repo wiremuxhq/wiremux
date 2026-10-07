@@ -8855,6 +8855,28 @@ fn messages_encode_appends_continue_on_assistant_last() {
 }
 
 #[test]
+fn messages_encode_appends_continue_on_custom_tool_call_last() {
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![IrItem::CustomToolCall {
+            call_id: "call_custom".into(),
+            name: "lookup".into(),
+            input: "{}".into(),
+            responses_item: None,
+        }],
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let roles = messages_roles(&body);
+    assert_eq!(
+        roles.last(),
+        Some(&("user".into(), Some("Continue.".into()))),
+        "custom-tool-call-last must append Continue., got {body}"
+    );
+    assert_eq!(roles.len(), 2, "custom tool call + Continue., got {body}");
+}
+
+#[test]
 fn messages_encode_appends_continue_on_function_call_last() {
     let ir = IrRequest::new(
         "claude-opus-4-6",

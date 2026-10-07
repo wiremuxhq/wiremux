@@ -948,6 +948,21 @@ chat_path = "/v1/chat/completions"
         let url = upstream_url_for_model(&fixed, None, false).expect("fixed path");
         assert!(url.ends_with("/v1/chat/completions"), "{url}");
         assert!(!url.contains("{model}"), "{url}");
+        let absolute = parse_profile_str(
+            r#"
+schema_version = 1
+id = "c"
+wire = "chat-completions"
+base_url = "https://example.invalid"
+chat_path = "HTTPS://api.example/v1/chat/completions"
+"#,
+        )
+        .expect("uppercase scheme parses");
+        let url = upstream_url_for_model(&absolute, None, false).expect("absolute");
+        assert_eq!(
+            url, "HTTPS://api.example/v1/chat/completions",
+            "an absolute chat_path must not be joined onto base_url, got {url}"
+        );
     }
 
     #[test]

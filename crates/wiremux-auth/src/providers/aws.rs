@@ -177,7 +177,7 @@ impl AwsStsTokenProvider {
                 return Ok(cached.creds.clone());
             }
         }
-        let token = lead_or_follow(&self.inner.inflight, || async {
+        lead_or_follow(&self.inner.inflight, || async {
             let force = self.inner.force_refresh.swap(false, Ordering::SeqCst);
             let result = self.refresh_as_leader(force).await;
             if result.is_err() && force {
@@ -187,9 +187,10 @@ impl AwsStsTokenProvider {
         })
         .await?;
         let state = self.inner.state.read().await;
-        state.as_ref().map(|c| c.creds.clone()).ok_or_else(|| {
-            AuthError::TokenProvider(format!("STS cache empty after refresh ({token})"))
-        })
+        state
+            .as_ref()
+            .map(|c| c.creds.clone())
+            .ok_or_else(|| AuthError::TokenProvider("STS cache empty after refresh".to_string()))
     }
 
     async fn refresh_as_leader(&self, force: bool) -> Result<String, AuthError> {
@@ -513,6 +514,17 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    #[test]
+    fn sts_cache_empty_error_does_not_include_the_access_key_id() {
+        let src = include_str!("aws.rs");
+        let marker = format!("({}token{})", '{', '}');
+        let bad = format!("STS cache empty after refresh {marker}");
+        assert!(
+            !src.contains(&bad),
+            "the refresh marker is an access key id and must not be formatted into the error"
+        );
+    }
 
     const STS_XML: &str = r#"<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
   <AssumeRoleResult>

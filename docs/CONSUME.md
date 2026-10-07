@@ -153,12 +153,13 @@ Host thinking slots and `LossReport`:
 | Unsigned `IrPart::Thinking` | Drop (not on wire) | `thought` (no signature) | Drop | Drop |
 | `max_reasoning_tokens` | `thinking.budget_tokens` | `thinkingBudget` when `thinking_budget` unset | Drop | Drop |
 | `include_thoughts` | `thinking.type` | `includeThoughts` | `reasoning.summary=auto` | Drop |
-| `reasoning_effort` | Budget defaults only | `thinkingLevel` | `reasoning.effort` | `reasoning_effort` |
+| `reasoning_effort` | `output_config.effort` when the trimmed string is non-empty and `include_thoughts` is not false | `thinkingLevel` | `reasoning.effort` | `reasoning_effort` |
 
 Chat Completions and Responses emit `store`. OpenRouter Responses
 `openrouter-codex` refuses `store` (`forbidden_field_policy =
 hard-error`). Chat Completions `openrouter` does not refuse
-`store`. Messages and Gemini have no slot.
+`store`. Gemini writes `store` on the body and records Preserve
+`gemini store` when `sampling.store` is `Some`. Messages has no slot.
 
 Diagnose should print `LossReport` for `part.thinking` and
 `sampling.max_reasoning_tokens`.
@@ -169,10 +170,12 @@ the crate choice. Locked by
 `messages_whitespace_only_assistant_becomes_dot`.
 
 Messages encode also appends one user text turn `Continue.` when the
-last IR item is Assistant or FunctionCall. xAI sxs-claude on the Grok
-Build proxy rejects assistant-last. Empty and user-last IR stay
-unchanged. Chat Completions, Gemini, and Responses do not append.
-Locked by `messages_encode_appends_continue_on_assistant_last`.
+last IR item is Assistant, FunctionCall, or CustomToolCall. xAI
+sxs-claude on the Grok Build proxy rejects assistant-last. Empty and
+user-last IR stay unchanged. Chat Completions, Gemini, and Responses
+do not append. Locked by
+`messages_encode_appends_continue_on_assistant_last` and
+`messages_encode_appends_continue_on_custom_tool_call_last`.
 
 ## Stay in the host
 
