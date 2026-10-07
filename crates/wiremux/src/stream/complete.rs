@@ -337,7 +337,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut tool_calls = Vec::new();
     let mut citations = Vec::new();
     let mut images = Vec::new();
-    let mut current: Option<(String, String, String)> = None;
+    let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta }
@@ -407,20 +407,21 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             }
             IrStreamEvent::ToolCallStart { id, name, .. }
             | IrStreamEvent::CustomToolCallStart { id, name, .. } => {
-                if let Some((id, name, args)) = current.take() {
-                    tool_calls.push(messages_tool_use_value(&id, &name, &args));
+                let custom = matches!(ev, IrStreamEvent::CustomToolCallStart { .. });
+                if let Some((id, name, args, custom)) = current.take() {
+                    tool_calls.push(messages_tool_use_value(&id, &name, &args, custom));
                 }
-                current = Some((id.clone(), name.clone(), String::new()));
+                current = Some((id.clone(), name.clone(), String::new(), custom));
             }
             IrStreamEvent::ToolCallArgDelta { delta, .. }
             | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
-                if let Some((_, _, args)) = current.as_mut() {
+                if let Some((_, _, args, _)) = current.as_mut() {
                     args.push_str(delta);
                 }
             }
             IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args)) = current.take() {
-                    tool_calls.push(messages_tool_use_value(&id, &name, &args));
+                if let Some((id, name, args, custom)) = current.take() {
+                    tool_calls.push(messages_tool_use_value(&id, &name, &args, custom));
                 }
             }
             IrStreamEvent::Protocol { item_type, payload }
@@ -456,8 +457,8 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             _ => {}
         }
     }
-    if let Some((id, name, args)) = current.take() {
-        tool_calls.push(messages_tool_use_value(&id, &name, &args));
+    if let Some((id, name, args, custom)) = current.take() {
+        tool_calls.push(messages_tool_use_value(&id, &name, &args, custom));
     }
 
     let mut content = Vec::new();
@@ -557,12 +558,17 @@ fn messages_content_block(item_type: &str, payload: &Value) -> bool {
     payload.get("type").and_then(Value::as_str) == Some(item_type)
 }
 
-fn messages_tool_use_value(id: &str, name: &str, args: &str) -> Value {
+fn messages_tool_use_value(id: &str, name: &str, args: &str, custom: bool) -> Value {
+    let input = if custom {
+        crate::map::response_custom_tool_input(args)
+    } else {
+        serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({}))
+    };
     json!({
         "type": "tool_use",
         "id": id,
         "name": name,
-        "input": serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({})),
+        "input": input,
     })
 }
 
@@ -593,7 +599,7 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut url_context = None;
     let mut citation_metadata = None;
     let mut gemini_code_parts = Vec::new();
-    let mut current: Option<(String, String, String, Option<String>)> = None;
+    let mut current: Option<(String, String, String, Option<String>, bool)> = None;
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta }
@@ -668,12 +674,13 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 thought_signature,
                 ..
             } => {
-                if let Some((id, name, args, signature)) = current.take() {
+                if let Some((id, name, args, signature, custom)) = current.take() {
                     tool_calls.push(gemini_function_call_value(
                         &id,
                         &name,
                         &args,
                         signature.as_deref(),
+                        custom,
                     ));
                 }
                 current = Some((
@@ -684,32 +691,35 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                         .as_deref()
                         .filter(|sig| !sig.is_empty())
                         .map(str::to_string),
+                    false,
                 ));
             }
             IrStreamEvent::CustomToolCallStart { id, name, .. } => {
-                if let Some((id, name, args, signature)) = current.take() {
+                if let Some((id, name, args, signature, custom)) = current.take() {
                     tool_calls.push(gemini_function_call_value(
                         &id,
                         &name,
                         &args,
                         signature.as_deref(),
+                        custom,
                     ));
                 }
-                current = Some((id.clone(), name.clone(), String::new(), None));
+                current = Some((id.clone(), name.clone(), String::new(), None, true));
             }
             IrStreamEvent::ToolCallArgDelta { delta, .. }
             | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
-                if let Some((_, _, args, _)) = current.as_mut() {
+                if let Some((_, _, args, _, _)) = current.as_mut() {
                     args.push_str(delta);
                 }
             }
             IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args, signature)) = current.take() {
+                if let Some((id, name, args, signature, custom)) = current.take() {
                     tool_calls.push(gemini_function_call_value(
                         &id,
                         &name,
                         &args,
                         signature.as_deref(),
+                        custom,
                     ));
                 }
             }
@@ -804,12 +814,13 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             _ => {}
         }
     }
-    if let Some((id, name, args, signature)) = current.take() {
+    if let Some((id, name, args, signature, custom)) = current.take() {
         tool_calls.push(gemini_function_call_value(
             &id,
             &name,
             &args,
             signature.as_deref(),
+            custom,
         ));
     }
 
@@ -954,11 +965,17 @@ fn gemini_function_call_value(
     name: &str,
     args: &str,
     thought_signature: Option<&str>,
+    custom: bool,
 ) -> Value {
     let n = if name.is_empty() { id } else { name };
+    let parsed = if custom {
+        crate::map::response_custom_tool_input(args)
+    } else {
+        serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({}))
+    };
     let mut function_call = json!({
         "name": n,
-        "args": serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({})),
+        "args": parsed,
     });
     if !id.is_empty() {
         function_call["id"] = json!(id);
@@ -2375,6 +2392,84 @@ mod tests {
                 .and_then(Value::as_i64),
             Some(1),
             "dest Gemini complete must keep custom tool args, got {gemini}"
+        );
+    }
+
+    #[test]
+    fn dest_complete_custom_tool_non_json_input_is_raw_object() {
+        let events = [
+            IrStreamEvent::CustomToolCallStart {
+                id: "call_c".into(),
+                name: "widget".into(),
+                index: 0,
+            },
+            IrStreamEvent::CustomToolCallInputDelta {
+                delta: "pri".into(),
+                index: 0,
+            },
+            IrStreamEvent::CustomToolCallInputDelta {
+                delta: "nt(1)".into(),
+                index: 0,
+            },
+            IrStreamEvent::ToolCallEnd,
+        ];
+        let expected = json!({ "raw": "print(1)" });
+        let messages = encode_response(Wire::Messages, &events).expect("messages");
+        assert_eq!(
+            messages.pointer("/content/0/input"),
+            Some(&expected),
+            "Messages complete custom input, got {messages}"
+        );
+        let gemini = encode_response(Wire::Gemini, &events).expect("gemini");
+        assert_eq!(
+            gemini.pointer("/candidates/0/content/parts/0/functionCall/args"),
+            Some(&expected),
+            "Gemini complete custom input, got {gemini}"
+        );
+        let converse = encode_response(Wire::Converse, &events).expect("converse");
+        assert_eq!(
+            converse.pointer("/output/message/content/0/toolUse/input"),
+            Some(&expected),
+            "Converse complete custom input, got {converse}"
+        );
+
+        let function = [
+            IrStreamEvent::ToolCallStart {
+                id: "t1".into(),
+                name: "lookup".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: "not-json".into(),
+                index: 0,
+            },
+            IrStreamEvent::ToolCallEnd,
+        ];
+        let function_messages = encode_response(Wire::Messages, &function).expect("function");
+        assert_eq!(
+            function_messages.pointer("/content/0/input"),
+            Some(&json!({})),
+            "a function tool with invalid JSON stays an empty object, got {function_messages}"
+        );
+
+        let array = [
+            IrStreamEvent::CustomToolCallStart {
+                id: "call_c".into(),
+                name: "widget".into(),
+                index: 0,
+            },
+            IrStreamEvent::CustomToolCallInputDelta {
+                delta: "[1]".into(),
+                index: 0,
+            },
+            IrStreamEvent::ToolCallEnd,
+        ];
+        let array_messages = encode_response(Wire::Messages, &array).expect("array");
+        assert_eq!(
+            array_messages.pointer("/content/0/input"),
+            Some(&json!({ "raw": [1] })),
+            "a JSON array custom input stays inside raw, got {array_messages}"
         );
     }
 

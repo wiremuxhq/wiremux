@@ -26,6 +26,8 @@ struct GeminiHeldCall {
     name: String,
     args: String,
     thought_signature: Option<String>,
+    /// Custom tool input is free text. Function arguments stay JSON fragments.
+    custom: bool,
 }
 
 /// Accumulates IR events into dialect-correct SSE frames.
@@ -109,6 +111,9 @@ pub struct StreamEncoder {
     /// Gemini `functionCall.args` is one JSON object, so fragments stay
     /// buffered until the call closes.
     gemini_open_calls: BTreeMap<u32, GeminiHeldCall>,
+    /// Custom-tool input for Messages and Converse, keyed by encoded block.
+    /// Emitted as one JSON object when the block closes.
+    custom_args: HashMap<u32, String>,
     /// Frames that arrived while a Gemini function call was open.
     /// Emitted after that call so a later text part does not jump ahead of it.
     gemini_deferred: Vec<RawSse>,
@@ -188,6 +193,7 @@ impl StreamEncoder {
             closed_tools: HashSet::new(),
             gemini_open_calls: BTreeMap::new(),
             gemini_deferred: Vec::new(),
+            custom_args: HashMap::new(),
         }
     }
 
@@ -848,6 +854,11 @@ impl StreamEncoder {
     }
 
     fn push_messages(&mut self, ev: IrStreamEvent) -> Result<Vec<RawSse>, MapError> {
+        let custom = matches!(
+            ev,
+            IrStreamEvent::CustomToolCallStart { .. }
+                | IrStreamEvent::CustomToolCallInputDelta { .. }
+        );
         let ev = custom_tool_as_function(ev);
         if let IrStreamEvent::ServiceTier { ref tier } = ev {
             self.service_tier = Some(tier.clone());
@@ -941,10 +952,14 @@ impl StreamEncoder {
                 let open_same = same_open && (id.is_empty() || open_id == id);
                 if open_same {
                     // A later chunk repeated this call.
+                    if let Some(enc) = open_enc {
+                        self.note_custom_slot(enc, custom);
+                    }
                 } else if same_open {
                     out.extend(self.close_open());
                     self.tool_slots.remove(&index);
                     let enc = self.alloc_tool(index);
+                    self.note_custom_slot(enc, custom);
                     out.push(self.tool_start_frame(enc, &id, &name));
                     self.tool_ids.insert(enc, id);
                     self.open = Some((enc, BlockKind::Tool));
@@ -955,11 +970,14 @@ impl StreamEncoder {
                     if held.2.is_empty() {
                         held.2 = name;
                     }
+                    let enc = held.0;
+                    self.note_custom_slot(enc, custom);
                 } else {
                     let enc = self.alloc_tool(index);
                     let other_tool_open = self
                         .open
                         .is_some_and(|(open_enc, kind)| kind == BlockKind::Tool && open_enc != enc);
+                    self.note_custom_slot(enc, custom);
                     if other_tool_open {
                         self.held_tools
                             .insert(index, (enc, id, name, String::new()));
@@ -973,12 +991,27 @@ impl StreamEncoder {
             }
             IrStreamEvent::ToolCallArgDelta { delta, index } => {
                 let enc = self.tool_enc(index);
-                if self.open == Some((enc, BlockKind::Tool)) {
-                    out.push(self.tool_arg_frame(enc, &delta));
+                if self.open == Some((enc, BlockKind::Tool))
+                    && (custom || self.custom_args.contains_key(&enc))
+                {
+                    self.custom_args.entry(enc).or_default().push_str(&delta);
                 } else if let Some(held) = self.held_tools.get_mut(&index) {
-                    held.3.push_str(&delta);
+                    let held_enc = held.0;
+                    if custom || self.custom_args.contains_key(&held_enc) {
+                        self.custom_args
+                            .entry(held_enc)
+                            .or_default()
+                            .push_str(&delta);
+                    } else {
+                        held.3.push_str(&delta);
+                    }
                 } else if !self.closed_tools.contains(&enc) {
-                    out.push(self.tool_arg_frame(enc, &delta));
+                    if custom || self.custom_args.contains_key(&enc) {
+                        let text = crate::map::response_custom_tool_input(&delta).to_string();
+                        out.push(self.tool_arg_frame(enc, &text));
+                    } else {
+                        out.push(self.tool_arg_frame(enc, &delta));
+                    }
                 }
             }
             IrStreamEvent::ToolCallEnd => {}
@@ -1147,16 +1180,36 @@ impl StreamEncoder {
     }
 
     fn close_open(&mut self) -> Vec<RawSse> {
-        let Some((index, _)) = self.open.take() else {
+        let Some((index, kind)) = self.open.take() else {
             return self.flush_held_tools();
         };
         self.closed_tools.insert(index);
-        let mut out = vec![named(
+        let mut out = Vec::new();
+        if kind == BlockKind::Tool
+            && let Some(text) = self.take_custom_json(index)
+        {
+            out.push(self.tool_arg_frame(index, &text));
+        }
+        out.push(named(
             "content_block_stop",
             json!({ "type": "content_block_stop", "index": index }),
-        )];
+        ));
         out.extend(self.flush_held_tools());
         out
+    }
+
+    fn note_custom_slot(&mut self, enc: u32, custom: bool) {
+        if custom {
+            self.custom_args.entry(enc).or_default();
+        }
+    }
+
+    fn take_custom_json(&mut self, enc: u32) -> Option<String> {
+        let args = self.custom_args.remove(&enc)?;
+        if args.is_empty() {
+            return None;
+        }
+        Some(crate::map::response_custom_tool_input(&args).to_string())
     }
 
     fn messages_start_frame(&self) -> RawSse {
@@ -1269,7 +1322,9 @@ impl StreamEncoder {
         for (enc, id, name, args) in held {
             self.closed_tools.insert(enc);
             out.push(self.tool_start_frame(enc, &id, &name));
-            if !args.is_empty() {
+            if let Some(text) = self.take_custom_json(enc) {
+                out.push(self.tool_arg_frame(enc, &text));
+            } else if !args.is_empty() {
                 out.push(self.tool_arg_frame(enc, &args));
             }
             out.push(named(
@@ -1970,6 +2025,11 @@ impl StreamEncoder {
     }
 
     fn push_converse(&mut self, ev: IrStreamEvent) -> Result<Vec<RawSse>, MapError> {
+        let custom = matches!(
+            ev,
+            IrStreamEvent::CustomToolCallStart { .. }
+                | IrStreamEvent::CustomToolCallInputDelta { .. }
+        );
         let ev = custom_tool_as_function(ev);
         let mut out = Vec::new();
         match ev {
@@ -2005,6 +2065,7 @@ impl StreamEncoder {
             } => {
                 let enc = self.alloc_tool(index);
                 out.extend(self.close_converse());
+                self.note_custom_slot(enc, custom);
                 out.push(converse_frame_with_index(
                     super::converse::encode(&IrStreamEvent::ToolCallStart {
                         id,
@@ -2018,10 +2079,14 @@ impl StreamEncoder {
             }
             IrStreamEvent::ToolCallArgDelta { delta, index } => {
                 let enc = self.tool_enc(index);
-                out.push(converse_frame_with_index(
-                    super::converse::encode(&IrStreamEvent::ToolCallArgDelta { delta, index })?,
-                    enc,
-                ));
+                if custom || self.custom_args.contains_key(&enc) {
+                    self.custom_args.entry(enc).or_default().push_str(&delta);
+                } else {
+                    out.push(converse_frame_with_index(
+                        super::converse::encode(&IrStreamEvent::ToolCallArgDelta { delta, index })?,
+                        enc,
+                    ));
+                }
             }
             IrStreamEvent::ToolCallEnd => {
                 out.extend(self.close_converse());
@@ -2112,10 +2177,23 @@ impl StreamEncoder {
         let Some((index, _)) = self.open.take() else {
             return Vec::new();
         };
-        vec![converse_frame_with_index(
+        let mut out = Vec::new();
+        // Converse delta `toolUse.input` is a string of JSON text.
+        if let Some(text) = self.take_custom_json(index) {
+            out.push(converse_frame_with_index(
+                json!({
+                    "contentBlockDelta": {
+                        "delta": { "toolUse": { "input": text } }
+                    }
+                }),
+                index,
+            ));
+        }
+        out.push(converse_frame_with_index(
             json!({ "contentBlockStop": {} }),
             index,
-        )]
+        ));
+        out
     }
 
     fn finish_converse(&mut self) -> Result<Vec<RawSse>, MapError> {
@@ -2138,13 +2216,16 @@ impl StreamEncoder {
                 name,
                 thought_signature,
                 index,
-            } => Ok(self.hold_gemini_start(index, id, name, thought_signature)),
+            } => Ok(self.hold_gemini_start(index, id, name, thought_signature, false)),
             IrStreamEvent::CustomToolCallStart { id, name, index } => {
-                Ok(self.hold_gemini_start(index, id, name, None))
+                Ok(self.hold_gemini_start(index, id, name, None, true))
             }
-            IrStreamEvent::ToolCallArgDelta { delta, index }
-            | IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
-                self.append_gemini_args(index, &delta);
+            IrStreamEvent::ToolCallArgDelta { delta, index } => {
+                self.append_gemini_args(index, &delta, false);
+                Ok(Vec::new())
+            }
+            IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
+                self.append_gemini_args(index, &delta, true);
                 Ok(Vec::new())
             }
             IrStreamEvent::ToolCallEnd => Ok(self.flush_gemini_calls()),
@@ -2174,6 +2255,7 @@ impl StreamEncoder {
         id: String,
         name: String,
         thought_signature: Option<String>,
+        custom: bool,
     ) -> Vec<RawSse> {
         if let Some(prev) = self.gemini_open_calls.get_mut(&index)
             && prev.id.is_empty()
@@ -2181,6 +2263,7 @@ impl StreamEncoder {
         {
             prev.id = id;
             prev.name = name;
+            prev.custom |= custom;
             if thought_signature.is_some() {
                 prev.thought_signature = thought_signature;
             }
@@ -2199,19 +2282,22 @@ impl StreamEncoder {
                 name,
                 args: String::new(),
                 thought_signature,
+                custom,
             },
         );
         frames
     }
 
-    fn append_gemini_args(&mut self, index: u32, delta: &str) {
+    fn append_gemini_args(&mut self, index: u32, delta: &str, custom: bool) {
         if let Some(call) = self.gemini_open_calls.get_mut(&index) {
             call.args.push_str(delta);
+            call.custom |= custom;
             return;
         }
         if self.gemini_open_calls.len() == 1 {
             if let Some(call) = self.gemini_open_calls.values_mut().next() {
                 call.args.push_str(delta);
+                call.custom |= custom;
             }
             return;
         }
@@ -2222,6 +2308,7 @@ impl StreamEncoder {
                 name: String::new(),
                 args: delta.to_string(),
                 thought_signature: None,
+                custom,
             },
         );
     }
@@ -2241,12 +2328,15 @@ impl StreamEncoder {
             name,
             args,
             thought_signature,
+            custom,
         } = call;
         if name.is_empty() && id.is_empty() {
             return None;
         }
         let display = if name.is_empty() { id.clone() } else { name };
-        let parsed = if args.is_empty() {
+        let parsed = if custom {
+            crate::map::response_custom_tool_input(&args)
+        } else if args.is_empty() {
             json!({})
         } else {
             serde_json::from_str::<Value>(&args).unwrap_or_else(|_| json!({}))
@@ -3183,6 +3273,22 @@ mod tests {
             Some(1),
             "custom input must land on the tool block, got {events:?}"
         );
+        let partial = events.iter().find_map(|(name, value)| {
+            if name != "content_block_delta" {
+                return None;
+            }
+            value
+                .pointer("/delta/partial_json")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+        let partial = partial.expect("custom input partial_json");
+        let parsed: Value = serde_json::from_str(&partial).expect("partial_json is JSON");
+        assert_eq!(
+            parsed,
+            json!({ "raw": "print(1)" }),
+            "custom input must be a JSON object, got {partial}"
+        );
         assert_eq!(
             stop_reason_of(&events).as_deref(),
             Some("tool_use"),
@@ -3195,6 +3301,81 @@ mod tests {
         assert!(
             block_stopped_before_delta(&events, 1),
             "the tool block must stop before message_delta, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn custom_tool_stream_joins_fragments_into_one_raw_object() {
+        let mut messages = StreamEncoder::new(Wire::Messages);
+        messages
+            .push(IrStreamEvent::CustomToolCallStart {
+                id: "call_c".into(),
+                name: "widget".into(),
+                index: 0,
+            })
+            .expect("messages start");
+        let first = messages
+            .push(IrStreamEvent::CustomToolCallInputDelta {
+                delta: "pri".into(),
+                index: 0,
+            })
+            .expect("first fragment");
+        assert!(
+            first
+                .iter()
+                .all(|frame| !frame.data.contains("partial_json")),
+            "a custom fragment is not JSON by itself, got {first:?}"
+        );
+        messages
+            .push(IrStreamEvent::CustomToolCallInputDelta {
+                delta: "nt(1)".into(),
+                index: 0,
+            })
+            .expect("second fragment");
+        let done = messages.finish().expect("messages finish");
+        let partials: Vec<String> = done
+            .iter()
+            .filter_map(|frame| {
+                let value: Value = serde_json::from_str(&frame.data).ok()?;
+                value
+                    .pointer("/delta/partial_json")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        assert_eq!(partials.len(), 1, "one JSON fragment, got {done:?}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&partials[0]).expect("json"),
+            json!({ "raw": "print(1)" }),
+            "joined custom input, got {partials:?}"
+        );
+
+        let mut gemini = StreamEncoder::new(Wire::Gemini);
+        gemini
+            .push(IrStreamEvent::CustomToolCallStart {
+                id: "call_c".into(),
+                name: "widget".into(),
+                index: 0,
+            })
+            .expect("gemini start");
+        gemini
+            .push(IrStreamEvent::CustomToolCallInputDelta {
+                delta: "pri".into(),
+                index: 0,
+            })
+            .expect("gemini first");
+        gemini
+            .push(IrStreamEvent::CustomToolCallInputDelta {
+                delta: "nt(1)".into(),
+                index: 0,
+            })
+            .expect("gemini second");
+        let frames = gemini.push(IrStreamEvent::ToolCallEnd).expect("gemini end");
+        let body: Value = serde_json::from_str(&frames[0].data).expect("gemini json");
+        assert_eq!(
+            body.pointer("/candidates/0/content/parts/0/functionCall/args"),
+            Some(&json!({ "raw": "print(1)" })),
+            "Gemini stream custom input, got {body}"
         );
     }
 
@@ -3216,6 +3397,11 @@ mod tests {
                 index: 0,
             })
             .expect("custom input");
+        assert!(
+            input.is_empty(),
+            "custom input stays buffered until the block closes, got {input:?}"
+        );
+        let done = enc.finish().expect("finish");
         let start_frame = frame_with_key(&start, "contentBlockStart");
         assert_eq!(
             start_frame
@@ -3231,20 +3417,23 @@ mod tests {
             Some("widget"),
             "custom tool name must reach toolUse, got {start_frame}"
         );
-        let input_frame = frame_with_key(&input, "contentBlockDelta");
+        let input_frame = frame_with_key(&done, "contentBlockDelta");
         assert_eq!(
             input_frame
                 .pointer("/contentBlockDelta/contentBlockIndex")
                 .and_then(Value::as_u64),
             Some(1),
-            "custom input must stay on the tool block, got {input:?}"
+            "custom input must stay on the tool block, got {done:?}"
         );
+        let raw = input_frame
+            .pointer("/contentBlockDelta/delta/toolUse/input")
+            .and_then(Value::as_str)
+            .expect("converse stream toolUse.input is JSON text");
+        let parsed: Value = serde_json::from_str(raw).expect("toolUse.input parses");
         assert_eq!(
-            input_frame
-                .pointer("/contentBlockDelta/delta/toolUse/input")
-                .and_then(Value::as_str),
-            Some("print(1)"),
-            "custom input must stay the tool argument, got {input_frame}"
+            parsed,
+            json!({ "raw": "print(1)" }),
+            "custom input must be the raw object, got {input_frame}"
         );
     }
 

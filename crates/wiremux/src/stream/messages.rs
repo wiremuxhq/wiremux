@@ -240,8 +240,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "content_block": { "type": "tool_use", "id": id, "name": name, "input": {} }
             }),
         ),
-        IrStreamEvent::ToolCallArgDelta { delta, index }
-        | IrStreamEvent::CustomToolCallInputDelta { delta, index } => (
+        IrStreamEvent::ToolCallArgDelta { delta, index } => (
             "content_block_delta",
             json!({
                 "type": "content_block_delta",
@@ -249,6 +248,17 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 "delta": { "type": "input_json_delta", "partial_json": delta }
             }),
         ),
+        IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
+            let partial = crate::map::response_custom_tool_input(delta).to_string();
+            (
+                "content_block_delta",
+                json!({
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": { "type": "input_json_delta", "partial_json": partial }
+                }),
+            )
+        }
         IrStreamEvent::AnnotationAdded { annotation } => (
             "content_block_delta",
             json!({

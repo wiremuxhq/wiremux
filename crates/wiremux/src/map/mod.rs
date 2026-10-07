@@ -66,17 +66,40 @@ pub(super) fn json_object_or_raw(
     detail: &str,
     wrap_key: &str,
 ) -> Value {
-    let mut wrap = |value: Value| {
+    let (value, degraded) = json_object_or_wrapped(raw_text, wrap_key);
+    if degraded {
         report.record(path, LossAction::Degrade, detail);
-        let mut map = serde_json::Map::new();
-        map.insert(wrap_key.to_string(), value);
-        Value::Object(map)
-    };
-    match serde_json::from_str::<Value>(raw_text) {
-        Ok(value) if value.is_object() => value,
-        Ok(value) => wrap(value),
-        Err(_) => wrap(Value::String(raw_text.to_string())),
     }
+    value
+}
+
+/// JSON object passes through. Anything else is `{ wrap_key: value }`.
+/// The bool is true when the text was wrapped.
+fn json_object_or_wrapped(raw_text: &str, wrap_key: &str) -> (Value, bool) {
+    match serde_json::from_str::<Value>(raw_text) {
+        Ok(value) if value.is_object() => (value, false),
+        Ok(value) => (wrapped_json(wrap_key, value), true),
+        Err(_) => (
+            wrapped_json(wrap_key, Value::String(raw_text.to_string())),
+            true,
+        ),
+    }
+}
+
+fn wrapped_json(wrap_key: &str, value: Value) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert(wrap_key.to_string(), value);
+    Value::Object(map)
+}
+
+/// Custom-tool input on a response wire that has no custom-tool frame.
+/// Empty input stays `{}`. Any other non-object is `{ "raw": ... }`,
+/// the same object the request encoder writes.
+pub(crate) fn response_custom_tool_input(raw_text: &str) -> Value {
+    if raw_text.is_empty() {
+        return Value::Object(serde_json::Map::new());
+    }
+    json_object_or_wrapped(raw_text, "raw").0
 }
 
 /// Decode a dialect request body into IR. Does not apply profile policy.
