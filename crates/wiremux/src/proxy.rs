@@ -2477,8 +2477,33 @@ anthropic-beta = "context-1m-2025-08-07"
             message_only.as_bytes(),
         );
         let text = String::from_utf8(bytes).expect("utf8");
-        assert!(text.contains("Hi"), "{text}");
-        assert!(text.contains("at capacity due to high demand"), "{text}");
+        let bodies = sse_json_bodies(&text);
+        let content = bodies
+            .iter()
+            .find(|value| value.pointer("/choices/0/delta/content").is_some())
+            .unwrap_or_else(|| panic!("missing chat content delta in {text}"));
+        assert_eq!(
+            content
+                .pointer("/choices/0/delta/content")
+                .and_then(|v| v.as_str()),
+            Some("Hi"),
+            "{text}"
+        );
+        let err = bodies
+            .iter()
+            .find(|value| value.get("error").is_some())
+            .unwrap_or_else(|| panic!("missing chat error in {text}"));
+        assert_eq!(err["error"]["type"], "server_error", "{text}");
+        assert_eq!(
+            err["error"]["message"], "The model is currently at capacity due to high demand.",
+            "{text}"
+        );
+        assert!(
+            bodies.iter().all(|value| {
+                value["type"] != "response.output_text.delta" && value["type"] != "response.failed"
+            }),
+            "chat client must not see the Responses event, got {text}"
+        );
         assert!(!text.contains("decode stream"), "{text}");
     }
 
