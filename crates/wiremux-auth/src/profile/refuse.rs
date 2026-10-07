@@ -116,13 +116,24 @@ fn check_url(field: &str, raw: &str) -> Result<(), ProfileError> {
             url: raw.to_string(),
         });
     }
-    if scheme_of(s).is_none() {
+    // `{env:VAR}` in a host does not parse. https stays allowed.
+    // A cleartext http URL that does not parse is still refused.
+    let Some(scheme) = scheme_of(s) else {
         return Ok(());
+    };
+    let allowed = match scheme.to_ascii_lowercase().as_str() {
+        "https" => true,
+        "http" => is_loopback_http(s),
+        _ => false,
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(ProfileError::DisallowedUrl {
+            field: field.to_string(),
+            url: raw.to_string(),
+        })
     }
-    Err(ProfileError::DisallowedUrl {
-        field: field.to_string(),
-        url: raw.to_string(),
-    })
 }
 
 pub(crate) fn is_loopback_http(url: &str) -> bool {
@@ -237,6 +248,14 @@ mod tests {
             );
         }
         assert!(check_url("base_url", "/v1/messages").is_ok());
+        assert!(
+            check_url(
+                "base_url",
+                "https://bedrock-runtime.{env:AWS_REGION}.amazonaws.com"
+            )
+            .is_ok(),
+            "an https host template is expanded later"
+        );
     }
 
     #[test]
