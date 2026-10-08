@@ -7566,6 +7566,129 @@ fn map_unknown_source_names_the_from_flag() {
     assert!(!err.contains("--to"), "{err}");
 }
 
+#[test]
+fn proxy_read_timeout_zero_exits_before_listen() {
+    let (_home, mut cmd) = isolated_home();
+    let out = cmd
+        .args([
+            "proxy",
+            "--from",
+            "chat",
+            "--profile",
+            "ollama",
+            "--read-timeout-secs",
+            "0",
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--read-timeout-secs must be greater than 0"),
+        "{err}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("listening"),
+        "zero timeout must not bind, got {stdout}"
+    );
+}
+
+#[test]
+fn proxy_logs_upstream_connect_failure() {
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "down.toml",
+        r#"
+schema_version = 1
+id = "down"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://127.0.0.1:1"
+chat_path = "/v1/chat/completions"
+"#,
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = br#"{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write headers");
+    client.write_all(body).expect("write body");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let mut err_handle = child.stderr.take().expect("stderr");
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut err = String::new();
+    err_handle.read_to_string(&mut err).expect("read stderr");
+    assert!(
+        resp.contains("502") || resp.to_ascii_lowercase().contains("upstream"),
+        "{resp}"
+    );
+    assert!(
+        err.contains("POST /v1/chat/completions") && err.contains("upstream=error"),
+        "{err}"
+    );
+}
+
+#[test]
+fn map_converse_names_the_model_url_and_skips_an_absent_inference_config() {
+    let out = run_map(
+        &["map", "--from", "chat", "--to", "converse"],
+        Some(br#"{"model":"amazon.nova-lite-v1:0","messages":[{"role":"user","content":"ping"}]}"#),
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(stdout.contains("ping"), "{stdout}");
+    assert!(
+        !stdout.contains("amazon.nova-lite-v1:0"),
+        "modelId must stay off the Converse JSON body, got {stdout}"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("drop model: modelId is the /model/{modelId}/converse URL, not a JSON field"),
+        "{err}"
+    );
+
+    let same = run_map(
+        &["map", "--from", "converse", "--to", "converse"],
+        Some(
+            br#"{"modelId":"amazon.nova-lite-v1:0","messages":[{"role":"user","content":[{"text":"ping"}]}]}"#,
+        ),
+    );
+    assert_eq!(same.status.code(), Some(0), "{same:?}");
+    let same_out = String::from_utf8(same.stdout).expect("utf8");
+    assert!(!same_out.contains("amazon.nova-lite-v1:0"), "{same_out}");
+    let same_err = String::from_utf8_lossy(&same.stderr);
+    assert!(same_err.contains("drop model:"), "{same_err}");
+    assert!(
+        !same_err.contains("inferenceConfig"),
+        "omitted inferenceConfig is not a drop, got {same_err}"
+    );
+}
+
 fn accept_upstream() -> (TcpListener, std::net::SocketAddr) {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let addr = upstream.local_addr().expect("addr");

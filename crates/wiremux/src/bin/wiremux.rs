@@ -56,7 +56,7 @@ enum Command {
         /// Print LossReport on stderr per request.
         #[arg(long)]
         dump_loss: bool,
-        /// Override profile `read_timeout_secs` (default 120).
+        /// Override profile `read_timeout_secs` (default 120). Must be greater than 0.
         #[arg(long)]
         read_timeout_secs: Option<u64>,
     },
@@ -342,7 +342,11 @@ async fn cmd_proxy(
             return EXIT_ERROR;
         }
     };
-    if let Some(secs) = read_timeout_secs.filter(|&s| s > 0) {
+    if let Some(secs) = read_timeout_secs {
+        if secs == 0 {
+            eprintln!("--read-timeout-secs must be greater than 0");
+            return EXIT_ERROR;
+        }
         profile.http.read_timeout_secs = Some(secs);
     }
     let model = model.filter(|value| !value.is_empty());
