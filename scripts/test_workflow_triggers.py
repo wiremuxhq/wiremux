@@ -656,7 +656,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("fork-user: SebTardif", text)
         self.assertNotIn("continue-on-error:", text)
         self.assertIn(
-            "vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e",
+            "vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54",
             text,
         )
         self.assertNotIn("cargo publish", text)
@@ -695,7 +695,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertNotIn("0.9.3", text)
         self.assertNotIn("CHOCOLATEY_API_KEY", text)
         self.assertIn(
-            "step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1",
+            "step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed",
             text,
         )
 
@@ -705,6 +705,10 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("runs-on: windows-latest", text)
         self.assertIn("timeout-minutes: 20", text)
         self.assertIn("cancel-in-progress: false", text)
+        self.assertIn(
+            "github.event.pull_request.user.login != 'dependabot[bot]'",
+            text,
+        )
         self.assertIn("secrets.CHOCOLATEY_API_KEY", text)
         self.assertIn("CHOCOLATEY_API_KEY is empty", text)
         self.assertIn("https://push.chocolatey.org/", text)
@@ -714,7 +718,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("gh release view --repo wiremuxhq/wiremux", text)
         self.assertNotIn("0.9.3", text)
         self.assertIn(
-            "step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1",
+            "step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed",
             text,
         )
 
