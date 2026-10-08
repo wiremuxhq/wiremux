@@ -56,9 +56,6 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
                 .collect()
         })
         .unwrap_or_default();
-    if value.get("inferenceConfig").is_none() {
-        report.record("inferenceConfig", LossAction::Drop, "absent");
-    }
     Ok((
         IrRequest {
             model,
@@ -448,6 +445,15 @@ pub(super) fn encode(
     prepared: &[PreparedTool],
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
+    if !ir.model.is_empty() {
+        // Bedrock takes the model from the URL path. The JSON body must
+        // stay free of modelId, and map must say where the value went.
+        report.record(
+            "model",
+            LossAction::Drop,
+            "modelId is the /model/{modelId}/converse URL, not a JSON field",
+        );
+    }
     let (system, messages) = encode_items(ir, report);
     if messages.as_array().is_none_or(|a| a.is_empty()) {
         return Err(MapError::Invalid(

@@ -138,18 +138,34 @@ async fn resolve_proxy_token(state: &ProxyState) -> Result<Option<String>, Strin
     }
 }
 
+struct UpstreamSendError {
+    detail: String,
+    response: Response<ProxyBody>,
+}
+
+fn upstream_send_error(status: StatusCode, detail: String) -> UpstreamSendError {
+    UpstreamSendError {
+        response: text(status, format!("{detail}\n")),
+        detail,
+    }
+}
+
+fn log_upstream_send_error(method: &str, path: &str, profile_id: &str, detail: &str) {
+    eprintln!("{method} {path} profile={profile_id} upstream=error: {detail}");
+}
+
 async fn send_upstream(
     state: &ProxyState,
     profile: &ResolvedProfile,
     anthropic_version: Option<&str>,
     url: &str,
     encoded: &[u8],
-) -> Result<reqwest::Response, Response<ProxyBody>> {
+) -> Result<reqwest::Response, UpstreamSendError> {
     let mut retried = false;
     loop {
         let token = match resolve_proxy_token(state).await {
             Ok(t) => t,
-            Err(err) => return Err(text(StatusCode::UNAUTHORIZED, format!("{err}\n"))),
+            Err(err) => return Err(upstream_send_error(StatusCode::UNAUTHORIZED, err)),
         };
         let mut upstream = state
             .client
@@ -178,18 +194,18 @@ async fn send_upstream(
         {
             Ok(req) => req,
             Err(crate::aws_sign::AwsSignError::Auth(err)) => {
-                return Err(text(StatusCode::UNAUTHORIZED, format!("{err}\n")));
+                return Err(upstream_send_error(StatusCode::UNAUTHORIZED, err));
             }
             Err(crate::aws_sign::AwsSignError::Transport(err)) => {
-                return Err(text(StatusCode::BAD_GATEWAY, format!("{err}\n")));
+                return Err(upstream_send_error(StatusCode::BAD_GATEWAY, err));
             }
         };
         let resp = match state.client.execute(built).await {
             Ok(r) => r,
             Err(err) => {
-                return Err(text(
+                return Err(upstream_send_error(
                     StatusCode::BAD_GATEWAY,
-                    format!("{}\n", format_oauth_transport_error("upstream", &err, url)),
+                    format_oauth_transport_error("upstream", &err, url),
                 ));
             }
         };
@@ -395,7 +411,10 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         ir.sampling.stream == Some(true),
     ) {
         Ok(u) => u,
-        Err(err) => return text(StatusCode::BAD_GATEWAY, format!("{err}\n")),
+        Err(err) => {
+            log_upstream_send_error(&method, &path, &state.profile.id, &err);
+            return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
+        }
     };
     let resp = match send_upstream(
         &state,
@@ -407,7 +426,10 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     .await
     {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(err) => {
+            log_upstream_send_error(&method, &path, &state.profile.id, &err.detail);
+            return err.response;
+        }
     };
     let status = resp.status();
     let content_type = resp
@@ -686,6 +708,7 @@ async fn handle_count(
             );
         }
         Err(CountUrlError::Upstream(err)) => {
+            log_upstream_send_error(method, path, &state.profile.id, &err);
             return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
         }
     };
@@ -699,7 +722,10 @@ async fn handle_count(
     .await
     {
         Ok(resp) => resp,
-        Err(resp) => return resp,
+        Err(err) => {
+            log_upstream_send_error(method, path, &state.profile.id, &err.detail);
+            return err.response;
+        }
     };
     let status = resp.status();
     let content_type = resp
