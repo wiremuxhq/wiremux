@@ -255,15 +255,12 @@ mod tests {
                 "{raw} parsed as cleartext and must be refused, got {err}"
             );
         }
-        assert!(check_url("base_url", "/v1/messages").is_ok());
-        assert!(
-            check_url(
-                "base_url",
-                "https://bedrock-runtime.{env:AWS_REGION}.amazonaws.com"
-            )
-            .is_ok(),
-            "an https host template is expanded later"
-        );
+        check_url("base_url", "/v1/messages").expect("a relative path is allowed");
+        check_url(
+            "base_url",
+            "https://bedrock-runtime.{env:AWS_REGION}.amazonaws.com",
+        )
+        .expect("an https host template is expanded later");
     }
 
     #[test]
