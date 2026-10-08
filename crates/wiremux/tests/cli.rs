@@ -7711,6 +7711,78 @@ chat_path = "/model/{model}/converse"
 }
 
 #[test]
+fn proxy_logs_an_oversized_upstream_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        let Ok((mut sock, _)) = listener.accept() else {
+            return;
+        };
+        let _ = sock.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut buf = [0_u8; 2048];
+        let _ = sock.read(&mut buf);
+        let header = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20000000\r\nConnection: close\r\n\r\n";
+        let _ = sock.write_all(header);
+        let _ = sock.write_all(b"{}");
+    });
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "huge.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "huge"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = br#"{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write headers");
+    client.write_all(body).expect("write body");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let mut err_handle = child.stderr.take().expect("stderr");
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut err = String::new();
+    err_handle.read_to_string(&mut err).expect("read stderr");
+    assert!(resp.contains("502"), "{resp}");
+    assert!(resp.contains("upstream body too large"), "{resp}");
+    assert!(
+        err.contains("upstream=error") && err.contains("upstream body too large"),
+        "{err}"
+    );
+}
+
+#[test]
 fn map_converse_names_the_model_url_and_skips_an_absent_inference_config() {
     let out = run_map(
         &["map", "--from", "chat", "--to", "converse"],
