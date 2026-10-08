@@ -449,7 +449,15 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     if content_type.contains("text/event-stream") || content_type.contains("eventstream") {
         let status = status_from_reqwest(status);
         if target == state.from {
-            return passthrough_sse(status, resp, &content_type);
+            return passthrough_sse(
+                state.from,
+                &method,
+                &path,
+                &state.profile.id,
+                status,
+                resp,
+                &content_type,
+            );
         }
         return map_sse_stream(state, target, status, resp, ir.model.clone());
     }
@@ -949,12 +957,19 @@ fn json_completion_to_sse(
 }
 
 fn passthrough_sse(
+    from: Wire,
+    method: &str,
+    path: &str,
+    profile_id: &str,
     status: StatusCode,
     resp: reqwest::Response,
     content_type: &str,
 ) -> Response<ProxyBody> {
     let url = resp.url().to_string();
     let eventstream = content_type.contains("eventstream");
+    let method = method.to_string();
+    let path = path.to_string();
+    let profile_id = profile_id.to_string();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(16);
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
@@ -967,15 +982,18 @@ fn passthrough_sse(
                 }
                 Err(err) => {
                     let msg = format_oauth_transport_error("upstream stream", &err, &url);
-                    eprintln!("{msg}");
-                    if !eventstream {
-                        let _ = tx
-                            .send(Ok(Frame::data(Bytes::from(format_sse(&RawSse {
-                                event: Some("error".into()),
-                                data: msg,
-                            })))))
-                            .await;
-                    }
+                    log_upstream_send_error(&method, &path, &profile_id, &msg);
+                    // An SSE error line would corrupt an Event Stream body.
+                    let frame = if eventstream && !matches!(from, Wire::Converse) {
+                        let payload = serde_json::json!({"message": msg}).to_string();
+                        Bytes::from(encode_eventstream_exception(
+                            "internalServerException",
+                            payload.as_bytes(),
+                        ))
+                    } else {
+                        dest_error_bytes(from, msg)
+                    };
+                    let _ = tx.send(Ok(Frame::data(frame))).await;
                     return;
                 }
             }
@@ -1087,7 +1105,9 @@ impl MappedStream {
     }
 
     fn finish_encoder(&mut self) -> Result<Vec<RawSse>, String> {
-        if self.saw_frame && !self.saw_terminal {
+        // No terminal event includes an empty body and HTML labeled as
+        // event-stream. finish() would otherwise emit [DONE].
+        if !self.saw_terminal {
             return Err(INCOMPLETE_STREAM_MESSAGE.to_string());
         }
         self.encoder
@@ -2425,6 +2445,28 @@ anthropic-beta = "context-1m-2025-08-07"
             "incomplete chat SSE must not become a successful finish, got {text}"
         );
         assert!(!text.contains("[DONE]"), "{text}");
+    }
+
+    #[test]
+    fn empty_mapped_event_stream_is_not_a_done_frame() {
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"m\"\nwire = \"messages\"\n")
+                .expect("profile");
+        for body in [b"<html>login</html>".as_slice(), b"".as_slice()] {
+            let bytes = super::map_sse_bytes(
+                wiremux_auth::Wire::ChatCompletions,
+                wiremux_auth::Wire::Messages,
+                &profile,
+                "gpt-4o",
+                body,
+            );
+            let text = String::from_utf8(bytes).expect("utf8");
+            assert!(
+                text.contains("upstream stream ended before a terminal event"),
+                "empty or non-SSE event-stream must not look finished, got {text}"
+            );
+            assert!(!text.contains("[DONE]"), "{text}");
+        }
     }
 
     #[test]
