@@ -7654,6 +7654,63 @@ chat_path = "/v1/chat/completions"
 }
 
 #[test]
+fn proxy_logs_missing_model_before_upstream() {
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "no-model.toml",
+        r#"
+schema_version = 1
+id = "no-model"
+wire = "converse"
+auth_scheme = "none"
+base_url = "http://127.0.0.1:1"
+chat_path = "/model/{model}/converse"
+"#,
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = br#"{"messages":[{"role":"user","content":"ping"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write headers");
+    client.write_all(body).expect("write body");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let mut err_handle = child.stderr.take().expect("stderr");
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut err = String::new();
+    err_handle.read_to_string(&mut err).expect("read stderr");
+    assert!(resp.contains("502"), "{resp}");
+    assert!(resp.contains("{model}"), "{resp}");
+    assert!(
+        err.contains("upstream=error") && err.contains("{model}"),
+        "{err}"
+    );
+}
+
+#[test]
 fn map_converse_names_the_model_url_and_skips_an_absent_inference_config() {
     let out = run_map(
         &["map", "--from", "chat", "--to", "converse"],

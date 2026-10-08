@@ -411,7 +411,10 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         ir.sampling.stream == Some(true),
     ) {
         Ok(u) => u,
-        Err(err) => return text(StatusCode::BAD_GATEWAY, format!("{err}\n")),
+        Err(err) => {
+            log_upstream_send_error(&method, &path, &state.profile.id, &err);
+            return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
+        }
     };
     let resp = match send_upstream(
         &state,
@@ -705,6 +708,7 @@ async fn handle_count(
             );
         }
         Err(CountUrlError::Upstream(err)) => {
+            log_upstream_send_error(method, path, &state.profile.id, &err);
             return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
         }
     };
