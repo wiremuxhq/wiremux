@@ -7557,6 +7557,15 @@ fn map_unknown_dest_names_the_to_flag() {
     assert!(!err.contains("--from"), "{err}");
 }
 
+#[test]
+fn map_unknown_source_names_the_from_flag() {
+    let out = run_map(&["map", "--from", "nope", "--to", "chat"], None);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("unknown --from `nope`"), "{err}");
+    assert!(!err.contains("--to"), "{err}");
+}
+
 fn accept_upstream() -> (TcpListener, std::net::SocketAddr) {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let addr = upstream.local_addr().expect("addr");
