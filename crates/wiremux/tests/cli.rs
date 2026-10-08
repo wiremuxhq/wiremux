@@ -7783,6 +7783,169 @@ chat_path = "/v1/chat/completions"
 }
 
 #[test]
+fn proxy_stream_reset_sends_a_json_error_event() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        let Ok((mut sock, _)) = listener.accept() else {
+            return;
+        };
+        let _ = sock.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut buf = [0_u8; 4096];
+        let _ = sock.read(&mut buf);
+        let payload = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            payload.len() + 64
+        );
+        let _ = sock.write_all(header.as_bytes());
+        let _ = sock.write_all(payload);
+    });
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "stream-reset.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "stream-reset"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://{addr}"
+chat_path = "/v1/chat/completions"
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = br#"{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"ping"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write headers");
+    client.write_all(body).expect("write body");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let mut err_handle = child.stderr.take().expect("stderr");
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut err = String::new();
+    err_handle.read_to_string(&mut err).expect("read stderr");
+    assert!(
+        resp.contains("server_error"),
+        "a stream reset must be a JSON error event, got: {resp}"
+    );
+    assert!(
+        resp.contains("upstream stream"),
+        "the error event must name the stream failure, got: {resp}"
+    );
+    assert!(
+        err.contains("upstream=error") && err.contains("upstream stream"),
+        "{err}"
+    );
+}
+
+#[test]
+fn proxy_eventstream_reset_sends_an_exception_frame() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        let Ok((mut sock, _)) = listener.accept() else {
+            return;
+        };
+        let _ = sock.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut buf = [0_u8; 4096];
+        let _ = sock.read(&mut buf);
+        let payload = b"not-a-full-frame";
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.amazon.eventstream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            payload.len() + 64
+        );
+        let _ = sock.write_all(header.as_bytes());
+        let _ = sock.write_all(payload);
+    });
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "eventstream-reset.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "eventstream-reset"
+wire = "converse"
+auth_scheme = "none"
+base_url = "http://{addr}"
+chat_path = "/model/{{model}}/converse"
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--model",
+            "amazon.nova-lite-v1:0",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = br#"{"messages":[{"role":"user","content":[{"text":"ping"}]}]}"#;
+    let req = format!(
+        "POST /model/amazon.nova-lite-v1:0/converse HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write headers");
+    client.write_all(body).expect("write body");
+    let mut resp = Vec::new();
+    let _ = client.read_to_end(&mut resp);
+    let mut err_handle = child.stderr.take().expect("stderr");
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut err = String::new();
+    err_handle.read_to_string(&mut err).expect("read stderr");
+    let text = String::from_utf8_lossy(&resp);
+    assert!(
+        text.contains("internalServerException"),
+        "a dropped Event Stream must end with an exception frame, got: {text}\nlog: {err}"
+    );
+    assert!(
+        err.contains("upstream=error") && err.contains("upstream stream"),
+        "{err}"
+    );
+}
+
+#[test]
 fn map_converse_names_the_model_url_and_skips_an_absent_inference_config() {
     let out = run_map(
         &["map", "--from", "chat", "--to", "converse"],
