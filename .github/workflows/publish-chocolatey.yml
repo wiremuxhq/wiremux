@@ -16,6 +16,9 @@ permissions:
 jobs:
   push:
     name: Push Chocolatey
+    # Dependabot cannot read CHOCOLATEY_API_KEY. Other actors still
+    # fail closed when that key is empty.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
