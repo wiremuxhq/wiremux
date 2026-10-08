@@ -1527,7 +1527,8 @@ mod tests {
             "candidates must stay a completion"
         );
         let only = r#"{"error":{"message":"please wait","type":"rate_limit_error"}}"#;
-        assert!(classify_http(200, only, None).is_some());
+        classify_http(200, only, None)
+            .expect("an error object with no completion text is an error");
     }
 
     /// The same class as the proxy table: an empty string is not

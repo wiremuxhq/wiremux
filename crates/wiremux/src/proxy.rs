@@ -456,6 +456,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     let body = match read_capped_upstream(resp, MAX_UPSTREAM_BODY).await {
         Ok(b) => b,
         Err(err) => {
+            log_upstream_send_error(&method, &path, &state.profile.id, &err);
             return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
         }
     };
@@ -736,7 +737,10 @@ async fn handle_count(
         .to_string();
     let upstream_body = match read_capped_upstream(resp, MAX_UPSTREAM_BODY).await {
         Ok(bytes) => bytes,
-        Err(err) => return text(StatusCode::BAD_GATEWAY, format!("{err}\n")),
+        Err(err) => {
+            log_upstream_send_error(method, path, &state.profile.id, &err);
+            return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
+        }
     };
     eprintln!(
         "{method} {path} profile={} upstream={} loss={}",

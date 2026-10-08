@@ -9702,8 +9702,8 @@ fn chat_stream_system_fingerprint_round_trips() {
                     && payload.as_str() == Some("fp_abc")
         )
     });
-    assert!(fingerprint.is_some(), "fingerprint missing: {events:?}");
-    let encoded = encode_stream_event(Wire::ChatCompletions, fingerprint.unwrap()).expect("encode");
+    let fingerprint = fingerprint.expect("fingerprint missing");
+    let encoded = encode_stream_event(Wire::ChatCompletions, fingerprint).expect("encode");
     let data: Value = serde_json::from_str(&encoded.data).expect("json");
     assert_eq!(
         data.get("system_fingerprint")
