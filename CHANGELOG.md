@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.10.5](https://github.com/wiremuxhq/wiremux/compare/v0.10.4...v0.10.5) (2026-10-08)
+
+
+### Bug Fixes
+
+* close host-reported schema and profile gaps ([#541](https://github.com/wiremuxhq/wiremux/issues/541)) ([8683902](https://github.com/wiremuxhq/wiremux/commit/868390254e6639faa4c7086515e2a153494908f5))
+* correct CONSUME slots and keep STS key ids out of errors ([#542](https://github.com/wiremuxhq/wiremux/issues/542)) ([d719adc](https://github.com/wiremuxhq/wiremux/commit/d719adc7bba08d355d743031f9fbd201a32d3d96))
+* report map and proxy failures the CLI hid ([#546](https://github.com/wiremuxhq/wiremux/issues/546)) ([07b7219](https://github.com/wiremuxhq/wiremux/commit/07b7219d501a0e7fcd3343e5016044fb5a05bbbd))
+* tell the host when a stream does not finish ([#548](https://github.com/wiremuxhq/wiremux/issues/548)) ([3f22c6d](https://github.com/wiremuxhq/wiremux/commit/3f22c6d20203ded4aee0ecfcac48ca9483b7c0fe))
+
 ## [0.10.4](https://github.com/wiremuxhq/wiremux/compare/v0.10.3...v0.10.4) (2026-10-07)
 
 
