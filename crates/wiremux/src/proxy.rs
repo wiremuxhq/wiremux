@@ -1143,6 +1143,7 @@ fn passthrough_sse(
                         }
                     }
                     Err(msg) => {
+                        log_upstream_send_error(&method, &path, &profile_id, &msg);
                         let _ = tx.send(Ok(Frame::data(dest_error_bytes(from, msg)))).await;
                         return;
                     }
@@ -1172,11 +1173,13 @@ fn passthrough_sse(
                 }
             }
             SameWireEnd::Replace { message } => {
+                log_upstream_send_error(&method, &path, &profile_id, &message);
                 let _ = tx
                     .send(Ok(Frame::data(dest_error_bytes(from, message))))
                     .await;
             }
             SameWireEnd::Append { tail, message } => {
+                log_upstream_send_error(&method, &path, &profile_id, &message);
                 if !tail.is_empty() && tx.send(Ok(Frame::data(Bytes::from(tail)))).await.is_err() {
                     return;
                 }
