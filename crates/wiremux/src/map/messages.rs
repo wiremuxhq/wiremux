@@ -911,10 +911,13 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
     match part {
         IrPart::Text(text) if text.trim().is_empty() => None,
         IrPart::Text(text) => Some(json!({"type": "text", "text": text})),
-        IrPart::ImageUrl { url, .. } => Some(json!({
-            "type": "image",
-            "source": {"type": "url", "url": url}
-        })),
+        IrPart::ImageUrl { url, detail } => {
+            super::note_dropped_image_detail(detail.as_deref(), "messages", report);
+            Some(json!({
+                "type": "image",
+                "source": {"type": "url", "url": url}
+            }))
+        }
         IrPart::ImageBase64 { media_type, data } => Some(json!({
             "type": "image",
             "source": {"type": "base64", "media_type": media_type, "data": data}
