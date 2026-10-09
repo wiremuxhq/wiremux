@@ -964,7 +964,6 @@ struct SameWireGate {
     saw_frame: bool,
     saw_terminal: bool,
     held: Vec<u8>,
-    leftover: Vec<u8>,
 }
 
 enum SameWirePush {
@@ -998,29 +997,22 @@ impl SameWireGate {
             saw_frame: false,
             saw_terminal: false,
             held: Vec::new(),
-            leftover: Vec::new(),
         }
     }
 
     fn push(&mut self, bytes: &[u8]) -> Result<SameWirePush, String> {
-        if !self.saw_frame {
-            let room = 65536usize.saturating_sub(self.leftover.len());
-            if room > 0 {
-                let take = room.min(bytes.len());
-                self.leftover.extend_from_slice(&bytes[..take]);
-            }
-            if self.held.len().saturating_add(bytes.len()) > MAX_UPSTREAM_BODY {
-                return Err(INCOMPLETE_STREAM_MESSAGE.to_string());
-            }
+        if !self.saw_frame && self.held.len().saturating_add(bytes.len()) > MAX_UPSTREAM_BODY {
+            return Err(INCOMPLETE_STREAM_MESSAGE.to_string());
         }
         let (frames, terminal) = match self.reader.feed(bytes) {
             Ok(parsed) => parsed,
             Err(err) => {
-                return Err(if self.saw_frame {
-                    err
-                } else {
-                    self.no_frame_message()
-                });
+                if self.saw_frame {
+                    return Err(err);
+                }
+                let mut body = self.held.clone();
+                body.extend_from_slice(bytes);
+                return Err(self.no_frame_message(&body));
             }
         };
         if terminal.is_some() {
@@ -1044,7 +1036,10 @@ impl SameWireGate {
 
     fn finish(mut self) -> SameWireEnd {
         match self.reader.finish() {
-            Err(_) if !self.saw_frame => self.no_frame_end(),
+            Err(_) if !self.saw_frame => {
+                let body = std::mem::take(&mut self.held);
+                self.no_frame_end(&body)
+            }
             Err(err) => SameWireEnd::Append {
                 tail: std::mem::take(&mut self.held),
                 message: err,
@@ -1056,7 +1051,7 @@ impl SameWireGate {
                 }
                 let tail = std::mem::take(&mut self.held);
                 if !self.saw_frame {
-                    self.no_frame_end()
+                    self.no_frame_end(&tail)
                 } else if !self.saw_terminal {
                     SameWireEnd::Append {
                         tail,
@@ -1083,32 +1078,32 @@ impl SameWireGate {
         }
     }
 
-    fn no_frame_message(&self) -> String {
-        if let Some(detail) = responses_complete_vendor_failure(self.from, &self.leftover) {
+    fn no_frame_message(&self, body: &[u8]) -> String {
+        if let Some(detail) = responses_complete_vendor_failure(self.from, body) {
             return detail;
         }
-        if let Some(detail) = chat_complete_vendor_failure(self.from, &self.leftover) {
+        if let Some(detail) = chat_complete_vendor_failure(self.from, body) {
             return detail;
         }
-        if let Some(detail) = messages_complete_vendor_failure(self.from, &self.leftover) {
+        if let Some(detail) = messages_complete_vendor_failure(self.from, body) {
             return detail;
         }
-        if let Some(detail) = gemini_complete_vendor_failure(self.from, &self.leftover) {
+        if let Some(detail) = gemini_complete_vendor_failure(self.from, body) {
             return detail;
         }
         INCOMPLETE_STREAM_MESSAGE.to_string()
     }
 
     /// Vendor failures stay errors. A real completion is SSE, not a drop.
-    fn no_frame_end(&self) -> SameWireEnd {
-        let message = self.no_frame_message();
+    fn no_frame_end(&self, body: &[u8]) -> SameWireEnd {
+        let message = self.no_frame_message(body);
         if message != INCOMPLETE_STREAM_MESSAGE {
             return SameWireEnd::Replace { message };
         }
         if let Some(sse) = json_completion_to_sse(
             self.from,
             self.from,
-            &Bytes::copy_from_slice(&self.leftover),
+            &Bytes::copy_from_slice(body),
             &self.profile,
             "",
         ) {
@@ -2763,6 +2758,22 @@ anthropic-beta = "context-1m-2025-08-07"
             _ => panic!("html split across chunks must not be forwarded"),
         };
         assert_eq!(message, super::INCOMPLETE_STREAM_MESSAGE);
+    }
+
+    #[test]
+    fn same_wire_long_json_completion_is_promoted() {
+        let mut body =
+            br#"{"choices":[{"message":{"role":"assistant","content":"PROMOTED-TAIL-"#.to_vec();
+        body.extend(std::iter::repeat_n(b'a', 70_000));
+        body.extend(br#"","finish_reason":"stop"}}]}"#);
+        let bytes = super::same_wire_passthrough_bytes(wiremux_auth::Wire::ChatCompletions, &body);
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(
+            text.contains("PROMOTED-TAIL-"),
+            "a completion larger than the 64KiB note cap must still be promoted, got {} bytes",
+            text.len()
+        );
+        assert!(!text.contains(super::INCOMPLETE_STREAM_MESSAGE), "{text}");
     }
 
     #[test]
