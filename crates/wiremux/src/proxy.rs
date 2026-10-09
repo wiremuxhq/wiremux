@@ -973,9 +973,20 @@ enum SameWirePush {
 }
 
 enum SameWireEnd {
-    Done { tail: Vec<u8> },
-    Replace { message: String },
-    Append { tail: Vec<u8>, message: String },
+    Done {
+        tail: Vec<u8>,
+    },
+    Replace {
+        message: String,
+    },
+    Append {
+        tail: Vec<u8>,
+        message: String,
+    },
+    /// A JSON completion arrived with an event-stream label.
+    Promote {
+        bytes: Vec<u8>,
+    },
 }
 
 impl SameWireGate {
@@ -1033,9 +1044,7 @@ impl SameWireGate {
 
     fn finish(mut self) -> SameWireEnd {
         match self.reader.finish() {
-            Err(_) if !self.saw_frame => SameWireEnd::Replace {
-                message: self.no_frame_message(),
-            },
+            Err(_) if !self.saw_frame => self.no_frame_end(),
             Err(err) => SameWireEnd::Append {
                 tail: std::mem::take(&mut self.held),
                 message: err,
@@ -1047,9 +1056,7 @@ impl SameWireGate {
                 }
                 let tail = std::mem::take(&mut self.held);
                 if !self.saw_frame {
-                    SameWireEnd::Replace {
-                        message: self.no_frame_message(),
-                    }
+                    self.no_frame_end()
                 } else if !self.saw_terminal {
                     SameWireEnd::Append {
                         tail,
@@ -1090,6 +1097,26 @@ impl SameWireGate {
             return detail;
         }
         INCOMPLETE_STREAM_MESSAGE.to_string()
+    }
+
+    /// Vendor failures stay errors. A real completion is SSE, not a drop.
+    fn no_frame_end(&self) -> SameWireEnd {
+        let message = self.no_frame_message();
+        if message != INCOMPLETE_STREAM_MESSAGE {
+            return SameWireEnd::Replace { message };
+        }
+        if let Some(sse) = json_completion_to_sse(
+            self.from,
+            self.from,
+            &Bytes::copy_from_slice(&self.leftover),
+            &self.profile,
+            "",
+        ) {
+            return SameWireEnd::Promote {
+                bytes: sse.to_vec(),
+            };
+        }
+        SameWireEnd::Replace { message }
     }
 }
 
@@ -1161,6 +1188,9 @@ fn passthrough_sse(
                 let _ = tx
                     .send(Ok(Frame::data(dest_error_bytes(from, message))))
                     .await;
+            }
+            SameWireEnd::Promote { bytes } => {
+                let _ = tx.send(Ok(Frame::data(Bytes::from(bytes)))).await;
             }
         }
     });
@@ -1484,8 +1514,11 @@ fn map_sse_bytes(
 
 #[cfg(test)]
 fn same_wire_passthrough_bytes(from: Wire, body: &[u8]) -> Vec<u8> {
-    let profile = crate::parse_profile_str("schema_version = 1\nid = \"m\"\nwire = \"messages\"\n")
-        .expect("profile");
+    let profile = crate::parse_profile_str(&format!(
+        "schema_version = 1\nid = \"m\"\nwire = \"{}\"\n",
+        from.as_str()
+    ))
+    .expect("profile");
     let mut gate = SameWireGate::new(from, profile);
     let mut out = Vec::new();
     match gate.push(body) {
@@ -1509,6 +1542,7 @@ fn same_wire_passthrough_bytes(from: Wire, body: &[u8]) -> Vec<u8> {
             }
             out.extend(dest_error_bytes(from, message));
         }
+        SameWireEnd::Promote { bytes } => out.extend(bytes),
     }
     out
 }
@@ -2710,6 +2744,37 @@ anthropic-beta = "context-1m-2025-08-07"
             body.as_bytes(),
         );
         assert_eq!(out, body.as_bytes());
+    }
+
+    #[test]
+    fn same_wire_html_split_across_chunks_is_an_error() {
+        let profile = crate::parse_profile_str(
+            "schema_version = 1\nid = \"m\"\nwire = \"chat-completions\"\n",
+        )
+        .expect("profile");
+        let mut gate = super::SameWireGate::new(wiremux_auth::Wire::ChatCompletions, profile);
+        assert!(matches!(gate.push(b"<ht"), Ok(super::SameWirePush::Hold)));
+        assert!(matches!(
+            gate.push(b"ml>login</html>"),
+            Ok(super::SameWirePush::Hold)
+        ));
+        let message = match gate.finish() {
+            super::SameWireEnd::Replace { message } => message,
+            _ => panic!("html split across chunks must not be forwarded"),
+        };
+        assert_eq!(message, super::INCOMPLETE_STREAM_MESSAGE);
+    }
+
+    #[test]
+    fn same_wire_json_completion_is_promoted() {
+        let body = br#"{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}"#;
+        let bytes = super::same_wire_passthrough_bytes(wiremux_auth::Wire::ChatCompletions, body);
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(text.contains("hi"), "{text}");
+        assert!(
+            !text.contains(super::INCOMPLETE_STREAM_MESSAGE),
+            "a JSON completion must not be reported as an unfinished stream, got {text}"
+        );
     }
 
     #[test]
