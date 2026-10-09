@@ -904,6 +904,22 @@ mod tests {
     }
 
     #[test]
+    fn system_only_chat_does_not_become_an_empty_gemini_success() {
+        let src = br#"{"model":"gpt-4o","messages":[{"role":"system","content":"be brief"}]}"#;
+        let (ir, _) = decode(Wire::ChatCompletions, src).expect("decode");
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"g\"\nwire = \"gemini\"\n")
+                .expect("profile");
+        let err = encode(Wire::Gemini, &ir, &profile).expect_err("system only");
+        let text = err.to_string();
+        assert!(
+            text.contains("gemini contents must not be empty")
+                && text.contains("system instruction needs a contents turn"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn empty_chat_turn_does_not_become_an_empty_gemini_success() {
         let src = br#"{"model":"gpt-4o","messages":[{"role":"user","content":[]}]}"#;
         let (ir, _) = decode(Wire::ChatCompletions, src).expect("decode");
