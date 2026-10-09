@@ -1151,7 +1151,8 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                     );
                 }
             }
-            IrPart::ImageUrl { url, .. } => {
+            IrPart::ImageUrl { url, detail } => {
+                super::note_dropped_image_detail(detail.as_deref(), "gemini", report);
                 if let Some(rest) = url.strip_prefix("data:")
                     && let Some((mime, b64)) = rest.split_once(";base64,")
                 {

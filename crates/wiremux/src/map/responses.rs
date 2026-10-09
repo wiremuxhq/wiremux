@@ -713,7 +713,10 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
             .iter()
             .map(|part| match part {
                 IrPart::Text(text) => json!({"type": text_ty, "text": text}),
-                IrPart::ImageUrl { url, .. } => json!({"type": "input_image", "image_url": url}),
+                IrPart::ImageUrl { url, detail } => {
+                    super::note_dropped_image_detail(detail.as_deref(), "responses", report);
+                    json!({"type": "input_image", "image_url": url})
+                }
                 IrPart::ImageBase64 { media_type, data } => json!({
                     "type": "input_image",
                     "image_url": format!("data:{media_type};base64,{data}")
@@ -829,7 +832,8 @@ fn encode_function_output(
     for part in parts {
         match part {
             IrPart::Text(_) => {}
-            IrPart::ImageUrl { url, .. } => {
+            IrPart::ImageUrl { url, detail } => {
+                super::note_dropped_image_detail(detail.as_deref(), "responses", report);
                 content.push(json!({"type": "input_image", "image_url": url}));
                 kept_structured = true;
             }

@@ -635,7 +635,8 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 for part in parts {
                     match part {
                         IrPart::Text(_) => {}
-                        IrPart::ImageUrl { url, .. } => {
+                        IrPart::ImageUrl { url, detail } => {
+                            super::note_dropped_image_detail(detail.as_deref(), "converse", report);
                             if let Some(block) = encode_image_url(url, report) {
                                 content.push(block);
                             }
@@ -760,7 +761,10 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             ..
         } => encode_document(source, media_type, name.as_deref(), report),
         IrPart::Audio { data, format } => encode_audio(data, format, report),
-        IrPart::ImageUrl { url, .. } => encode_image_url(url, report),
+        IrPart::ImageUrl { url, detail } => {
+            super::note_dropped_image_detail(detail.as_deref(), "converse", report);
+            encode_image_url(url, report)
+        }
         IrPart::ImageBase64 { media_type, data } => encode_image_bytes(media_type, data, report),
         IrPart::Raw { .. } => {
             if let Some(plain) = super::plain_media_part(part) {

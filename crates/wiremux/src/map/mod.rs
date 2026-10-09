@@ -133,6 +133,17 @@ pub fn decode(wire: Wire, bytes: &[u8]) -> Result<(IrRequest, LossReport), MapEr
     }
 }
 
+/// `detail` has a slot only on Chat Completions. Other wires must say so.
+pub(super) fn note_dropped_image_detail(detail: Option<&str>, wire: &str, report: &mut LossReport) {
+    if detail.is_some_and(|text| !text.is_empty()) {
+        report.record(
+            "part.image.detail",
+            LossAction::Drop,
+            format!("image detail has no {wire} slot"),
+        );
+    }
+}
+
 /// Encode IR into a dialect request body. Applies `tool_type_policy` and fingerprint.
 pub fn encode(
     wire: Wire,
@@ -889,6 +900,46 @@ mod tests {
         assert!(
             text.contains("wire `messages`") && text.contains("got array"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn chat_image_detail_is_dropped_on_messages_with_a_loss_line() {
+        let src = br#"{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"what is this"},{"type":"image_url","image_url":{"url":"https://example.com/cat.png","detail":"high"}}]}]}"#;
+        let (ir, decode_loss) = decode(Wire::ChatCompletions, src).expect("decode");
+        assert!(
+            decode_loss
+                .events
+                .iter()
+                .all(|event| event.path != "part.image.detail"),
+            "chat keeps detail, got {decode_loss:?}"
+        );
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"m\"\nwire = \"messages\"\n")
+                .expect("profile");
+        let (body, loss) = encode(Wire::Messages, &ir, &profile).expect("encode");
+        let text = String::from_utf8(body).expect("utf8");
+        assert!(text.contains("https://example.com/cat.png"), "{text}");
+        assert!(!text.contains("high"), "{text}");
+        assert!(
+            loss.events.iter().any(|event| {
+                event.path == "part.image.detail" && event.detail.contains("no messages slot")
+            }),
+            "{loss:?}"
+        );
+        let chat = crate::parse_profile_str(
+            "schema_version = 1\nid = \"c\"\nwire = \"chat-completions\"\n",
+        )
+        .expect("profile");
+        let (kept, kept_loss) = encode(Wire::ChatCompletions, &ir, &chat).expect("chat");
+        let kept_text = String::from_utf8(kept).expect("utf8");
+        assert!(kept_text.contains("high"), "{kept_text}");
+        assert!(
+            kept_loss
+                .events
+                .iter()
+                .all(|event| event.path != "part.image.detail"),
+            "{kept_loss:?}"
         );
     }
 
