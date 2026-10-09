@@ -54,7 +54,9 @@ pub use stream::{
     encode_eventstream_message, encode_response, encode_response_with_model, encode_stream_event,
     frame_is_terminal, stream_has_terminal,
 };
-pub use wiremux_auth::VERSION;
+pub use wiremux_auth::{
+    GROK_CHAT_PROXY_CLIENT_IDENTIFIER, GROK_CHAT_PROXY_CLIENT_VERSION, VERSION,
+};
 pub use wiremux_auth::{
     LoadOptions, ResolvedProfile, StreamUnknownPolicy, ToolTypePolicy, Wire, load_profile,
     load_profile_for_wire, parse_profile_str,

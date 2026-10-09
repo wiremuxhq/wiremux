@@ -7,9 +7,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use wiremux_auth::{
-    AuthScheme, IsolatedHome, LoadOptions, Login, PlantCredentials, ProfileError, TokenProvider,
-    TokenRequestFormat, ToolTypePolicy, Wire, list_profiles, load_profile, provider_from_profile,
-    shipped_profile_ids, token_for_profile,
+    AuthScheme, GROK_CHAT_PROXY_CLIENT_IDENTIFIER, GROK_CHAT_PROXY_CLIENT_VERSION, IsolatedHome,
+    LoadOptions, Login, PlantCredentials, ProfileError, TokenProvider, TokenRequestFormat,
+    ToolTypePolicy, Wire, list_profiles, load_profile, provider_from_profile, shipped_profile_ids,
+    token_for_profile,
 };
 
 fn presets_dir() -> PathBuf {
@@ -294,7 +295,7 @@ fn load_profile_xai_grok_build_from_shipped_catalog() {
             .headers
             .get("x-grok-client-version")
             .map(String::as_str),
-        Some("1.0.46"),
+        Some(GROK_CHAT_PROXY_CLIENT_VERSION),
         "cli-chat-proxy rejects requests with no Grok CLI version (HTTP 426)"
     );
     assert_eq!(
@@ -303,7 +304,7 @@ fn load_profile_xai_grok_build_from_shipped_catalog() {
             .headers
             .get("x-grok-client-identifier")
             .map(String::as_str),
-        Some("wiremux")
+        Some(GROK_CHAT_PROXY_CLIENT_IDENTIFIER)
     );
 }
 
@@ -342,7 +343,7 @@ fn load_profile_xai_grok_build_messages_from_shipped_catalog() {
             .headers
             .get("x-grok-client-version")
             .map(String::as_str),
-        Some("1.0.46")
+        Some(GROK_CHAT_PROXY_CLIENT_VERSION)
     );
     assert_eq!(
         profile
@@ -350,7 +351,7 @@ fn load_profile_xai_grok_build_messages_from_shipped_catalog() {
             .headers
             .get("x-grok-client-identifier")
             .map(String::as_str),
-        Some("wiremux")
+        Some(GROK_CHAT_PROXY_CLIENT_IDENTIFIER)
     );
     let oauth = profile
         .oauth
