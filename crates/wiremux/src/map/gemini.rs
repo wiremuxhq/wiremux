@@ -689,28 +689,10 @@ pub(super) fn encode(
                 system_parts.push(json!({ "text": text }));
             }
             IrItem::User { parts } => {
-                if last_role(&contents) == Some("user") {
-                    report.record(
-                        format!("items[{idx}]"),
-                        LossAction::Degrade,
-                        "consecutive turns with the same role were joined",
-                    );
-                }
-                for part in encode_parts(parts, report) {
-                    push_role_part(&mut contents, "user", part);
-                }
+                push_encoded_turn(&mut contents, "user", parts, idx, report);
             }
             IrItem::Assistant { parts } => {
-                if last_role(&contents) == Some("model") {
-                    report.record(
-                        format!("items[{idx}]"),
-                        LossAction::Degrade,
-                        "consecutive turns with the same role were joined",
-                    );
-                }
-                for part in encode_parts(parts, report) {
-                    push_role_part(&mut contents, "model", part);
-                }
+                push_encoded_turn(&mut contents, "model", parts, idx, report);
             }
             IrItem::FunctionCall {
                 call_id,
@@ -846,6 +828,25 @@ pub(super) fn encode(
                 );
             }
         }
+    }
+
+    // An empty user or assistant turn must not look like a finished request.
+    // A reasoning item that Gemini cannot send is a drop on an otherwise
+    // valid body, and stays a loss line instead of this error.
+    let dropped_empty_turn = report.events.iter().any(|event| {
+        event.action == LossAction::Drop && event.detail.contains("empty turn has no gemini parts")
+    });
+    if contents.is_empty() && dropped_empty_turn {
+        let dropped: Vec<&str> = report
+            .events
+            .iter()
+            .filter(|event| event.action == LossAction::Drop)
+            .map(|event| event.detail.as_str())
+            .collect();
+        return Err(MapError::Invalid(format!(
+            "gemini contents must not be empty: {}",
+            dropped.join("; ")
+        )));
     }
 
     let mut body = json!({ "contents": contents });
@@ -1073,6 +1074,34 @@ fn is_gemini_hosted_raw(raw: &Value) -> bool {
     obj.contains_key("googleSearch")
         || obj.contains_key("codeExecution")
         || obj.contains_key("googleSearchRetrieval")
+}
+
+fn push_encoded_turn(
+    contents: &mut Vec<Value>,
+    role: &str,
+    parts: &[IrPart],
+    idx: usize,
+    report: &mut LossReport,
+) {
+    let encoded = encode_parts(parts, report);
+    if encoded.is_empty() {
+        report.record(
+            format!("items[{idx}]"),
+            LossAction::Drop,
+            "empty turn has no gemini parts",
+        );
+        return;
+    }
+    if last_role(contents) == Some(role) {
+        report.record(
+            format!("items[{idx}]"),
+            LossAction::Degrade,
+            "consecutive turns with the same role were joined",
+        );
+    }
+    for part in encoded {
+        push_role_part(contents, role, part);
+    }
 }
 
 fn last_role(contents: &[Value]) -> Option<&str> {

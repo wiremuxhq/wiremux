@@ -904,6 +904,22 @@ mod tests {
     }
 
     #[test]
+    fn empty_chat_turn_does_not_become_an_empty_gemini_success() {
+        let src = br#"{"model":"gpt-4o","messages":[{"role":"user","content":[]}]}"#;
+        let (ir, _) = decode(Wire::ChatCompletions, src).expect("decode");
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"g\"\nwire = \"gemini\"\n")
+                .expect("profile");
+        let err = encode(Wire::Gemini, &ir, &profile).expect_err("empty contents");
+        let text = err.to_string();
+        assert!(
+            text.contains("gemini contents must not be empty")
+                && text.contains("empty turn has no gemini parts"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn chat_image_detail_is_dropped_on_messages_with_a_loss_line() {
         let src = br#"{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"what is this"},{"type":"image_url","image_url":{"url":"https://example.com/cat.png","detail":"high"}}]}]}"#;
         let (ir, decode_loss) = decode(Wire::ChatCompletions, src).expect("decode");
