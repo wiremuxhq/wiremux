@@ -456,9 +456,21 @@ pub(super) fn encode(
     }
     let (system, messages) = encode_items(ir, report);
     if messages.as_array().is_none_or(|a| a.is_empty()) {
-        return Err(MapError::Invalid(
-            "converse messages must not be empty".into(),
-        ));
+        let dropped: Vec<&str> = report
+            .events
+            .iter()
+            .filter(|event| event.action == LossAction::Drop && event.path != "model")
+            .map(|event| event.detail.as_str())
+            .collect();
+        let message = if dropped.is_empty() {
+            "converse messages must not be empty".to_string()
+        } else {
+            format!(
+                "converse messages must not be empty: {}",
+                dropped.join("; ")
+            )
+        };
+        return Err(MapError::Invalid(message));
     }
     let mut body = json!({ "messages": messages });
     if let Some(system) = system {
