@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import os
+import stat
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -248,6 +252,8 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("already on crates.io", script)
         self.assertIn("already uploaded", script)
         self.assertIn("cargo publish --locked -p", script)
+        self.assertNotIn("sleep 60", script)
+        self.assertIn("index.crates.io", script)
         self.assertIn("github.event_name != 'push'", text)
         self.assertIn("github.event.created", text)
         self.assertIn("inputs.tag != ''", text)
@@ -721,6 +727,91 @@ class WorkflowTriggerTests(unittest.TestCase):
             "step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed",
             text,
         )
+
+
+class PublishIndexWaitTests(unittest.TestCase):
+    def _fake_curl(self, directory: Path, hits_before_version: int) -> Path:
+        path = directory / "curl"
+        path.write_text(
+            "#!/bin/bash\n"
+            "url=\"${@: -1}\"\n"
+            "printf '%s\\n' \"$url\" >> \"$CURL_LOG\"\n"
+            "n=0\n"
+            "if [ -f \"$CURL_COUNT\" ]; then n=$(cat \"$CURL_COUNT\"); fi\n"
+            "n=$((n + 1))\n"
+            "printf '%s\\n' \"$n\" > \"$CURL_COUNT\"\n"
+            f"if [ \"$n\" -gt {hits_before_version} ]; then\n"
+            "  printf '%s\\n' '{\"name\":\"wiremux-auth\",\"vers\":\"0.10.5\",\"yanked\":false}'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 22\n",
+            encoding="utf-8",
+        )
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        return path
+
+    def test_wait_retries_until_the_sparse_index_lists_the_version(self) -> None:
+        script = ROOT / "scripts" / "publish-crates.sh"
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            curl = self._fake_curl(directory, hits_before_version=1)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PUBLISH_CRATES_CMD": "wait-index",
+                    "INDEX_WAIT_SECS": "5",
+                    "INDEX_POLL_SECS": "0",
+                    "CURL": str(curl),
+                    "CURL_LOG": str(directory / "urls"),
+                    "CURL_COUNT": str(directory / "count"),
+                }
+            )
+            done = subprocess.run(
+                ["bash", str(script), "wiremux-auth", "0.10.5"],
+                cwd=directory,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            self.assertIn("OK: index lists wiremux-auth 0.10.5", done.stdout)
+            urls = (directory / "urls").read_text(encoding="utf-8")
+            self.assertIn(
+                "https://index.crates.io/wi/re/wiremux-auth",
+                urls,
+            )
+            self.assertGreaterEqual(urls.count("index.crates.io"), 2)
+
+    def test_wait_fails_when_the_index_never_lists_the_version(self) -> None:
+        script = ROOT / "scripts" / "publish-crates.sh"
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            curl = self._fake_curl(directory, hits_before_version=99)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PUBLISH_CRATES_CMD": "wait-index",
+                    "INDEX_WAIT_SECS": "1",
+                    "INDEX_POLL_SECS": "1",
+                    "CURL": str(curl),
+                    "CURL_LOG": str(directory / "urls"),
+                    "CURL_COUNT": str(directory / "count"),
+                }
+            )
+            done = subprocess.run(
+                ["bash", str(script), "wiremux-auth", "0.10.5"],
+                cwd=directory,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn(
+                "index did not list wiremux-auth 0.10.5",
+                done.stderr,
+            )
 
 
 if __name__ == "__main__":

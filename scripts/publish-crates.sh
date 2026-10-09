@@ -14,6 +14,58 @@ CRATES=(wiremux-auth wiremux)
 
 echo "PLAN: publish ${CRATES[*]} from $(pwd)"
 
+# Sparse index layout: https://doc.rust-lang.org/cargo/reference/registry-index.html
+index_rel() {
+  local name="$1"
+  local n=${#name}
+  if [ "$n" -eq 1 ]; then
+    printf '1/%s' "$name"
+  elif [ "$n" -eq 2 ]; then
+    printf '2/%s' "$name"
+  elif [ "$n" -eq 3 ]; then
+    printf '3/%s/%s' "${name:0:1}" "$name"
+  else
+    printf '%s/%s/%s' "${name:0:2}" "${name:2:2}" "$name"
+  fi
+}
+
+# cargo publish reads this index. The crates.io API can show a version first.
+wait_for_index() {
+  local crate="$1"
+  local version="$2"
+  local deadline="${INDEX_WAIT_SECS:-300}"
+  local pause="${INDEX_POLL_SECS:-10}"
+  local rel url start now elapsed remaining body
+  rel="$(index_rel "$crate")"
+  url="https://index.crates.io/${rel}"
+  start="$(date +%s)"
+  while true; do
+    now="$(date +%s)"
+    elapsed=$((now - start))
+    remaining=$((deadline - elapsed))
+    if [ "$remaining" -le 0 ]; then
+      echo "FAIL: crates.io index did not list ${crate} ${version} within ${deadline}s" >&2
+      return 1
+    fi
+    body="$("${CURL}" -fsS -A "${USER_AGENT}" "$url" 2>/dev/null || true)"
+    if printf '%s\n' "$body" | grep -F "\"vers\":\"${version}\"" >/dev/null; then
+      echo "OK: index lists ${crate} ${version}"
+      return 0
+    fi
+    echo "WAIT: index does not list ${crate} ${version} yet (${remaining}s left)"
+    if [ "$pause" -gt "$remaining" ]; then
+      sleep "$remaining"
+    else
+      sleep "$pause"
+    fi
+  done
+}
+
+if [ "${PUBLISH_CRATES_CMD:-}" = "wait-index" ]; then
+  wait_for_index "${1:?crate}" "${2:?version}"
+  exit 0
+fi
+
 if [ ! -f Cargo.toml ] || [ ! -d crates/wiremux-auth ] || [ ! -d crates/wiremux ]; then
   echo "FAIL: workspace root with crates/wiremux-auth and crates/wiremux required" >&2
   exit 1
@@ -32,7 +84,8 @@ print(tomllib.loads(path.read_text(encoding="utf-8"))["package"]["version"])
 PY
 }
 
-published=0
+pending_crate=""
+pending_version=""
 for crate in "${CRATES[@]}"; do
   version="$(crate_version "${crate}")"
   if [ -z "${version}" ]; then
@@ -80,9 +133,9 @@ for crate in "${CRATES[@]}"; do
     exit 1
   fi
 
-  if [ "${published}" -gt 0 ]; then
-    echo "WAIT: 60s before the next new upload"
-    sleep 60
+  # The next crate cannot select a dependency that the index does not list yet.
+  if [ -n "${pending_crate}" ]; then
+    wait_for_index "${pending_crate}" "${pending_version}"
   fi
 
   echo "DO: ${CARGO} publish --locked -p ${crate}"
@@ -94,7 +147,8 @@ for crate in "${CRATES[@]}"; do
 
   if [ "${st}" -eq 0 ]; then
     echo "DONE: published ${crate} ${version}"
-    published=$((published + 1))
+    pending_crate="${crate}"
+    pending_version="${version}"
     rm -f "${tmp}"
     continue
   fi
