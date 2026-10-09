@@ -2819,9 +2819,14 @@ fn cache_disabled_no_cache_control_blocks() {
 fn cache_retention_none_skips_cache_control() {
     let ir = IrRequest::new(
         "claude-opus-4-6",
-        vec![IrItem::System {
-            text: "rules".into(),
-        }],
+        vec![
+            IrItem::System {
+                text: "rules".into(),
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("hello".into())],
+            },
+        ],
     )
     .with_sampling(IrSampling::patch(|s| {
         s.cache = IrCache::enabled().with_retention("none");
