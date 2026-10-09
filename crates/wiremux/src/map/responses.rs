@@ -472,6 +472,14 @@ pub(super) fn encode(
     // flatten-namespace emits dotted function names on the wire, including Responses.
     let restore_calls = matches!(profile.dialect.tool_type_policy, ToolTypePolicy::HardError);
     let (instructions, input) = encode_items(ir, restore_calls, report);
+    if input.as_array().is_none_or(|rows| rows.is_empty()) {
+        let message = if instructions.is_some() {
+            "responses input must not be empty: instructions need an input turn"
+        } else {
+            "responses input must not be empty"
+        };
+        return Err(MapError::Invalid(message.into()));
+    }
     let mut body = json!({
         "model": ir.model,
         "input": input,

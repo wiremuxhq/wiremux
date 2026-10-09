@@ -523,6 +523,14 @@ pub(super) fn encode(
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
     let (system, messages) = encode_items(ir, report);
+    if messages.as_array().is_none_or(|rows| rows.is_empty()) {
+        let message = if system.is_some() {
+            "messages must not be empty: system text needs a message turn"
+        } else {
+            "messages must not be empty"
+        };
+        return Err(MapError::Invalid(message.into()));
+    }
     let mut body = json!({
         "model": ir.model,
         "messages": messages,

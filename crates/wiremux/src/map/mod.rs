@@ -904,6 +904,32 @@ mod tests {
     }
 
     #[test]
+    fn system_only_chat_does_not_become_an_empty_messages_or_responses_success() {
+        let src = br#"{"model":"gpt-4o","messages":[{"role":"system","content":"be brief"}]}"#;
+        let (ir, _) = decode(Wire::ChatCompletions, src).expect("decode");
+        for (wire, name, needle) in [
+            (
+                Wire::Messages,
+                "messages",
+                "system text needs a message turn",
+            ),
+            (
+                Wire::Responses,
+                "responses",
+                "instructions need an input turn",
+            ),
+        ] {
+            let profile = crate::parse_profile_str(&format!(
+                "schema_version = 1\nid = \"t\"\nwire = \"{name}\"\n"
+            ))
+            .expect("profile");
+            let err = encode(wire, &ir, &profile).expect_err(name);
+            let text = err.to_string();
+            assert!(text.contains(needle), "{name}: {text}");
+        }
+    }
+
+    #[test]
     fn system_only_chat_does_not_become_an_empty_gemini_success() {
         let src = br#"{"model":"gpt-4o","messages":[{"role":"system","content":"be brief"}]}"#;
         let (ir, _) = decode(Wire::ChatCompletions, src).expect("decode");
