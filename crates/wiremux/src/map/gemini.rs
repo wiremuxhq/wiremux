@@ -830,19 +830,23 @@ pub(super) fn encode(
         }
     }
 
-    if contents.is_empty() {
+    // An empty user or assistant turn must not look like a finished request.
+    // A reasoning item that Gemini cannot send is a drop on an otherwise
+    // valid body, and stays a loss line instead of this error.
+    let dropped_empty_turn = report.events.iter().any(|event| {
+        event.action == LossAction::Drop && event.detail.contains("empty turn has no gemini parts")
+    });
+    if contents.is_empty() && dropped_empty_turn {
         let dropped: Vec<&str> = report
             .events
             .iter()
             .filter(|event| event.action == LossAction::Drop)
             .map(|event| event.detail.as_str())
             .collect();
-        let message = if dropped.is_empty() {
-            "gemini contents must not be empty".to_string()
-        } else {
-            format!("gemini contents must not be empty: {}", dropped.join("; "))
-        };
-        return Err(MapError::Invalid(message));
+        return Err(MapError::Invalid(format!(
+            "gemini contents must not be empty: {}",
+            dropped.join("; ")
+        )));
     }
 
     let mut body = json!({ "contents": contents });
