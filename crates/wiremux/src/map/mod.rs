@@ -944,6 +944,38 @@ mod tests {
     }
 
     #[test]
+    fn chat_image_detail_loss_line_names_responses_gemini_and_converse() {
+        let src = br#"{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/cat.png","detail":"low"}}]}]}"#;
+        let (ir, _) = decode(Wire::ChatCompletions, src).expect("decode");
+        let cases = [(Wire::Responses, "responses"), (Wire::Gemini, "gemini")];
+        for (wire, name) in cases {
+            let profile = crate::parse_profile_str(&format!(
+                "schema_version = 1\nid = \"t\"\nwire = \"{name}\"\n"
+            ))
+            .expect("profile");
+            let (_body, loss) = encode(wire, &ir, &profile).expect(name);
+            assert!(
+                loss.events.iter().any(|event| {
+                    event.path == "part.image.detail"
+                        && event.detail.contains(&format!("no {name} slot"))
+                }),
+                "{name} dropped image detail without a loss line: {loss:?}"
+            );
+        }
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"t\"\nwire = \"converse\"\n")
+                .expect("profile");
+        let err = encode(Wire::Converse, &ir, &profile).expect_err("image-only https");
+        let text = err.to_string();
+        assert!(
+            text.contains("converse messages must not be empty")
+                && text.contains("image url has no converse slot")
+                && text.contains("image detail has no converse slot"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn decode_invalid_json_names_the_wire() {
         let err = decode(Wire::ChatCompletions, b"").expect_err("empty");
         let text = err.to_string();
