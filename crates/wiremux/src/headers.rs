@@ -2,7 +2,10 @@
 
 use std::time::Duration;
 
-use wiremux_auth::{AnyTokenProvider, AuthScheme, ResolvedProfile};
+use wiremux_auth::{
+    AnyTokenProvider, AuthScheme, GROK_CHAT_PROXY_CLIENT_IDENTIFIER,
+    GROK_CHAT_PROXY_CLIENT_VERSION, ResolvedProfile,
+};
 
 pub(crate) fn default_http_client(profile: &ResolvedProfile) -> Result<reqwest::Client, String> {
     let read_secs = profile
@@ -19,9 +22,6 @@ pub(crate) fn default_http_client(profile: &ResolvedProfile) -> Result<reqwest::
 }
 
 const GROK_BUILD_PROXY_HOST: &str = "cli-chat-proxy.grok.com";
-// Proxy floor in the HTTP 426 body is 1.0.13. 1.0.46 is a current Grok CLI version.
-const GROK_CLIENT_VERSION: &str = "1.0.46";
-const GROK_CLIENT_IDENTIFIER: &str = "wiremux";
 
 pub(crate) fn apply_profile_headers(
     mut req: reqwest::RequestBuilder,
@@ -140,10 +140,13 @@ pub(crate) fn grok_build_default_headers(
     }
     let mut extra = Vec::new();
     if !header_present(profile, "x-grok-client-version") {
-        extra.push(("x-grok-client-version", GROK_CLIENT_VERSION));
+        extra.push(("x-grok-client-version", GROK_CHAT_PROXY_CLIENT_VERSION));
     }
     if !header_present(profile, "x-grok-client-identifier") {
-        extra.push(("x-grok-client-identifier", GROK_CLIENT_IDENTIFIER));
+        extra.push((
+            "x-grok-client-identifier",
+            GROK_CHAT_PROXY_CLIENT_IDENTIFIER,
+        ));
     }
     extra
 }
@@ -151,7 +154,9 @@ pub(crate) fn grok_build_default_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremux_auth::parse_profile_str;
+    use wiremux_auth::{
+        GROK_CHAT_PROXY_CLIENT_IDENTIFIER, GROK_CHAT_PROXY_CLIENT_VERSION, parse_profile_str,
+    };
 
     fn profile(toml: &str) -> ResolvedProfile {
         parse_profile_str(toml).expect("test profile")
@@ -170,11 +175,14 @@ chat_path = "/v1/chat/completions"
         );
         let extra = grok_build_default_headers(&p);
         assert!(
-            extra.contains(&("x-grok-client-version", "1.0.46")),
+            extra.contains(&("x-grok-client-version", GROK_CHAT_PROXY_CLIENT_VERSION)),
             "missing version, got {extra:?}"
         );
         assert!(
-            extra.contains(&("x-grok-client-identifier", "wiremux")),
+            extra.contains(&(
+                "x-grok-client-identifier",
+                GROK_CHAT_PROXY_CLIENT_IDENTIFIER
+            )),
             "missing identifier, got {extra:?}"
         );
     }
@@ -192,7 +200,7 @@ chat_path = "/v1/chat/completions"
         );
         let extra = grok_build_default_headers(&p);
         assert!(
-            extra.contains(&("x-grok-client-version", "1.0.46")),
+            extra.contains(&("x-grok-client-version", GROK_CHAT_PROXY_CLIENT_VERSION)),
             "trailing-dot host must match, got {extra:?}"
         );
     }
@@ -236,7 +244,10 @@ x-grok-client-version = "9.9.9"
             "must keep overlay version, got {extra:?}"
         );
         assert!(
-            extra.contains(&("x-grok-client-identifier", "wiremux")),
+            extra.contains(&(
+                "x-grok-client-identifier",
+                GROK_CHAT_PROXY_CLIENT_IDENTIFIER
+            )),
             "missing identifier still filled, got {extra:?}"
         );
     }

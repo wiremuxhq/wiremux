@@ -10,8 +10,9 @@ header_merge = "union"
 
 # cli-chat-proxy.grok.com returns HTTP 426 when this header is absent
 # or older than the proxy floor (the 426 body named 1.0.13).
-# 1.0.46 is a current Grok CLI version that floor accepts.
-# Identifier is this crate, not a Grok product client id.
+# The version must match GROK_CHAT_PROXY_CLIENT_VERSION.
+# The identifier must match GROK_CHAT_PROXY_CLIENT_IDENTIFIER.
+# That identifier is this crate, not a Grok product client id.
 [headers]
 x-grok-client-version = "1.0.46"
 x-grok-client-identifier = "wiremux"

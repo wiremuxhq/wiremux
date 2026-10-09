@@ -285,9 +285,12 @@ is not in crates.io `0.5.0`.
 
 Refresh-only hosts call `token_for_profile_cached`. A URL-first host
 whose `base_url` host is `cli-chat-proxy.grok.com` (trailing-dot FQDN
-too) still gets the Grok Build header pack (`x-grok-client-version`
-and `x-grok-client-identifier`) even when the profile is handmade or
-an overlay. `https://api.x.ai` does not get those headers.
+too) still gets the Grok Build header pack. The version is
+`GROK_CHAT_PROXY_CLIENT_VERSION`. This crate's identifier is
+`GROK_CHAT_PROXY_CLIENT_IDENTIFIER`. A handmade profile that already
+sets either header keeps that value. Other hosts send their own
+identifier with the same version. `https://api.x.ai` does not get
+those headers.
 
 Shipped catalog ids:
 
@@ -316,9 +319,10 @@ Also shipped: `grok-ollama`,
 `xai-oauth` (`https://api.x.ai`), `xai-grok-build` (Grok Build CLI
 proxy `https://cli-chat-proxy.grok.com`, Chat Completions, same
 empty-client `oidc-auth-json` pack as `xai-oauth`, plus
-`x-grok-client-version = 1.0.46` so the proxy does not return HTTP
-426; the 426 body names 1.0.13 as the floor), and `xai-grok-build-messages` (same host and pack, Messages at
-`/v1/messages`). crates.io `0.6.0` also ships Bedrock, Azure,
+`x-grok-client-version` set to `GROK_CHAT_PROXY_CLIENT_VERSION`
+so the proxy does not return HTTP 426; `0.1.202` was rejected and
+that body names `1.0.13` as the floor), and `xai-grok-build-messages`
+(same host and pack, Messages at `/v1/messages`). crates.io `0.6.0` also ships Bedrock, Azure,
 Vertex, Groq, Together, Mistral, DashScope, Moonshot, Zhipu, and
 the rest of `shipped_profile_ids()`. Lock that function on a
 version bump. Do not hand-copy the name list. Hosts that need a

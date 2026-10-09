@@ -70,6 +70,22 @@ pub use keychain_guard::KeychainIsolation;
 /// Crate version from Cargo.toml.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// `x-grok-client-version` for `cli-chat-proxy.grok.com`.
+///
+/// The proxy returns HTTP 426 for `0.1.202`. That response names
+/// `1.0.13` as the floor. Shipped `xai-grok-build` and
+/// `xai-grok-build-messages` use this exact string. The HTTP client
+/// fills the same value when a handmade proxy profile omits it.
+/// Hosts that send their own `x-grok-client-identifier` should still
+/// send this version.
+pub const GROK_CHAT_PROXY_CLIENT_VERSION: &str = "1.0.46";
+
+/// `x-grok-client-identifier` this crate sends to the Grok chat proxy.
+///
+/// This is not a Grok product client id. Other hosts send their own
+/// name with [`GROK_CHAT_PROXY_CLIENT_VERSION`].
+pub const GROK_CHAT_PROXY_CLIENT_IDENTIFIER: &str = "wiremux";
+
 /// A provider of short-lived Bearer tokens.
 ///
 /// Implementations are cheaply cloneable (`Arc` state) and safe to share.
