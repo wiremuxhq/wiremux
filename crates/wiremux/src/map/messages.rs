@@ -523,6 +523,14 @@ pub(super) fn encode(
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
     let (system, messages) = encode_items(ir, report);
+    // A system prompt with no turn is not a request Anthropic will accept.
+    // A truly empty item list stays an empty messages array so Continue is
+    // not invented onto a request that had no turns.
+    if system.is_some() && messages.as_array().is_none_or(|rows| rows.is_empty()) {
+        return Err(MapError::Invalid(
+            "messages must not be empty: system text needs a message turn".into(),
+        ));
+    }
     let mut body = json!({
         "model": ir.model,
         "messages": messages,
