@@ -451,9 +451,9 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         if target == state.from {
             return passthrough_sse(
                 state.from,
+                state.profile.clone(),
                 &method,
                 &path,
-                &state.profile.id,
                 status,
                 resp,
                 &content_type,
@@ -956,11 +956,148 @@ fn json_completion_to_sse(
     wrote.then(|| Bytes::from(out))
 }
 
+// A same-wire body with no frame must not look like a finished stream.
+struct SameWireGate {
+    from: Wire,
+    profile: ResolvedProfile,
+    reader: UpstreamFrames,
+    saw_frame: bool,
+    saw_terminal: bool,
+    held: Vec<u8>,
+    leftover: Vec<u8>,
+}
+
+enum SameWirePush {
+    Hold,
+    Forward(Vec<u8>),
+}
+
+enum SameWireEnd {
+    Done { tail: Vec<u8> },
+    Replace { message: String },
+    Append { tail: Vec<u8>, message: String },
+}
+
+impl SameWireGate {
+    fn new(from: Wire, profile: ResolvedProfile) -> Self {
+        Self {
+            from,
+            profile,
+            reader: UpstreamFrames::for_wire(from),
+            saw_frame: false,
+            saw_terminal: false,
+            held: Vec::new(),
+            leftover: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> Result<SameWirePush, String> {
+        if !self.saw_frame {
+            let room = 65536usize.saturating_sub(self.leftover.len());
+            if room > 0 {
+                let take = room.min(bytes.len());
+                self.leftover.extend_from_slice(&bytes[..take]);
+            }
+            if self.held.len().saturating_add(bytes.len()) > MAX_UPSTREAM_BODY {
+                return Err(INCOMPLETE_STREAM_MESSAGE.to_string());
+            }
+        }
+        let (frames, terminal) = match self.reader.feed(bytes) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                return Err(if self.saw_frame {
+                    err
+                } else {
+                    self.no_frame_message()
+                });
+            }
+        };
+        if terminal.is_some() {
+            self.saw_frame = true;
+            self.saw_terminal = true;
+            return Ok(SameWirePush::Forward(self.held_plus(bytes)));
+        }
+        if frames.is_empty() {
+            if !self.saw_frame {
+                self.held.extend_from_slice(bytes);
+                return Ok(SameWirePush::Hold);
+            }
+            return Ok(SameWirePush::Forward(bytes.to_vec()));
+        }
+        self.saw_frame = true;
+        for raw in &frames {
+            self.note_terminal(raw);
+        }
+        Ok(SameWirePush::Forward(self.held_plus(bytes)))
+    }
+
+    fn finish(mut self) -> SameWireEnd {
+        match self.reader.finish() {
+            Err(_) if !self.saw_frame => SameWireEnd::Replace {
+                message: self.no_frame_message(),
+            },
+            Err(err) => SameWireEnd::Append {
+                tail: std::mem::take(&mut self.held),
+                message: err,
+            },
+            Ok(frame) => {
+                if let Some(raw) = frame {
+                    self.saw_frame = true;
+                    self.note_terminal(&raw);
+                }
+                let tail = std::mem::take(&mut self.held);
+                if !self.saw_frame {
+                    SameWireEnd::Replace {
+                        message: self.no_frame_message(),
+                    }
+                } else if !self.saw_terminal {
+                    SameWireEnd::Append {
+                        tail,
+                        message: INCOMPLETE_STREAM_MESSAGE.to_string(),
+                    }
+                } else {
+                    SameWireEnd::Done { tail }
+                }
+            }
+        }
+    }
+
+    fn held_plus(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let mut out = std::mem::take(&mut self.held);
+        out.extend_from_slice(bytes);
+        out
+    }
+
+    fn note_terminal(&mut self, raw: &RawSse) {
+        if frame_is_terminal(self.from, raw, &self.profile)
+            || sse_wrapped_error_message(&raw.data).is_some()
+        {
+            self.saw_terminal = true;
+        }
+    }
+
+    fn no_frame_message(&self) -> String {
+        if let Some(detail) = responses_complete_vendor_failure(self.from, &self.leftover) {
+            return detail;
+        }
+        if let Some(detail) = chat_complete_vendor_failure(self.from, &self.leftover) {
+            return detail;
+        }
+        if let Some(detail) = messages_complete_vendor_failure(self.from, &self.leftover) {
+            return detail;
+        }
+        if let Some(detail) = gemini_complete_vendor_failure(self.from, &self.leftover) {
+            return detail;
+        }
+        INCOMPLETE_STREAM_MESSAGE.to_string()
+    }
+}
+
 fn passthrough_sse(
     from: Wire,
+    profile: ResolvedProfile,
     method: &str,
     path: &str,
-    profile_id: &str,
     status: StatusCode,
     resp: reqwest::Response,
     content_type: &str,
@@ -969,15 +1106,26 @@ fn passthrough_sse(
     let eventstream = content_type.contains("eventstream");
     let method = method.to_string();
     let path = path.to_string();
-    let profile_id = profile_id.to_string();
+    let profile_id = profile.id.clone();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(16);
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
+        let mut gate = SameWireGate::new(from, profile);
+        let mut failed: Option<String> = None;
         while let Some(item) = stream.next().await {
             match item {
                 Ok(bytes) => {
-                    if tx.send(Ok(Frame::data(bytes))).await.is_err() {
-                        return;
+                    if failed.is_some() {
+                        continue;
+                    }
+                    match gate.push(&bytes) {
+                        Ok(SameWirePush::Hold) => {}
+                        Ok(SameWirePush::Forward(chunk)) => {
+                            if tx.send(Ok(Frame::data(Bytes::from(chunk)))).await.is_err() {
+                                return;
+                            }
+                        }
+                        Err(msg) => failed = Some(msg),
                     }
                 }
                 Err(err) => {
@@ -996,6 +1144,30 @@ fn passthrough_sse(
                     let _ = tx.send(Ok(Frame::data(frame))).await;
                     return;
                 }
+            }
+        }
+        if let Some(msg) = failed {
+            let _ = tx.send(Ok(Frame::data(dest_error_bytes(from, msg)))).await;
+            return;
+        }
+        match gate.finish() {
+            SameWireEnd::Done { tail } => {
+                if !tail.is_empty() {
+                    let _ = tx.send(Ok(Frame::data(Bytes::from(tail)))).await;
+                }
+            }
+            SameWireEnd::Replace { message } => {
+                let _ = tx
+                    .send(Ok(Frame::data(dest_error_bytes(from, message))))
+                    .await;
+            }
+            SameWireEnd::Append { tail, message } => {
+                if !tail.is_empty() && tx.send(Ok(Frame::data(Bytes::from(tail)))).await.is_err() {
+                    return;
+                }
+                let _ = tx
+                    .send(Ok(Frame::data(dest_error_bytes(from, message))))
+                    .await;
             }
         }
     });
@@ -1313,6 +1485,37 @@ fn map_sse_bytes(
             }
         }
         Err(err) => out.extend(dest_error_bytes(from, err)),
+    }
+    out
+}
+
+#[cfg(test)]
+fn same_wire_passthrough_bytes(from: Wire, body: &[u8]) -> Vec<u8> {
+    let profile = crate::parse_profile_str("schema_version = 1\nid = \"m\"\nwire = \"messages\"\n")
+        .expect("profile");
+    let mut gate = SameWireGate::new(from, profile);
+    let mut out = Vec::new();
+    match gate.push(body) {
+        Ok(SameWirePush::Hold) => {}
+        Ok(SameWirePush::Forward(bytes)) => out.extend(bytes),
+        Err(msg) => {
+            out.extend(dest_error_bytes(from, msg));
+            return out;
+        }
+    }
+    match gate.finish() {
+        SameWireEnd::Done { tail } => {
+            if !tail.is_empty() {
+                out.extend(tail);
+            }
+        }
+        SameWireEnd::Replace { message } => out.extend(dest_error_bytes(from, message)),
+        SameWireEnd::Append { tail, message } => {
+            if !tail.is_empty() {
+                out.extend(tail);
+            }
+            out.extend(dest_error_bytes(from, message));
+        }
     }
     out
 }
@@ -2467,6 +2670,63 @@ anthropic-beta = "context-1m-2025-08-07"
             );
             assert!(!text.contains("[DONE]"), "{text}");
         }
+    }
+
+    #[test]
+    fn same_wire_html_or_empty_is_an_error() {
+        for body in [b"<html>login</html>".as_slice(), b"".as_slice()] {
+            let bytes =
+                super::same_wire_passthrough_bytes(wiremux_auth::Wire::ChatCompletions, body);
+            let text = String::from_utf8(bytes).expect("utf8");
+            assert!(text.contains(super::INCOMPLETE_STREAM_MESSAGE), "{text}");
+            assert!(!text.contains("<html>"), "{text}");
+        }
+    }
+
+    #[test]
+    fn same_wire_vendor_json_names_the_error() {
+        let body = br#"{"error":{"message":"model not found","type":"invalid_request_error"}}"#;
+        let bytes = super::same_wire_passthrough_bytes(wiremux_auth::Wire::ChatCompletions, body);
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(text.contains("model not found"), "{text}");
+        assert!(
+            text.contains("invalid_request_error"),
+            "vendor type must survive, got {text}"
+        );
+        assert!(!text.contains("<html>"), "{text}");
+    }
+
+    #[test]
+    fn same_wire_finished_chat_stream_is_unchanged() {
+        let body = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let out = super::same_wire_passthrough_bytes(
+            wiremux_auth::Wire::ChatCompletions,
+            body.as_bytes(),
+        );
+        assert_eq!(out, body.as_bytes());
+    }
+
+    #[test]
+    fn same_wire_in_band_sse_error_is_unchanged() {
+        let body = "data: {\"error\":{\"message\":\"model not found\",\"type\":\"invalid_request_error\"}}\n\n";
+        let out = super::same_wire_passthrough_bytes(
+            wiremux_auth::Wire::ChatCompletions,
+            body.as_bytes(),
+        );
+        assert_eq!(out, body.as_bytes());
+    }
+
+    #[test]
+    fn same_wire_delta_without_terminal_appends_incomplete() {
+        let body = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        let bytes = super::same_wire_passthrough_bytes(wiremux_auth::Wire::ChatCompletions, body);
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(text.contains("hi"), "{text}");
+        assert!(text.contains(super::INCOMPLETE_STREAM_MESSAGE), "{text}");
+        assert!(!text.contains("[DONE]"), "{text}");
     }
 
     #[test]
