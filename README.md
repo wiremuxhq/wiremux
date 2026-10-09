@@ -2,7 +2,7 @@
 
 ![Wiremux. Map five LLM wires in-process.](docs/brand/social-preview.png)
 
-[![CI](https://github.com/wiremuxhq/wiremux/actions/workflows/ci.yml/badge.svg?event=pull_request)](https://github.com/wiremuxhq/wiremux/actions/workflows/ci.yml?query=event%3Apull_request)
+[![CI](https://github.com/wiremuxhq/wiremux/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wiremuxhq/wiremux/actions/workflows/ci.yml?query=branch%3Amain)
 [![Security](https://github.com/wiremuxhq/wiremux/actions/workflows/security.yml/badge.svg?event=push)](https://github.com/wiremuxhq/wiremux/actions/workflows/security.yml?query=event%3Apush)
 [![crates.io](https://img.shields.io/crates/v/wiremux?logo=rust)](https://crates.io/crates/wiremux)
 [![docs.rs](https://img.shields.io/docsrs/wiremux?logo=docs.rs)](https://docs.rs/wiremux)
