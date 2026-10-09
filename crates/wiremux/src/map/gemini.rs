@@ -830,23 +830,36 @@ pub(super) fn encode(
         }
     }
 
-    // An empty user or assistant turn must not look like a finished request.
-    // A reasoning item that Gemini cannot send is a drop on an otherwise
-    // valid body, and stays a loss line instead of this error.
-    let dropped_empty_turn = report.events.iter().any(|event| {
-        event.action == LossAction::Drop && event.detail.contains("empty turn has no gemini parts")
-    });
-    if contents.is_empty() && dropped_empty_turn {
-        let dropped: Vec<&str> = report
-            .events
-            .iter()
-            .filter(|event| event.action == LossAction::Drop)
-            .map(|event| event.detail.as_str())
-            .collect();
-        return Err(MapError::Invalid(format!(
-            "gemini contents must not be empty: {}",
-            dropped.join("; ")
-        )));
+    // An empty user or assistant turn, or a system instruction with no
+    // turn, must not look like a finished request. Encrypted reasoning
+    // with no summary is still a successful omit: the loss line is enough.
+    let omitted_reasoning_only = system_parts.is_empty()
+        && report.events.iter().any(|event| {
+            event.action == LossAction::Drop
+                && event
+                    .detail
+                    .contains("reasoning omitted on generateContent")
+        })
+        && !report.events.iter().any(|event| {
+            event.action == LossAction::Drop
+                && event.detail.contains("empty turn has no gemini parts")
+        });
+    if contents.is_empty() && !omitted_reasoning_only {
+        let mut reasons: Vec<&str> = Vec::new();
+        if !system_parts.is_empty() {
+            reasons.push("system instruction needs a contents turn");
+        }
+        for event in &report.events {
+            if event.action == LossAction::Drop {
+                reasons.push(event.detail.as_str());
+            }
+        }
+        let message = if reasons.is_empty() {
+            "gemini contents must not be empty".to_string()
+        } else {
+            format!("gemini contents must not be empty: {}", reasons.join("; "))
+        };
+        return Err(MapError::Invalid(message));
     }
 
     let mut body = json!({ "contents": contents });
