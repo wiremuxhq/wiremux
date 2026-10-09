@@ -1111,23 +1111,20 @@ fn passthrough_sse(
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
         let mut gate = SameWireGate::new(from, profile);
-        let mut failed: Option<String> = None;
         while let Some(item) = stream.next().await {
             match item {
-                Ok(bytes) => {
-                    if failed.is_some() {
-                        continue;
-                    }
-                    match gate.push(&bytes) {
-                        Ok(SameWirePush::Hold) => {}
-                        Ok(SameWirePush::Forward(chunk)) => {
-                            if tx.send(Ok(Frame::data(Bytes::from(chunk)))).await.is_err() {
-                                return;
-                            }
+                Ok(bytes) => match gate.push(&bytes) {
+                    Ok(SameWirePush::Hold) => {}
+                    Ok(SameWirePush::Forward(chunk)) => {
+                        if tx.send(Ok(Frame::data(Bytes::from(chunk)))).await.is_err() {
+                            return;
                         }
-                        Err(msg) => failed = Some(msg),
                     }
-                }
+                    Err(msg) => {
+                        let _ = tx.send(Ok(Frame::data(dest_error_bytes(from, msg)))).await;
+                        return;
+                    }
+                },
                 Err(err) => {
                     let msg = format_oauth_transport_error("upstream stream", &err, &url);
                     log_upstream_send_error(&method, &path, &profile_id, &msg);
@@ -1145,10 +1142,6 @@ fn passthrough_sse(
                     return;
                 }
             }
-        }
-        if let Some(msg) = failed {
-            let _ = tx.send(Ok(Frame::data(dest_error_bytes(from, msg)))).await;
-            return;
         }
         match gate.finish() {
             SameWireEnd::Done { tail } => {
