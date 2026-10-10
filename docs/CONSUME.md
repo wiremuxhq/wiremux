@@ -3,8 +3,8 @@
 How a host application depends on `wiremux` and `wiremux-auth`. This
 repository does not add a host path-dep, wrapper, or request map.
 
-Published crates.io is `0.10.5`. <!-- x-release-please-version -->
-Current tag is `v0.10.5`. <!-- x-release-please-version -->
+Published crates.io is `0.10.6`. <!-- x-release-please-version -->
+Current tag is `v0.10.6`. <!-- x-release-please-version -->
 
 `wiremux-auth` is ready to pin (`Static` + `Profile`, IsolatedHome
 behind `test-util`, shipped `anthropic-oauth` and
@@ -78,12 +78,12 @@ Pin `wiremux-auth` first, then maps at the adapter boundary.
    host SigV4 Bedrock signing may stay in the host.
 
 crates.io is the attach path for published hosts. Pin the current
-published tag `v0.10.5` until the next cut: <!-- x-release-please-version -->
+published tag `v0.10.6` until the next cut: <!-- x-release-please-version -->
 
 ```toml
 [dependencies]
-wiremux-auth = "0.10.5" # x-release-please-version
-wiremux = { version = "0.10.5", default-features = false } # x-release-please-version
+wiremux-auth = "0.10.6" # x-release-please-version
+wiremux = { version = "0.10.6", default-features = false } # x-release-please-version
 ```
 
 `default-features = false` is maps plus re-exported profile types.
@@ -358,6 +358,6 @@ Product README and architecture live at the repository root and in
 
 ## Pin
 
-Published hosts pin crates.io `0.10.5`. <!-- x-release-please-version -->
-Matching tag is `v0.10.5`. <!-- x-release-please-version -->
-Published hosts stay on `0.10.5` until they choose a later crates.io cut. <!-- x-release-please-version -->
+Published hosts pin crates.io `0.10.6`. <!-- x-release-please-version -->
+Matching tag is `v0.10.6`. <!-- x-release-please-version -->
+Published hosts stay on `0.10.6` until they choose a later crates.io cut. <!-- x-release-please-version -->
