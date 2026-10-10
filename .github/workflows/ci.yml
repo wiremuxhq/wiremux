@@ -59,6 +59,7 @@ jobs:
             ci:
               - '.github/workflows/ci.yml'
               - '.github/actions/**'
+              - '.config/nextest.toml'
             workflows:
               - '.github/workflows/**'
               - '.github/actions/**'
