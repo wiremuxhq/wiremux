@@ -3174,6 +3174,130 @@ fn large_function_output_at_min_cacheable_tokens_still_tags() {
     );
 }
 
+fn messages_floor_ir(items: Vec<IrItem>, floor: u32) -> IrRequest {
+    IrRequest::new("claude-opus-4-6", items).with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache::enabled().with_min_cacheable_tokens(floor);
+    }))
+}
+
+fn assert_cache_preserved(bytes: &[u8], report: &LossReport) {
+    let body: Value = serde_json::from_slice(bytes).expect("json");
+    assert!(
+        count_cache_control(&body) > 0,
+        "prompt at the floor must still tag, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.cache" && event.action == LossAction::Preserve
+        }),
+        "must Preserve sampling.cache, got {report:?}"
+    );
+}
+
+fn assert_cache_dropped(bytes: &[u8], report: &LossReport) {
+    let body: Value = serde_json::from_slice(bytes).expect("json");
+    assert_eq!(count_cache_control(&body), 0, "short prompt, got {body}");
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.cache"
+                && event.action == LossAction::Drop
+                && event.detail.contains("1024")
+        }),
+        "must Drop sampling.cache naming the floor, got {report:?}"
+    );
+}
+
+#[test]
+fn large_custom_tool_input_at_min_cacheable_tokens_still_tags() {
+    let input = "x".repeat(5000);
+    let ir = messages_floor_ir(
+        vec![
+            IrItem::System {
+                text: "rules".into(),
+            },
+            IrItem::CustomToolCall {
+                call_id: "call_custom".into(),
+                name: "lookup".into(),
+                input: input.clone(),
+                responses_item: None,
+            },
+        ],
+        1024,
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    assert!(
+        String::from_utf8_lossy(&bytes).contains(&input),
+        "custom-tool input must be in the Messages body"
+    );
+    assert_cache_preserved(&bytes, &report);
+}
+
+#[test]
+fn short_custom_tool_input_below_min_cacheable_tokens_drops_cache_control() {
+    let ir = messages_floor_ir(
+        vec![
+            IrItem::System {
+                text: "rules".into(),
+            },
+            IrItem::CustomToolCall {
+                call_id: "call_custom".into(),
+                name: "lookup".into(),
+                input: "{}".into(),
+                responses_item: Some(serde_json::json!({ "input": "x".repeat(5000) })),
+            },
+        ],
+        1024,
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    assert_cache_dropped(&bytes, &report);
+}
+
+#[test]
+fn large_reasoning_summary_at_min_cacheable_tokens_still_tags() {
+    let summary = "x".repeat(5000);
+    let ir = messages_floor_ir(
+        vec![
+            IrItem::System {
+                text: "rules".into(),
+            },
+            IrItem::Reasoning {
+                encrypted: Some("sig".into()),
+                summary: Some(summary.clone()),
+                raw: None,
+            },
+        ],
+        1024,
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    assert!(
+        String::from_utf8_lossy(&bytes).contains(&summary),
+        "reasoning summary must be in the Messages body"
+    );
+    assert_cache_preserved(&bytes, &report);
+}
+
+#[test]
+fn reasoning_signature_alone_stays_below_min_cacheable_tokens() {
+    let ir = messages_floor_ir(
+        vec![
+            IrItem::System {
+                text: "rules".into(),
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("hello".into())],
+            },
+            IrItem::Reasoning {
+                encrypted: Some("y".repeat(5000)),
+                summary: None,
+                raw: None,
+            },
+        ],
+        1024,
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    assert_cache_dropped(&bytes, &report);
+}
+
 fn user_ir(sampling: IrSampling) -> IrRequest {
     IrRequest::new(
         "gpt-4",
