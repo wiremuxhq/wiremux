@@ -276,7 +276,11 @@ probe suite. Display text is unchanged from 0.7.0.
 `WireClient::from_profile` loads a catalog id (shipped `base_url`,
 `chat_path`, `auth_scheme`, `[headers]`, `[betas]`) and
 `provider_for_profile`. `send` encodes IR, POSTs, and decodes a
-complete JSON body. `stream` remaps SSE frames. `list_models` GETs
+complete JSON body, and returns the encode `LossReport`. `stream`
+remaps SSE frames and drops that report. `stream_with_loss` returns
+the same report before the first event. An encode error from
+`stream_with_loss` fails before any HTTP call. HTTP and SSE errors
+stay on the event stream. `list_models` GETs
 the models catalog. OpenAI-compat uses the chat version prefix
 (`{base}/v1/models` when `chat_path` is `/v1/chat/completions` or
 `/v1/messages`). It reads `context_length` then `context_window`
