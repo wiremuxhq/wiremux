@@ -5,6 +5,7 @@ use std::fmt;
 use std::pin::Pin;
 
 use bytes::Bytes;
+use futures_util::future::Either;
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 use wiremux_auth::{
@@ -378,18 +379,52 @@ impl WireClient {
     }
 
     /// POST with the dialect stream flag and remap SSE frames incrementally.
+    ///
+    /// Encode loss is dropped. [`Self::stream_with_loss`] returns that report.
+    /// An encode error is the first item, and no request is sent.
+    /// The stream does not borrow `self`.
     pub fn stream(
         &self,
         ir: IrRequest,
-    ) -> impl Stream<Item = Result<IrStreamEvent, ClientError>> + Send {
+    ) -> impl Stream<Item = Result<IrStreamEvent, ClientError>> + Send + use<> {
+        match self.stream_with_loss(ir) {
+            Ok((_loss, events)) => Either::Left(events),
+            Err(err) => Either::Right(futures_util::stream::once(futures_util::future::ready(
+                Err(err),
+            ))),
+        }
+    }
+
+    /// Encode with the dialect stream flag, then remap SSE frames.
+    ///
+    /// The [`LossReport`] is encode loss only, and it is ready before any
+    /// HTTP call. Encode errors return [`Err`] and do not open a stream.
+    /// HTTP and SSE errors stay on the event stream. The stream does not
+    /// borrow `self`.
+    pub fn stream_with_loss(
+        &self,
+        mut ir: IrRequest,
+    ) -> Result<
+        (
+            LossReport,
+            impl Stream<Item = Result<IrStreamEvent, ClientError>> + Send + use<>,
+        ),
+        ClientError,
+    > {
+        ir.sampling.stream = Some(true);
+        let wire = profile_wire(&self.profile)?;
+        let (encoded, loss) = encode(wire, &ir, &self.profile)?;
         let client = self.clone();
-        futures_util::stream::unfold(
+        let model = ir.model;
+        let events = futures_util::stream::unfold(
             StreamPhase::Start {
                 client,
-                ir: Box::new(ir),
+                model,
+                encoded,
             },
             |phase| async move { step_stream(phase).await },
-        )
+        );
+        Ok((loss, events))
     }
 
     /// GET the models catalog. OpenAI-compat uses the chat version prefix
@@ -552,11 +587,9 @@ impl WireClient {
         Ok(Some((context_from_show(&value), vision_from_show(&value))))
     }
 
-    async fn open_stream(&self, mut ir: IrRequest) -> Result<LiveStream, ClientError> {
-        ir.sampling.stream = Some(true);
+    async fn open_encoded(&self, model: &str, encoded: Vec<u8>) -> Result<LiveStream, ClientError> {
         let wire = profile_wire(&self.profile)?;
-        let (encoded, _loss) = encode(wire, &ir, &self.profile)?;
-        let url = upstream_url_for_model(&self.profile, Some(ir.model.as_str()), true)
+        let url = upstream_url_for_model(&self.profile, Some(model), true)
             .map_err(ClientError::Transport)?;
         let resp = self.post_json_auth_retry(&url, encoded).await?;
         let status = resp.status().as_u16();
@@ -594,7 +627,8 @@ impl WireClient {
 enum StreamPhase {
     Start {
         client: WireClient,
-        ir: Box<IrRequest>,
+        model: String,
+        encoded: Vec<u8>,
     },
     Live(LiveStream),
     Done,
@@ -645,7 +679,11 @@ async fn step_stream(
     phase: StreamPhase,
 ) -> Option<(Result<IrStreamEvent, ClientError>, StreamPhase)> {
     match phase {
-        StreamPhase::Start { client, ir } => match client.open_stream(*ir).await {
+        StreamPhase::Start {
+            client,
+            model,
+            encoded,
+        } => match client.open_encoded(&model, encoded).await {
             Ok(live) => pull_live(live).await,
             Err(err) => Some((Err(err), StreamPhase::Done)),
         },

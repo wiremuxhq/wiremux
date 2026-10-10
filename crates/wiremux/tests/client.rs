@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use serde_json::json;
 use wiremux::{
-    ClientError, IrItem, IrPart, IrRequest, IrStreamEvent, TransientKind, WireClient,
+    ClientError, IrItem, IrPart, IrRequest, IrStreamEvent, LossReport, TransientKind, WireClient,
     parse_profile_str,
 };
 use wiremux_auth::{
@@ -99,6 +99,40 @@ chat_path = "/model/{{model}}/converse"
     .expect("converse profile");
     WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("none")))
         .expect("client")
+}
+
+fn gemini_client_for(base: &str, token: &str) -> WireClient {
+    let profile = parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "mock-gemini"
+wire = "gemini"
+auth_scheme = "bearer"
+base_url = "{base}"
+chat_path = "/v1beta/models/{{model}}:generateContent"
+"#
+    ))
+    .expect("gemini profile");
+    WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new(token)))
+        .expect("client")
+}
+
+fn image_detail_ir(model: &str, url: &str) -> IrRequest {
+    IrRequest::new(
+        model,
+        vec![IrItem::User {
+            parts: vec![IrPart::ImageUrl {
+                url: url.into(),
+                detail: Some("high".into()),
+            }],
+        }],
+    )
+}
+
+fn has_image_detail(loss: &LossReport, wire: &str) -> bool {
+    loss.events.iter().any(|event| {
+        event.path == "part.image.detail" && event.detail.contains(&format!("no {wire} slot"))
+    })
 }
 
 fn write_http_bytes(
@@ -2366,4 +2400,179 @@ fn reset_helper_is_after_connect() {
         !display.to_ascii_lowercase().contains("kind"),
         "Display must not name TransientKind, got {display}"
     );
+}
+
+fn converse_client_for_token(base: &str, _token: &str) -> WireClient {
+    converse_client_for(base)
+}
+
+async fn send_and_stream_loss(
+    make: fn(&str, &str) -> WireClient,
+    ir: IrRequest,
+    body: &str,
+) -> (LossReport, String, LossReport, String) {
+    let (base, handle) = spawn_one(200, "OK", "", body.to_string());
+    let (_events, send_loss) = make(&base, "sk-test").send(ir.clone()).await.expect("send");
+    let send_req = handle.join().expect("send join");
+
+    let (base, handle) = spawn_one(200, "OK", "", body.to_string());
+    let (stream_loss, events) = make(&base, "sk-test")
+        .stream_with_loss(ir)
+        .expect("stream_with_loss");
+    let mut events = std::pin::pin!(events);
+    assert!(
+        events.next().await.is_some(),
+        "polling the stream must reach the mock"
+    );
+    let stream_req = handle.join().expect("stream join");
+    (send_loss, send_req, stream_loss, stream_req)
+}
+
+#[tokio::test]
+async fn send_and_stream_with_loss_report_dropped_image_detail() {
+    let url = "https://example.com/cat.png";
+    let messages_ok = r#"{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}"#;
+    let responses_ok = r#"{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}"#;
+    let gemini_ok =
+        r#"{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"#;
+    let dropped = [
+        send_and_stream_loss(
+            messages_client_for,
+            image_detail_ir("claude-3-5-sonnet", url),
+            messages_ok,
+        )
+        .await,
+        send_and_stream_loss(
+            responses_client_for,
+            image_detail_ir("gpt-4o", url),
+            responses_ok,
+        )
+        .await,
+        send_and_stream_loss(
+            gemini_client_for,
+            image_detail_ir("gemini-2.0-flash", url),
+            gemini_ok,
+        )
+        .await,
+    ];
+    for (wire, (send_loss, send_req, stream_loss, stream_req)) in
+        ["messages", "responses", "gemini"].into_iter().zip(dropped)
+    {
+        assert!(
+            has_image_detail(&send_loss, wire),
+            "{wire} send dropped image detail without a loss line: {send_loss:?}"
+        );
+        assert!(
+            has_image_detail(&stream_loss, wire),
+            "{wire} stream_with_loss dropped image detail without a loss line: {stream_loss:?}"
+        );
+        assert!(
+            send_req.contains(url) && stream_req.contains(url),
+            "{wire} image URL must stay on the encoded body\nsend: {send_req}\nstream: {stream_req}"
+        );
+    }
+
+    // Converse keeps only s3:// image URLs. An https URL is dropped.
+    let s3 = "s3://bucket/cat.png";
+    let (send_loss, send_req, stream_loss, stream_req) = send_and_stream_loss(
+        converse_client_for_token,
+        image_detail_ir("amazon.nova-lite-v1:0", s3),
+        r#"{"output":{"message":{"content":[{"text":"ok"}]}},"stopReason":"end_turn"}"#,
+    )
+    .await;
+    assert!(
+        has_image_detail(&send_loss, "converse"),
+        "converse send: {send_loss:?}"
+    );
+    assert!(
+        has_image_detail(&stream_loss, "converse"),
+        "converse stream_with_loss: {stream_loss:?}"
+    );
+    assert!(
+        send_req.contains(s3) && stream_req.contains(s3),
+        "converse s3 URL must stay on the encoded body\nsend: {send_req}\nstream: {stream_req}"
+    );
+}
+
+#[tokio::test]
+async fn chat_send_and_stream_with_loss_keep_image_detail() {
+    let url = "https://example.com/cat.png";
+    let (send_loss, send_req, stream_loss, stream_req) = send_and_stream_loss(
+        client_for,
+        image_detail_ir("gpt-4", url),
+        &complete_chat_body(),
+    )
+    .await;
+    assert!(
+        send_loss
+            .events
+            .iter()
+            .all(|event| event.path != "part.image.detail"),
+        "chat send must keep detail: {send_loss:?}"
+    );
+    assert!(
+        stream_loss
+            .events
+            .iter()
+            .all(|event| event.path != "part.image.detail"),
+        "chat stream_with_loss must keep detail: {stream_loss:?}"
+    );
+    for req in [&send_req, &stream_req] {
+        assert!(
+            req.contains(url) && req.contains("high"),
+            "chat must keep the image URL and detail: {req}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn stream_with_loss_encode_failure_does_not_connect() {
+    let cases = [
+        (
+            "messages",
+            "system text needs a message turn",
+            IrRequest::new(
+                "claude-3-5-sonnet",
+                vec![IrItem::System {
+                    text: "be brief".into(),
+                }],
+            ),
+        ),
+        (
+            "responses",
+            "responses input must not be empty",
+            IrRequest::new("gpt-4o", Vec::new()),
+        ),
+    ];
+    for (wire, needle, ir) in cases {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let base = format!("http://{addr}");
+        let client = match wire {
+            "messages" => messages_client_for(&base, "sk-test"),
+            "responses" => responses_client_for(&base, "sk-test"),
+            _ => unreachable!(),
+        };
+        let err = match client.stream_with_loss(ir.clone()) {
+            Err(err) => err,
+            Ok((loss, _)) => panic!("encode must fail before HTTP, got {loss:?}"),
+        };
+        let text = err.to_string();
+        assert!(text.contains(needle), "{wire}: {text}");
+        assert!(
+            accept_timeout(&listener, Duration::from_millis(200)).is_none(),
+            "{wire} stream_with_loss must not open a connection"
+        );
+
+        let mut stream = std::pin::pin!(client.stream(ir));
+        let first = stream.next().await.expect("stream item");
+        match first {
+            Err(err) => assert!(err.to_string().contains(needle), "{wire} stream: {err}"),
+            Ok(event) => panic!("{wire} stream must surface the encode error, got {event:?}"),
+        }
+        assert!(
+            accept_timeout(&listener, Duration::from_millis(200)).is_none(),
+            "{wire} stream must not open a connection when encode fails"
+        );
+    }
 }
