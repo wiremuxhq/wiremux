@@ -8,8 +8,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use wiremux::{
-    EventStreamReader, IrStreamEvent, RawSse, ResolvedProfile, StreamEncoder, ToolCallAssembler,
-    Wire, decode_stream_events, encode_eventstream_message, parse_profile_str,
+    EventStreamReader, IrStreamEvent, MapError, RawSse, ResolvedProfile, StreamEncoder,
+    ToolCallAssembler, Wire, decode_stream_events, encode_eventstream_message, parse_profile_str,
 };
 
 fn golden(name: &str) -> String {
@@ -45,13 +45,13 @@ fn has_slot(client: Wire, ev: &IrStreamEvent) -> bool {
     }
 }
 
-fn remap(upstream: Wire, client: Wire, frames: &[RawSse]) -> Vec<RawSse> {
+fn remap(upstream: Wire, client: Wire, frames: &[RawSse]) -> Result<Vec<RawSse>, MapError> {
     let profile = profile_for(upstream);
     let mut assembler = ToolCallAssembler::new();
     let mut encoder = StreamEncoder::new(client);
     let mut out = Vec::new();
     for raw in frames {
-        let events = decode_stream_events(upstream, raw, &profile).unwrap_or_default();
+        let events = decode_stream_events(upstream, raw, &profile)?;
         for ev in events.into_iter().flat_map(|ev| assembler.push(ev)) {
             if !has_slot(client, &ev) {
                 continue;
@@ -66,7 +66,7 @@ fn remap(upstream: Wire, client: Wire, frames: &[RawSse]) -> Vec<RawSse> {
         out.extend(encoder.push(ev).expect("encode flush"));
     }
     out.extend(encoder.finish().expect("finish"));
-    out
+    Ok(out)
 }
 
 fn frame_names(frames: &[RawSse]) -> Vec<String> {
@@ -244,7 +244,7 @@ fn grammar_matrix_upstream_goldens_to_each_client() {
         let frames = RawSse::parse_all(&golden(name)).expect("parse golden SSE");
         assert!(!frames.is_empty(), "{name} parsed no frames");
         for client in CLIENTS {
-            let mapped = remap(*upstream, *client, &frames);
+            let mapped = remap(*upstream, *client, &frames).expect("decode golden");
             check_grammar(*client, &mapped);
         }
     }
@@ -265,7 +265,7 @@ fn redacted_capture_exists_per_vendor_dialect() {
     let (frames, err) = reader.feed(&converse).expect("eventstream");
     assert!(err.is_none(), "{err:?}");
     assert_eq!(frames.len(), 1, "{frames:?}");
-    let mapped = remap(Wire::Converse, Wire::Messages, &frames);
+    let mapped = remap(Wire::Converse, Wire::Messages, &frames).expect("decode converse");
     check_messages(&mapped);
 }
 
@@ -276,7 +276,8 @@ fn messages_grammar_has_start_blocks_and_one_stop() {
         Wire::Messages,
         &RawSse::parse_all(&golden("chat_tool_call_deltas.sse"))
             .expect("parse chat tool call deltas"),
-    );
+    )
+    .expect("decode chat tool call deltas");
     check_messages(&frames);
 }
 
@@ -287,7 +288,8 @@ fn responses_grammar_one_created_one_completed() {
         Wire::Responses,
         &RawSse::parse_all(&golden("responses_usage_with_cache.sse"))
             .expect("parse responses usage golden"),
-    );
+    )
+    .expect("decode responses usage golden");
     check_responses(&frames);
 }
 
@@ -298,7 +300,8 @@ fn chat_grammar_distinct_tool_indexes() {
         Wire::ChatCompletions,
         &RawSse::parse_all(&golden("chat_tool_call_deltas.sse"))
             .expect("parse chat tool call deltas"),
-    );
+    )
+    .expect("decode chat tool call deltas");
     check_chat(&frames);
 }
 
@@ -331,5 +334,19 @@ fn converse_finish_reason_is_one_message_stop() {
             .pointer("/messageStop/stopReason")
             .and_then(|v| v.as_str()),
         Some("tool_use")
+    );
+}
+
+#[test]
+fn remap_rejects_a_frame_that_does_not_decode() {
+    let bad = [RawSse {
+        event: None,
+        data: "{".into(),
+    }];
+    let err = remap(Wire::ChatCompletions, Wire::Messages, &bad)
+        .expect_err("broken JSON must not become a finished Messages stream");
+    assert!(
+        err.to_string().contains("invalid JSON"),
+        "decode error must name invalid JSON, got {err}"
     );
 }

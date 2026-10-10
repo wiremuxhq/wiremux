@@ -52,12 +52,7 @@ fn responses_completed_repeats_resp_wiremux() {
         .expect("completed frame");
     let value: Value = serde_json::from_str(&completed.data).expect("json");
     assert_eq!(value["response"]["id"], "resp_wiremux", "{value}");
-    assert!(
-        value["response"]["object"].as_str().is_some()
-            || value["object"].as_str().is_some()
-            || completed.data.contains("\"object\""),
-        "{value}"
-    );
+    assert_eq!(value["response"]["object"], "response", "{value}");
 }
 
 #[test]
@@ -149,13 +144,17 @@ fn responses_interleaved_arguments_stay_on_first_item() {
             index: 0,
         })
         .expect("rest of 0");
-    let blob = data_of(&late);
-    assert!(
-        blob.contains("call_0") || blob.contains("\"q\""),
-        "late arguments for item 0 must not be dropped or attached only to call_1, got {blob}"
+    let frames = json_frames(&late);
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    assert_eq!(
+        frames[0]["type"], "response.function_call_arguments.delta",
+        "{frames:?}"
     );
+    assert_eq!(frames[0]["item_id"], "call_0", "{frames:?}");
+    assert_eq!(frames[0]["output_index"], 0, "{frames:?}");
+    assert_eq!(frames[0]["delta"], "1}", "{frames:?}");
     assert!(
-        !blob.contains("call_1") || blob.contains("call_0") || blob.contains("\"q\""),
-        "{blob}"
+        !frames[0].to_string().contains("call_1"),
+        "late arguments must stay on call_0, got {frames:?}"
     );
 }

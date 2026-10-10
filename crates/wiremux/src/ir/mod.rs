@@ -710,8 +710,13 @@ pub enum LossAction {
 /// Estimate prompt tokens as `chars / 4` over IR text.
 ///
 /// Counts system / developer / user / assistant text and thinking parts,
-/// function-call names and args, function-output text, and function-tool
-/// names, descriptions, and parameters.
+/// function-call names and args, custom-tool names and inputs,
+/// function-output text, reasoning text that becomes a thinking block,
+/// and function-tool names, descriptions, and parameters.
+///
+/// A custom tool's `responses_item` is the same input again, so it is
+/// not counted. A reasoning signature is not prompt text. Hosted and
+/// unknown raw JSON stay out so a short prompt is not treated as long.
 #[must_use]
 pub fn estimate_prompt_tokens(req: &IrRequest) -> u32 {
     let mut chars = 0usize;
@@ -733,8 +738,14 @@ pub fn estimate_prompt_tokens(req: &IrRequest) -> u32 {
             } => {
                 chars += name.len() + arguments.len();
             }
+            IrItem::CustomToolCall { name, input, .. } => {
+                chars += name.len() + input.len();
+            }
             IrItem::FunctionOutput { output, .. } => {
                 chars += output.len();
+            }
+            IrItem::Reasoning { summary, raw, .. } => {
+                chars += reasoning_prompt_chars(summary.as_deref(), raw.as_ref());
             }
             _ => {}
         }
@@ -751,6 +762,30 @@ pub fn estimate_prompt_tokens(req: &IrRequest) -> u32 {
         }
     }
     (chars / 4) as u32
+}
+
+/// Text the Messages encoder writes into a thinking block.
+///
+/// A raw `type: thinking` object contributes its `thinking` string.
+/// Otherwise the summary, or a raw `summary` string. The encrypted
+/// signature is omitted.
+fn reasoning_prompt_chars(summary: Option<&str>, raw: Option<&serde_json::Value>) -> usize {
+    if let Some(raw) = raw
+        && raw.get("type").and_then(serde_json::Value::as_str) == Some("thinking")
+    {
+        return raw
+            .get("thinking")
+            .and_then(serde_json::Value::as_str)
+            .map(str::len)
+            .unwrap_or(0);
+    }
+    if let Some(summary) = summary {
+        return summary.len();
+    }
+    raw.and_then(|value| value.get("summary"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::len)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -906,6 +941,95 @@ mod tests {
         assert!(
             estimate_prompt_tokens(&req) >= 1024,
             "5000 thinking chars must meet a 1024-token floor"
+        );
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_counts_custom_tool_input_not_responses_item() {
+        let long = "x".repeat(5000);
+        let counted = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::CustomToolCall {
+                call_id: "c1".into(),
+                name: "lookup".into(),
+                input: long.clone(),
+                responses_item: None,
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&counted) >= 1024,
+            "5000 custom-tool input chars must meet a 1024-token floor"
+        );
+
+        let wrapper_only = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::CustomToolCall {
+                call_id: "c1".into(),
+                name: "lookup".into(),
+                input: "{}".into(),
+                responses_item: Some(serde_json::json!({ "input": long })),
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&wrapper_only) < 1024,
+            "responses_item must not double-count the custom-tool input"
+        );
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_counts_reasoning_summary_not_signature() {
+        let long = "x".repeat(5000);
+        let summary = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::Reasoning {
+                encrypted: Some("y".repeat(5000)),
+                summary: Some(long.clone()),
+                raw: None,
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&summary) >= 1024,
+            "5000 reasoning-summary chars must meet a 1024-token floor"
+        );
+
+        let signature_only = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::Reasoning {
+                encrypted: Some(long.clone()),
+                summary: None,
+                raw: None,
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&signature_only) < 1024,
+            "a reasoning signature must not meet the floor by itself"
+        );
+
+        let raw_thinking = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::Reasoning {
+                encrypted: None,
+                summary: None,
+                raw: Some(serde_json::json!({
+                    "type": "thinking",
+                    "thinking": long,
+                    "signature": "y".repeat(5000),
+                })),
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&raw_thinking) >= 1024,
+            "a raw thinking string must meet a 1024-token floor"
         );
     }
 

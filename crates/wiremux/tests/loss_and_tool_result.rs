@@ -157,11 +157,7 @@ fn chat_tool_result_image_is_a_drop() {
     let (ir, _) = decode(Wire::Messages, raw.as_bytes()).expect("decode");
     let (body, report) = encode_value(Wire::ChatCompletions, &ir);
     assert!(
-        has_action(&report, LossAction::Drop, "image")
-            || report
-                .events
-                .iter()
-                .any(|event| event.action == LossAction::Drop),
+        has_action(&report, LossAction::Drop, "image"),
         "chat has no image slot on a tool result, got {report:?}"
     );
     assert!(!body.to_string().contains("aaaa"), "{body}");
@@ -834,7 +830,7 @@ fn thinking_forces_tool_choice_auto_and_drops_temperature() {
     }));
     let (body, _) = encode_value(Wire::Messages, &plain);
     assert_eq!(body["temperature"], 0.2, "{body}");
-    assert_ne!(body["tool_choice"]["type"], "auto", "{body}");
+    assert_eq!(body["tool_choice"]["type"], "any", "{body}");
 }
 
 #[test]
