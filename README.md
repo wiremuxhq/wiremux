@@ -123,9 +123,14 @@ exits 2 and prints why (set `pkce` or `device`, and a client id).
 `login = "setup-token"` (shipped Anthropic) prints
 `setup_token_hint` and also exits 2.
 
-Catalog ingest writes user-dir profiles from
+`wiremux profile ingest` writes user-dir profiles from
 [models.dev](https://models.dev/api.json) (default) or LiteLLM
-(`--source litellm`). Catalog misses fail closed.
+(`--source litellm`). `--dry-run` prints the paths and does not
+write. Catalog misses fail closed.
+
+```bash
+wiremux profile ingest --dry-run
+```
 
 ## Proxy
 
