@@ -137,6 +137,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("release_created == 'true'", workflow)
         self.assertIn("apply-release-notes:", workflow)
         self.assertIn("scripts/apply-release-notes.sh", workflow)
+        self.assertNotIn("continue-on-error:", workflow)
         self.assertIn("uses: ./.github/workflows/publish-crates.yml", workflow)
         self.assertIn("dispatch-release-binaries:", workflow)
         self.assertIn('gh workflow run "Release binaries"', workflow)
@@ -446,6 +447,20 @@ class WorkflowTriggerTests(unittest.TestCase):
             "version-bump PR; CodeQL already ran on the feature PR",
             security,
         )
+        self.assertIn("- '.config/nextest.toml'", ci)
+        codeql_hits = security.count("startsWith(github.head_ref, 'release-please')")
+        self.assertEqual(codeql_hits, 8)
+        start = 0
+        for _ in range(codeql_hits):
+            i = security.find("startsWith(github.head_ref, 'release-please')", start)
+            window = security[max(0, i - 180) : i + 180]
+            self.assertIn("github-actions[bot]", window)
+            start = i + 1
+        fossa = (WORKFLOWS / "fossa.yml").read_text(encoding="utf-8")
+        fossa_at = fossa.find("startsWith(github.head_ref, 'release-please')")
+        self.assertGreater(fossa_at, 0)
+        fossa_window = fossa[max(0, fossa_at - 180) : fossa_at + 180]
+        self.assertIn("github-actions[bot]", fossa_window)
         self.assertIn("Monday security red", security)
         self.assertIn("scripts/report-scheduled-failure.py", security)
         self.assertIn('cron: "17 4 * * 1"', security)

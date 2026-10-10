@@ -165,7 +165,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Apply curated notes
-        continue-on-error: true
         run: bash scripts/apply-release-notes.sh
 
   # GITHUB_TOKEN tags do not start Release binaries. workflow_dispatch does.
