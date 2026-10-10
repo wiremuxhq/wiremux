@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.6](https://github.com/wiremuxhq/wiremux/compare/v0.10.5...v0.10.6) (2026-10-10)
+
+
+### Bug Fixes
+
+* keep the Grok proxy client version in one const ([#550](https://github.com/wiremuxhq/wiremux/issues/550)) ([7604848](https://github.com/wiremuxhq/wiremux/commit/76048481b42a5dcb99ad4a5e1105a230ab1887c7))
+* name the dropped image when Converse would be empty ([#554](https://github.com/wiremuxhq/wiremux/issues/554)) ([badcfc9](https://github.com/wiremuxhq/wiremux/commit/badcfc954e2746e4072c12129c6704eb80d66506))
+* reject a same-wire event-stream that never starts ([#552](https://github.com/wiremuxhq/wiremux/issues/552)) ([ea08ada](https://github.com/wiremuxhq/wiremux/commit/ea08ada3b3fd05d78bb8d07d5b8cbb1422e8ec79))
+* reject a system-only Gemini map with no contents turn ([#556](https://github.com/wiremuxhq/wiremux/issues/556)) ([b74b154](https://github.com/wiremuxhq/wiremux/commit/b74b1542fa6e70dfb85b4f93365495dd4280c921))
+* reject a system-only Messages or Responses map ([#557](https://github.com/wiremuxhq/wiremux/issues/557)) ([459f7e7](https://github.com/wiremuxhq/wiremux/commit/459f7e7b429f4ef1a7855abaf5fc5fc85d0245f8))
+* reject an empty Gemini map instead of a blank success ([#555](https://github.com/wiremuxhq/wiremux/issues/555)) ([737cb2a](https://github.com/wiremuxhq/wiremux/commit/737cb2ad0b2ac455902a07c8bddd3ff430898976))
+* report image detail when the destination has no slot ([#553](https://github.com/wiremuxhq/wiremux/issues/553)) ([ea06de1](https://github.com/wiremuxhq/wiremux/commit/ea06de148ec8370950a52507547c057a3ac691ab))
+
 ## [0.10.5](https://github.com/wiremuxhq/wiremux/compare/v0.10.4...v0.10.5) (2026-10-08)
 
 
