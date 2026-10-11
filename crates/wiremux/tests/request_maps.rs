@@ -1090,7 +1090,11 @@ fn gemini_tool_schema_drops_prefix_items() {
         .pointer("/tools/0/functionDeclarations/0/parameters/properties/coords")
         .expect("coords");
     assert!(coords.get("prefixItems").is_none(), "{coords}");
-    assert!(coords.get("items").is_some(), "{coords}");
+    assert_eq!(
+        coords.get("items"),
+        Some(&serde_json::json!({})),
+        "dropped prefixItems must leave an empty items schema, got {coords}"
+    );
     let root = body
         .pointer("/tools/0/functionDeclarations/0/parameters")
         .expect("parameters");
@@ -1161,7 +1165,11 @@ fn gemini_tool_schema_drops_prefix_items() {
         Some("array"),
         "{inlined}"
     );
-    assert!(inlined.get("items").is_some(), "{inlined}");
+    assert_eq!(
+        inlined.get("items"),
+        Some(&serde_json::json!({})),
+        "inlined prefixItems must leave an empty items schema, got {inlined}"
+    );
 }
 
 #[test]
@@ -1192,7 +1200,11 @@ fn gemini_response_schema_drops_prefix_items() {
         .pointer("/generationConfig/responseSchema/properties/coords")
         .expect("coords");
     assert!(coords.get("prefixItems").is_none(), "{coords}");
-    assert!(coords.get("items").is_some(), "{coords}");
+    assert_eq!(
+        coords.get("items"),
+        Some(&serde_json::json!({})),
+        "dropped prefixItems must leave an empty items schema, got {coords}"
+    );
     assert!(
         report
             .events
