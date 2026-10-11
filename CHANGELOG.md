@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.0](https://github.com/wiremuxhq/wiremux/compare/v0.10.6...v0.11.0) (2026-10-11)
+
+
+### Features
+
+* **client:** return the encode LossReport from streaming ([#560](https://github.com/wiremuxhq/wiremux/issues/560)) ([49346f5](https://github.com/wiremuxhq/wiremux/commit/49346f59077bc2c91371d0eabbffda9053773a27)), closes [#559](https://github.com/wiremuxhq/wiremux/issues/559)
+
+
+### Bug Fixes
+
+* **ci:** do not treat a skipped scan as a green gate ([#562](https://github.com/wiremuxhq/wiremux/issues/562)) ([31b8ed8](https://github.com/wiremuxhq/wiremux/commit/31b8ed8f948b923f3a8b6978094265fff337b433))
+* count custom-tool and reasoning text in the cache floor ([#563](https://github.com/wiremuxhq/wiremux/issues/563)) ([4c65ad7](https://github.com/wiremuxhq/wiremux/commit/4c65ad796ac88375136910e36a021f8b8b613a83))
+* treat a blank setup-token hint as missing ([#568](https://github.com/wiremuxhq/wiremux/issues/568)) ([9fc4f9f](https://github.com/wiremuxhq/wiremux/commit/9fc4f9f96522aef33dc57bc1eb2c6949a50ecbed))
+
 ## [0.10.6](https://github.com/wiremuxhq/wiremux/compare/v0.10.5...v0.10.6) (2026-10-10)
 
 
