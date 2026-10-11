@@ -252,18 +252,15 @@ fn auth_login_xai_oauth_prints_grok_store_hint_and_exits_2() {
         .output()
         .expect("run");
     assert_eq!(out.status.code(), Some(2), "{:?}", out);
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stdout.contains("log in with Grok or set XAI_API_KEY on profile xai"),
+        "xai-oauth must print the setup-token hint, got stdout: {stdout} stderr: {stderr}"
     );
     assert!(
-        text.contains("XAI_API_KEY") || text.contains("Grok"),
-        "expected Grok store or XAI_API_KEY hint, got: {text}"
-    );
-    assert!(
-        !text.contains("openai-codex-oauth"),
-        "empty-client xai-oauth must not print openai-codex-oauth overlay text, got: {text}"
+        !stdout.contains("openai-codex-oauth") && !stderr.contains("openai-codex-oauth"),
+        "empty-client xai-oauth must not print openai-codex-oauth overlay text, got: {stdout}{stderr}"
     );
 }
 
