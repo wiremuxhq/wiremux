@@ -2538,9 +2538,10 @@ fn dest_responses_stream_encode_refusal_delta_is_refusal_event() {
         Some("response.refusal.delta")
     );
     assert_eq!(body.get("delta").and_then(Value::as_str), Some("nope"));
-    assert!(
-        body.get("output_index").is_some(),
-        "dest Responses refusal.delta must follow TextDelta shape with output_index, got {}",
+    assert_eq!(
+        body.get("output_index").and_then(Value::as_u64),
+        Some(0),
+        "dest Responses refusal.delta must follow TextDelta shape with output_index 0, got {}",
         raw.data
     );
 }
@@ -4824,11 +4825,15 @@ fn dest_complete_image_before_text_keeps_part_order() {
         "text after an image must follow it on dest Messages, got {messages}"
     );
     let gemini = encode_response(Wire::Gemini, &events).expect("gemini");
-    assert!(
-        gemini
-            .pointer("/candidates/0/content/parts/0/inlineData")
-            .is_some(),
+    assert_eq!(
+        gemini.pointer("/candidates/0/content/parts/0/inlineData/mimeType"),
+        Some(&json!("image/png")),
         "image before text must stay first on dest Gemini, got {gemini}"
+    );
+    assert_eq!(
+        gemini.pointer("/candidates/0/content/parts/0/inlineData/data"),
+        Some(&json!("iVBORw0KGgo=")),
+        "image before text must keep the png bytes on dest Gemini, got {gemini}"
     );
     assert_eq!(
         gemini
@@ -5273,9 +5278,15 @@ fn dest_converse_citation_uses_flushed_caption_text() {
         Some("caption"),
         "flushed caption must move into citationsContent, got {body}"
     );
-    assert!(
-        body.pointer("/output/message/content/1/image").is_some(),
+    assert_eq!(
+        body.pointer("/output/message/content/1/image/format"),
+        Some(&json!("png")),
         "image must stay beside the citation, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/output/message/content/1/image/source/bytes"),
+        Some(&json!("iVBORw0KGgo=")),
+        "image bytes must stay beside the citation, got {body}"
     );
     let plain = body
         .pointer("/output/message/content")
@@ -5313,11 +5324,15 @@ fn dest_converse_citation_uses_flushed_caption_text() {
         Some("before"),
         "the prefix stays in the first citations block, got {split_body}"
     );
-    assert!(
-        split_body
-            .pointer("/output/message/content/1/image")
-            .is_some(),
+    assert_eq!(
+        split_body.pointer("/output/message/content/1/image/format"),
+        Some(&json!("png")),
         "the image stays between the text runs, got {split_body}"
+    );
+    assert_eq!(
+        split_body.pointer("/output/message/content/1/image/source/bytes"),
+        Some(&json!("iVBORw0KGgo=")),
+        "the image bytes stay between the text runs, got {split_body}"
     );
     assert_eq!(
         split_body
@@ -10894,9 +10909,23 @@ fn stream_encoder_chat_to_responses_one_created_one_completed() {
         .find(|f| f.event.as_deref() == Some("response.completed"))
         .expect("completed");
     let json: Value = serde_json::from_str(&completed_frame.data).expect("json");
-    assert!(
-        json.pointer("/response/usage").is_some(),
-        "completed must carry usage, got {json}"
+    assert_eq!(
+        json.pointer("/response/usage/input_tokens")
+            .and_then(Value::as_u64),
+        Some(3),
+        "completed must carry prompt tokens, got {json}"
+    );
+    assert_eq!(
+        json.pointer("/response/usage/output_tokens")
+            .and_then(Value::as_u64),
+        Some(2),
+        "completed must carry completion tokens, got {json}"
+    );
+    assert_eq!(
+        json.pointer("/response/usage/total_tokens")
+            .and_then(Value::as_u64),
+        Some(5),
+        "completed must carry total tokens, got {json}"
     );
 }
 
