@@ -265,6 +265,36 @@ fn auth_login_xai_oauth_prints_grok_store_hint_and_exits_2() {
 }
 
 #[test]
+fn auth_login_blank_setup_token_hint_prints_fallback_and_exits_2() {
+    let (home, mut cmd) = isolated_home();
+    let path = write_profile(
+        home.path(),
+        "blank-hint.toml",
+        "schema_version = 1\nid = \"blank-hint\"\n[oauth]\ntoken_url = \"https://example.invalid/token\"\nlogin = \"setup-token\"\nsetup_token_hint = \"   \"\n",
+    );
+    let out = cmd
+        .args([
+            "auth",
+            "login",
+            "--profile",
+            path.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2), "{:?}", out);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stdout.contains("run the vendor setup-token command"),
+        "a whitespace setup-token hint must print the fallback, got stdout: {stdout:?} stderr: {stderr}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "fallback hint is stdout, got stderr: {stderr}"
+    );
+}
+
+#[test]
 fn auth_login_openai_exits_2_until_client_id() {
     let (_home, mut cmd) = isolated_home();
     let out = cmd

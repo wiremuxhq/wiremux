@@ -131,7 +131,7 @@ pub fn login_plan(profile: &ResolvedProfile) -> LoginPlan {
                 &oauth
                     .setup_token_hint
                     .clone()
-                    .filter(|s| !s.is_empty())
+                    .filter(|s| !s.trim().is_empty())
                     .unwrap_or_else(|| "run the vendor setup-token command".into()),
             ),
         },
