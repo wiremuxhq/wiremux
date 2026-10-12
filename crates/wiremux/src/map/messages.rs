@@ -10,8 +10,8 @@ use super::{
     stop_values, str_field, u32_field, value_as_string,
 };
 use crate::ir::{
-    IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction,
-    LossReport,
+    IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrTool, IrToolChoice,
+    LossAction, LossReport,
 };
 
 pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError> {
@@ -1042,6 +1042,120 @@ fn text_block(text: &str, cache: bool, retention: Option<&str>) -> Value {
     block
 }
 
+/// Chars the Messages cache floor counts.
+///
+/// This follows the bytes `encode_part` writes. Opaque hosted JSON and
+/// unknown raw objects stay out so a short prompt is not treated as long.
+pub(crate) fn cache_floor_tokens(req: &IrRequest) -> u32 {
+    let mut chars = 0usize;
+    for item in &req.items {
+        match item {
+            IrItem::System { text } | IrItem::Developer { text } => chars += text.len(),
+            IrItem::User { parts } | IrItem::Assistant { parts } => {
+                chars += parts.iter().map(messages_part_chars).sum::<usize>();
+            }
+            IrItem::FunctionCall {
+                name, arguments, ..
+            } => {
+                chars += name.len() + arguments.len();
+            }
+            IrItem::CustomToolCall { name, input, .. } => {
+                chars += name.len() + input.len();
+            }
+            IrItem::FunctionOutput { output, parts, .. } => {
+                chars += output.len();
+                chars += parts.iter().map(messages_part_chars).sum::<usize>();
+            }
+            IrItem::Reasoning { summary, raw, .. } => {
+                chars += reasoning_prompt_chars(summary.as_deref(), raw.as_ref());
+            }
+            IrItem::HostedToolCall { .. } | IrItem::Unknown { .. } => {}
+        }
+    }
+    for tool in &req.tools {
+        if let IrTool::Function {
+            name,
+            description,
+            parameters,
+            ..
+        } = tool
+        {
+            chars += name.len() + description.len() + parameters.to_string().len();
+        }
+    }
+    (chars / 4) as u32
+}
+
+fn messages_part_chars(part: &IrPart) -> usize {
+    match part {
+        IrPart::Text(text) if text.trim().is_empty() => 0,
+        IrPart::Text(text) => text.len(),
+        IrPart::ImageUrl { url, .. } => url.len(),
+        IrPart::ImageBase64 { data, .. } => data.len(),
+        IrPart::Document {
+            source,
+            name,
+            context,
+            ..
+        } => document_written_chars(source, name.as_deref(), context.as_deref()),
+        IrPart::Audio { .. } => 0,
+        IrPart::Thinking { text, signature } => {
+            if signature.as_deref().is_some_and(|sig| !sig.is_empty()) {
+                text.len()
+            } else {
+                0
+            }
+        }
+        IrPart::Raw { .. } => super::raw_prompt_chars(part),
+    }
+}
+
+fn document_written_chars(
+    source: &IrDocumentSource,
+    name: Option<&str>,
+    context: Option<&str>,
+) -> usize {
+    let payload = match source {
+        IrDocumentSource::Base64(data)
+        | IrDocumentSource::Text(data)
+        | IrDocumentSource::Url(data)
+        | IrDocumentSource::FileId(data) => data.len(),
+    };
+    payload + trimmed_nonempty_len(name) + trimmed_nonempty_len(context)
+}
+
+fn trimmed_nonempty_len(value: Option<&str>) -> usize {
+    value
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::len)
+        .unwrap_or(0)
+}
+
+/// Text the Messages encoder writes into a thinking block.
+///
+/// A raw `type: thinking` object contributes its `thinking` string.
+/// Otherwise the summary, or a raw `summary` string. The encrypted
+/// signature is omitted.
+fn reasoning_prompt_chars(summary: Option<&str>, raw: Option<&Value>) -> usize {
+    if let Some(raw) = raw
+        && raw.get("type").and_then(Value::as_str) == Some("thinking")
+    {
+        return raw
+            .get("thinking")
+            .and_then(Value::as_str)
+            .map(str::len)
+            .unwrap_or(0);
+    }
+    if let Some(summary) = summary {
+        return summary.len();
+    }
+    raw.and_then(|value| value.get("summary"))
+        .and_then(Value::as_str)
+        .map(str::len)
+        .unwrap_or(0)
+}
+
 /// Anthropic rejects more than this many `cache_control` blocks.
 const ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS: usize = 4;
 /// Preferred agent layout. Leaves headroom if a proxy injects more.
@@ -1055,7 +1169,7 @@ fn apply_cache_breakpoints(body: &mut Value, ir: &IrRequest, report: &mut LossRe
     if let Some(floor) = cache.min_cacheable_tokens
         && floor > 0
     {
-        let estimated = crate::ir::estimate_prompt_tokens(ir);
+        let estimated = cache_floor_tokens(ir);
         if estimated < floor {
             report.record(
                 "sampling.cache",
@@ -1210,16 +1324,7 @@ fn tag_first_user_text(body: &mut Value, ttl: Option<&str>) {
         return;
     };
     match user.get_mut("content") {
-        Some(Value::Array(parts)) => {
-            if let Some(part) = parts.iter_mut().find(|p| {
-                p.get("type").and_then(Value::as_str) == Some("text")
-                    && p.get("text")
-                        .and_then(Value::as_str)
-                        .is_some_and(|t| !t.trim().is_empty())
-            }) {
-                part["cache_control"] = ephemeral_cache_control(ttl);
-            }
-        }
+        Some(Value::Array(parts)) => tag_user_content_blocks(parts, ttl),
         Some(Value::String(text)) if !text.trim().is_empty() => {
             let text = text.clone();
             user["content"] = json!([{
@@ -1230,6 +1335,45 @@ fn tag_first_user_text(body: &mut Value, ttl: Option<&str>) {
         }
         _ => {}
     }
+}
+
+fn tag_user_content_blocks(parts: &mut [Value], ttl: Option<&str>) {
+    let text_idx = parts.iter().position(nonempty_text_block);
+    let payload_idx = parts
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(idx, part)| cacheable_user_block(part).then_some(idx));
+    // "." is the empty-turn placeholder. A breakpoint on it leaves a
+    // following tool result outside the cached prefix. Thinking blocks
+    // cannot carry cache_control.
+    let placeholder =
+        text_idx.is_some_and(|idx| parts[idx].get("text").and_then(Value::as_str) == Some("."));
+    let chosen = if let Some(idx) = text_idx
+        && !(placeholder && payload_idx.is_some())
+    {
+        Some(idx)
+    } else {
+        payload_idx.or(text_idx)
+    };
+    if let Some(idx) = chosen {
+        parts[idx]["cache_control"] = ephemeral_cache_control(ttl);
+    }
+}
+
+fn nonempty_text_block(part: &Value) -> bool {
+    part.get("type").and_then(Value::as_str) == Some("text")
+        && part
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty())
+}
+
+fn cacheable_user_block(part: &Value) -> bool {
+    matches!(
+        part.get("type").and_then(Value::as_str),
+        Some("image" | "document" | "tool_result" | "tool_use")
+    )
 }
 
 /// Anthropic `tool_use.id` must match `^[a-zA-Z0-9_-]+$`.
