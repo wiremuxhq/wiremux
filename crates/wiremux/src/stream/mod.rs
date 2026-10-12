@@ -1357,6 +1357,14 @@ pub(crate) fn sse_wrapped_error_message(data: &str) -> Option<String> {
     if has_choice || value.get("delta").is_some() {
         return None;
     }
+    if let Some(text) = value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return Some(text.to_string());
+    }
     // Responses `event: error` is a flat object. Other wires nest `error`.
     let error = if let Some(error) = value.get("error").filter(|v| v.is_object()) {
         error
@@ -1917,6 +1925,13 @@ base_url = "http://127.0.0.1"
     fn sse_wrapped_error_message_reads_error_when_choices_are_empty() {
         let msg = sse_wrapped_error_message(r#"{"choices":[],"error":{"message":"nope"}}"#);
         assert_eq!(msg.as_deref(), Some("nope"));
+    }
+
+    #[cfg(any(feature = "client", feature = "proxy"))]
+    #[test]
+    fn sse_wrapped_error_message_reads_string_error() {
+        let msg = sse_wrapped_error_message(r#"{"error":"model catalog unavailable"}"#);
+        assert_eq!(msg.as_deref(), Some("model catalog unavailable"));
     }
 
     #[cfg(any(feature = "client", feature = "proxy"))]
