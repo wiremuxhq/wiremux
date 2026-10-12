@@ -2217,6 +2217,16 @@ fn decode_gemini_complete(
     value: &Value,
     profile: &ResolvedProfile,
 ) -> Result<Vec<IrStreamEvent>, MapError> {
+    let has_candidate = value
+        .get("candidates")
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty());
+    if !has_candidate
+        && value.get("error").and_then(Value::as_str).is_some()
+        && let Some(detail) = plain_error_detail(value)
+    {
+        return Err(MapError::Invalid(detail));
+    }
     decode_stream_events(
         Wire::Gemini,
         &RawSse {
@@ -2359,6 +2369,25 @@ wire = "messages"
         )
         .expect("messages object without type stays a non-error");
         assert!(untouched.is_empty(), "{untouched:?}");
+
+        let gemini = crate::parse_profile_str(
+            r#"
+schema_version = 1
+id = "gemini"
+wire = "gemini"
+"#,
+        )
+        .expect("gemini profile");
+        let err = decode_response(
+            Wire::Gemini,
+            br#"{"error":"model catalog unavailable"}"#,
+            &gemini,
+        )
+        .expect_err("gemini string error");
+        assert!(
+            err.to_string().contains("model catalog unavailable"),
+            "{err}"
+        );
     }
 
     #[test]
