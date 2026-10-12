@@ -403,15 +403,24 @@ pub fn ingest_catalog(text: &str, req: &IngestRequest) -> Result<IngestReport, I
         })?;
     }
     let mut actions = Vec::new();
+    let mut pending: Vec<(PathBuf, String)> = Vec::new();
     let mut hard: Vec<String> = Vec::new();
     for id in wanted {
         match ingest_one(&by_id, &id, &dir, req) {
-            Ok(action) => {
+            Ok((action, body)) => {
                 if let IngestAction::Skipped { reason, .. } = &action
                     && req.vendors.iter().any(|v| v == &id)
                     && reason_is_hard(reason)
                 {
                     hard.push(format!("{id}: {reason}"));
+                }
+                if let Some(toml) = body {
+                    let IngestAction::Wrote(path) = &action else {
+                        return Err(IngestError::Message(format!(
+                            "{id}: planned a write without a path"
+                        )));
+                    };
+                    pending.push((path.clone(), toml));
                 }
                 actions.push(action);
             }
@@ -419,7 +428,19 @@ pub fn ingest_catalog(text: &str, req: &IngestRequest) -> Result<IngestReport, I
         }
     }
     if !hard.is_empty() {
+        // A later hard failure must not leave an earlier overlay on disk.
+        for action in &actions {
+            if let IngestAction::Wrote(path) | IngestAction::DryRun(path) = action {
+                hard.push(format!("not written: {}", path.display()));
+            }
+        }
         return Err(IngestError::Message(hard.join("\n")));
+    }
+    for (path, toml) in pending {
+        fs::write(&path, toml).map_err(|source| IngestError::Io {
+            path: path.clone(),
+            source,
+        })?;
     }
     Ok(IngestReport { actions })
 }
@@ -481,40 +502,45 @@ fn ingest_one(
     id: &str,
     dir: &Path,
     req: &IngestRequest,
-) -> Result<IngestAction, IngestError> {
+) -> Result<(IngestAction, Option<String>), IngestError> {
     if skip_id(id) {
-        return Ok(IngestAction::Skipped {
-            vendor: id.to_string(),
-            reason: skip_reason(id).to_string(),
-        });
+        return Ok((
+            IngestAction::Skipped {
+                vendor: id.to_string(),
+                reason: skip_reason(id).to_string(),
+            },
+            None,
+        ));
     }
     let Some(vendor) = by_id.get(id) else {
         return Err(vendor_err(id, "not in catalog"));
     };
     if shipped(id) && !req.force {
-        return Ok(IngestAction::Skipped {
-            vendor: id.to_string(),
-            reason: "already shipped (pass --force to write a user overlay)".into(),
-        });
+        return Ok((
+            IngestAction::Skipped {
+                vendor: id.to_string(),
+                reason: "already shipped (pass --force to write a user overlay)".into(),
+            },
+            None,
+        ));
     }
     let toml = profile_toml(vendor)?;
     parse_profile_str(&toml)
         .map_err(|e| vendor_err(id, &format!("emitted TOML failed parse: {e}")))?;
     let path = dir.join(format!("{id}.toml"));
     if path.exists() && !req.force {
-        return Ok(IngestAction::Skipped {
-            vendor: id.to_string(),
-            reason: format!("already exists ({})", path.display()),
-        });
+        return Ok((
+            IngestAction::Skipped {
+                vendor: id.to_string(),
+                reason: format!("already exists ({})", path.display()),
+            },
+            None,
+        ));
     }
     if req.dry_run {
-        return Ok(IngestAction::DryRun(path));
+        return Ok((IngestAction::DryRun(path), None));
     }
-    fs::write(&path, toml).map_err(|source| IngestError::Io {
-        path: path.clone(),
-        source,
-    })?;
-    Ok(IngestAction::Wrote(path))
+    Ok((IngestAction::Wrote(path), Some(toml)))
 }
 
 fn reason_is_hard(reason: &str) -> bool {
@@ -1402,6 +1428,49 @@ mod tests {
         .to_string();
         assert!(err.contains("no-such-vendor"), "{err}");
         assert!(err.contains("not in catalog"), "{err}");
+    }
+
+    #[test]
+    fn mixed_vendor_failure_does_not_write_the_good_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("odd.toml");
+        fs::write(&keep, "keep\n").unwrap();
+        let err = ingest_catalog(
+            r#"{"odd":{"id":"odd","name":"Odd","env":["ODD_API_KEY"],"npm":"@ai-sdk/openai-compatible","api":"https://odd.example/v1"}}"#,
+            &IngestRequest {
+                vendors: vec!["odd".into(), "missing".into()],
+                dir: Some(dir.path().to_path_buf()),
+                force: true,
+                ..IngestRequest::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("missing: not in catalog"), "{err}");
+        assert!(err.contains("not written:"), "{err}");
+        assert_eq!(fs::read_to_string(&keep).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn mixed_vendor_dry_run_names_the_profile_it_did_not_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = ingest_catalog(
+            r#"{"odd":{"id":"odd","name":"Odd","env":["ODD_API_KEY"],"npm":"@ai-sdk/openai-compatible","api":"https://odd.example/v1"}}"#,
+            &IngestRequest {
+                vendors: vec!["odd".into(), "missing".into()],
+                dir: Some(dir.path().to_path_buf()),
+                dry_run: true,
+                ..IngestRequest::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("missing: not in catalog"), "{err}");
+        assert!(
+            err.contains("odd.toml") && err.contains("not written:"),
+            "{err}"
+        );
+        assert!(!dir.path().join("odd.toml").exists());
     }
 
     #[test]
