@@ -1692,8 +1692,8 @@ fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
 
 /// JSON success body that is only a vendor failure.
 ///
-/// Responses uses `status: failed` with no output, or a string `error`
-/// when that output is absent. Chat uses an `error` object and no
+/// Responses uses `status: failed` with no output, or an `error` string
+/// or object when that output is absent. Chat uses an `error` object and no
 /// visible choice. An empty string is not a choice.
 /// Messages uses `type: error` and no content blocks, or a string
 /// `error` when those blocks are absent. Gemini uses an
@@ -1840,6 +1840,11 @@ fn responses_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String
     }
     if let Some(text) = crate::completion::json_string_error(response) {
         return Some(text.to_string());
+    }
+    if let Some(err) = response.get("error").filter(|item| item.is_object())
+        && let Some(detail) = vendor_error_detail(err)
+    {
+        return Some(detail);
     }
     let status = response.get("status").and_then(serde_json::Value::as_str);
     if status != Some("failed") {
@@ -2217,6 +2222,14 @@ anthropic-beta = "context-1m-2025-08-07"
         assert_eq!(
             responses_complete_vendor_failure(Wire::Responses, body).as_deref(),
             Some("model catalog unavailable")
+        );
+        assert_eq!(
+            responses_complete_vendor_failure(
+                Wire::Responses,
+                br#"{"error":{"message":"model catalog unavailable","type":"server_error"}}"#,
+            )
+            .as_deref(),
+            Some("server_error: model catalog unavailable")
         );
         assert!(
             responses_complete_vendor_failure(
