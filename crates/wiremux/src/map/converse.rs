@@ -93,7 +93,15 @@ fn decode_message(
     match role {
         "user" => decode_user(content, items, report),
         "assistant" => decode_assistant(content, items, report),
-        _ => Ok(()),
+        _ => {
+            let shown = if role.is_empty() { "missing" } else { role };
+            report.record(
+                "message.role",
+                LossAction::Drop,
+                format!("{shown} not user or assistant"),
+            );
+            Ok(())
+        }
     }
 }
 
@@ -123,7 +131,7 @@ fn decode_user(
                 call_id: id.to_string(),
                 output,
                 parts,
-                is_error: false,
+                is_error: tool_result_status_is_error(result),
             });
             continue;
         }
@@ -195,6 +203,13 @@ fn flush_assistant(parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
             parts: std::mem::take(parts),
         });
     }
+}
+
+fn tool_result_status_is_error(result: &Value) -> bool {
+    result
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status.trim().eq_ignore_ascii_case("error"))
 }
 
 fn tool_result_output(result: &Value) -> (String, Vec<IrPart>) {
@@ -620,13 +635,6 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 parts,
                 is_error,
             } => {
-                if *is_error {
-                    report.record(
-                        format!("items[{idx}].is_error"),
-                        LossAction::Drop,
-                        "no slot",
-                    );
-                }
                 let has_image = parts.iter().any(|part| {
                     matches!(part, IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. })
                 });
@@ -680,12 +688,15 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 if content.is_empty() {
                     content.push(json!({ "text": "." }));
                 }
-                let block = json!({
-                    "toolResult": {
-                        "toolUseId": call_id,
-                        "content": content
-                    }
+                // A missing status is success. Only a failed tool sets the field.
+                let mut tool_result = json!({
+                    "toolUseId": call_id,
+                    "content": content
                 });
+                if *is_error {
+                    tool_result["status"] = json!("error");
+                }
+                let block = json!({ "toolResult": tool_result });
                 if last_is_user(&messages)
                     && let Some(last) = messages.last_mut()
                     && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)

@@ -465,6 +465,31 @@ base_url = "http://{addr}"
     let _ = home;
 }
 
+#[test]
+fn from_profile_invalid_toml_is_transport_not_auth() {
+    let home = IsolatedHome::new();
+    let dir = home.path().join(".config/wiremux/profiles");
+    std::fs::create_dir_all(&dir).expect("mkdir profiles");
+    std::fs::write(dir.join("broken.toml"), "not toml [[[").expect("write");
+
+    let err = WireClient::from_profile("broken").expect_err("invalid toml");
+    match &err {
+        ClientError::Auth { .. } => panic!("a bad profile file is not Auth: {err}"),
+        ClientError::Transport(_) => {}
+        other => panic!("expected Transport, got {other:?}"),
+    }
+    let text = err.to_string();
+    assert!(
+        text.contains("failed to parse profile") || text.contains("failed to read"),
+        "display must name the profile failure, got {text}"
+    );
+    assert!(
+        !text.starts_with("auth:"),
+        "display must not start with auth:, got {text}"
+    );
+    let _ = home;
+}
+
 #[tokio::test]
 async fn send_chat_complete_text_finish_usage() {
     let (base, handle) = spawn_one(200, "OK", "", complete_chat_body());
@@ -1396,6 +1421,155 @@ async fn list_models_401_is_auth() {
         ClientError::Auth { status, .. } => assert_eq!(status, Some(401)),
         other => panic!("expected Auth, got {other}"),
     }
+}
+
+#[tokio::test]
+async fn list_models_401_oauth_refreshes_once() {
+    let home = IsolatedHome::new();
+    let creds = home.plant_credentials(PlantCredentials::JsonPointer {
+        relative_path: ".config/wiremux/auth-retry-models.json",
+        document: json!({
+            "tokens": {
+                "access": "first-models",
+                "refresh": "rt-models",
+                "expiry_unix": 4_102_444_800_i64
+            }
+        }),
+    });
+    let (token_base, token_handle) = spawn_one(
+        200,
+        "OK",
+        "",
+        r#"{"access_token":"second-models","refresh_token":"rt2","expires_in":3600}"#,
+    );
+    let (api_base, api_handle) = spawn_script(vec![
+        (401, r#"{"error":{"message":"expired"}}"#.into()),
+        (
+            200,
+            r#"{"data":[{"id":"refreshed-model","context_window":2048}]}"#.into(),
+        ),
+    ]);
+    let profile = oauth_retry_profile(
+        &api_base,
+        &format!("{token_base}/token"),
+        &creds.to_string_lossy(),
+    );
+    let provider = provider_from_profile(&profile).expect("provider");
+    let client = WireClient::from_resolved(profile, provider).expect("client");
+    let models = client.list_models().await.expect("401 refresh");
+    let seen = api_handle.join().expect("join");
+    let _ = token_handle.join();
+    assert_eq!(
+        seen.len(),
+        2,
+        "must retry the models GET once, got {seen:?}"
+    );
+    assert!(
+        seen.iter().all(|req| req.contains("GET /v1/models")),
+        "both attempts must GET /v1/models: {seen:?}"
+    );
+    assert!(
+        seen[0].contains("Bearer first-models"),
+        "first GET uses the stored access token: {}",
+        seen[0]
+    );
+    assert!(
+        seen[1].contains("Bearer second-models"),
+        "second GET must use the token from mark_stale refresh: {}",
+        seen[1]
+    );
+    assert_eq!(models.len(), 1, "{models:?}");
+    assert_eq!(models[0].id, "refreshed-model");
+    assert_eq!(models[0].context_tokens, Some(2048));
+    let _ = home;
+}
+
+#[tokio::test]
+async fn list_models_sigv4_404_is_empty_after_signed_get() {
+    let home = IsolatedHome::with_extra_envs(&[
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_REGION",
+    ]);
+    home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+    home.set_env("AWS_ACCESS_KEY_ID", "AKIATEST");
+    home.set_env(
+        "AWS_SECRET_ACCESS_KEY",
+        "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+    );
+    let (base, handle) = spawn_one(404, "Not Found", "", "missing");
+    let profile = bedrock_profile(&base, "auth_scheme = \"none\"");
+    let client = WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("")))
+        .expect("client");
+    let models = client.list_models().await.expect("signed 404 is empty");
+    let req = handle.join().expect("join");
+    assert!(models.is_empty(), "{models:?}");
+    assert!(
+        req.contains("GET /models"),
+        "signed list_models must GET the catalog: {req}"
+    );
+    let auths = authorization_lines(&req);
+    assert_eq!(
+        auths.len(),
+        1,
+        "signed models GET must send one Authorization, got {auths:?} in {req}"
+    );
+    let value = auths[0]
+        .split_once(':')
+        .map(|(_, rest)| rest.trim())
+        .unwrap_or("");
+    assert!(
+        value.starts_with("AWS4-HMAC-SHA256"),
+        "Authorization must start with AWS4-HMAC-SHA256, got {value}"
+    );
+    assert!(
+        value.contains("AKIATEST"),
+        "SigV4 credential must use the static access key, got {value}"
+    );
+    let _ = home;
+}
+
+#[tokio::test]
+async fn list_models_aws_service_without_keys_is_not_empty() {
+    let home = IsolatedHome::with_extra_envs(&[
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_REGION",
+    ]);
+    home.set_env("AWS_EC2_METADATA_DISABLED", "true");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = thread::spawn(move || {
+        let mut stream = accept_timeout(&listener, Duration::from_millis(500))?;
+        let req = read_http_request(&mut stream);
+        write_http(&mut stream, 404, "Not Found", "", "missing");
+        Some(req)
+    });
+    let profile = bedrock_profile(&format!("http://{addr}"), "auth_scheme = \"none\"");
+    let client = WireClient::from_resolved(profile, AnyTokenProvider::from(StaticToken::new("")))
+        .expect("client");
+    let result = client.list_models().await;
+    let accepted = handle.join().expect("join");
+    assert!(
+        accepted.is_none(),
+        "missing IAM keys must fail before the models GET: {accepted:?}"
+    );
+    let err = result.expect_err("missing keys must not look like an empty catalog");
+    match err {
+        ClientError::Auth { status, message } => {
+            assert_eq!(status, None, "local sign failure has no HTTP status");
+            assert!(
+                message.to_ascii_lowercase().contains("aws")
+                    || message.contains("AWS_ACCESS_KEY_ID")
+                    || message.contains("credentials"),
+                "must name the missing IAM credentials, got {message}"
+            );
+        }
+        other => panic!("expected local Auth, got {other:?}"),
+    }
+    let _ = home;
 }
 
 #[tokio::test]

@@ -10016,6 +10016,220 @@ fn converse_decode_tool_result_missing_id_fails() {
 }
 
 #[test]
+fn converse_function_output_is_error_sets_tool_result_status() {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::FunctionOutput {
+            call_id: "t1".into(),
+            output: "no".into(),
+
+            parts: Vec::new(),
+            is_error: true,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/status"),
+        Some(&serde_json::json!("error")),
+        "failed tool must set toolResult.status, got {body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| { event.action == LossAction::Drop && event.path.contains("is_error") }),
+        "is_error has a Converse status slot, got {report:?}"
+    );
+
+    let ok = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::FunctionOutput {
+            call_id: "t2".into(),
+            output: "ok".into(),
+
+            parts: Vec::new(),
+            is_error: false,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Converse, &ok, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.pointer("/messages/0/content/0/toolResult/status")
+            .is_none(),
+        "a successful tool omits status, got {body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| { event.action == LossAction::Drop && event.path.contains("is_error") }),
+        "a successful tool must not Drop is_error, got {report:?}"
+    );
+}
+
+#[test]
+fn converse_tool_result_status_error_decodes_is_error() {
+    let error_status = br#"{
+      "messages": [
+        {"role": "user", "content": [{
+          "toolResult": {
+            "toolUseId": "t1",
+            "content": [{"text": "no"}],
+            "status": "error"
+          }
+        }]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, error_status).expect("decode error status");
+    assert!(
+        matches!(
+            ir.items.as_slice(),
+            [IrItem::FunctionOutput {
+                call_id,
+                is_error: true,
+                ..
+            }] if call_id == "t1"
+        ),
+        "status error must set is_error, got {:?}",
+        ir.items
+    );
+
+    let padded = br#"{
+      "messages": [
+        {"role": "user", "content": [{
+          "toolResult": {
+            "toolUseId": "t2",
+            "content": [{"text": "no"}],
+            "status": " ERROR "
+          }
+        }]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, padded).expect("decode padded status");
+    assert!(
+        matches!(
+            ir.items.as_slice(),
+            [IrItem::FunctionOutput { is_error: true, .. }]
+        ),
+        "trimmed status ERROR must set is_error, got {:?}",
+        ir.items
+    );
+
+    let absent = br#"{
+      "messages": [
+        {"role": "user", "content": [{
+          "toolResult": {"toolUseId": "t3", "content": [{"text": "ok"}]}
+        }]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, absent).expect("decode missing status");
+    assert!(
+        matches!(
+            ir.items.as_slice(),
+            [IrItem::FunctionOutput {
+                is_error: false,
+                ..
+            }]
+        ),
+        "missing status is success, got {:?}",
+        ir.items
+    );
+
+    let success = br#"{
+      "messages": [
+        {"role": "user", "content": [{
+          "toolResult": {
+            "toolUseId": "t4",
+            "content": [{"text": "ok"}],
+            "status": "success"
+          }
+        }]}
+      ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, success).expect("decode success status");
+    assert!(
+        matches!(
+            ir.items.as_slice(),
+            [IrItem::FunctionOutput {
+                is_error: false,
+                ..
+            }]
+        ),
+        "status success must leave is_error false, got {:?}",
+        ir.items
+    );
+}
+
+#[test]
+fn converse_unknown_message_role_records_a_drop() {
+    let req = br#"{
+      "messages": [
+        {"role": "system", "content": [{"text": "hidden"}]},
+        {"role": "user", "content": [{"text": "hi"}]},
+        {"role": "assistant", "content": [{"text": "hello"}]}
+      ]
+    }"#;
+    let (ir, report) = decode(Wire::Converse, req).expect("decode");
+    let drops: Vec<_> = report
+        .events
+        .iter()
+        .filter(|event| event.path == "message.role" && event.action == LossAction::Drop)
+        .collect();
+    assert_eq!(
+        drops.len(),
+        1,
+        "only the system message role is a drop, got {report:?}"
+    );
+    assert!(
+        drops[0].detail.contains("system") && drops[0].detail.contains("not user or assistant"),
+        "the drop must name the role, got {}",
+        drops[0].detail
+    );
+    assert!(
+        !ir.items
+            .iter()
+            .any(|item| matches!(item, IrItem::System { text } if text == "hidden")),
+        "a message role of system is not the top-level system field, got {:?}",
+        ir.items
+    );
+    assert!(
+        matches!(
+            ir.items.as_slice(),
+            [
+                IrItem::User { parts: user },
+                IrItem::Assistant { parts: assistant }
+            ] if matches!(user.as_slice(), [IrPart::Text(text)] if text == "hi")
+                && matches!(assistant.as_slice(), [IrPart::Text(text)] if text == "hello")
+        ),
+        "user and assistant messages must stay, got {:?}",
+        ir.items
+    );
+
+    let user_only = br#"{
+      "messages": [
+        {"role": "user", "content": [{"text": "hi"}]}
+      ]
+    }"#;
+    let (ir, report) = decode(Wire::Converse, user_only).expect("decode user");
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| event.path == "message.role"),
+        "a user message must not record a role drop, got {report:?}"
+    );
+    assert!(
+        matches!(
+            ir.items.as_slice(),
+            [IrItem::User { parts }] if matches!(parts.as_slice(), [IrPart::Text(text)] if text == "hi")
+        ),
+        "user text must decode, got {:?}",
+        ir.items
+    );
+}
+
+#[test]
 fn converse_parallel_function_outputs_encode_one_user_message() {
     let ir = IrRequest::new(
         "amazon.nova-lite-v1:0",
