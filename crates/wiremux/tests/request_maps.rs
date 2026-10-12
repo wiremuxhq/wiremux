@@ -3310,6 +3310,271 @@ fn reasoning_signature_alone_stays_below_min_cacheable_tokens() {
     assert_cache_dropped(&bytes, &report);
 }
 
+fn encode_floor(items: Vec<IrItem>) -> (Vec<u8>, LossReport) {
+    let ir = messages_floor_ir(items, 1024);
+    encode(Wire::Messages, &ir, &messages_profile()).expect("encode")
+}
+
+#[test]
+fn large_image_base64_at_min_cacheable_tokens_still_tags() {
+    let data = "x".repeat(5000);
+    let (bytes, report) = encode_floor(vec![IrItem::User {
+        parts: vec![IrPart::ImageBase64 {
+            media_type: "image/png".into(),
+            data: data.clone(),
+        }],
+    }]);
+    assert!(
+        String::from_utf8_lossy(&bytes).contains(&data),
+        "image bytes must be in the Messages body"
+    );
+    assert_cache_preserved(&bytes, &report);
+}
+
+#[test]
+fn large_document_text_at_min_cacheable_tokens_still_tags() {
+    let data = "x".repeat(5000);
+    let (bytes, report) = encode_floor(vec![IrItem::User {
+        parts: vec![IrPart::Document {
+            source: IrDocumentSource::Text(data.clone()),
+            media_type: "text/plain".into(),
+            name: None,
+            citations_enabled: None,
+            context: None,
+        }],
+    }]);
+    assert!(
+        String::from_utf8_lossy(&bytes).contains(&data),
+        "document text must be in the Messages body"
+    );
+    assert_cache_preserved(&bytes, &report);
+}
+
+#[test]
+fn large_document_base64_at_min_cacheable_tokens_still_tags() {
+    let data = "x".repeat(5000);
+    let (bytes, report) = encode_floor(vec![IrItem::User {
+        parts: vec![IrPart::Document {
+            source: IrDocumentSource::Base64(data.clone()),
+            media_type: "application/pdf".into(),
+            name: None,
+            citations_enabled: None,
+            context: None,
+        }],
+    }]);
+    assert!(
+        String::from_utf8_lossy(&bytes).contains(&data),
+        "document base64 must be in the Messages body"
+    );
+    assert_cache_preserved(&bytes, &report);
+}
+
+#[test]
+fn large_tool_result_image_at_min_cacheable_tokens_still_tags() {
+    let data = "x".repeat(5000);
+    let (bytes, report) = encode_floor(vec![IrItem::FunctionOutput {
+        call_id: "c1".into(),
+        output: String::new(),
+        parts: vec![IrPart::ImageBase64 {
+            media_type: "image/png".into(),
+            data: data.clone(),
+        }],
+        is_error: false,
+    }]);
+    assert!(
+        String::from_utf8_lossy(&bytes).contains(&data),
+        "tool-result image bytes must be in the Messages body"
+    );
+    assert_cache_preserved(&bytes, &report);
+}
+
+#[test]
+fn large_tool_result_text_at_min_cacheable_tokens_still_tags() {
+    let data = "x".repeat(5000);
+    let (bytes, report) = encode_floor(vec![IrItem::FunctionOutput {
+        call_id: "c1".into(),
+        output: String::new(),
+        parts: vec![IrPart::Text(data.clone())],
+        is_error: false,
+    }]);
+    assert!(
+        String::from_utf8_lossy(&bytes).contains(&data),
+        "tool-result text must be in the Messages body"
+    );
+    assert_cache_preserved(&bytes, &report);
+}
+
+#[test]
+fn large_image_url_at_min_cacheable_tokens_still_tags() {
+    let url = format!("https://cdn.example/{}", "a".repeat(5000));
+    let (bytes, report) = encode_floor(vec![IrItem::User {
+        parts: vec![IrPart::ImageUrl {
+            url: url.clone(),
+            detail: Some("high".into()),
+        }],
+    }]);
+    assert!(
+        String::from_utf8_lossy(&bytes).contains(&url),
+        "image URL must be in the Messages body"
+    );
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("high"),
+        "image detail must not be sent"
+    );
+    assert_cache_preserved(&bytes, &report);
+}
+
+#[test]
+fn unsigned_thinking_stays_below_min_cacheable_tokens() {
+    let thinking = "x".repeat(5000);
+    let (bytes, report) = encode_floor(vec![IrItem::User {
+        parts: vec![
+            IrPart::Text("hi".into()),
+            IrPart::Thinking {
+                text: thinking.clone(),
+                signature: None,
+            },
+        ],
+    }]);
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(body.contains("hi"), "user text must stay, got {body}");
+    assert!(
+        !body.contains(&thinking),
+        "unsigned thinking must not be sent, got {body}"
+    );
+    assert_cache_dropped(&bytes, &report);
+}
+
+#[test]
+fn long_user_text_at_min_cacheable_tokens_still_tags() {
+    let text = "x".repeat(5000);
+    let (bytes, report) = encode_floor(vec![IrItem::User {
+        parts: vec![IrPart::Text(text.clone())],
+    }]);
+    assert!(
+        String::from_utf8_lossy(&bytes).contains(&text),
+        "user text must be in the Messages body"
+    );
+    assert_cache_preserved(&bytes, &report);
+}
+
+#[test]
+fn whitespace_user_text_stays_below_min_cacheable_tokens() {
+    let (bytes, report) = encode_floor(vec![IrItem::User {
+        parts: vec![IrPart::Text(" \n".repeat(2500))],
+    }]);
+    assert_cache_dropped(&bytes, &report);
+}
+
+#[test]
+fn signed_thinking_is_not_a_cache_breakpoint() {
+    let thinking = "x".repeat(5000);
+    let (bytes, _) = encode_floor(vec![IrItem::User {
+        parts: vec![
+            IrPart::ImageBase64 {
+                media_type: "image/png".into(),
+                data: "abcd".into(),
+            },
+            IrPart::Thinking {
+                text: thinking.clone(),
+                signature: Some("sig".into()),
+            },
+        ],
+    }]);
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    assert!(
+        content.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("thinking")
+                && block.get("thinking").and_then(Value::as_str) == Some(thinking.as_str())
+                && block.get("cache_control").is_none()
+        }),
+        "thinking must be sent without cache_control, got {body}"
+    );
+    assert!(
+        content.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("image")
+                && block.get("cache_control").is_some()
+        }),
+        "the image before thinking must carry the breakpoint, got {body}"
+    );
+}
+
+#[test]
+fn placeholder_dot_does_not_hide_a_tool_result_breakpoint() {
+    let data = "x".repeat(5000);
+    let (bytes, report) = encode_floor(vec![
+        IrItem::User {
+            parts: vec![IrPart::Text(" \n".into())],
+        },
+        IrItem::FunctionOutput {
+            call_id: "c1".into(),
+            output: String::new(),
+            parts: vec![IrPart::ImageBase64 {
+                media_type: "image/png".into(),
+                data: data.clone(),
+            }],
+            is_error: false,
+        },
+    ]);
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.to_string().contains(&data),
+        "tool-result image must be in the body, got {body}"
+    );
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    assert!(
+        content.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("text")
+                && block.get("text").and_then(Value::as_str) == Some(".")
+                && block.get("cache_control").is_none()
+        }),
+        "placeholder dot must not take the breakpoint, got {body}"
+    );
+    assert!(
+        content.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("tool_result")
+                && block.get("cache_control").is_some()
+        }),
+        "tool result must carry the breakpoint, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.cache" && event.action == LossAction::Preserve
+        }),
+        "must Preserve sampling.cache, got {report:?}"
+    );
+}
+
+#[test]
+fn audio_stays_below_min_cacheable_tokens() {
+    let (bytes, report) = encode_floor(vec![IrItem::User {
+        parts: vec![IrPart::Audio {
+            data: "x".repeat(5000),
+            format: "mp3".into(),
+        }],
+    }]);
+    assert_cache_dropped(&bytes, &report);
+}
+
+#[test]
+fn unknown_raw_json_stays_below_min_cacheable_tokens() {
+    let (bytes, report) = encode_floor(vec![IrItem::Unknown {
+        type_name: "redacted_thinking".into(),
+        raw: serde_json::json!({
+            "type": "redacted_thinking",
+            "data": "x".repeat(5000),
+        }),
+    }]);
+    assert_cache_dropped(&bytes, &report);
+}
+
 fn user_ir(sampling: IrSampling) -> IrRequest {
     IrRequest::new(
         "gpt-4",

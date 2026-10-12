@@ -314,7 +314,7 @@ pub struct IrCache {
     pub enabled: bool,
     /// "5m" or "1h" when the target dialect has a TTL slot.
     pub retention: Option<String>,
-    /// Skip `cache_control` when estimated prompt tokens are below this floor.
+    /// Skip `cache_control` when [`estimate_prompt_tokens`] is below this floor.
     /// `None` or `0` means no floor.
     pub min_cacheable_tokens: Option<u32>,
 }
@@ -707,85 +707,25 @@ pub enum LossAction {
     HardError,
 }
 
-/// Estimate prompt tokens as `chars / 4` over IR text.
+/// Estimate prompt tokens as `chars / 4` for the Messages cache floor.
 ///
-/// Counts system / developer / user / assistant text and thinking parts,
-/// function-call names and args, custom-tool names and inputs,
-/// function-output text, reasoning text that becomes a thinking block,
-/// and function-tool names, descriptions, and parameters.
+/// Counts system and developer text, user and assistant text, signed
+/// thinking text, image bytes and image URLs, document text, base64,
+/// URLs, file ids, titles, and context, function-call names and args,
+/// custom-tool names and inputs, function-output text and the parts
+/// Messages writes, reasoning text that becomes a thinking block, and
+/// function-tool names, descriptions, and parameters.
 ///
-/// A custom tool's `responses_item` is the same input again, so it is
-/// not counted. A reasoning signature is not prompt text. Hosted and
-/// unknown raw JSON stay out so a short prompt is not treated as long.
+/// Unsigned thinking is not replayed, so that text is not counted.
+/// Whitespace-only text parts are omitted. Audio is dropped. A custom
+/// tool's `responses_item` is the same input again, so it is not
+/// counted. A reasoning or thinking signature is not prompt text.
+/// Image detail is dropped. Hosted items and unknown raw JSON stay out
+/// so a short prompt is not treated as long. Inline image and document
+/// bytes that Messages rewrites from a raw part are counted.
 #[must_use]
 pub fn estimate_prompt_tokens(req: &IrRequest) -> u32 {
-    let mut chars = 0usize;
-    for item in &req.items {
-        match item {
-            IrItem::System { text } | IrItem::Developer { text } => chars += text.len(),
-            IrItem::User { parts } | IrItem::Assistant { parts } => {
-                for part in parts {
-                    match part {
-                        IrPart::Text(text) | IrPart::Thinking { text, .. } => {
-                            chars += text.len();
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            IrItem::FunctionCall {
-                name, arguments, ..
-            } => {
-                chars += name.len() + arguments.len();
-            }
-            IrItem::CustomToolCall { name, input, .. } => {
-                chars += name.len() + input.len();
-            }
-            IrItem::FunctionOutput { output, .. } => {
-                chars += output.len();
-            }
-            IrItem::Reasoning { summary, raw, .. } => {
-                chars += reasoning_prompt_chars(summary.as_deref(), raw.as_ref());
-            }
-            _ => {}
-        }
-    }
-    for tool in &req.tools {
-        if let IrTool::Function {
-            name,
-            description,
-            parameters,
-            ..
-        } = tool
-        {
-            chars += name.len() + description.len() + parameters.to_string().len();
-        }
-    }
-    (chars / 4) as u32
-}
-
-/// Text the Messages encoder writes into a thinking block.
-///
-/// A raw `type: thinking` object contributes its `thinking` string.
-/// Otherwise the summary, or a raw `summary` string. The encrypted
-/// signature is omitted.
-fn reasoning_prompt_chars(summary: Option<&str>, raw: Option<&serde_json::Value>) -> usize {
-    if let Some(raw) = raw
-        && raw.get("type").and_then(serde_json::Value::as_str) == Some("thinking")
-    {
-        return raw
-            .get("thinking")
-            .and_then(serde_json::Value::as_str)
-            .map(str::len)
-            .unwrap_or(0);
-    }
-    if let Some(summary) = summary {
-        return summary.len();
-    }
-    raw.and_then(|value| value.get("summary"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::len)
-        .unwrap_or(0)
+    crate::map::messages_cache_floor_tokens(req)
 }
 
 #[cfg(test)]
@@ -926,21 +866,401 @@ mod tests {
     }
 
     #[test]
-    fn estimate_prompt_tokens_counts_thinking_text() {
-        let req = IrRequest {
+    fn estimate_prompt_tokens_counts_signed_thinking_not_unsigned() {
+        let signed = IrRequest {
             model: "claude".into(),
             items: vec![IrItem::Assistant {
                 parts: vec![IrPart::Thinking {
                     text: "x".repeat(5000),
-                    signature: None,
+                    signature: Some("sig".into()),
                 }],
             }],
             tools: vec![],
             sampling: IrSampling::default(),
         };
         assert!(
-            estimate_prompt_tokens(&req) >= 1024,
-            "5000 thinking chars must meet a 1024-token floor"
+            estimate_prompt_tokens(&signed) >= 1024,
+            "5000 signed thinking chars must meet a 1024-token floor"
+        );
+
+        let unsigned = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![
+                    IrPart::Text("hi".into()),
+                    IrPart::Thinking {
+                        text: "x".repeat(5000),
+                        signature: None,
+                    },
+                ],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&unsigned) < 1024,
+            "unsigned thinking is not replayed and must stay under the floor"
+        );
+
+        let blank_signature = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::Assistant {
+                parts: vec![IrPart::Thinking {
+                    text: "x".repeat(5000),
+                    signature: Some(String::new()),
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&blank_signature) < 1024,
+            "an empty thinking signature is unsigned and must stay under the floor"
+        );
+
+        let signature_only = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::Assistant {
+                parts: vec![IrPart::Thinking {
+                    text: "hi".into(),
+                    signature: Some("y".repeat(5000)),
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&signature_only) < 1024,
+            "a thinking signature is not prompt text"
+        );
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_counts_images_documents_and_tool_result_parts() {
+        let long = "x".repeat(5000);
+        let image = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::ImageBase64 {
+                    media_type: "image/png".into(),
+                    data: long.clone(),
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&image) >= 1024,
+            "5000 image bytes must meet a 1024-token floor"
+        );
+
+        let image_url = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::ImageUrl {
+                    url: long.clone(),
+                    detail: Some("y".repeat(5000)),
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&image_url) >= 1024,
+            "a long image URL must meet a 1024-token floor"
+        );
+        let detail_only = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::ImageUrl {
+                    url: "https://cdn.example/a.png".into(),
+                    detail: Some(long.clone()),
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&detail_only) < 1024,
+            "image detail is dropped and must not meet the floor"
+        );
+
+        let document_text = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Document {
+                    source: IrDocumentSource::Text(long.clone()),
+                    media_type: "text/plain".into(),
+                    name: None,
+                    citations_enabled: None,
+                    context: None,
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&document_text) >= 1024,
+            "5000 document text chars must meet a 1024-token floor"
+        );
+
+        let document_base64 = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Document {
+                    source: IrDocumentSource::Base64(long.clone()),
+                    media_type: "application/pdf".into(),
+                    name: None,
+                    citations_enabled: None,
+                    context: None,
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&document_base64) >= 1024,
+            "5000 document base64 chars must meet a 1024-token floor"
+        );
+
+        let document_url = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Document {
+                    source: IrDocumentSource::Url(long.clone()),
+                    media_type: "application/pdf".into(),
+                    name: None,
+                    citations_enabled: None,
+                    context: None,
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&document_url) >= 1024,
+            "a long document URL must meet a 1024-token floor"
+        );
+
+        let document_context = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Document {
+                    source: IrDocumentSource::FileId("file-short".into()),
+                    media_type: "text/plain".into(),
+                    name: None,
+                    citations_enabled: None,
+                    context: Some(long.clone()),
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&document_context) >= 1024,
+            "document context Messages writes must meet a 1024-token floor"
+        );
+
+        let tool_image = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::FunctionOutput {
+                call_id: "c1".into(),
+                output: String::new(),
+                parts: vec![IrPart::ImageBase64 {
+                    media_type: "image/png".into(),
+                    data: long.clone(),
+                }],
+                is_error: false,
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&tool_image) >= 1024,
+            "a tool-result image must meet a 1024-token floor"
+        );
+
+        let tool_text = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::FunctionOutput {
+                call_id: "c1".into(),
+                output: String::new(),
+                parts: vec![IrPart::Text(long.clone())],
+                is_error: false,
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&tool_text) >= 1024,
+            "tool-result text Messages writes must meet a 1024-token floor"
+        );
+
+        let raw_image = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Raw {
+                    type_name: "inline".into(),
+                    raw: serde_json::json!({
+                        "inlineData": {
+                            "mimeType": "image/png",
+                            "data": long,
+                        }
+                    }),
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&raw_image) >= 1024,
+            "inline image bytes Messages writes must meet a 1024-token floor"
+        );
+
+        let hinted_pdf = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Raw {
+                    type_name: "inline".into(),
+                    raw: serde_json::json!({
+                        "inlineData": {
+                            "mimeType": "application/pdf",
+                            "data": "y".repeat(5000),
+                        },
+                        "mediaResolution": { "level": "media_resolution_high" }
+                    }),
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&hinted_pdf) >= 1024,
+            "a media-hint PDF Messages writes must meet a 1024-token floor"
+        );
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_skips_text_messages_does_not_send() {
+        let long = "x".repeat(5000);
+        let whitespace = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Text(" \n".repeat(2500))],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&whitespace) < 1024,
+            "whitespace-only text is omitted and must stay under the floor"
+        );
+
+        let audio = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Audio {
+                    data: long.clone(),
+                    format: "mp3".into(),
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&audio) < 1024,
+            "audio has no Messages slot and must stay under the floor"
+        );
+
+        let raw_json = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::Unknown {
+                type_name: "redacted_thinking".into(),
+                raw: serde_json::json!({
+                    "type": "redacted_thinking",
+                    "data": long.clone(),
+                }),
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&raw_json) < 1024,
+            "unknown raw JSON must not meet the floor"
+        );
+
+        let hosted = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::HostedToolCall {
+                kind: "web_search".into(),
+                raw: serde_json::json!({ "query": long }),
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&hosted) < 1024,
+            "hosted raw JSON must not meet the floor"
+        );
+
+        let raw_part = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Raw {
+                    type_name: "redacted_thinking".into(),
+                    raw: serde_json::json!({
+                        "type": "redacted_thinking",
+                        "data": long.clone(),
+                    }),
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&raw_part) < 1024,
+            "a raw Messages block is not prompt text"
+        );
+
+        let raw_audio = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Raw {
+                    type_name: "inline".into(),
+                    raw: serde_json::json!({
+                        "inlineData": {
+                            "mimeType": "audio/mp3",
+                            "data": long,
+                        },
+                        "mediaResolution": { "level": "media_resolution_high" }
+                    }),
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&raw_audio) < 1024,
+            "audio bytes inside a raw part must stay under the floor"
+        );
+
+        let hinted_blank = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Raw {
+                    type_name: "inline".into(),
+                    raw: serde_json::json!({
+                        "text": " \n".repeat(2500),
+                        "mediaResolution": { "level": "media_resolution_high" }
+                    }),
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&hinted_blank) < 1024,
+            "whitespace inside a hinted raw part must stay under the floor"
         );
     }
 

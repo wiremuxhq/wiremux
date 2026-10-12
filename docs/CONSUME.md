@@ -177,6 +177,17 @@ do not append. Locked by
 `messages_encode_appends_continue_on_assistant_last` and
 `messages_encode_appends_continue_on_custom_tool_call_last`.
 
+Messages `min_cacheable_tokens` uses `estimate_prompt_tokens`
+(`chars / 4`). The count includes image bytes, image URLs, document
+text and base64, and tool-result parts that Messages writes. It skips
+unsigned thinking (`unsigned thinking is not replayed`) and
+whitespace-only text parts. Audio stays uncounted. Hosted items and
+unknown raw JSON stay uncounted, so a short prompt is not treated as
+long. When the user turn has no text block, the breakpoint is placed
+on the image, document, or tool result Messages wrote. A thinking
+block is not a breakpoint. An empty-turn `.` does not take the
+breakpoint away from a following tool result.
+
 ## Stay in the host
 
 | Stay in the host | Why |

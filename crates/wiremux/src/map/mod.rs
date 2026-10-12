@@ -9,6 +9,7 @@ mod tools;
 
 pub(crate) use converse::converse_service_tier;
 pub(crate) use gemini::{gemini_decode_service_tier, gemini_service_tier};
+pub(crate) use messages::cache_floor_tokens as messages_cache_floor_tokens;
 
 use std::collections::BTreeMap;
 
@@ -554,6 +555,63 @@ pub(super) fn part_has_media_hint(part: &Value) -> bool {
         || part.get("speechMetadata").is_some()
         || part.get("partMetadata").is_some()
         || part.get("thoughtSignature").is_some()
+}
+
+/// Chars Messages writes for a raw part. Borrows the payload; does not copy it.
+///
+/// Matches [`plain_media_part`] and then an inline image. Audio and opaque
+/// JSON contribute nothing.
+pub(super) fn raw_prompt_chars(part: &IrPart) -> usize {
+    let IrPart::Raw { raw, .. } = part else {
+        return 0;
+    };
+    if part_has_media_hint(raw) {
+        if raw.get("inlineData").is_some() {
+            return hinted_inline_prompt_chars(raw);
+        }
+        if let Some(text) = raw.get("text").and_then(Value::as_str) {
+            return if text.trim().is_empty() {
+                0
+            } else {
+                text.len()
+            };
+        }
+        if let Some(chars) = hinted_pdf_uri_chars(raw) {
+            return chars;
+        }
+    }
+    inline_image_prompt_chars(raw).unwrap_or(0)
+}
+
+fn hinted_inline_prompt_chars(raw: &Value) -> usize {
+    let Some(inline) = raw.get("inlineData") else {
+        return 0;
+    };
+    let media = inline.get("mimeType").and_then(Value::as_str).unwrap_or("");
+    let data = inline.get("data").and_then(Value::as_str).unwrap_or("");
+    if data.is_empty() || is_audio_media_type(media) {
+        return 0;
+    }
+    data.len()
+}
+
+fn hinted_pdf_uri_chars(raw: &Value) -> Option<usize> {
+    let file = raw.get("fileData")?;
+    let media = file.get("mimeType").and_then(Value::as_str).unwrap_or("");
+    let uri = file.get("fileUri").and_then(Value::as_str).unwrap_or("");
+    (is_pdf_media_type(media) && !uri.is_empty()).then_some(uri.len())
+}
+
+fn inline_image_prompt_chars(raw: &Value) -> Option<usize> {
+    let inline = raw.get("inlineData")?;
+    let mime = inline.get("mimeType").and_then(Value::as_str)?;
+    let data = inline.get("data").and_then(Value::as_str)?;
+    if data.is_empty() || !function_response_mime_allowed(mime) {
+        return None;
+    }
+    mime.to_ascii_lowercase()
+        .starts_with("image/")
+        .then_some(data.len())
 }
 
 /// Bytes-only view of a Gemini part kept whole so `mediaResolution`,

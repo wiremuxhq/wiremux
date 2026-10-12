@@ -121,8 +121,10 @@ fn consume_notes_do_not_claim_consume_is_unstarted() {
         "resolve-by-wire belongs here"
     );
     assert!(
-        notes.contains("min_cacheable_tokens"),
-        "cache floor belongs on IrCache"
+        notes.contains("min_cacheable_tokens")
+            && notes.contains("image bytes")
+            && notes.contains("unsigned thinking is not replayed"),
+        "cache floor belongs on IrCache and must match the Messages body"
     );
     assert!(
         notes.contains("Signed `IrPart::Thinking`")
