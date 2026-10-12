@@ -250,15 +250,43 @@ fn token_request(
     oauth: &OauthPack,
     body: &BTreeMap<String, String>,
     format: TokenRequestFormat,
-) -> reqwest::RequestBuilder {
+) -> Result<reqwest::RequestBuilder, AuthError> {
+    // The scheme check stays next to the POST. A token body must not go
+    // out on a URL this function has not proven is https.
+    if url.scheme() != "https" {
+        return Err(AuthError::TokenProvider("token_url must be https".into()));
+    }
     let mut req = http.post(url);
     for (k, v) in &oauth.token_headers {
         req = req.header(k.as_str(), v.as_str());
     }
-    match format {
+    Ok(match format {
         TokenRequestFormat::Json => req.json(body),
         TokenRequestFormat::Form => req.form(body),
+    })
+}
+
+#[cfg(all(feature = "net", any(test, feature = "test-util")))]
+fn token_request_loopback(
+    http: &reqwest::Client,
+    url: reqwest::Url,
+    oauth: &OauthPack,
+    body: &BTreeMap<String, String>,
+    format: TokenRequestFormat,
+) -> Result<reqwest::RequestBuilder, AuthError> {
+    if !crate::profile::is_loopback_http(url.as_str()) {
+        return Err(AuthError::TokenProvider(
+            "token_url must be https (or loopback http)".into(),
+        ));
     }
+    let mut req = http.post(url);
+    for (k, v) in &oauth.token_headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    Ok(match format {
+        TokenRequestFormat::Json => req.json(body),
+        TokenRequestFormat::Form => req.form(body),
+    })
 }
 
 /// One token POST. `context` is the transport-error prefix.
@@ -277,7 +305,7 @@ pub(crate) async fn token_post(
     let Some(https) = https_token_url(url) else {
         return token_post_non_https(http, oauth, url, body, format, context).await;
     };
-    token_request(http, https, oauth, body, format)
+    token_request(http, https, oauth, body, format)?
         .send()
         .await
         .map_err(|e| AuthError::TokenProvider(format_oauth_transport_error(context, &e, url)))
@@ -299,7 +327,7 @@ async fn token_post_non_https(
     }
     let parsed = reqwest::Url::parse(url.trim())
         .map_err(|e| AuthError::TokenProvider(format!("token_url is not a valid URL: {e}")))?;
-    token_request(http, parsed, oauth, body, format)
+    token_request_loopback(http, parsed, oauth, body, format)?
         .send()
         .await
         .map_err(|e| AuthError::TokenProvider(format_oauth_transport_error(context, &e, url)))
