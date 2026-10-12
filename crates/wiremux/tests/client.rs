@@ -779,9 +779,12 @@ async fn stream_messages_api_error_is_transient() {
     match first_err {
         Some(ClientError::Transient {
             kind: TransientKind::Http,
+            status,
             message,
-            ..
-        }) => assert!(message.contains("Internal server error"), "{message}"),
+        }) => {
+            assert_eq!(status, Some(200), "{message}");
+            assert!(message.contains("Internal server error"), "{message}");
+        }
         other => panic!("Messages api_error must be Transient Http, got {other:?}"),
     }
 }
@@ -1116,16 +1119,12 @@ async fn stream_eventstream_validation_exception_is_vendor() {
     match first {
         Err(ClientError::Vendor { status, message }) => {
             assert_eq!(status, Some(200));
-            assert!(
-                message.contains("validationException") || message.contains("model identifier"),
-                "{message}"
-            );
+            assert!(message.contains("model identifier"), "{message}");
         }
-        Err(ClientError::NotFound { status, .. }) => assert_eq!(status, Some(200)),
         Err(ClientError::Transport(err)) => {
             panic!("eventstream validationException must not be Transport: {err}");
         }
-        other => panic!("expected Vendor (or NotFound), got {other:?}"),
+        other => panic!("expected Vendor, got {other:?}"),
     }
 }
 
