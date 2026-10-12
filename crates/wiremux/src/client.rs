@@ -1096,6 +1096,17 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
     let code = error_obj.and_then(json_error_code);
 
     if (200..300).contains(&status) {
+        if error_obj.is_none()
+            && let Some(message) = parsed
+                .as_ref()
+                .and_then(crate::completion::json_string_error)
+            && !success_body_has_completion(parsed.as_ref())
+        {
+            return Some(ClientError::Vendor {
+                status: Some(status),
+                message: message.to_string(),
+            });
+        }
         if error_obj.is_some() && !success_body_has_completion(parsed.as_ref()) {
             return Some(classify_error_payload(
                 Some(status),
@@ -1591,6 +1602,28 @@ mod tests {
         let only = r#"{"error":{"message":"please wait","type":"rate_limit_error"}}"#;
         classify_http(200, only, None)
             .expect("an error object with no completion text is an error");
+        let string_error = r#"{"error":"model catalog unavailable"}"#;
+        let err = classify_http(200, string_error, None)
+            .expect("a string error with no completion text is an error");
+        assert!(
+            matches!(
+                err,
+                ClientError::Vendor {
+                    status: Some(200),
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().contains("model catalog unavailable"),
+            "{err}"
+        );
+        let beside = r#"{"choices":[{"message":{"role":"assistant","content":"Hi"}}],"error":"please wait"}"#;
+        assert!(
+            classify_http(200, beside, None).is_none(),
+            "choice text must stay a completion when error is a string"
+        );
     }
 
     /// The same class as the proxy table: an empty string is not
