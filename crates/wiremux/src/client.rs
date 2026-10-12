@@ -820,16 +820,15 @@ fn profile_wire(profile: &ResolvedProfile) -> Result<Wire, ClientError> {
     })
 }
 
+/// A missing catalog id stays NotFound. Any other profile failure is the
+/// file or document, not a credential, so it must not be Auth.
 fn profile_err(err: ProfileError) -> ClientError {
     match err {
         ProfileError::NotFound { id, known } => ClientError::NotFound {
             status: None,
             message: not_found_message(&id, &known),
         },
-        other => ClientError::Auth {
-            status: None,
-            message: other.to_string(),
-        },
+        other => ClientError::Transport(other.to_string()),
     }
 }
 

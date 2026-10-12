@@ -606,9 +606,9 @@ pub fn parse_listen(s: &str) -> Result<SocketAddr, String> {
         }
         _ => s.to_string(),
     };
-    let addr: SocketAddr = candidate
-        .parse()
-        .map_err(|_| format!("proxy listen address must be 127.0.0.1 ({s})"))?;
+    let addr: SocketAddr = candidate.parse().map_err(|_| {
+        format!("proxy listen address must be 127.0.0.1:<port> or localhost:<port> ({s})")
+    })?;
     match addr.ip() {
         IpAddr::V4(ip) if ip == Ipv4Addr::LOCALHOST => Ok(addr),
         _ => Err(format!("proxy listen address must be 127.0.0.1 ({s})")),
@@ -1164,6 +1164,39 @@ chat_path = "/v1/projects/p/locations/us-central1/publishers/anthropic/models/{m
             "error should name the input, got {err}"
         );
         assert!(parse_listen("[::1]:8787").is_err());
+    }
+
+    #[test]
+    fn parse_listen_missing_port_asks_for_port() {
+        for input in ["127.0.0.1", "localhost", "127.0.0.1:99999"] {
+            let err = parse_listen(input).expect_err(input);
+            let host_only = format!("proxy listen address must be 127.0.0.1 ({input})");
+            assert!(
+                err.contains("<port>"),
+                "unparsed listen address must ask for a port, got {err}"
+            );
+            assert!(err.contains(input), "error must name the input, got {err}");
+            assert_ne!(
+                err, host_only,
+                "must not claim the host is forbidden, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_listen_parsed_non_loopback_keeps_host_error() {
+        let err = parse_listen("0.0.0.0:1").expect_err("wildcard");
+        assert_eq!(err, "proxy listen address must be 127.0.0.1 (0.0.0.0:1)");
+        assert!(
+            !err.contains("<port>"),
+            "a parsed port must not use the missing-port wording, got {err}"
+        );
+        let v6 = parse_listen("[::1]:8787").expect_err("ipv6 loopback");
+        assert!(
+            !v6.contains("<port>"),
+            "parsed ipv6 must keep the host error, got {v6}"
+        );
+        assert!(v6.contains("[::1]:8787"), "{v6}");
     }
 
     #[tokio::test]

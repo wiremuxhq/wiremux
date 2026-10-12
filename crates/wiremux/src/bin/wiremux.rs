@@ -41,7 +41,7 @@ enum Command {
     },
     /// Optional local HTTP proxy (source dialect -> profile target).
     Proxy {
-        /// Bind address. `127.0.0.1` or `localhost`.
+        /// Bind address. `127.0.0.1:<port>` or `localhost:<port>`.
         #[arg(long, default_value = "127.0.0.1:0")]
         listen: String,
         /// Incoming harness dialect (`chat-completions` / `chat`, `messages`, `responses`, `gemini`, `converse`).

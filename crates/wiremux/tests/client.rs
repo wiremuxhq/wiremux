@@ -465,6 +465,31 @@ base_url = "http://{addr}"
     let _ = home;
 }
 
+#[test]
+fn from_profile_invalid_toml_is_transport_not_auth() {
+    let home = IsolatedHome::new();
+    let dir = home.path().join(".config/wiremux/profiles");
+    std::fs::create_dir_all(&dir).expect("mkdir profiles");
+    std::fs::write(dir.join("broken.toml"), "not toml [[[").expect("write");
+
+    let err = WireClient::from_profile("broken").expect_err("invalid toml");
+    match &err {
+        ClientError::Auth { .. } => panic!("a bad profile file is not Auth: {err}"),
+        ClientError::Transport(_) => {}
+        other => panic!("expected Transport, got {other:?}"),
+    }
+    let text = err.to_string();
+    assert!(
+        text.contains("failed to parse profile") || text.contains("failed to read"),
+        "display must name the profile failure, got {text}"
+    );
+    assert!(
+        !text.starts_with("auth:"),
+        "display must not start with auth:, got {text}"
+    );
+    let _ = home;
+}
+
 #[tokio::test]
 async fn send_chat_complete_text_finish_usage() {
     let (base, handle) = spawn_one(200, "OK", "", complete_chat_body());
