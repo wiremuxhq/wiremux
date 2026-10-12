@@ -33,6 +33,10 @@ use crate::writeback::{
 };
 
 const DEFAULT_LIFETIME_SECS: u64 = 3600;
+/// Env tokens have no expiry and no refresh token. A one-hour default
+/// makes `get_token` fail offline later even though the variable did not
+/// change. Ten years stays inside `Duration` math for the 80% refresh check.
+const ENV_TOKEN_LIFETIME_SECS: u64 = 60 * 60 * 24 * 365 * 10;
 
 /// Cached access token plus refresh material.
 struct CachedToken {
@@ -696,6 +700,32 @@ impl ProfileTokenProvider {
     }
 }
 
+impl ProfileTokenProvider {
+    /// A local reason `get_token` would fail without contacting the token URL.
+    ///
+    /// Status uses this so an expired access token with no refresh token is
+    /// not reported as available. A token that can still be refreshed is not
+    /// a block: refresh needs the network, and status does not call it.
+    pub async fn offline_block(&self) -> Option<String> {
+        let state = self.inner.state.read().await;
+        if state.access_token.trim().is_empty() {
+            return Some(empty_access_error(&self.inner.oauth).to_string());
+        }
+        let refresh = state
+            .refresh_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty());
+        if state.needs_refresh() && refresh.is_none() {
+            return Some(format!(
+                "access token expired and no refresh token is available; {}",
+                setup_hint(&self.inner.oauth)
+            ));
+        }
+        None
+    }
+}
+
 impl TokenProvider for ProfileTokenProvider {
     fn mark_stale(&self) {
         self.inner.force_refresh.store(true, Ordering::SeqCst);
@@ -981,7 +1011,7 @@ fn load_from_env(oauth: &OauthPack) -> Result<Option<Loaded>, AuthError> {
     Ok(Some(Loaded {
         access_token: token.to_owned(),
         refresh_token: None,
-        lifetime: Duration::from_secs(DEFAULT_LIFETIME_SECS),
+        lifetime: Duration::from_secs(ENV_TOKEN_LIFETIME_SECS),
         source: CredSource::Env,
         layout,
         store_token_url: None,

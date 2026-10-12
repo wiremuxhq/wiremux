@@ -138,6 +138,18 @@ impl AnyTokenProvider {
         }
     }
 
+    /// Local reason [`TokenProvider::get_token`] would fail with no network.
+    ///
+    /// `None` for static keys and for a profile token that is still inside
+    /// its lifetime or that has a refresh token. Status uses this so it does
+    /// not call the token URL.
+    pub async fn offline_block(&self) -> Option<String> {
+        match self {
+            Self::Profile(provider) => provider.offline_block().await,
+            Self::Static(_) | Self::Azure(_) | Self::Gcp(_) | Self::AwsSts(_) => None,
+        }
+    }
+
     /// True when a 401 can be retried after [`TokenProvider::mark_stale`]
     /// and another `get_token`.
     ///
