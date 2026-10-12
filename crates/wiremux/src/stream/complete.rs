@@ -1460,6 +1460,13 @@ fn decode_response_value(
 }
 
 fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
+    let has_choice = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty());
+    if !has_choice && let Some(detail) = plain_error_detail(value) {
+        return Err(MapError::Invalid(detail));
+    }
     let mut out = Vec::new();
     if let Some(tier) = value
         .get("service_tier")
@@ -1613,6 +1620,18 @@ fn complete_chat_tool_call(call: &Value) -> Result<Vec<IrStreamEvent>, MapError>
 }
 
 fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
+    let has_content = value
+        .get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty());
+    let typed_error = value.get("type").and_then(Value::as_str) == Some("error");
+    let string_error = value.get("error").and_then(Value::as_str).is_some();
+    if !has_content
+        && (typed_error || string_error)
+        && let Some(detail) = plain_error_detail(value)
+    {
+        return Err(MapError::Invalid(detail));
+    }
     let mut out = Vec::new();
     let mut tool_index = 0u32;
     if let Some(content) = value.get("content").and_then(Value::as_array) {
@@ -1773,6 +1792,10 @@ fn responses_gateway_error(value: &Value) -> Option<String> {
     {
         return None;
     }
+    plain_error_detail(value)
+}
+
+fn plain_error_detail(value: &Value) -> Option<String> {
     if let Some(text) = value
         .get("error")
         .and_then(Value::as_str)
@@ -2270,6 +2293,72 @@ wire = "responses"
                 .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
             "{done:?}"
         );
+
+        let chat = crate::parse_profile_str(
+            r#"
+schema_version = 1
+id = "chat"
+wire = "chat-completions"
+"#,
+        )
+        .expect("chat profile");
+        let err = decode_response(
+            Wire::ChatCompletions,
+            br#"{"error":{"message":"model catalog unavailable","type":"server_error"}}"#,
+            &chat,
+        )
+        .expect_err("chat error object");
+        assert!(
+            err.to_string().contains("model catalog unavailable"),
+            "{err}"
+        );
+        let kept = decode_response(
+            Wire::ChatCompletions,
+            br#"{"choices":[{"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"error":{"message":"please wait"}}"#,
+            &chat,
+        )
+        .expect("choice beside an error");
+        assert!(
+            kept.iter()
+                .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
+            "{kept:?}"
+        );
+
+        let messages = crate::parse_profile_str(
+            r#"
+schema_version = 1
+id = "messages"
+wire = "messages"
+"#,
+        )
+        .expect("messages profile");
+        let err = decode_response(
+            Wire::Messages,
+            br#"{"type":"error","error":{"type":"api_error","message":"model catalog unavailable"}}"#,
+            &messages,
+        )
+        .expect_err("messages typed error");
+        assert!(
+            err.to_string().contains("model catalog unavailable"),
+            "{err}"
+        );
+        let err = decode_response(
+            Wire::Messages,
+            br#"{"error":"model catalog unavailable"}"#,
+            &messages,
+        )
+        .expect_err("messages string error");
+        assert!(
+            err.to_string().contains("model catalog unavailable"),
+            "{err}"
+        );
+        let untouched = decode_response(
+            Wire::Messages,
+            br#"{"error":{"message":"model not found"}}"#,
+            &messages,
+        )
+        .expect("messages object without type stays a non-error");
+        assert!(untouched.is_empty(), "{untouched:?}");
     }
 
     #[test]
