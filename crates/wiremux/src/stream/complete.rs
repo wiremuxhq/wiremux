@@ -2388,6 +2388,37 @@ wire = "gemini"
             err.to_string().contains("model catalog unavailable"),
             "{err}"
         );
+
+        let converse = crate::parse_profile_str(
+            r#"
+schema_version = 1
+id = "converse"
+wire = "converse"
+"#,
+        )
+        .expect("converse profile");
+        let err = decode_response(
+            Wire::Converse,
+            br#"{"__type":"ValidationException","message":"The provided model identifier is invalid."}"#,
+            &converse,
+        )
+        .expect_err("converse exception");
+        let text = err.to_string();
+        assert!(
+            text.contains("ValidationException") && text.contains("model identifier"),
+            "{text}"
+        );
+        let kept = decode_response(
+            Wire::Converse,
+            br#"{"output":{"message":{"role":"assistant","content":[{"text":"Hi"}]}},"stopReason":"end_turn"}"#,
+            &converse,
+        )
+        .expect("converse completion");
+        assert!(
+            kept.iter()
+                .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
+            "{kept:?}"
+        );
     }
 
     #[test]

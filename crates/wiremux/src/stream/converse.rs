@@ -435,7 +435,32 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
     Ok(body)
 }
 
+fn converse_exception(value: &Value) -> Option<String> {
+    if value.get("output").is_some() || value.get("stopReason").and_then(Value::as_str).is_some() {
+        return None;
+    }
+    let ty = value
+        .get("__type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    let message = value
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    match (ty, message) {
+        (Some(ty), Some(message)) => Some(format!("{ty}: {message}")),
+        (Some(ty), None) => Some(ty.to_string()),
+        (None, Some(message)) => Some(message.to_string()),
+        (None, None) => None,
+    }
+}
+
 pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
+    if let Some(detail) = converse_exception(value) {
+        return Err(MapError::Invalid(detail));
+    }
     let mut out = Vec::new();
     let blocks = value
         .pointer("/output/message/content")
