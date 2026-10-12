@@ -141,6 +141,9 @@ Upstream comes from `--profile`.
 wiremux proxy --from chat-completions --profile ollama --dump-loss
 ```
 
+The default listen address is `127.0.0.1:0`. After bind, stdout prints
+`listening on 127.0.0.1:<port>`. Point the harness at that address.
+
 `--dump-loss` prints `loss.encode:` plus each loss event on stderr
 per request. `wiremux map` does not take this flag.
 

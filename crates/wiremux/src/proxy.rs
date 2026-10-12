@@ -641,6 +641,9 @@ fn count_body_hides_vendor_error(route: CountRoute, body: &[u8]) -> bool {
     {
         return false;
     }
+    if crate::completion::json_string_error(&value).is_some() {
+        return true;
+    }
     let Some(err) = value.get("error").filter(|item| item.is_object()) else {
         return false;
     };
@@ -1719,6 +1722,9 @@ fn gemini_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
     if crate::completion::json_has_completion(&value) {
         return None;
     }
+    if let Some(text) = crate::completion::json_string_error(&value) {
+        return Some(text.to_string());
+    }
     if let Some(err) = value.get("error").filter(|item| item.is_object())
         && let Some(detail) = vendor_error_detail(err)
     {
@@ -1762,6 +1768,9 @@ fn chat_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
     if crate::completion::json_has_completion(&value) {
         return None;
     }
+    if let Some(text) = crate::completion::json_string_error(&value) {
+        return Some(text.to_string());
+    }
     let err = value.get("error").filter(|item| item.is_object())?;
     vendor_error_detail(err)
 }
@@ -1777,6 +1786,9 @@ fn messages_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String>
     let content = value.get("content").and_then(serde_json::Value::as_array);
     if content.is_some_and(|items| !items.is_empty()) {
         return None;
+    }
+    if let Some(text) = crate::completion::json_string_error(&value) {
+        return Some(text.to_string());
     }
     let err = value.get("error").filter(|item| item.is_object())?;
     vendor_error_detail(err)
@@ -1885,10 +1897,12 @@ fn status_from_reqwest(status: reqwest::StatusCode) -> StatusCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        CountRoute, CountUrlError, count_body_hides_vendor_error, count_model, count_route,
-        count_upstream_url, host_is_loopback, is_json_content_type, read_capped_body,
-        rewrite_count_body_model, same_wire_success_is_json,
+        CountRoute, CountUrlError, chat_complete_vendor_failure, count_body_hides_vendor_error,
+        count_model, count_route, count_upstream_url, gemini_complete_vendor_failure,
+        host_is_loopback, is_json_content_type, read_capped_body, rewrite_count_body_model,
+        same_wire_success_is_json,
     };
+    use crate::Wire;
 
     fn count_profile(wire: &str, chat_path: Option<&str>) -> wiremux_auth::ResolvedProfile {
         let path = chat_path
@@ -2174,6 +2188,24 @@ anthropic-beta = "context-1m-2025-08-07"
             b" {\"id\":\"x\"}"
         ));
         assert!(same_wire_success_is_json("", b"[1]"));
+    }
+
+    #[test]
+    fn string_error_without_completion_is_a_vendor_failure() {
+        let body = br#"{"error":"model catalog unavailable"}"#;
+        let detail =
+            chat_complete_vendor_failure(Wire::ChatCompletions, body).expect("chat string");
+        assert_eq!(detail, "model catalog unavailable");
+        let kept = chat_complete_vendor_failure(
+            Wire::ChatCompletions,
+            br#"{"choices":[{"message":{"role":"assistant","content":"Hi"}}],"error":"please wait"}"#,
+        );
+        assert!(kept.is_none(), "{kept:?}");
+        assert!(count_body_hides_vendor_error(CountRoute::Gemini, body));
+        assert_eq!(
+            gemini_complete_vendor_failure(Wire::Gemini, body).as_deref(),
+            Some("model catalog unavailable")
+        );
     }
 
     #[test]

@@ -30,17 +30,19 @@ pub fn upstream_url_for_model(
     if path.contains("{model}") {
         return Err("request has no model and the profile path still contains {model}".to_string());
     }
+    // Model ids keep `:`, so the method name can sit inside the model
+    // segment. Rewrite only the trailing method, not the first match.
     if stream
         && matches!(profile.dialect.wire, Some(Wire::Gemini))
-        && path.ends_with(":generateContent")
+        && let Some(prefix) = path.strip_suffix(":generateContent")
     {
-        path = path.replacen(":generateContent", ":streamGenerateContent?alt=sse", 1);
+        path = format!("{prefix}:streamGenerateContent?alt=sse");
     }
     if stream
         && matches!(profile.dialect.wire, Some(Wire::Messages))
-        && path.ends_with(":rawPredict")
+        && let Some(prefix) = path.strip_suffix(":rawPredict")
     {
-        path = path.replacen(":rawPredict", ":streamRawPredict", 1);
+        path = format!("{prefix}:streamRawPredict");
     }
     if stream && matches!(profile.dialect.wire, Some(Wire::Converse)) && path.ends_with("/converse")
     {

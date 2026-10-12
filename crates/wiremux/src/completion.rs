@@ -14,6 +14,15 @@ pub(crate) fn json_has_completion(value: &Value) -> bool {
         || nonempty_array(value, "content")
 }
 
+/// Non-empty `error` string. Object errors stay on the object parsers.
+pub(crate) fn json_string_error(value: &Value) -> Option<&str> {
+    value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
 fn nonempty_array(value: &Value, key: &str) -> bool {
     value
         .get(key)
