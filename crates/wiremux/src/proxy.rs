@@ -636,13 +636,13 @@ fn count_body_hides_vendor_error(route: CountRoute, body: &[u8]) -> bool {
     {
         return false;
     }
+    if crate::completion::json_string_error(&value).is_some() {
+        return true;
+    }
     if matches!(route, CountRoute::Messages)
         && value.get("type").and_then(serde_json::Value::as_str) != Some("error")
     {
         return false;
-    }
-    if crate::completion::json_string_error(&value).is_some() {
-        return true;
     }
     let Some(err) = value.get("error").filter(|item| item.is_object()) else {
         return false;
@@ -1692,9 +1692,11 @@ fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
 
 /// JSON success body that is only a vendor failure.
 ///
-/// Responses uses `status: failed` with no output. Chat uses an `error`
-/// object and no visible choice. An empty string is not a choice.
-/// Messages uses `type: error` and no content blocks. Gemini uses an
+/// Responses uses `status: failed` with no output, or an `error` string
+/// or object when that output is absent. Chat uses an `error` object and no
+/// visible choice. An empty string is not a choice.
+/// Messages uses `type: error` and no content blocks, or a string
+/// `error` when those blocks are absent. Gemini uses an
 /// `error` object, or a `promptFeedback.blockReason`, when no candidate
 /// text, tool call, or inline data is present. A non-empty candidate
 /// list with no `error` object stays on the decode path. A non-stream
@@ -1780,15 +1782,15 @@ fn messages_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String>
         return None;
     }
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    if value.get("type").and_then(serde_json::Value::as_str) != Some("error") {
-        return None;
-    }
     let content = value.get("content").and_then(serde_json::Value::as_array);
     if content.is_some_and(|items| !items.is_empty()) {
         return None;
     }
     if let Some(text) = crate::completion::json_string_error(&value) {
         return Some(text.to_string());
+    }
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("error") {
+        return None;
     }
     let err = value.get("error").filter(|item| item.is_object())?;
     vendor_error_detail(err)
@@ -1833,6 +1835,17 @@ fn responses_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String
     } else {
         &value
     };
+    if crate::completion::json_has_completion(response) {
+        return None;
+    }
+    if let Some(text) = crate::completion::json_string_error(response) {
+        return Some(text.to_string());
+    }
+    if let Some(err) = response.get("error").filter(|item| item.is_object())
+        && let Some(detail) = vendor_error_detail(err)
+    {
+        return Some(detail);
+    }
     let status = response.get("status").and_then(serde_json::Value::as_str);
     if status != Some("failed") {
         return None;
@@ -1899,8 +1912,8 @@ mod tests {
     use super::{
         CountRoute, CountUrlError, chat_complete_vendor_failure, count_body_hides_vendor_error,
         count_model, count_route, count_upstream_url, gemini_complete_vendor_failure,
-        host_is_loopback, is_json_content_type, read_capped_body, rewrite_count_body_model,
-        same_wire_success_is_json,
+        host_is_loopback, is_json_content_type, messages_complete_vendor_failure, read_capped_body,
+        responses_complete_vendor_failure, rewrite_count_body_model, same_wire_success_is_json,
     };
     use crate::Wire;
 
@@ -2206,6 +2219,38 @@ anthropic-beta = "context-1m-2025-08-07"
             gemini_complete_vendor_failure(Wire::Gemini, body).as_deref(),
             Some("model catalog unavailable")
         );
+        assert_eq!(
+            responses_complete_vendor_failure(Wire::Responses, body).as_deref(),
+            Some("model catalog unavailable")
+        );
+        assert_eq!(
+            responses_complete_vendor_failure(
+                Wire::Responses,
+                br#"{"error":{"message":"model catalog unavailable","type":"server_error"}}"#,
+            )
+            .as_deref(),
+            Some("server_error: model catalog unavailable")
+        );
+        assert!(
+            responses_complete_vendor_failure(
+                Wire::Responses,
+                br#"{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Hi"}]}],"error":"please wait"}"#,
+            )
+            .is_none(),
+            "responses output stays on the map path"
+        );
+        assert_eq!(
+            messages_complete_vendor_failure(Wire::Messages, body).as_deref(),
+            Some("model catalog unavailable")
+        );
+        assert_eq!(
+            messages_complete_vendor_failure(
+                Wire::Messages,
+                br#"{"type":"error","error":"model catalog unavailable"}"#,
+            )
+            .as_deref(),
+            Some("model catalog unavailable")
+        );
     }
 
     #[test]
@@ -2270,6 +2315,12 @@ anthropic-beta = "context-1m-2025-08-07"
                 r#"{"error":{"message":"model not found"}}"#,
                 false,
                 "messages missing type",
+            ),
+            (
+                CountRoute::Messages,
+                r#"{"error":"model catalog unavailable"}"#,
+                true,
+                "messages string error",
             ),
             (CountRoute::Messages, "not-json", false, "messages not json"),
             (
