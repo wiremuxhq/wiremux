@@ -636,13 +636,13 @@ fn count_body_hides_vendor_error(route: CountRoute, body: &[u8]) -> bool {
     {
         return false;
     }
+    if crate::completion::json_string_error(&value).is_some() {
+        return true;
+    }
     if matches!(route, CountRoute::Messages)
         && value.get("type").and_then(serde_json::Value::as_str) != Some("error")
     {
         return false;
-    }
-    if crate::completion::json_string_error(&value).is_some() {
-        return true;
     }
     let Some(err) = value.get("error").filter(|item| item.is_object()) else {
         return false;
@@ -1695,7 +1695,8 @@ fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
 /// Responses uses `status: failed` with no output, or a string `error`
 /// when that output is absent. Chat uses an `error` object and no
 /// visible choice. An empty string is not a choice.
-/// Messages uses `type: error` and no content blocks. Gemini uses an
+/// Messages uses `type: error` and no content blocks, or a string
+/// `error` when those blocks are absent. Gemini uses an
 /// `error` object, or a `promptFeedback.blockReason`, when no candidate
 /// text, tool call, or inline data is present. A non-empty candidate
 /// list with no `error` object stays on the decode path. A non-stream
@@ -1781,15 +1782,15 @@ fn messages_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String>
         return None;
     }
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    if value.get("type").and_then(serde_json::Value::as_str) != Some("error") {
-        return None;
-    }
     let content = value.get("content").and_then(serde_json::Value::as_array);
     if content.is_some_and(|items| !items.is_empty()) {
         return None;
     }
     if let Some(text) = crate::completion::json_string_error(&value) {
         return Some(text.to_string());
+    }
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("error") {
+        return None;
     }
     let err = value.get("error").filter(|item| item.is_object())?;
     vendor_error_detail(err)
@@ -2225,9 +2226,9 @@ anthropic-beta = "context-1m-2025-08-07"
             .is_none(),
             "responses output stays on the map path"
         );
-        assert!(
-            messages_complete_vendor_failure(Wire::Messages, body).is_none(),
-            "messages string error without type is not a messages error"
+        assert_eq!(
+            messages_complete_vendor_failure(Wire::Messages, body).as_deref(),
+            Some("model catalog unavailable")
         );
         assert_eq!(
             messages_complete_vendor_failure(
@@ -2301,6 +2302,12 @@ anthropic-beta = "context-1m-2025-08-07"
                 r#"{"error":{"message":"model not found"}}"#,
                 false,
                 "messages missing type",
+            ),
+            (
+                CountRoute::Messages,
+                r#"{"error":"model catalog unavailable"}"#,
+                true,
+                "messages string error",
             ),
             (CountRoute::Messages, "not-json", false, "messages not json"),
             (
