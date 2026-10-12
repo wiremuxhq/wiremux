@@ -3,6 +3,9 @@
 mod chat;
 mod complete;
 mod converse;
+
+#[cfg(feature = "proxy")]
+pub(crate) use converse::complete_exception_detail;
 mod encoder;
 mod eventstream;
 mod gemini;
