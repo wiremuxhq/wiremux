@@ -14,15 +14,14 @@ use crate::TokenProvider;
 use crate::error::AuthError;
 use crate::helpers::{
     AUTH_LOCK_TIMEOUT, InFlight, cached_token_on_lock_failure, duration_from_expires_in_secs,
-    expand_tilde, format_oauth_transport_error, is_oauth_transport_error, is_token_rotation_error,
-    jail_creds_path, lead_or_follow, oauth_http_client, parse_rfc3339, read_oauth_body,
+    expand_tilde, is_oauth_transport_error, is_token_rotation_error, jail_creds_path,
+    lead_or_follow, oauth_http_client, parse_rfc3339, post_token_with_fallback, read_oauth_body,
     redact_secret_looking, redact_url_origin, remaining_from_system_time, resolve_creds_path,
     try_acquire_refresh_lock, vendor_rejected_summary,
 };
 use crate::keychain_guard::keychain_disabled;
 use crate::profile::{
-    AuthScheme, CredsFormat, ExpiresUnit, Login, OauthPack, ResolvedProfile, TokenRequestFormat,
-    TokenResponse,
+    AuthScheme, CredsFormat, ExpiresUnit, Login, OauthPack, ResolvedProfile, TokenResponse,
 };
 use crate::providers::static_token::StaticToken;
 #[cfg(any(target_os = "macos", test, feature = "test-util"))]
@@ -33,6 +32,10 @@ use crate::writeback::{
 };
 
 const DEFAULT_LIFETIME_SECS: u64 = 3600;
+/// Env tokens have no expiry and no refresh token. A one-hour default
+/// makes `get_token` fail offline later even though the variable did not
+/// change. Ten years stays inside `Duration` math for the 80% refresh check.
+const ENV_TOKEN_LIFETIME_SECS: u64 = 60 * 60 * 24 * 365 * 10;
 
 /// Cached access token plus refresh material.
 struct CachedToken {
@@ -340,41 +343,17 @@ impl ProfileTokenProvider {
         refresh_token: &str,
     ) -> Result<Result<ParsedTokenResponse, (u16, String, String)>, AuthError> {
         let body = refresh_request_body(&self.inner.oauth, refresh_token);
-        let format = self
-            .inner
-            .oauth
-            .token_request_format
-            .unwrap_or(TokenRequestFormat::Form);
-
-        let mut used_url = self.inner.oauth.token_url.clone();
-        debug!("refreshing token via {}", redact_url_origin(&used_url));
-        let resp = token_post(
+        debug!(
+            "refreshing token via {}",
+            redact_url_origin(&self.inner.oauth.token_url)
+        );
+        let (resp, used_url) = post_token_with_fallback(
             &self.inner.http,
             &self.inner.oauth,
-            &used_url,
             &body,
-            format,
+            "token refresh request failed",
         )
         .await?;
-
-        let resp = if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            if let Some(fallback) = &self.inner.oauth.token_url_fallback {
-                debug!("primary token URL returned 404, trying fallback");
-                used_url = fallback.clone();
-                token_post(
-                    &self.inner.http,
-                    &self.inner.oauth,
-                    &used_url,
-                    &body,
-                    format,
-                )
-                .await?
-            } else {
-                resp
-            }
-        } else {
-            resp
-        };
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -696,6 +675,32 @@ impl ProfileTokenProvider {
     }
 }
 
+impl ProfileTokenProvider {
+    /// A local reason `get_token` would fail without contacting the token URL.
+    ///
+    /// Status uses this so an expired access token with no refresh token is
+    /// not reported as available. A token that can still be refreshed is not
+    /// a block: refresh needs the network, and status does not call it.
+    pub async fn offline_block(&self) -> Option<String> {
+        let state = self.inner.state.read().await;
+        if state.access_token.trim().is_empty() {
+            return Some(empty_access_error(&self.inner.oauth).to_string());
+        }
+        let refresh = state
+            .refresh_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty());
+        if state.needs_refresh() && refresh.is_none() {
+            return Some(format!(
+                "access token expired and no refresh token is available; {}",
+                setup_hint(&self.inner.oauth)
+            ));
+        }
+        None
+    }
+}
+
 impl TokenProvider for ProfileTokenProvider {
     fn mark_stale(&self) {
         self.inner.force_refresh.store(true, Ordering::SeqCst);
@@ -793,81 +798,6 @@ fn refresh_request_body(oauth: &OauthPack, refresh_token: &str) -> BTreeMap<Stri
     // Reserved key wins: a gist cannot omit or hardcode the refresh token.
     body.insert("refresh_token".into(), refresh_token.to_owned());
     body
-}
-
-fn https_token_url(url: &str) -> Option<reqwest::Url> {
-    let parsed = reqwest::Url::parse(url.trim()).ok()?;
-    (parsed.scheme() == "https").then_some(parsed)
-}
-
-async fn token_post(
-    http: &reqwest::Client,
-    oauth: &OauthPack,
-    url: &str,
-    body: &BTreeMap<String, String>,
-    format: TokenRequestFormat,
-) -> Result<reqwest::Response, AuthError> {
-    let Some(https) = https_token_url(url) else {
-        return token_post_non_https(http, oauth, url, body, format).await;
-    };
-    let mut req = http.post(https);
-    for (k, v) in &oauth.token_headers {
-        req = req.header(k.as_str(), v.as_str());
-    }
-    let req = match format {
-        TokenRequestFormat::Json => req.json(body),
-        TokenRequestFormat::Form => req.form(body),
-    };
-    req.send().await.map_err(|e| {
-        AuthError::TokenProvider(format_oauth_transport_error(
-            "token refresh request failed",
-            &e,
-            url,
-        ))
-    })
-}
-
-#[cfg(any(test, feature = "test-util"))]
-async fn token_post_non_https(
-    http: &reqwest::Client,
-    oauth: &OauthPack,
-    url: &str,
-    body: &BTreeMap<String, String>,
-    format: TokenRequestFormat,
-) -> Result<reqwest::Response, AuthError> {
-    if !crate::profile::is_loopback_http(url) {
-        return Err(AuthError::TokenProvider(
-            "token_url must be https (or loopback http)".into(),
-        ));
-    }
-    let parsed = reqwest::Url::parse(url.trim())
-        .map_err(|e| AuthError::TokenProvider(format!("token_url is not a valid URL: {e}")))?;
-    let mut req = http.post(parsed);
-    for (k, v) in &oauth.token_headers {
-        req = req.header(k.as_str(), v.as_str());
-    }
-    let req = match format {
-        TokenRequestFormat::Json => req.json(body),
-        TokenRequestFormat::Form => req.form(body),
-    };
-    req.send().await.map_err(|e| {
-        AuthError::TokenProvider(format_oauth_transport_error(
-            "token refresh request failed",
-            &e,
-            url,
-        ))
-    })
-}
-
-#[cfg(not(any(test, feature = "test-util")))]
-async fn token_post_non_https(
-    _http: &reqwest::Client,
-    _oauth: &OauthPack,
-    _url: &str,
-    _body: &BTreeMap<String, String>,
-    _format: TokenRequestFormat,
-) -> Result<reqwest::Response, AuthError> {
-    Err(AuthError::TokenProvider("token_url must be https".into()))
 }
 
 fn parse_token_response(
@@ -981,7 +911,7 @@ fn load_from_env(oauth: &OauthPack) -> Result<Option<Loaded>, AuthError> {
     Ok(Some(Loaded {
         access_token: token.to_owned(),
         refresh_token: None,
-        lifetime: Duration::from_secs(DEFAULT_LIFETIME_SECS),
+        lifetime: Duration::from_secs(ENV_TOKEN_LIFETIME_SECS),
         source: CredSource::Env,
         layout,
         store_token_url: None,
@@ -1257,7 +1187,7 @@ fn stored_oidc_token_url(oauth: &OauthPack, doc: &Value) -> Option<String> {
 }
 
 fn token_url_allowed(url: &str) -> bool {
-    if https_token_url(url).is_some() {
+    if crate::helpers::https_token_url(url).is_some() {
         return true;
     }
     #[cfg(any(test, feature = "test-util"))]
@@ -2788,14 +2718,15 @@ access_env = "WIREMUX_TEST_ACCESS"
 
     #[test]
     fn token_endpoint_https_or_loopback_only() {
-        let https = https_token_url("https://auth.example.invalid/token").expect("https token url");
+        let https = crate::helpers::https_token_url("https://auth.example.invalid/token")
+            .expect("https token url");
         assert_eq!(https.as_str(), "https://auth.example.invalid/token");
-        let https_upper =
-            https_token_url("HTTPS://auth.example.invalid/token").expect("HTTPS token url");
+        let https_upper = crate::helpers::https_token_url("HTTPS://auth.example.invalid/token")
+            .expect("HTTPS token url");
         assert_eq!(https_upper.scheme(), "https");
         assert_eq!(https_upper.host_str(), Some("auth.example.invalid"));
         assert_eq!(https_upper.path(), "/token");
-        assert!(https_token_url("http://127.0.0.1:9/token").is_none());
+        assert!(crate::helpers::https_token_url("http://127.0.0.1:9/token").is_none());
         assert!(crate::profile::is_loopback_http("http://127.0.0.1:9/token"));
         assert!(crate::profile::is_loopback_http("http://localhost/token"));
         assert!(!crate::profile::is_loopback_http("http://192.0.2.1/token"));

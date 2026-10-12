@@ -263,18 +263,10 @@ async fn run_pkce(oauth: &OauthPack, listener: TcpListener) -> Result<(), String
     let target = first.split_whitespace().nth(1).unwrap_or("");
     let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
     let code = reply_to_pkce_callback(&mut stream, query, &pkce.state)?;
-    let redirect = oauth.redirect_uri.as_deref().unwrap_or("");
-    let client_id = oauth.client_id.as_deref().unwrap_or("");
     let saved = async {
-        let tokens = exchange_auth_code(
-            &oauth.token_url,
-            client_id,
-            &code,
-            redirect,
-            &pkce.code_verifier,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let tokens = exchange_auth_code(oauth, &code, &pkce.code_verifier)
+            .await
+            .map_err(|e| e.to_string())?;
         persist_login_tokens(oauth, &tokens)
             .await
             .map_err(|e| e.to_string())
@@ -312,23 +304,11 @@ async fn run_device(profile: &ResolvedProfile) -> Result<(), String> {
         println!("or open {complete}");
     }
     let _ = std::io::stdout().flush();
-    let client_id = oauth.client_id.as_deref().unwrap_or("");
-    let headers: Vec<(&str, &str)> = oauth
-        .token_headers
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
     let tokens = poll_device_token(
-        &oauth.token_url,
-        client_id,
+        oauth,
         &started.device_code,
         started.interval,
         started.expires_in,
-        if headers.is_empty() {
-            None
-        } else {
-            Some(&headers)
-        },
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -513,7 +493,14 @@ pub async fn token_status(profile: &ResolvedProfile) -> TokenStatus {
         .is_some_and(|name| !name.is_empty());
     if profile.oauth.is_some() || !profile.access_env.is_empty() || gcp {
         match provider_from_profile(profile) {
-            Ok(_) => {
+            Ok(provider) => {
+                if let Some(reason) = provider.offline_block().await {
+                    return TokenStatus {
+                        id: profile.id.clone(),
+                        available: false,
+                        detail: redact_secret_looking(&reason),
+                    };
+                }
                 return TokenStatus {
                     id: profile.id.clone(),
                     available: true,
@@ -706,7 +693,9 @@ pub fn upstream_url(profile: &ResolvedProfile) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremux_auth::{AnyTokenProvider, IsolatedHome, StaticToken, parse_profile_str};
+    use wiremux_auth::{
+        AnyTokenProvider, IsolatedHome, PlantCredentials, StaticToken, parse_profile_str,
+    };
 
     #[test]
     fn redact_printed_url_keeps_origin_only() {
@@ -1221,6 +1210,51 @@ base_url = "https://api.x.ai"
             "status leaked the token: {}",
             status.detail
         );
+    }
+
+    #[tokio::test]
+    async fn token_status_expired_without_refresh_is_unavailable() {
+        let home = IsolatedHome::new();
+        let creds = home.plant_credentials(PlantCredentials::JsonPointer {
+            relative_path: ".config/wiremux/expired-status.json",
+            document: serde_json::json!({
+                "tokens": { "access": "stale-status-token", "expiry_unix": 1 }
+            }),
+        });
+        let creds = creds.to_string_lossy().replace('\\', "/");
+        let profile = parse_profile_str(&format!(
+            r#"
+schema_version = 1
+id = "expired-oauth"
+wire = "chat-completions"
+base_url = "https://example.invalid"
+[oauth]
+token_url = "https://example.invalid/oauth/token"
+client_id = "example-public-client"
+creds_format = "json-pointer"
+creds_path = "{creds}"
+access_token_ptr = "/tokens/access"
+refresh_token_ptr = "/tokens/refresh"
+expires_ptr = "/tokens/expiry_unix"
+expires_unit = "s"
+login = "none"
+"#
+        ))
+        .expect("parse");
+        let status = token_status(&profile).await;
+        assert!(!status.available, "{}", status.detail);
+        assert!(
+            status.detail.contains("expired") && status.detail.contains("refresh"),
+            "{}",
+            status.detail
+        );
+        assert!(
+            !status.detail.contains("stale-status-token"),
+            "status leaked the token: {}",
+            status.detail
+        );
+        let shown = format_status(&status);
+        assert!(shown.contains("token: unavailable"), "{shown}");
     }
 
     #[tokio::test]

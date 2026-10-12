@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::error::AuthError;
 use crate::helpers::{
-    format_oauth_http_error, format_oauth_transport_error, oauth_http_client, percent_encode,
+    format_oauth_http_error, oauth_http_client, percent_encode, post_token_with_fallback,
     read_oauth_body,
 };
 use crate::profile::OauthPack;
@@ -140,47 +140,48 @@ fn is_reserved_authorize_param(key: &str) -> bool {
     )
 }
 
+fn auth_code_body(oauth: &OauthPack, code: &str, code_verifier: &str) -> BTreeMap<String, String> {
+    let mut body = BTreeMap::new();
+    body.insert("grant_type".into(), "authorization_code".into());
+    body.insert(
+        "client_id".into(),
+        oauth.client_id.clone().unwrap_or_default(),
+    );
+    body.insert("code".into(), code.to_owned());
+    body.insert(
+        "redirect_uri".into(),
+        oauth.redirect_uri.clone().unwrap_or_default(),
+    );
+    body.insert("code_verifier".into(), code_verifier.to_owned());
+    body
+}
+
 /// Exchange an authorization code for tokens.
+///
+/// Uses the same body format, token headers, and token URL fallback as refresh.
 pub async fn exchange_auth_code(
-    token_url: &str,
-    client_id: &str,
+    oauth: &OauthPack,
     code: &str,
-    redirect_uri: &str,
     code_verifier: &str,
 ) -> Result<TokenExchangeResponse, AuthError> {
     let http = oauth_http_client()?;
-    let resp = http
-        .post(token_url)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("client_id", client_id),
-            ("code", code),
-            ("redirect_uri", redirect_uri),
-            ("code_verifier", code_verifier),
-        ])
-        .send()
-        .await
-        .map_err(|e| {
-            AuthError::TokenProvider(format_oauth_transport_error(
-                "auth code exchange failed",
-                &e,
-                token_url,
-            ))
-        })?;
+    let body = auth_code_body(oauth, code, code_verifier);
+    let (resp, used_url) =
+        post_token_with_fallback(&http, oauth, &body, "auth code exchange failed").await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = read_oauth_body(resp).await.unwrap_or_default();
+        let raw = read_oauth_body(resp).await.unwrap_or_default();
         return Err(AuthError::TokenProvider(format_oauth_http_error(
             "auth code exchange failed",
             status,
-            &body,
-            token_url,
+            &raw,
+            &used_url,
         )));
     }
 
-    let body = read_oauth_body(resp).await?;
-    serde_json::from_str::<TokenExchangeResponse>(&body)
+    let raw = read_oauth_body(resp).await?;
+    serde_json::from_str::<TokenExchangeResponse>(&raw)
         .map_err(|e| AuthError::TokenProvider(format!("auth code exchange: invalid JSON: {e}")))
 }
 
@@ -464,7 +465,8 @@ mod tests {
     #[tokio::test]
     async fn exchange_transport_error_redacts_userinfo_and_secret() {
         let url = "https://user:s3cret@127.0.0.1:1/oauth/token?client_secret=supersecret";
-        let err = exchange_auth_code(url, "cid", "code", "http://127.0.0.1/cb", "ver")
+        let oauth = crate::helpers::test_login_oauth(url, None, "form", "pkce");
+        let err = exchange_auth_code(&oauth, "code", "ver")
             .await
             .expect_err("closed port must fail");
         let msg = err.to_string();
@@ -484,5 +486,59 @@ mod tests {
             !msg.contains("user:"),
             "transport error leaked userinfo: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn exchange_json_profile_posts_json_and_token_header() {
+        let (primary, primary_h) =
+            crate::helpers::capture_one_http_request(404, r#"{"error":"not_found"}"#);
+        let (fallback, fallback_h) = crate::helpers::capture_one_http_request(
+            200,
+            r#"{"access_token":"access-1","refresh_token":"rt-1","expires_in":60}"#,
+        );
+        let oauth = crate::helpers::test_login_oauth(&primary, Some(&fallback), "json", "pkce");
+        let result = exchange_auth_code(&oauth, "auth-code", "verifier-1").await;
+        let primary_req = primary_h.join().expect("primary");
+        let fallback_req = fallback_h.join().expect("fallback");
+        for req in [&primary_req, &fallback_req] {
+            crate::helpers::assert_login_token_post(req, true);
+            assert!(
+                req.contains("\"grant_type\":\"authorization_code\""),
+                "json body missing grant, got: {req}"
+            );
+            assert!(
+                !req.contains("grant_type=authorization_code"),
+                "json profile posted a form body, got: {req}"
+            );
+            assert!(req.contains("\"code\":\"auth-code\""), "{req}");
+            assert!(req.contains("\"code_verifier\":\"verifier-1\""), "{req}");
+        }
+        let tokens = result.expect("json exchange");
+        assert_eq!(tokens.access_token, "access-1");
+    }
+
+    #[tokio::test]
+    async fn exchange_form_profile_posts_form() {
+        let (url, handle) = crate::helpers::capture_one_http_request(
+            200,
+            r#"{"access_token":"access-form","expires_in":60}"#,
+        );
+        let oauth = crate::helpers::test_login_oauth(&url, None, "form", "pkce");
+        let result = exchange_auth_code(&oauth, "auth-code", "verifier-1").await;
+        let req = handle.join().expect("server");
+        crate::helpers::assert_login_token_post(&req, false);
+        assert!(
+            req.contains("grant_type=authorization_code"),
+            "form body missing grant, got: {req}"
+        );
+        assert!(
+            !req.contains("\"grant_type\""),
+            "form profile posted JSON, got: {req}"
+        );
+        assert!(req.contains("code=auth-code"), "{req}");
+        assert!(req.contains("code_verifier=verifier-1"), "{req}");
+        assert!(req.contains("client_id=client-1"), "{req}");
+        let tokens = result.expect("form exchange");
+        assert_eq!(tokens.access_token, "access-form");
     }
 }

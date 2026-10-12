@@ -1,0 +1,6 @@
+# The OAuth token endpoint is HTTPS, and the body is the token request.
+# rust/cleartext-transmission treats that endpoint string as sensitive
+# data in the POST. It is the URL, not a secret.
+query-filters:
+  - exclude:
+      id: rust/cleartext-transmission

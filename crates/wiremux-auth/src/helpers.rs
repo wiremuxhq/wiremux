@@ -1,6 +1,8 @@
 //! HTTP, lock, single-flight, and sanitization helpers.
 
 #[cfg(feature = "net")]
+use std::collections::BTreeMap;
+#[cfg(feature = "net")]
 use std::future::Future;
 #[cfg(feature = "net")]
 use std::io;
@@ -14,10 +16,12 @@ use std::time::Duration;
 #[cfg(feature = "net")]
 use tokio::sync::watch;
 #[cfg(feature = "net")]
-use tracing::warn;
+use tracing::{debug, warn};
 
 #[cfg(any(feature = "net", test))]
 use crate::error::AuthError;
+#[cfg(feature = "net")]
+use crate::profile::{OauthPack, TokenRequestFormat};
 
 /// Cap `expires_in` so a millisecond-as-seconds vendor cannot overflow.
 #[cfg(feature = "net")]
@@ -231,6 +235,128 @@ pub(crate) fn parse_token_endpoint(url: &str) -> Result<reqwest::Url, AuthError>
     Err(AuthError::TokenProvider(
         "token_url must be https (or loopback http)".into(),
     ))
+}
+
+#[cfg(feature = "net")]
+pub(crate) fn https_token_url(url: &str) -> Option<reqwest::Url> {
+    let parsed = reqwest::Url::parse(url.trim()).ok()?;
+    (parsed.scheme() == "https").then_some(parsed)
+}
+
+#[cfg(all(feature = "net", any(test, feature = "test-util")))]
+fn token_request_loopback(
+    http: &reqwest::Client,
+    url: reqwest::Url,
+    oauth: &OauthPack,
+    body: &BTreeMap<String, String>,
+    format: TokenRequestFormat,
+) -> Result<reqwest::RequestBuilder, AuthError> {
+    if !crate::profile::is_loopback_http(url.as_str()) {
+        return Err(AuthError::TokenProvider(
+            "token_url must be https (or loopback http)".into(),
+        ));
+    }
+    let mut req = http.post(url);
+    for (k, v) in &oauth.token_headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    Ok(match format {
+        TokenRequestFormat::Json => req.json(body),
+        TokenRequestFormat::Form => req.form(body),
+    })
+}
+
+/// One token POST. `context` is the transport-error prefix.
+///
+/// Refresh must pass `token refresh request failed` so a down token URL
+/// can still keep a cached access token.
+#[cfg(feature = "net")]
+pub(crate) async fn token_post(
+    http: &reqwest::Client,
+    oauth: &OauthPack,
+    url: &str,
+    body: &BTreeMap<String, String>,
+    format: TokenRequestFormat,
+    context: &str,
+) -> Result<reqwest::Response, AuthError> {
+    let Some(https) = https_token_url(url) else {
+        return token_post_non_https(http, oauth, url, body, format, context).await;
+    };
+    // `https` came from `https_token_url`, which returns only https.
+    let mut req = http.post(https);
+    for (k, v) in &oauth.token_headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let req = match format {
+        TokenRequestFormat::Json => req.json(body),
+        TokenRequestFormat::Form => req.form(body),
+    };
+    req.send()
+        .await
+        .map_err(|e| AuthError::TokenProvider(format_oauth_transport_error(context, &e, url)))
+}
+
+#[cfg(all(feature = "net", any(test, feature = "test-util")))]
+async fn token_post_non_https(
+    http: &reqwest::Client,
+    oauth: &OauthPack,
+    url: &str,
+    body: &BTreeMap<String, String>,
+    format: TokenRequestFormat,
+    context: &str,
+) -> Result<reqwest::Response, AuthError> {
+    if !crate::profile::is_loopback_http(url) {
+        return Err(AuthError::TokenProvider(
+            "token_url must be https (or loopback http)".into(),
+        ));
+    }
+    let parsed = reqwest::Url::parse(url.trim())
+        .map_err(|e| AuthError::TokenProvider(format!("token_url is not a valid URL: {e}")))?;
+    token_request_loopback(http, parsed, oauth, body, format)?
+        .send()
+        .await
+        .map_err(|e| AuthError::TokenProvider(format_oauth_transport_error(context, &e, url)))
+}
+
+#[cfg(all(feature = "net", not(any(test, feature = "test-util"))))]
+async fn token_post_non_https(
+    _http: &reqwest::Client,
+    _oauth: &OauthPack,
+    _url: &str,
+    _body: &BTreeMap<String, String>,
+    _format: TokenRequestFormat,
+    _context: &str,
+) -> Result<reqwest::Response, AuthError> {
+    Err(AuthError::TokenProvider("token_url must be https".into()))
+}
+
+/// POST `token_url`. On HTTP 404, POST `token_url_fallback` once.
+///
+/// Refresh and login share this rule. The authorize URL is not involved.
+#[cfg(feature = "net")]
+pub(crate) async fn post_token_with_fallback(
+    http: &reqwest::Client,
+    oauth: &OauthPack,
+    body: &BTreeMap<String, String>,
+    context: &str,
+) -> Result<(reqwest::Response, String), AuthError> {
+    let format = oauth
+        .token_request_format
+        .unwrap_or(TokenRequestFormat::Form);
+    let mut used_url = oauth.token_url.clone();
+    let resp = token_post(http, oauth, &used_url, body, format, context).await?;
+    let resp = if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        if let Some(fallback) = &oauth.token_url_fallback {
+            debug!("primary token URL returned 404, trying fallback");
+            used_url = fallback.clone();
+            token_post(http, oauth, &used_url, body, format, context).await?
+        } else {
+            resp
+        }
+    } else {
+        resp
+    };
+    Ok((resp, used_url))
 }
 
 #[cfg(feature = "net")]
@@ -869,6 +995,153 @@ pub(crate) fn remaining_from_system_time(expiry: std::time::SystemTime) -> Durat
         Ok(remaining) => remaining,
         Err(_) => Duration::ZERO,
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_login_oauth(
+    token_url: &str,
+    fallback: Option<&str>,
+    format: &str,
+    login: &str,
+) -> crate::profile::OauthPack {
+    let fb = match fallback {
+        Some(url) => format!("token_url_fallback = \"{url}\"\n"),
+        None => String::new(),
+    };
+    let text = format!(
+        r#"
+schema_version = 1
+id = "login-post"
+[oauth]
+token_url = "{token_url}"
+{fb}client_id = "client-1"
+redirect_uri = "http://127.0.0.1:9/cb"
+token_request_format = "{format}"
+login = "{login}"
+[oauth.token_headers]
+X-Client = "official-app"
+"#
+    );
+    crate::profile::parse_profile_str(&text)
+        .expect("test profile")
+        .oauth
+        .expect("oauth")
+}
+
+/// One loopback response. The handle is the raw request, or `NO_REQUEST`
+/// if nothing connected within 8 seconds.
+#[cfg(test)]
+pub(crate) fn capture_one_http_request(
+    status: u16,
+    body: &str,
+) -> (String, std::thread::JoinHandle<String>) {
+    use std::io::{ErrorKind, Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+    let body = body.to_owned();
+    let handle = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return "NO_REQUEST".to_owned();
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => return format!("ACCEPT_ERROR {err}"),
+            }
+        };
+        stream.set_nonblocking(false).ok();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1024];
+        loop {
+            match stream.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&buf[..pos]);
+                        let content_len = header
+                            .lines()
+                            .find_map(|line| {
+                                line.split_once(':').and_then(|(name, value)| {
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then_some(value.trim().parse::<usize>().unwrap_or(0))
+                                })
+                            })
+                            .unwrap_or(0);
+                        let header_end = pos + 4;
+                        while buf.len() < header_end + content_len {
+                            match stream.read(&mut tmp) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                            }
+                        }
+                        break;
+                    }
+                    if buf.len() > 32_768 {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let req = String::from_utf8_lossy(&buf).into_owned();
+        let resp = format!(
+            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        let _ = stream.flush();
+        req
+    });
+    (format!("http://{addr}/oauth/token"), handle)
+}
+
+#[cfg(test)]
+pub(crate) fn assert_login_token_post(req: &str, json: bool) {
+    assert!(
+        !req.starts_with("NO_REQUEST"),
+        "token endpoint was not called"
+    );
+    let headers = req.split_once("\r\n\r\n").map(|(h, _)| h).unwrap_or(req);
+    let content_type = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-type")
+                .then(|| value.trim().to_ascii_lowercase())
+        })
+        .unwrap_or_default();
+    if json {
+        assert!(
+            content_type.starts_with("application/json"),
+            "expected JSON content-type, got: {req}"
+        );
+        assert!(
+            !content_type.contains("application/x-www-form-urlencoded"),
+            "json profile posted a form body, got: {req}"
+        );
+    } else {
+        assert!(
+            content_type.starts_with("application/x-www-form-urlencoded"),
+            "expected form content-type, got: {req}"
+        );
+    }
+    let header_present = headers.lines().any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        name.eq_ignore_ascii_case("x-client") && value.trim() == "official-app"
+    });
+    assert!(header_present, "token header missing, got: {req}");
 }
 
 #[cfg(test)]

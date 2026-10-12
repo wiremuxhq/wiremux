@@ -1,5 +1,6 @@
 //! OAuth 2.0 device authorization grant (RFC 8628). Poll is bounded.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -7,7 +8,8 @@ use serde::Deserialize;
 use crate::error::AuthError;
 use crate::exchange::TokenExchangeResponse;
 use crate::helpers::{
-    format_oauth_http_error, format_oauth_transport_error, oauth_http_client, read_oauth_body,
+    format_oauth_http_error, format_oauth_transport_error, oauth_http_client,
+    post_token_with_fallback, read_oauth_body,
 };
 use crate::profile::OauthPack;
 
@@ -152,21 +154,35 @@ pub async fn start_device_flow(
         .map_err(|e| AuthError::TokenProvider(format!("device authorization: invalid JSON: {e}")))
 }
 
+fn device_token_body(oauth: &OauthPack, device_code: &str) -> BTreeMap<String, String> {
+    let mut body = BTreeMap::new();
+    body.insert(
+        "grant_type".into(),
+        "urn:ietf:params:oauth:grant-type:device_code".into(),
+    );
+    body.insert("device_code".into(), device_code.to_owned());
+    body.insert(
+        "client_id".into(),
+        oauth.client_id.clone().unwrap_or_default(),
+    );
+    body
+}
+
 /// Poll the token endpoint until the user authorizes the device code.
 ///
+/// Uses the same body format, token headers, and token URL fallback as refresh.
 /// Interval is capped at 60s. The whole loop is capped at 15 minutes.
 pub async fn poll_device_token(
-    token_url: &str,
-    client_id: &str,
+    oauth: &OauthPack,
     device_code: &str,
     interval: u64,
     timeout_secs: u64,
-    extra_headers: Option<&[(&str, &str)]>,
 ) -> Result<TokenExchangeResponse, AuthError> {
     let http = oauth_http_client()?;
     let start = Instant::now();
     let mut poll_interval = device_poll_interval(interval);
     let timeout = device_poll_timeout(timeout_secs);
+    let body = device_token_body(oauth, device_code);
 
     loop {
         if start.elapsed() > timeout {
@@ -177,33 +193,17 @@ pub async fn poll_device_token(
 
         tokio::time::sleep(poll_interval).await;
 
-        let mut req = http.post(token_url).form(&[
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("device_code", device_code),
-            ("client_id", client_id),
-        ]);
-        if let Some(headers) = extra_headers {
-            for (k, v) in headers {
-                req = req.header(*k, *v);
-            }
-        }
-
-        let resp = req.send().await.map_err(|e| {
-            AuthError::TokenProvider(format_oauth_transport_error(
-                "device token poll failed",
-                &e,
-                token_url,
-            ))
-        })?;
+        let (resp, used_url) =
+            post_token_with_fallback(&http, oauth, &body, "device token poll failed").await?;
 
         let status = resp.status();
-        let body = read_oauth_body(resp).await?;
+        let raw = read_oauth_body(resp).await?;
         if status.is_success() {
-            return serde_json::from_str::<TokenExchangeResponse>(&body)
+            return serde_json::from_str::<TokenExchangeResponse>(&raw)
                 .map_err(|e| AuthError::TokenProvider(format!("device token: invalid JSON: {e}")));
         }
 
-        if let Ok(err) = serde_json::from_str::<DevicePollError>(&body) {
+        if let Ok(err) = serde_json::from_str::<DevicePollError>(&raw) {
             match err.error.as_str() {
                 "authorization_pending" => continue,
                 "slow_down" => {
@@ -226,8 +226,8 @@ pub async fn poll_device_token(
                     return Err(AuthError::TokenProvider(format_oauth_http_error(
                         "device token error",
                         status,
-                        &body,
-                        token_url,
+                        &raw,
+                        &used_url,
                     )));
                 }
             }
@@ -236,8 +236,8 @@ pub async fn poll_device_token(
         return Err(AuthError::TokenProvider(format_oauth_http_error(
             "device token: unexpected response",
             status,
-            &body,
-            token_url,
+            &raw,
+            &used_url,
         )));
     }
 }
@@ -294,5 +294,64 @@ mod tests {
         assert_eq!(device_poll_timeout(30), Duration::from_secs(30));
         assert_eq!(device_poll_timeout(u64::MAX), Duration::from_secs(15 * 60));
         assert_eq!(MAX_DEVICE_POLL_TIMEOUT_SECS, 15 * 60);
+    }
+
+    #[tokio::test]
+    async fn poll_json_profile_posts_json_and_token_header() {
+        let (primary, primary_h) =
+            crate::helpers::capture_one_http_request(404, r#"{"error":"not_found"}"#);
+        let (fallback, fallback_h) = crate::helpers::capture_one_http_request(
+            200,
+            r#"{"access_token":"access-1","refresh_token":"rt-1","expires_in":60}"#,
+        );
+        let oauth = crate::helpers::test_login_oauth(&primary, Some(&fallback), "json", "device");
+        let result = poll_device_token(&oauth, "device-1", 1, 30).await;
+        let primary_req = primary_h.join().expect("primary");
+        let fallback_req = fallback_h.join().expect("fallback");
+        for req in [&primary_req, &fallback_req] {
+            crate::helpers::assert_login_token_post(req, true);
+            assert!(
+                req.contains("\"grant_type\":\"urn:ietf:params:oauth:grant-type:device_code\""),
+                "json body missing grant, got: {req}"
+            );
+            assert!(
+                !req.contains("grant_type=urn"),
+                "json profile posted a form body, got: {req}"
+            );
+            assert!(req.contains("\"device_code\":\"device-1\""), "{req}");
+            assert!(req.contains("\"client_id\":\"client-1\""), "{req}");
+        }
+        let tokens = result.expect("json device poll");
+        assert_eq!(tokens.access_token, "access-1");
+    }
+
+    #[tokio::test]
+    async fn poll_form_profile_posts_form() {
+        let (url, handle) = crate::helpers::capture_one_http_request(
+            200,
+            r#"{"access_token":"access-form","expires_in":60}"#,
+        );
+        let oauth = crate::helpers::test_login_oauth(&url, None, "form", "device");
+        let result = poll_device_token(&oauth, "device-1", 1, 30).await;
+        let req = handle.join().expect("server");
+        crate::helpers::assert_login_token_post(&req, false);
+        assert!(
+            req.contains("client_id=client-1"),
+            "form body missing client_id, got: {req}"
+        );
+        assert!(
+            req.contains("device_code=device-1"),
+            "form body missing device_code, got: {req}"
+        );
+        assert!(
+            !req.contains("\"grant_type\""),
+            "form profile posted JSON, got: {req}"
+        );
+        assert!(
+            req.contains("application/x-www-form-urlencoded"),
+            "form profile posted a non-form body, got: {req}"
+        );
+        let tokens = result.expect("form device poll");
+        assert_eq!(tokens.access_token, "access-form");
     }
 }
