@@ -903,6 +903,19 @@ base_url = "https://generativelanguage.googleapis.com"
             stream.ends_with("/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"),
             "{stream}"
         );
+        let embedded =
+            upstream_url_for_model(&profile, Some("gemini-2.5-flash:generateContent"), true)
+                .expect("url");
+        assert!(
+            embedded.ends_with(
+                "/v1beta/models/gemini-2.5-flash:generateContent:streamGenerateContent?alt=sse"
+            ),
+            "{embedded}"
+        );
+        assert!(
+            !embedded.contains(":streamGenerateContent?alt=sse:generateContent"),
+            "{embedded}"
+        );
     }
 
     #[test]
@@ -1131,6 +1144,16 @@ chat_path = "/v1/projects/p/locations/us-central1/publishers/anthropic/models/{m
         assert!(
             !stream.contains("?alt=sse"),
             "Messages Vertex stream must not add ?alt=sse, got {stream}"
+        );
+        let embedded = upstream_url_for_model(&profile, Some("claude-sonnet-4:rawPredict"), true)
+            .expect("stream");
+        assert!(
+            embedded.ends_with(":rawPredict:streamRawPredict"),
+            "model text that contains :rawPredict must stay in the model segment, got {embedded}"
+        );
+        assert!(
+            !embedded.contains(":streamRawPredict:rawPredict"),
+            "{embedded}"
         );
     }
 
