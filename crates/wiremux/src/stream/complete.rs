@@ -1748,10 +1748,71 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
     Ok(out)
 }
 
+fn responses_gateway_error(value: &Value) -> Option<String> {
+    // A real Responses object carries `status` or `object`. A gateway
+    // failure is only an `error` string or object. Treating that as
+    // `response.completed` emits Done, which encodes as a finished stop.
+    if value.get("status").and_then(Value::as_str).is_some() {
+        return None;
+    }
+    if value.get("object").and_then(Value::as_str) == Some("response") {
+        return None;
+    }
+    let ty = value.get("type").and_then(Value::as_str).unwrap_or("");
+    if ty.starts_with("response.") {
+        return None;
+    }
+    if ["output", "content", "choices", "candidates"]
+        .iter()
+        .any(|key| {
+            value
+                .get(*key)
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty())
+        })
+    {
+        return None;
+    }
+    if let Some(text) = value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return Some(text.to_string());
+    }
+    let err = value.get("error")?.as_object()?;
+    let code = err
+        .get("code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .or_else(|| {
+            err.get("type")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty() && *text != "error")
+        });
+    let message = err
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    match (code, message) {
+        (Some(code), Some(message)) => Some(format!("{code}: {message}")),
+        (None, Some(message)) => Some(message.to_string()),
+        (Some(code), None) => Some(code.to_string()),
+        (None, None) => None,
+    }
+}
+
 fn decode_responses_complete(
     value: &Value,
     profile: &ResolvedProfile,
 ) -> Result<Vec<IrStreamEvent>, MapError> {
+    if let Some(detail) = responses_gateway_error(value) {
+        return Err(MapError::Invalid(detail));
+    }
     let name = value.get("type").and_then(Value::as_str).unwrap_or("");
     let (event, data) = if name == "response.completed" || name == "response.incomplete" {
         (name.to_string(), value.to_string())
@@ -2147,6 +2208,69 @@ fn decode_gemini_complete(
 mod tests {
     use super::*;
     use crate::ir::IrStreamEvent;
+
+    fn responses_profile() -> ResolvedProfile {
+        crate::parse_profile_str(
+            r#"
+schema_version = 1
+id = "responses"
+wire = "responses"
+"#,
+        )
+        .expect("profile")
+    }
+
+    #[test]
+    fn responses_gateway_error_is_not_a_completed_response() {
+        let profile = responses_profile();
+        let err = decode_response(
+            Wire::Responses,
+            br#"{"error":{"message":"model catalog unavailable","type":"server_error"}}"#,
+            &profile,
+        )
+        .expect_err("error object");
+        let text = err.to_string();
+        assert!(
+            text.contains("server_error") && text.contains("model catalog unavailable"),
+            "{text}"
+        );
+
+        let err = decode_response(
+            Wire::Responses,
+            br#"{"error":"model catalog unavailable"}"#,
+            &profile,
+        )
+        .expect_err("string error");
+        assert!(
+            err.to_string().contains("model catalog unavailable"),
+            "{err}"
+        );
+
+        let failed = decode_response(
+            Wire::Responses,
+            br#"{"id":"resp_1","object":"response","status":"failed","error":{"code":"server_error","message":"upstream failed"},"output":[]}"#,
+            &profile,
+        )
+        .expect("status failed still decodes");
+        assert!(
+            failed
+                .iter()
+                .any(|ev| matches!(ev, IrStreamEvent::FinishReason { .. })),
+            "{failed:?}"
+        );
+
+        let done = decode_response(
+            Wire::Responses,
+            br#"{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}]}"#,
+            &profile,
+        )
+        .expect("completed output");
+        assert!(
+            done.iter()
+                .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
+            "{done:?}"
+        );
+    }
 
     #[test]
     fn dest_chat_complete_failed_tool_stays_stop() {
