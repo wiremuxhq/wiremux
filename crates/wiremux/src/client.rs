@@ -428,8 +428,12 @@ impl WireClient {
     }
 
     /// GET the models catalog. OpenAI-compat uses the chat version prefix
-    /// (`{base}/v1/models` for `/v1/chat/completions`). HTTP 404 is an empty
-    /// list. HTTP 401 is [`ClientError::Auth`].
+    /// (`{base}/v1/models` for `/v1/chat/completions`). HTTP 404 after the
+    /// request is sent is an empty list, including a SigV4-signed GET.
+    /// HTTP 401 is [`ClientError::Auth`] for a static token. A provider
+    /// that can refresh retries that GET once after `mark_stale`. When
+    /// `aws_service` is set and no bearer token is applied, the GET is
+    /// SigV4-signed like `send`. Failure to sign is not an empty catalog.
     pub async fn list_models(&self) -> Result<Vec<ListedModel>, ClientError> {
         let base = self
             .profile
@@ -445,11 +449,7 @@ impl WireClient {
             .or_else(|| self.profile.dialect.wire.map(Wire::default_chat_path))
             .unwrap_or("");
         let url = models_url(base, chat_path);
-        let token = self.access_token().await?;
-        let resp = self
-            .get_url(&url, token.as_deref())
-            .await
-            .map_err(classify_send_err)?;
+        let resp = self.get_url_auth_retry(&url).await?;
         let status = resp.status().as_u16();
         if status == 404 {
             return Ok(Vec::new());
@@ -544,16 +544,41 @@ impl WireClient {
         self.post_json(url, body, token.as_deref()).await
     }
 
+    /// GET with the same one-shot 401 refresh as [`Self::post_json_auth_retry`].
+    async fn get_url_auth_retry(&self, url: &str) -> Result<reqwest::Response, ClientError> {
+        let token = self.access_token().await?;
+        let resp = self.get_url(url, token.as_deref()).await?;
+        if resp.status().as_u16() != 401 || !self.provider.can_refresh() {
+            return Ok(resp);
+        }
+        drop(resp);
+        self.provider.mark_stale();
+        let token = self.access_token().await?;
+        self.get_url(url, token.as_deref()).await
+    }
+
     async fn get_url(
         &self,
         url: &str,
         token: Option<&str>,
-    ) -> Result<reqwest::Response, reqwest::Error> {
-        let req = self.http.get(url);
+    ) -> Result<reqwest::Response, ClientError> {
+        let req = self
+            .http
+            .get(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json");
         let req = apply_profile_headers(req, &self.profile, token);
-        apply_provider_headers(req, &self.profile, &self.provider)
-            .send()
-            .await
+        let req = apply_provider_headers(req, &self.profile, &self.provider);
+        let built = apply_aws_sigv4(
+            &self.profile,
+            url,
+            "GET",
+            b"",
+            req,
+            bearer_token_applied(&self.profile, token),
+        )
+        .await
+        .map_err(aws_sign_err)?;
+        self.http.execute(built).await.map_err(classify_send_err)
     }
 
     async fn ollama_show(

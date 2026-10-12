@@ -296,7 +296,12 @@ the models catalog. OpenAI-compat uses the chat version prefix
 (`{base}/v1/models` when `chat_path` is `/v1/chat/completions` or
 `/v1/messages`). It reads `context_length` then `context_window`
 (Grok Build `/v1/models` sends the second key). That second key
-is not in crates.io `0.5.0`.
+is not in crates.io `0.5.0`. `list_models` retries HTTP 401 once
+when the provider can refresh, same as `send`. A static token still
+returns an auth error. The GET is SigV4-signed when the profile sets
+`aws_service` and no bearer token is applied. A profile that cannot
+sign does not look like an empty catalog. A 404 after the request is
+sent, including a signed one, is still an empty catalog.
 
 Refresh-only hosts call `token_for_profile_cached`. A URL-first host
 whose `base_url` host is `cli-chat-proxy.grok.com` (trailing-dot FQDN
