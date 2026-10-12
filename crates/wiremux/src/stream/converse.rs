@@ -435,7 +435,7 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
     Ok(body)
 }
 
-fn converse_exception(value: &Value) -> Option<String> {
+pub(crate) fn complete_exception_detail(value: &Value) -> Option<String> {
     if value.get("output").is_some() || value.get("stopReason").and_then(Value::as_str).is_some() {
         return None;
     }
@@ -458,7 +458,7 @@ fn converse_exception(value: &Value) -> Option<String> {
 }
 
 pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
-    if let Some(detail) = converse_exception(value) {
+    if let Some(detail) = complete_exception_detail(value) {
         return Err(MapError::Invalid(detail));
     }
     let mut out = Vec::new();

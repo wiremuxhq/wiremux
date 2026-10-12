@@ -1706,7 +1706,8 @@ fn cross_wire_vendor_failure(from: Wire, target: Wire, stream: bool, body: &[u8]
     let detail = responses_complete_vendor_failure(target, body)
         .or_else(|| chat_complete_vendor_failure(target, body))
         .or_else(|| messages_complete_vendor_failure(target, body))
-        .or_else(|| gemini_complete_vendor_failure(target, body))?;
+        .or_else(|| gemini_complete_vendor_failure(target, body))
+        .or_else(|| converse_complete_vendor_failure(target, body))?;
     if stream {
         Some(dest_error_bytes(from, detail))
     } else if target == from {
@@ -1714,6 +1715,14 @@ fn cross_wire_vendor_failure(from: Wire, target: Wire, stream: bool, body: &[u8]
     } else {
         Some(Bytes::from(dest_error_json(from, &detail).to_string()))
     }
+}
+
+fn converse_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
+    if target != Wire::Converse {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    crate::stream::complete_exception_detail(&value)
 }
 
 fn gemini_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
@@ -1910,12 +1919,31 @@ fn status_from_reqwest(status: reqwest::StatusCode) -> StatusCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        CountRoute, CountUrlError, chat_complete_vendor_failure, count_body_hides_vendor_error,
-        count_model, count_route, count_upstream_url, gemini_complete_vendor_failure,
-        host_is_loopback, is_json_content_type, messages_complete_vendor_failure, read_capped_body,
-        responses_complete_vendor_failure, rewrite_count_body_model, same_wire_success_is_json,
+        CountRoute, CountUrlError, chat_complete_vendor_failure, converse_complete_vendor_failure,
+        count_body_hides_vendor_error, count_model, count_route, count_upstream_url,
+        gemini_complete_vendor_failure, host_is_loopback, is_json_content_type,
+        messages_complete_vendor_failure, read_capped_body, responses_complete_vendor_failure,
+        rewrite_count_body_model, same_wire_success_is_json,
     };
     use crate::Wire;
+
+    #[test]
+    fn converse_exception_without_output_is_a_vendor_failure() {
+        let body = br#"{"__type":"ValidationException","message":"The provided model identifier is invalid."}"#;
+        assert_eq!(
+            converse_complete_vendor_failure(Wire::Converse, body).as_deref(),
+            Some("ValidationException: The provided model identifier is invalid.")
+        );
+        assert!(
+            converse_complete_vendor_failure(
+                Wire::Converse,
+                br#"{"output":{"message":{"role":"assistant","content":[{"text":"Hi"}]}},"stopReason":"end_turn"}"#,
+            )
+            .is_none(),
+            "a completion stays on the map path"
+        );
+        assert!(converse_complete_vendor_failure(Wire::ChatCompletions, body).is_none());
+    }
 
     fn count_profile(wire: &str, chat_path: Option<&str>) -> wiremux_auth::ResolvedProfile {
         let path = chat_path
