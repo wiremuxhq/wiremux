@@ -1,0 +1,2 @@
+packs:
+  - ./.github/codeql/wiremux-models
