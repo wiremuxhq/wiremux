@@ -243,29 +243,6 @@ pub(crate) fn https_token_url(url: &str) -> Option<reqwest::Url> {
     (parsed.scheme() == "https").then_some(parsed)
 }
 
-#[cfg(feature = "net")]
-fn token_request(
-    http: &reqwest::Client,
-    url: reqwest::Url,
-    oauth: &OauthPack,
-    body: &BTreeMap<String, String>,
-    format: TokenRequestFormat,
-) -> Result<reqwest::RequestBuilder, AuthError> {
-    // The scheme check stays next to the POST. A token body must not go
-    // out on a URL this function has not proven is https.
-    if url.scheme() != "https" {
-        return Err(AuthError::TokenProvider("token_url must be https".into()));
-    }
-    let mut req = http.post(url);
-    for (k, v) in &oauth.token_headers {
-        req = req.header(k.as_str(), v.as_str());
-    }
-    Ok(match format {
-        TokenRequestFormat::Json => req.json(body),
-        TokenRequestFormat::Form => req.form(body),
-    })
-}
-
 #[cfg(all(feature = "net", any(test, feature = "test-util")))]
 fn token_request_loopback(
     http: &reqwest::Client,
@@ -305,8 +282,17 @@ pub(crate) async fn token_post(
     let Some(https) = https_token_url(url) else {
         return token_post_non_https(http, oauth, url, body, format, context).await;
     };
-    token_request(http, https, oauth, body, format)?
-        .send()
+    // Post here, not in a helper that accepts any URL. `https` came from
+    // `https_token_url`, which returns only https.
+    let mut req = http.post(https);
+    for (k, v) in &oauth.token_headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let req = match format {
+        TokenRequestFormat::Json => req.json(body),
+        TokenRequestFormat::Form => req.form(body),
+    };
+    req.send()
         .await
         .map_err(|e| AuthError::TokenProvider(format_oauth_transport_error(context, &e, url)))
 }
