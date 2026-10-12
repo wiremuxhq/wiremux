@@ -263,18 +263,10 @@ async fn run_pkce(oauth: &OauthPack, listener: TcpListener) -> Result<(), String
     let target = first.split_whitespace().nth(1).unwrap_or("");
     let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
     let code = reply_to_pkce_callback(&mut stream, query, &pkce.state)?;
-    let redirect = oauth.redirect_uri.as_deref().unwrap_or("");
-    let client_id = oauth.client_id.as_deref().unwrap_or("");
     let saved = async {
-        let tokens = exchange_auth_code(
-            &oauth.token_url,
-            client_id,
-            &code,
-            redirect,
-            &pkce.code_verifier,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let tokens = exchange_auth_code(oauth, &code, &pkce.code_verifier)
+            .await
+            .map_err(|e| e.to_string())?;
         persist_login_tokens(oauth, &tokens)
             .await
             .map_err(|e| e.to_string())
@@ -312,23 +304,11 @@ async fn run_device(profile: &ResolvedProfile) -> Result<(), String> {
         println!("or open {complete}");
     }
     let _ = std::io::stdout().flush();
-    let client_id = oauth.client_id.as_deref().unwrap_or("");
-    let headers: Vec<(&str, &str)> = oauth
-        .token_headers
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
     let tokens = poll_device_token(
-        &oauth.token_url,
-        client_id,
+        oauth,
         &started.device_code,
         started.interval,
         started.expires_in,
-        if headers.is_empty() {
-            None
-        } else {
-            Some(&headers)
-        },
     )
     .await
     .map_err(|e| e.to_string())?;
