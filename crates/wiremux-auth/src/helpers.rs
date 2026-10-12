@@ -283,8 +283,6 @@ pub(crate) async fn token_post(
         return token_post_non_https(http, oauth, url, body, format, context).await;
     };
     // `https` came from `https_token_url`, which returns only https.
-    // The token URL is not a secret. The body is the OAuth token request.
-    // codeql[rust/cleartext-transmission]
     let mut req = http.post(https);
     for (k, v) in &oauth.token_headers {
         req = req.header(k.as_str(), v.as_str());
