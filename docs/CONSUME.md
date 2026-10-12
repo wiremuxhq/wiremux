@@ -302,6 +302,13 @@ returns an auth error. The GET is SigV4-signed when the profile sets
 `aws_service` and no bearer token is applied. A profile that cannot
 sign does not look like an empty catalog. A 404 after the request is
 sent, including a signed one, is still an empty catalog.
+A profile file that will not load is `ClientError::Transport`, not
+`Auth`. A missing catalog id stays `NotFound`.
+
+Converse `toolResult.status` is `error` when the IR tool result is
+`is_error`. A missing status is success, on encode and on decode.
+An unknown role inside `messages` is a loss. The top-level `system`
+array is unchanged.
 
 Refresh-only hosts call `token_for_profile_cached`. A URL-first host
 whose `base_url` host is `cli-chat-proxy.grok.com` (trailing-dot FQDN
