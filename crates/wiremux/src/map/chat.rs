@@ -16,7 +16,6 @@ use crate::ir::{
 };
 
 pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError> {
-    let report = LossReport::default();
     let messages = value
         .get("messages")
         .and_then(Value::as_array)
@@ -24,8 +23,9 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         .unwrap_or_default();
 
     let mut items = Vec::new();
+    let mut report = LossReport::default();
     for msg in &messages {
-        decode_message(msg, &mut items);
+        decode_message(msg, &mut items, &mut report);
     }
 
     let tools = value
@@ -43,9 +43,19 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     Ok((ir, report))
 }
 
-fn decode_message(msg: &Value, items: &mut Vec<IrItem>) {
+fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport) {
     let role = msg.get("role").and_then(Value::as_str).unwrap_or("user");
-    let parts = decode_content(msg.get("content"));
+    let mut parts = decode_content(msg.get("content"));
+    if role == "assistant"
+        && let Some(refusal) = str_field(msg, "refusal").filter(|text| !text.is_empty())
+    {
+        report.record(
+            "messages.refusal",
+            LossAction::Degrade,
+            "refusal kept as text",
+        );
+        parts.push(IrPart::Text(refusal));
+    }
     match role {
         "system" => items.push(IrItem::System {
             text: parts_text(&parts),
@@ -156,6 +166,12 @@ fn decode_part(part: &Value) -> Option<IrPart> {
         }
         "file" => decode_openai_file_part(part),
         "input_audio" => decode_input_audio_part(part),
+        "refusal" => part
+            .get("refusal")
+            .or_else(|| part.get("text"))
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(|text| IrPart::Text(text.to_string())),
         "thinking" => Some(IrPart::Thinking {
             text: part
                 .get("text")
@@ -1313,6 +1329,37 @@ mod tests {
     use super::encode_parts;
     use crate::ir::{IrPart, LossAction};
     use serde_json::json;
+
+    #[test]
+    fn assistant_refusal_is_kept_as_text() {
+        let value = json!({
+            "model": "gpt-4o",
+            "messages": [{
+                "role": "assistant",
+                "content": null,
+                "refusal": "I can't help with that."
+            }]
+        });
+        let (ir, report) = super::decode(&value).expect("decode");
+        assert!(
+            matches!(
+                &ir.items[0],
+                crate::ir::IrItem::Assistant { parts }
+                    if *parts == [IrPart::Text("I can't help with that.".into())]
+            ),
+            "{ir:?}"
+        );
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|event| event.detail.contains("refusal")),
+            "{report:?}"
+        );
+        let mut encode_report = crate::ir::LossReport::default();
+        let body = super::encode(&ir, &[], &mut encode_report).expect("encode");
+        assert_eq!(body["messages"][0]["content"], "I can't help with that.");
+    }
 
     #[test]
     fn gemini_pdf_url_with_media_hint_is_dropped() {
