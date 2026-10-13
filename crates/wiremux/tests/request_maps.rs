@@ -402,6 +402,77 @@ fn messages_drops_codex_cache_and_tier_gemini_emits_service_tier() {
 }
 
 #[test]
+fn responses_request_keeps_assistant_phase_for_the_next_turn() {
+    let req = br#"{
+        "model": "gpt-5.3-codex",
+        "input": [
+            {"role": "user", "content": "hi"},
+            {
+                "type": "message",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "thinking out loud"}]
+            },
+            {"role": "assistant", "phase": "final_answer", "content": "done"},
+            {"role": "user", "phase": "commentary", "content": "go on"},
+            {"role": "assistant", "phase": "  ", "content": "blank"}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    let (bytes, report) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let input = body["input"].as_array().expect("input array");
+    assert!(
+        input[0].get("phase").is_none(),
+        "user messages must not gain phase, got {body}"
+    );
+    assert_eq!(
+        input[1]["phase"].as_str(),
+        Some("commentary"),
+        "commentary must be resent on the next Responses turn, got {body}"
+    );
+    assert_eq!(
+        input[2]["phase"].as_str(),
+        Some("final_answer"),
+        "final_answer must be resent, got {body}"
+    );
+    assert!(
+        input[3].get("phase").is_none(),
+        "a phase on a user item must not be resent, got {body}"
+    );
+    assert!(
+        input[4].get("phase").is_none(),
+        "a blank phase must stay absent, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "items[1].phase"),
+        "same-wire phase must not Drop, got {report:?}"
+    );
+
+    for (wire, profile) in [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Messages, messages_profile()),
+        (Wire::Gemini, gemini_profile()),
+        (Wire::Converse, converse_profile()),
+    ] {
+        let (dest_bytes, dest_report) = encode(wire, &ir, &profile).expect("encode dest");
+        let dest: Value = serde_json::from_slice(&dest_bytes).expect("json");
+        assert!(
+            !dest.to_string().contains("commentary") && !dest.to_string().contains("final_answer"),
+            "{wire:?} must not invent a phase field, got {dest}"
+        );
+        assert!(
+            loss_dropped(&dest_report, "items[1].phase"),
+            "{wire:?} must Drop assistant phase, got {dest_report:?}"
+        );
+        assert!(
+            loss_dropped(&dest_report, "items[2].phase"),
+            "{wire:?} must Drop the second assistant phase, got {dest_report:?}"
+        );
+    }
+}
+
+#[test]
 fn responses_round_trips_truncation_tool_cap_background_and_conversation() {
     let req = br#"{
         "model": "gpt-5",
@@ -1871,7 +1942,7 @@ fn replay_thinking_and_signature_in_assistant_json() {
     assert!(
         ir.items.iter().any(|item| matches!(
             item,
-            IrItem::Assistant { parts } if parts.iter().any(|part| matches!(
+            IrItem::Assistant { parts, ..} if parts.iter().any(|part| matches!(
                 part,
                 IrPart::Thinking { text, signature }
                     if text == "I should greet them"
@@ -1906,6 +1977,7 @@ fn unsigned_thinking_is_not_replayed_on_messages() {
     let ir = IrRequest::new(
         "claude-opus-4-6",
         vec![IrItem::Assistant {
+            phase: None,
             parts: vec![
                 IrPart::Thinking {
                     text: "scratch".into(),
@@ -1982,6 +2054,7 @@ fn chat_skips_thinking_and_protocol_parts() {
     let ir = IrRequest::new(
         "grok-4",
         vec![IrItem::Assistant {
+            phase: None,
             parts: vec![
                 IrPart::Thinking {
                     text: "plan".into(),
@@ -2017,6 +2090,7 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
     let ir = IrRequest::new(
         "gpt-5",
         vec![IrItem::Assistant {
+            phase: None,
             parts: vec![
                 IrPart::Thinking {
                     text: "secret plan".into(),
@@ -2361,6 +2435,7 @@ fn messages_whitespace_only_assistant_becomes_dot() {
     let ir = IrRequest::new(
         "claude-opus-4-6",
         vec![IrItem::Assistant {
+            phase: None,
             parts: vec![IrPart::Text("\n".into())],
         }],
     );
@@ -4744,6 +4819,7 @@ fn chat_grouped_function_call_records_thought_signature_drop() {
         "gpt-4",
         vec![
             IrItem::Assistant {
+                phase: None,
                 parts: vec![IrPart::Text("calling".into())],
             },
             IrItem::FunctionCall {
@@ -9301,6 +9377,7 @@ fn messages_encode_appends_continue_on_assistant_last() {
                 parts: vec![IrPart::Text("hi".into())],
             },
             IrItem::Assistant {
+                phase: None,
                 parts: vec![IrPart::Text("hello".into())],
             },
         ],
@@ -9395,6 +9472,7 @@ fn other_wires_do_not_append_continue_on_assistant_last() {
                 parts: vec![IrPart::Text("hi".into())],
             },
             IrItem::Assistant {
+                phase: None,
                 parts: vec![IrPart::Text("hello".into())],
             },
         ],
@@ -10254,7 +10332,7 @@ fn converse_unknown_message_role_records_a_drop() {
             ir.items.as_slice(),
             [
                 IrItem::User { parts: user },
-                IrItem::Assistant { parts: assistant }
+                IrItem::Assistant { parts: assistant, ..}
             ] if matches!(user.as_slice(), [IrPart::Text(text)] if text == "hi")
                 && matches!(assistant.as_slice(), [IrPart::Text(text)] if text == "hello")
         ),
@@ -10420,6 +10498,7 @@ fn converse_whitespace_only_assistant_text_with_tool_use_omits_blank_text() {
         "amazon.nova-lite-v1:0",
         vec![
             IrItem::Assistant {
+                phase: None,
                 parts: vec![IrPart::Text("  \n\t  ".into())],
             },
             IrItem::FunctionCall {
@@ -10582,7 +10661,7 @@ fn converse_reasoning_text_signature_round_trips() {
     assert!(
         ir.items.iter().any(|item| matches!(
             item,
-            IrItem::Assistant { parts } if parts.iter().any(|part| matches!(
+            IrItem::Assistant { parts, ..} if parts.iter().any(|part| matches!(
                 part,
                 IrPart::Thinking { text, signature }
                     if text == "plan" && signature.as_deref() == Some("sig_abc")

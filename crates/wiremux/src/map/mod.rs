@@ -283,6 +283,18 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
     value.get(key)?.as_str().map(str::to_string)
 }
 
+/// Non-blank Responses assistant `phase`. Blank and whitespace stay absent.
+pub(super) fn assistant_phase(phase: &Option<String>) -> Option<&str> {
+    phase.as_deref().filter(|value| !value.trim().is_empty())
+}
+
+/// Record a Drop when this dest has no assistant `phase` field.
+pub(super) fn drop_assistant_phase(phase: &Option<String>, path: &str, report: &mut LossReport) {
+    if assistant_phase(phase).is_some() {
+        report.record(path, LossAction::Drop, "phase has no slot");
+    }
+}
+
 fn drop_dest_chat_sampling_extras(s: &IrSampling, report: &mut LossReport) {
     if s.prompt_cache_mode.is_some() {
         report.record("sampling.prompt_cache_mode", LossAction::Drop, "no slot");

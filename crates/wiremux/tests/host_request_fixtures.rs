@@ -58,6 +58,7 @@ fn gemini_system_is_instruction_and_roles_are_user_or_model() {
             },
             user("Hi"),
             IrItem::Assistant {
+                phase: None,
                 parts: vec![IrPart::Text("Hello!".into())],
             },
         ],
@@ -212,6 +213,7 @@ fn gemini_images_and_thought_signatures_replay_on_the_next_request() {
             vec![
                 user("list files"),
                 IrItem::Assistant {
+                    phase: None,
                     parts: vec![IrPart::Thinking {
                         text: "planning the listing".into(),
                         signature: Some("sig_thought_part".into()),
@@ -382,6 +384,7 @@ fn chat_request_fixtures_match_host_encode() {
             "gpt-4o",
             vec![
                 IrItem::Assistant {
+                    phase: None,
                     parts: vec![
                         IrPart::Thinking {
                             text: "plan".into(),
@@ -451,6 +454,7 @@ fn responses_input_item_fixtures() {
             "gpt-4o",
             vec![
                 IrItem::Assistant {
+                    phase: None,
                     parts: vec![IrPart::Text("checking".into())],
                 },
                 IrItem::FunctionCall {
@@ -478,6 +482,7 @@ fn responses_input_item_fixtures() {
                     raw: json!({"type": "web_search_call", "id": "ws_1"}),
                 },
                 IrItem::Assistant {
+                    phase: None,
                     parts: vec![IrPart::Text("done".into())],
                 },
             ],
@@ -491,6 +496,7 @@ fn responses_input_item_fixtures() {
         &IrRequest::new(
             "gpt-4o",
             vec![IrItem::Assistant {
+                phase: None,
                 parts: vec![
                     IrPart::Thinking {
                         text: "secret plan".into(),
@@ -522,6 +528,7 @@ fn responses_input_item_fixtures() {
         &IrRequest::new(
             "gpt-4o",
             vec![IrItem::Assistant {
+                phase: None,
                 parts: vec![
                     IrPart::Thinking {
                         text: "secret plan".into(),
@@ -577,6 +584,7 @@ fn messages_request_fixtures_match_host_encode() {
         &IrRequest::new(
             "claude-haiku-4-5",
             vec![IrItem::Assistant {
+                phase: None,
                 parts: vec![IrPart::Text("done".into())],
             }],
         ),
@@ -635,6 +643,7 @@ fn messages_request_fixtures_match_host_encode() {
         &IrRequest::new(
             "claude-haiku-4-5",
             vec![IrItem::Assistant {
+                phase: None,
                 parts: vec![
                     IrPart::Thinking {
                         text: "plan".into(),
@@ -663,6 +672,7 @@ fn messages_request_fixtures_match_host_encode() {
             "claude-haiku-4-5",
             vec![
                 IrItem::Assistant {
+                    phase: None,
                     parts: vec![IrPart::Text(" \n".into())],
                 },
                 IrItem::FunctionCall {

@@ -154,7 +154,10 @@ fn decode_message_item(item: &Value) -> Vec<IrItem> {
         "developer" => vec![IrItem::Developer {
             text: parts_text(&parts),
         }],
-        "assistant" => vec![IrItem::Assistant { parts }],
+        "assistant" => vec![IrItem::Assistant {
+            parts,
+            phase: str_field(item, "phase").filter(|phase| !phase.trim().is_empty()),
+        }],
         _ => vec![IrItem::User { parts }],
     }
 }
@@ -532,14 +535,24 @@ fn encode_items(
                 "role": "user",
                 "content": encode_parts(parts, true, report),
             })),
-            IrItem::Assistant { parts } => {
+            IrItem::Assistant { parts, phase } => {
                 let rest = peel_signed_thinking(parts, &mut input, report);
                 if !rest.is_empty() || !parts.iter().any(is_signed_thinking) {
-                    input.push(json!({
+                    let mut message = json!({
                         "type": "message",
                         "role": "assistant",
                         "content": encode_parts(&rest, false, report),
-                    }));
+                    });
+                    if let Some(phase) = super::assistant_phase(phase) {
+                        message["phase"] = json!(phase);
+                    }
+                    input.push(message);
+                } else if super::assistant_phase(phase).is_some() {
+                    report.record(
+                        format!("items[{idx}].phase"),
+                        LossAction::Drop,
+                        "phase has no assistant message",
+                    );
                 }
             }
             IrItem::FunctionCall {
