@@ -966,6 +966,7 @@ struct SameWireGate {
     reader: UpstreamFrames,
     saw_frame: bool,
     saw_terminal: bool,
+    saw_vendor_error: bool,
     held: Vec<u8>,
 }
 
@@ -999,6 +1000,7 @@ impl SameWireGate {
             reader: UpstreamFrames::for_wire(from),
             saw_frame: false,
             saw_terminal: false,
+            saw_vendor_error: false,
             held: Vec::new(),
         }
     }
@@ -1029,6 +1031,25 @@ impl SameWireGate {
                 return Ok(SameWirePush::Hold);
             }
             return Ok(SameWirePush::Forward(bytes.to_vec()));
+        }
+        if frames
+            .iter()
+            .any(|raw| sse_wrapped_error_message(&raw.data).is_some())
+        {
+            self.saw_vendor_error = true;
+        }
+        if self.saw_vendor_error {
+            self.saw_frame = true;
+            let _ = std::mem::take(&mut self.held);
+            let mut out = Vec::new();
+            for raw in &frames {
+                if sse_done_frame(raw) {
+                    continue;
+                }
+                self.note_terminal(raw);
+                out.extend(format_sse(raw).into_bytes());
+            }
+            return Ok(SameWirePush::Forward(out));
         }
         self.saw_frame = true;
         for raw in &frames {
@@ -1868,6 +1889,10 @@ fn responses_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String
         .iter()
         .find_map(|key| response.get(*key).filter(|item| item.is_object()))?;
     vendor_error_detail(err)
+}
+
+fn sse_done_frame(raw: &RawSse) -> bool {
+    raw.data.trim() == "[DONE]"
 }
 
 fn format_sse(raw: &RawSse) -> String {
@@ -2830,6 +2855,23 @@ anthropic-beta = "context-1m-2025-08-07"
             "vendor type must survive, got {text}"
         );
         assert!(!text.contains("<html>"), "{text}");
+    }
+
+    #[test]
+    fn same_wire_error_sse_is_not_a_finished_stream() {
+        let body = concat!(
+            "data: {\"choices\":[],\"error\":{\"message\":\"nope\"}}\n\n",
+            "data: {\"error\":\"model catalog unavailable\"}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let bytes = super::same_wire_passthrough_bytes(
+            wiremux_auth::Wire::ChatCompletions,
+            body.as_bytes(),
+        );
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(text.contains("nope"), "{text}");
+        assert!(text.contains("model catalog unavailable"), "{text}");
+        assert!(!text.contains("[DONE]"), "{text}");
     }
 
     #[test]
