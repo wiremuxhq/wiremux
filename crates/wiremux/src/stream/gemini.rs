@@ -9,11 +9,13 @@ use super::usage;
 use super::{RawSse, str_field};
 
 pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
-    if value
+    let candidate = value
         .get("candidates")
         .and_then(Value::as_array)
-        .and_then(|c| c.first())
-        .is_none()
+        .and_then(|items| items.first());
+    // blockReason stays a finish when there is no candidate. An error
+    // object still wins when a candidate shell has no visible part.
+    if candidate.is_none()
         && let Some(reason) = value
             .pointer("/promptFeedback/blockReason")
             .and_then(Value::as_str)
@@ -23,6 +25,13 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             reason: map_block(reason),
             vendor: Some(reason.to_string()),
         }));
+    }
+    let visible = candidate.is_some_and(crate::completion::candidate_visible);
+    if !visible && let Some(detail) = gemini_error_detail(value) {
+        return Err(MapError::HardError {
+            path: "error".into(),
+            detail,
+        });
     }
 
     if let Some(ev) = usage_from_chunk(value)
@@ -43,29 +52,6 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         .and_then(Value::as_array)
         .and_then(|c| c.first())
     else {
-        if let Some(error) = value.get("error").filter(|v| v.is_object()) {
-            let detail = error
-                .get("message")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .unwrap_or("vendor error")
-                .to_string();
-            return Err(MapError::HardError {
-                path: "error".into(),
-                detail,
-            });
-        }
-        if let Some(text) = value
-            .get("error")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-        {
-            return Err(MapError::HardError {
-                path: "error".into(),
-                detail: text.to_string(),
-            });
-        }
         if let Some(ev) = usage_from_chunk(value) {
             return Ok(Some(ev));
         }
@@ -268,6 +254,14 @@ pub(super) fn map_finish(reason: &str, has_function_call: bool) -> String {
         other => return other.to_string(),
     }
     .to_string()
+}
+
+fn gemini_error_detail(value: &Value) -> Option<String> {
+    if let Some(text) = crate::completion::json_string_error(value) {
+        return Some(text.to_string());
+    }
+    let err = value.get("error").filter(|item| item.is_object())?;
+    Some(crate::completion::error_object_detail(err).unwrap_or_else(|| "vendor error".to_string()))
 }
 
 pub(super) fn map_block(reason: &str) -> String {
@@ -742,5 +736,11 @@ mod tests {
         }))
         .expect("candidate");
         assert!(kept.is_some(), "{kept:?}");
+        let err = decode(&serde_json::json!({
+            "candidates": [{}],
+            "error": {"message": "overloaded"}
+        }))
+        .expect_err("empty candidate");
+        assert!(err.to_string().contains("overloaded"), "{err}");
     }
 }

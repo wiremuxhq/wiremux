@@ -598,10 +598,7 @@ fn rewrite_count_body_model(body: &[u8], model: &str, insert_if_missing: bool) -
 }
 
 fn rewrite_count_url(url: &str, route: CountRoute) -> Option<String> {
-    let (base, query) = match url.split_once('?') {
-        Some((base, query)) => (base, Some(query)),
-        None => (url, None),
-    };
+    let (base, query, fragment) = split_query_fragment(url);
     let trimmed = base.trim_end_matches('/');
     let rewritten = match route {
         CountRoute::Messages if trimmed.ends_with("/messages") => {
@@ -613,10 +610,31 @@ fn rewrite_count_url(url: &str, route: CountRoute) -> Option<String> {
         }
         CountRoute::Messages => return None,
     };
-    Some(match query {
-        Some(query) => format!("{rewritten}?{query}"),
-        None => rewritten,
-    })
+    Some(join_query_fragment(&rewritten, query, fragment))
+}
+
+fn split_query_fragment(url: &str) -> (&str, Option<&str>, Option<&str>) {
+    let (before_fragment, fragment) = match url.split_once('#') {
+        Some((path, fragment)) => (path, Some(fragment)),
+        None => (url, None),
+    };
+    match before_fragment.split_once('?') {
+        Some((path, query)) => (path, Some(query), fragment),
+        None => (before_fragment, None, fragment),
+    }
+}
+
+fn join_query_fragment(path: &str, query: Option<&str>, fragment: Option<&str>) -> String {
+    let mut out = path.to_string();
+    if let Some(query) = query {
+        out.push('?');
+        out.push_str(query);
+    }
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
 }
 
 fn count_body_hides_vendor_error(route: CountRoute, body: &[u8]) -> bool {
@@ -638,11 +656,6 @@ fn count_body_hides_vendor_error(route: CountRoute, body: &[u8]) -> bool {
     }
     if crate::completion::json_string_error(&value).is_some() {
         return true;
-    }
-    if matches!(route, CountRoute::Messages)
-        && value.get("type").and_then(serde_json::Value::as_str) != Some("error")
-    {
-        return false;
     }
     let Some(err) = value.get("error").filter(|item| item.is_object()) else {
         return false;
@@ -1017,7 +1030,14 @@ impl SameWireGate {
                 }
                 let mut body = self.held.clone();
                 body.extend_from_slice(bytes);
-                return Err(self.no_frame_message(&body));
+                let message = self.no_frame_message(&body);
+                if message != INCOMPLETE_STREAM_MESSAGE {
+                    return Err(message);
+                }
+                // A JSON completion is not an Event Stream frame. Hold it
+                // so finish() can promote the body instead of a CRC error.
+                self.held = body;
+                return Ok(SameWirePush::Hold);
             }
         };
         if terminal.is_some() {
@@ -1028,6 +1048,11 @@ impl SameWireGate {
         if frames.is_empty() {
             if !self.saw_frame {
                 self.held.extend_from_slice(bytes);
+                return Ok(SameWirePush::Hold);
+            }
+            // After a vendor error, complete frames are rewritten below.
+            // Forwarding this partial chunk would leak a split `[DONE]`.
+            if self.saw_vendor_error {
                 return Ok(SameWirePush::Hold);
             }
             return Ok(SameWirePush::Forward(bytes.to_vec()));
@@ -1069,11 +1094,16 @@ impl SameWireGate {
                 message: err,
             },
             Ok(frame) => {
+                let mut synthesized = Vec::new();
                 if let Some(raw) = frame {
                     self.saw_frame = true;
+                    if self.saw_vendor_error && !done_frame_prefix(&raw) {
+                        synthesized.extend(format_sse(&raw).into_bytes());
+                    }
                     self.note_terminal(&raw);
                 }
-                let tail = std::mem::take(&mut self.held);
+                let mut tail = std::mem::take(&mut self.held);
+                tail.extend(synthesized);
                 if !self.saw_frame {
                     self.no_frame_end(&tail)
                 } else if !self.saw_terminal {
@@ -1819,36 +1849,16 @@ fn messages_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String>
     if let Some(text) = crate::completion::json_string_error(&value) {
         return Some(text.to_string());
     }
-    if value.get("type").and_then(serde_json::Value::as_str) != Some("error") {
+    let err = value.get("error").filter(|item| item.is_object());
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("error") && err.is_none() {
         return None;
     }
-    let err = value.get("error").filter(|item| item.is_object())?;
+    let err = err?;
     vendor_error_detail(err)
 }
 
 fn vendor_error_detail(err: &serde_json::Value) -> Option<String> {
-    let message = err
-        .get("message")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty());
-    let code = ["code", "type", "status"].iter().find_map(|key| {
-        let value = err.get(*key)?;
-        if let Some(text) = value.as_str() {
-            let text = text.trim();
-            if text.is_empty() || (*key == "type" && text == "error") {
-                return None;
-            }
-            return Some(text.to_string());
-        }
-        value.as_i64().map(|number| number.to_string())
-    });
-    match (code, message) {
-        (Some(code), Some(message)) => Some(format!("{code}: {message}")),
-        (None, Some(message)) => Some(message.to_string()),
-        (Some(code), None) => Some(code),
-        (None, None) => None,
-    }
+    crate::completion::error_object_detail(err)
 }
 
 fn responses_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
@@ -1893,6 +1903,12 @@ fn responses_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String
 
 fn sse_done_frame(raw: &RawSse) -> bool {
     raw.data.trim() == "[DONE]"
+}
+
+/// `[D` or `[DONE]` so a split terminator is not forwarded after an error.
+fn done_frame_prefix(raw: &RawSse) -> bool {
+    let data = raw.data.trim();
+    !data.is_empty() && "[DONE]".starts_with(data)
 }
 
 fn format_sse(raw: &RawSse) -> String {
@@ -2304,6 +2320,22 @@ anthropic-beta = "context-1m-2025-08-07"
             .as_deref(),
             Some("model catalog unavailable")
         );
+        assert_eq!(
+            messages_complete_vendor_failure(
+                Wire::Messages,
+                br#"{"error":{"message":"model not found"}}"#,
+            )
+            .as_deref(),
+            Some("model not found")
+        );
+        assert!(
+            messages_complete_vendor_failure(
+                Wire::Messages,
+                br#"{"content":[{"type":"text","text":"Hi"}],"error":{"message":"model not found"}}"#,
+            )
+            .is_none(),
+            "content blocks stay a completion"
+        );
     }
 
     #[test]
@@ -2366,8 +2398,8 @@ anthropic-beta = "context-1m-2025-08-07"
             (
                 CountRoute::Messages,
                 r#"{"error":{"message":"model not found"}}"#,
-                false,
-                "messages missing type",
+                true,
+                "messages object without type",
             ),
             (
                 CountRoute::Messages,
@@ -2468,6 +2500,25 @@ anthropic-beta = "context-1m-2025-08-07"
         let total = u32::from_be_bytes(bytes[0..4].try_into().expect("total")) as usize;
         let headers_len = u32::from_be_bytes(bytes[4..8].try_into().expect("headers")) as usize;
         &bytes[12 + headers_len..total - 4]
+    }
+
+    #[test]
+    fn count_url_keeps_query_and_fragment() {
+        let url = super::rewrite_count_url(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=test#frag",
+            CountRoute::Gemini,
+        )
+        .expect("count url");
+        assert!(url.ends_with(":countTokens?key=test#frag"), "{url}");
+        let fragment_only = super::rewrite_count_url(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent#section",
+            CountRoute::Gemini,
+        )
+        .expect("fragment");
+        assert!(
+            fragment_only.ends_with(":countTokens#section"),
+            "{fragment_only}"
+        );
     }
 
     #[test]
@@ -2872,6 +2923,49 @@ anthropic-beta = "context-1m-2025-08-07"
         assert!(text.contains("nope"), "{text}");
         assert!(text.contains("model catalog unavailable"), "{text}");
         assert!(!text.contains("[DONE]"), "{text}");
+    }
+
+    #[test]
+    fn same_wire_split_done_after_error_is_not_forwarded() {
+        let profile = crate::parse_profile_str(
+            "schema_version = 1\nid = \"m\"\nwire = \"chat-completions\"\n",
+        )
+        .expect("profile");
+        let mut gate = super::SameWireGate::new(wiremux_auth::Wire::ChatCompletions, profile);
+        let first = gate
+            .push(b"data: {\"choices\":[],\"error\":{\"message\":\"nope\"}}\n\n")
+            .expect("error frame");
+        let second = gate.push(b"data: [DO").expect("partial done");
+        let third = gate.push(b"NE]\n\n").expect("rest of done");
+        let mut out = Vec::new();
+        for push in [first, second, third] {
+            if let super::SameWirePush::Forward(bytes) = push {
+                out.extend(bytes);
+            }
+        }
+        match gate.finish() {
+            super::SameWireEnd::Done { tail } | super::SameWireEnd::Append { tail, .. } => {
+                out.extend(tail);
+            }
+            super::SameWireEnd::Promote { bytes } => out.extend(bytes),
+            super::SameWireEnd::Replace { message } => out.extend(message.into_bytes()),
+        }
+        let text = String::from_utf8(out).expect("utf8");
+        assert!(text.contains("nope"), "{text}");
+        assert!(!text.contains("[DO"), "{text}");
+        assert!(!text.contains("[DONE]"), "{text}");
+    }
+
+    #[test]
+    fn same_wire_converse_json_completion_is_promoted() {
+        let body = br#"{"output":{"message":{"role":"assistant","content":[{"text":"Hi"}]}},"stopReason":"end_turn"}"#;
+        let bytes = super::same_wire_passthrough_bytes(wiremux_auth::Wire::Converse, body);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("Hi"),
+            "JSON completion must be promoted, got {text}"
+        );
+        assert!(!text.contains(super::INCOMPLETE_STREAM_MESSAGE), "{text}");
     }
 
     #[test]

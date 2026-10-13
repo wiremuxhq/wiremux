@@ -3405,6 +3405,62 @@ fn large_tool_result_text_at_min_cacheable_tokens_still_tags() {
 }
 
 #[test]
+fn short_image_and_document_urls_meet_min_cacheable_tokens() {
+    let (bytes, report) = encode_floor(vec![IrItem::User {
+        parts: vec![IrPart::ImageUrl {
+            url: "https://cdn.example/a.png".into(),
+            detail: None,
+        }],
+    }]);
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("https://cdn.example/a.png"),
+        "image URL must be in the Messages body"
+    );
+    assert_cache_preserved(&bytes, &report);
+
+    let (bytes, report) = encode_floor(vec![IrItem::User {
+        parts: vec![IrPart::Document {
+            source: IrDocumentSource::Url("https://cdn.example/a.pdf".into()),
+            media_type: "application/pdf".into(),
+            name: None,
+            citations_enabled: None,
+            context: None,
+        }],
+    }]);
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("https://cdn.example/a.pdf"),
+        "document URL must be in the Messages body"
+    );
+    assert_cache_preserved(&bytes, &report);
+
+    let (bytes, report) = encode_floor(vec![IrItem::User {
+        parts: vec![IrPart::Document {
+            source: IrDocumentSource::FileId("file_abc".into()),
+            media_type: "application/pdf".into(),
+            name: None,
+            citations_enabled: None,
+            context: None,
+        }],
+    }]);
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("file_abc"),
+        "file id must be in the Messages body"
+    );
+    assert_cache_preserved(&bytes, &report);
+
+    let (bytes, report) = encode_floor(vec![IrItem::User {
+        parts: vec![IrPart::Document {
+            source: IrDocumentSource::Base64("0123456789".into()),
+            media_type: "application/pdf".into(),
+            name: None,
+            citations_enabled: None,
+            context: None,
+        }],
+    }]);
+    assert_cache_dropped(&bytes, &report);
+}
+
+#[test]
 fn large_image_url_at_min_cacheable_tokens_still_tags() {
     let url = format!("https://cdn.example/{}", "a".repeat(5000));
     let (bytes, report) = encode_floor(vec![IrItem::User {

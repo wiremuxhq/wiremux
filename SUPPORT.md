@@ -69,9 +69,10 @@ community repository.
 
 Chocolatey files are on the release. `CHOCOLATEY_API_KEY` is set.
 Publish Chocolatey submits the current release to the community
-moderation queue. `choco install wiremux` installs 0.10.2, the
-latest approved package. Later versions stay in that queue until
-a moderator accepts them.
+moderation queue. `choco install wiremux` installs the latest
+package a moderator has accepted. A release can sit in that queue
+before it is installable, so the community package can lag the
+GitHub Release.
 
 Git tags are not GPG-signed. The package signature is the
 `.intoto.jsonl` provenance file next to each archive.

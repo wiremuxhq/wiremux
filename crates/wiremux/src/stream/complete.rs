@@ -1460,11 +1460,10 @@ fn decode_response_value(
 }
 
 fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
-    let has_choice = value
-        .get("choices")
-        .and_then(Value::as_array)
-        .is_some_and(|items| !items.is_empty());
-    if !has_choice && let Some(detail) = plain_error_detail(value) {
+    // An empty choice is not a completion. Match `json_has_completion`.
+    if !crate::completion::json_has_completion(value)
+        && let Some(detail) = plain_error_detail(value)
+    {
         return Err(MapError::Invalid(detail));
     }
     let mut out = Vec::new();
@@ -1626,8 +1625,9 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
         .is_some_and(|items| !items.is_empty());
     let typed_error = value.get("type").and_then(Value::as_str) == Some("error");
     let string_error = value.get("error").and_then(Value::as_str).is_some();
+    let object_error = value.get("error").is_some_and(Value::is_object);
     if !has_content
-        && (typed_error || string_error)
+        && (typed_error || string_error || object_error)
         && let Some(detail) = plain_error_detail(value)
     {
         return Err(MapError::Invalid(detail));
@@ -1796,37 +1796,13 @@ fn responses_gateway_error(value: &Value) -> Option<String> {
 }
 
 fn plain_error_detail(value: &Value) -> Option<String> {
-    if let Some(text) = value
-        .get("error")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-    {
+    if let Some(text) = crate::completion::json_string_error(value) {
         return Some(text.to_string());
     }
-    let err = value.get("error")?.as_object()?;
-    let code = err
-        .get("code")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .or_else(|| {
-            err.get("type")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty() && *text != "error")
-        });
-    let message = err
-        .get("message")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty());
-    match (code, message) {
-        (Some(code), Some(message)) => Some(format!("{code}: {message}")),
-        (None, Some(message)) => Some(message.to_string()),
-        (Some(code), None) => Some(code.to_string()),
-        (None, None) => None,
-    }
+    value
+        .get("error")
+        .filter(|err| err.is_object())
+        .and_then(crate::completion::error_object_detail)
 }
 
 fn decode_responses_complete(
@@ -2217,12 +2193,10 @@ fn decode_gemini_complete(
     value: &Value,
     profile: &ResolvedProfile,
 ) -> Result<Vec<IrStreamEvent>, MapError> {
-    let has_candidate = value
-        .get("candidates")
-        .and_then(Value::as_array)
-        .is_some_and(|items| !items.is_empty());
-    if !has_candidate
-        && value.get("error").and_then(Value::as_str).is_some()
+    // A string error stays `Invalid`. An error object stays `HardError`
+    // from `gemini::decode`, including an empty candidate shell.
+    if !crate::completion::json_has_completion(value)
+        && crate::completion::json_string_error(value).is_some()
         && let Some(detail) = plain_error_detail(value)
     {
         return Err(MapError::Invalid(detail));
@@ -2333,6 +2307,16 @@ wire = "chat-completions"
                 .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
             "{kept:?}"
         );
+        let err = decode_response(
+            Wire::ChatCompletions,
+            br#"{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"error":{"message":"overloaded"}}"#,
+            &chat,
+        )
+        .expect_err("empty choice hides the error");
+        assert!(err.to_string().contains("overloaded"), "{err}");
+        let err = decode_response(Wire::ChatCompletions, br#"{"error":{"code":503}}"#, &chat)
+            .expect_err("numeric code");
+        assert!(err.to_string().contains("503"), "{err}");
 
         let messages = crate::parse_profile_str(
             r#"
@@ -2362,13 +2346,25 @@ wire = "messages"
             err.to_string().contains("model catalog unavailable"),
             "{err}"
         );
-        let untouched = decode_response(
+        let err = decode_response(
             Wire::Messages,
             br#"{"error":{"message":"model not found"}}"#,
             &messages,
         )
-        .expect("messages object without type stays a non-error");
-        assert!(untouched.is_empty(), "{untouched:?}");
+        .expect_err("messages object without type");
+        assert!(err.to_string().contains("model not found"), "{err}");
+        let kept_messages = decode_response(
+            Wire::Messages,
+            br#"{"content":[{"type":"text","text":"Hi"}],"error":{"message":"model not found"}}"#,
+            &messages,
+        )
+        .expect("content beside an untyped error");
+        assert!(
+            kept_messages
+                .iter()
+                .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
+            "{kept_messages:?}"
+        );
 
         let gemini = crate::parse_profile_str(
             r#"
@@ -2387,6 +2383,31 @@ wire = "gemini"
         assert!(
             err.to_string().contains("model catalog unavailable"),
             "{err}"
+        );
+        let err = decode_response(
+            Wire::Gemini,
+            br#"{"candidates":[{}],"error":{"message":"overloaded"}}"#,
+            &gemini,
+        )
+        .expect_err("empty candidate hides the error");
+        match &err {
+            MapError::HardError { path, detail } => {
+                assert_eq!(path, "error");
+                assert!(detail.contains("overloaded"), "{detail}");
+            }
+            other => panic!("empty candidate must stay HardError, got {other}"),
+        }
+        let kept_gemini = decode_response(
+            Wire::Gemini,
+            br#"{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}],"error":{"message":"overloaded"}}"#,
+            &gemini,
+        )
+        .expect("candidate text beside an error");
+        assert!(
+            kept_gemini
+                .iter()
+                .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
+            "{kept_gemini:?}"
         );
 
         let converse = crate::parse_profile_str(

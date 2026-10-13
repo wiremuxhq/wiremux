@@ -32,22 +32,8 @@ pub fn upstream_url_for_model(
     }
     // Model ids keep `:`, so the method name can sit inside the model
     // segment. Rewrite only the trailing method, not the first match.
-    if stream
-        && matches!(profile.dialect.wire, Some(Wire::Gemini))
-        && let Some(prefix) = path.strip_suffix(":generateContent")
-    {
-        path = format!("{prefix}:streamGenerateContent?alt=sse");
-    }
-    if stream
-        && matches!(profile.dialect.wire, Some(Wire::Messages))
-        && let Some(prefix) = path.strip_suffix(":rawPredict")
-    {
-        path = format!("{prefix}:streamRawPredict");
-    }
-    if stream && matches!(profile.dialect.wire, Some(Wire::Converse)) && path.ends_with("/converse")
-    {
-        path = format!("{path}-stream");
-    }
+    // A query or fragment is not part of that method.
+    path = rewrite_stream_method(profile.dialect.wire, &path, stream);
     // Same absolute-URL rule as profile `check_url`: scheme case does not
     // matter. A lowercase prefix left `HTTPS://...` joined onto base_url.
     let path = path.trim().to_string();
@@ -63,6 +49,57 @@ pub fn upstream_url_for_model(
             format!("/{path}")
         }
     )))
+}
+
+fn rewrite_stream_method(wire: Option<Wire>, path: &str, stream: bool) -> String {
+    let (path_only, suffix) = split_path_suffix(path);
+    if !stream {
+        return format!("{path_only}{suffix}");
+    }
+    if matches!(wire, Some(Wire::Gemini))
+        && let Some(prefix) = path_only.strip_suffix(":generateContent")
+    {
+        return format!("{prefix}:streamGenerateContent{}", with_alt_sse(suffix));
+    }
+    if matches!(wire, Some(Wire::Messages))
+        && let Some(prefix) = path_only.strip_suffix(":rawPredict")
+    {
+        return format!("{prefix}:streamRawPredict{suffix}");
+    }
+    if matches!(wire, Some(Wire::Converse)) && path_only.ends_with("/converse") {
+        return format!("{path_only}-stream{suffix}");
+    }
+    format!("{path_only}{suffix}")
+}
+
+fn split_path_suffix(path: &str) -> (&str, &str) {
+    match path.find(['?', '#']) {
+        Some(index) => (&path[..index], &path[index..]),
+        None => (path, ""),
+    }
+}
+
+/// Gemini streaming needs `alt=sse`. Keep an existing query and fragment.
+fn with_alt_sse(suffix: &str) -> String {
+    if suffix.is_empty() {
+        return "?alt=sse".to_string();
+    }
+    let (query, fragment) = match suffix.split_once('#') {
+        Some((query, fragment)) => (query, Some(fragment)),
+        None => (suffix, None),
+    };
+    let mut out = if query.is_empty() {
+        "?alt=sse".to_string()
+    } else if query.split(['?', '&']).any(|part| part == "alt=sse") {
+        query.to_string()
+    } else {
+        format!("{query}&alt=sse")
+    };
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
 }
 
 /// Encode `{model}` as one path segment. Keep `:` so Bedrock model ids

@@ -710,11 +710,14 @@ pub enum LossAction {
 /// Estimate prompt tokens as `chars / 4` for the Messages cache floor.
 ///
 /// Counts system and developer text, user and assistant text, signed
-/// thinking text, image bytes and image URLs, document text, base64,
-/// URLs, file ids, titles, and context, function-call names and args,
-/// custom-tool names and inputs, function-output text and the parts
-/// Messages writes, reasoning text that becomes a thinking block, and
-/// function-tool names, descriptions, and parameters.
+/// thinking text, image bytes, document text, and document base64.
+/// An image URL, a document URL, and a document file id count as at
+/// least 4096 characters (1024 tokens) so a short handle still meets
+/// the shipped Messages floor. A longer handle counts its own length.
+/// Titles, context, function-call names and arguments, custom-tool
+/// names and inputs, function-output text and parts, reasoning text
+/// that becomes a thinking block, and function-tool names,
+/// descriptions, and parameters also count.
 ///
 /// Unsigned thinking is not replayed, so that text is not counted.
 /// Whitespace-only text parts are omitted. Audio is dropped. A custom
@@ -981,8 +984,60 @@ mod tests {
             sampling: IrSampling::default(),
         };
         assert!(
-            estimate_prompt_tokens(&detail_only) < 1024,
-            "image detail is dropped and must not meet the floor"
+            estimate_prompt_tokens(&detail_only) >= 1024,
+            "a normal image URL meets a 1024-token floor"
+        );
+        let url_only = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::ImageUrl {
+                    url: "https://cdn.example/a.png".into(),
+                    detail: None,
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert_eq!(
+            estimate_prompt_tokens(&detail_only),
+            estimate_prompt_tokens(&url_only),
+            "image detail is dropped"
+        );
+        let file_id = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Document {
+                    source: IrDocumentSource::FileId("file_abc".into()),
+                    media_type: "application/pdf".into(),
+                    name: None,
+                    citations_enabled: None,
+                    context: None,
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&file_id) >= 1024,
+            "a file id meets a 1024-token floor"
+        );
+        let short_base64 = IrRequest {
+            model: "claude".into(),
+            items: vec![IrItem::User {
+                parts: vec![IrPart::Document {
+                    source: IrDocumentSource::Base64("0123456789".into()),
+                    media_type: "application/pdf".into(),
+                    name: None,
+                    citations_enabled: None,
+                    context: None,
+                }],
+            }],
+            tools: vec![],
+            sampling: IrSampling::default(),
+        };
+        assert!(
+            estimate_prompt_tokens(&short_base64) < 1024,
+            "short document base64 stays under the floor"
         );
 
         let document_text = IrRequest {

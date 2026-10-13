@@ -23,6 +23,32 @@ pub(crate) fn json_string_error(value: &Value) -> Option<&str> {
         .filter(|text| !text.is_empty())
 }
 
+/// `error` object text. Numeric `code` and `status` count, same as the proxy.
+pub(crate) fn error_object_detail(err: &Value) -> Option<String> {
+    let message = err
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    let code = ["code", "type", "status"].iter().find_map(|key| {
+        let value = err.get(*key)?;
+        if let Some(text) = value.as_str() {
+            let text = text.trim();
+            if text.is_empty() || (*key == "type" && text == "error") {
+                return None;
+            }
+            return Some(text.to_string());
+        }
+        value.as_i64().map(|number| number.to_string())
+    });
+    match (code, message) {
+        (Some(code), Some(message)) => Some(format!("{code}: {message}")),
+        (None, Some(message)) => Some(message.to_string()),
+        (Some(code), None) => Some(code),
+        (None, None) => None,
+    }
+}
+
 fn nonempty_array(value: &Value, key: &str) -> bool {
     value
         .get(key)
@@ -62,7 +88,7 @@ fn content_part_visible(item: &Value) -> bool {
             .is_some_and(|kind| matches!(kind, "image_url" | "image" | "input_audio" | "audio"))
 }
 
-fn choice_visible(choice: &Value) -> bool {
+pub(crate) fn choice_visible(choice: &Value) -> bool {
     let body = choice
         .get("message")
         .or_else(|| choice.get("delta"))
@@ -96,7 +122,7 @@ fn audio_visible(body: &Value) -> bool {
     nonempty_str(audio, "data") || nonempty_str(audio, "transcript")
 }
 
-fn candidate_visible(candidate: &Value) -> bool {
+pub(crate) fn candidate_visible(candidate: &Value) -> bool {
     nonempty_str(candidate, "finishMessage")
         || candidate
             .pointer("/content/parts")

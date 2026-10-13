@@ -374,7 +374,15 @@ impl WireClient {
         if let Some(err) = classify_http(status, &text, retry_after) {
             return Err(err);
         }
-        let events = decode_response(wire, &body, &self.profile)?;
+        let events = match decode_response(wire, &body, &self.profile) {
+            Ok(events) => events,
+            Err(err) => {
+                if let Some(classified) = converse_json_client_error(wire, status, &text) {
+                    return Err(classified);
+                }
+                return Err(err.into());
+            }
+        };
         Ok((events, loss))
     }
 
@@ -755,6 +763,30 @@ async fn pull_live(
                         }
                     }
                     Err(err) => {
+                        if !live.saw_frame && !err.contains("exceeds") {
+                            if promote_non_stream_completion(&mut live) {
+                                live.eof = true;
+                                continue;
+                            }
+                            let text = String::from_utf8_lossy(&live.leftover);
+                            if let Some(classified) =
+                                converse_json_client_error(live.wire, live.http_status, &text)
+                            {
+                                return Some((Err(classified), StreamPhase::Done));
+                            }
+                            if json_prefix(&live.leftover)
+                                && serde_json::from_slice::<Value>(&live.leftover).is_err()
+                            {
+                                // A split JSON body is not a frame yet.
+                                continue;
+                            }
+                            if serde_json::from_slice::<Value>(&live.leftover).is_ok() {
+                                return Some((
+                                    Err(classify_empty_stream(live.http_status, &text)),
+                                    StreamPhase::Done,
+                                ));
+                            }
+                        }
                         return Some((
                             Err(classify_feed_err(err, live.http_status)),
                             StreamPhase::Done,
@@ -780,6 +812,21 @@ async fn pull_live(
                                 continue;
                             }
                             let text = String::from_utf8_lossy(&live.leftover);
+                            if let Some(classified) =
+                                converse_json_client_error(live.wire, live.http_status, &text)
+                            {
+                                return Some((Err(classified), StreamPhase::Done));
+                            }
+                            if live.wire == Wire::Converse
+                                && (200..300).contains(&live.http_status)
+                                && serde_json::from_slice::<Value>(&live.leftover).is_err()
+                                && !live.leftover.is_empty()
+                            {
+                                return Some((
+                                    Err(classify_feed_err(err, live.http_status)),
+                                    StreamPhase::Done,
+                                ));
+                            }
                             return Some((
                                 Err(classify_empty_stream(live.http_status, &text)),
                                 StreamPhase::Done,
@@ -956,6 +1003,27 @@ fn classify_feed_err(err: String, status: u16) -> ClientError {
         return classified;
     }
     ClientError::Transport(err)
+}
+
+fn json_prefix(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| matches!(byte, b'{' | b'['))
+}
+
+/// Converse HTTP 200 JSON uses `__type` and `message`, not `error`.
+///
+/// `classify_http` misses that shape, so `send` would report `Map` and
+/// `stream` would report a prelude CRC error.
+fn converse_json_client_error(wire: Wire, status: u16, body: &str) -> Option<ClientError> {
+    if wire != Wire::Converse || classify_http(status, body, None).is_some() {
+        return None;
+    }
+    let value: Value = serde_json::from_str(body).ok()?;
+    let detail = crate::stream::complete_exception_detail(&value)?;
+    let ty = value.get("__type").and_then(Value::as_str).unwrap_or("");
+    Some(classify_aws_exception_type(status, ty, &detail, &detail))
 }
 
 fn classify_eventstream_exception(err: &str, status: u16) -> Option<ClientError> {
@@ -1755,6 +1823,49 @@ mod tests {
             }
             other => panic!("401 body with no frame must stay Auth, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn converse_json_completion_split_before_crc_still_decodes() {
+        let profile = parse_profile_str("schema_version = 1\nid = \"c\"\nwire = \"converse\"\n")
+            .expect("parse");
+        let rest = br#""output":{"message":{"role":"assistant","content":[{"text":"Hi"}]}},"stopReason":"end_turn"}"#;
+        let live = LiveStream {
+            bytes: Box::pin(futures_util::stream::iter(vec![
+                Ok(Bytes::from_static(b"{")),
+                Ok(Bytes::copy_from_slice(rest)),
+            ])),
+            reader: UpstreamFrames::for_wire(Wire::Converse),
+            decoder: StreamDecoder::new(),
+            assembler: ToolCallAssembler::new(),
+            pending: VecDeque::new(),
+            wire: Wire::Converse,
+            profile,
+            eof: false,
+            saw_frame: false,
+            saw_terminal: false,
+            leftover: Vec::new(),
+            http_status: 200,
+            stop_error: None,
+        };
+        let mut phase = StreamPhase::Live(live);
+        let mut text = String::new();
+        loop {
+            let StreamPhase::Live(live) = phase else {
+                break;
+            };
+            let Some((item, next)) = pull_live(live).await else {
+                break;
+            };
+            if let Ok(IrStreamEvent::TextDelta { text: delta }) = &item {
+                text.push_str(delta);
+            }
+            if let Err(err) = &item {
+                panic!("split JSON completion must decode, got {err}");
+            }
+            phase = next;
+        }
+        assert!(text.contains("Hi"), "{text}");
     }
 
     #[test]

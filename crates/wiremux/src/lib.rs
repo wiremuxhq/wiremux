@@ -26,7 +26,6 @@ mod capped_body;
 pub mod cli;
 #[cfg(feature = "client")]
 pub mod client;
-#[cfg(any(feature = "proxy", feature = "client"))]
 mod completion;
 #[cfg(any(feature = "proxy", feature = "client"))]
 mod headers;

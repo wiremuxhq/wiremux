@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use wiremux::cli::{
     EXIT_ERROR, EXIT_NOT_READY, EXIT_OK, format_status, list_cli_profiles, load_cli_profile,
-    parse_wire, pick_auth_profile, run_login, token_status, validate_report,
+    parse_listen, parse_wire, pick_auth_profile, run_login, token_status, validate_report,
 };
 use wiremux::ingest::{
     CatalogKind, IngestAction, IngestRequest, fetch_catalog_url, ingest_catalog,
@@ -335,6 +335,15 @@ async fn cmd_proxy(
             return EXIT_ERROR;
         }
     };
+    // Listen and timeout are local. A missing profile must not hide them.
+    if let Err(err) = parse_listen(listen) {
+        eprintln!("{err}");
+        return EXIT_ERROR;
+    }
+    if let Some(0) = read_timeout_secs {
+        eprintln!("--read-timeout-secs must be greater than 0");
+        return EXIT_ERROR;
+    }
     let mut profile = match load_cli_profile(profile_arg) {
         Ok(p) => p,
         Err(err) => {
@@ -343,10 +352,6 @@ async fn cmd_proxy(
         }
     };
     if let Some(secs) = read_timeout_secs {
-        if secs == 0 {
-            eprintln!("--read-timeout-secs must be greater than 0");
-            return EXIT_ERROR;
-        }
         profile.http.read_timeout_secs = Some(secs);
     }
     let model = model.filter(|value| !value.is_empty());

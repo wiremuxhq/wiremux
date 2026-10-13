@@ -1090,7 +1090,7 @@ fn messages_part_chars(part: &IrPart) -> usize {
     match part {
         IrPart::Text(text) if text.trim().is_empty() => 0,
         IrPart::Text(text) => text.len(),
-        IrPart::ImageUrl { url, .. } => url.len(),
+        IrPart::ImageUrl { url, .. } => url.len().max(MESSAGES_REMOTE_SOURCE_CHARS),
         IrPart::ImageBase64 { data, .. } => data.len(),
         IrPart::Document {
             source,
@@ -1116,10 +1116,10 @@ fn document_written_chars(
     context: Option<&str>,
 ) -> usize {
     let payload = match source {
-        IrDocumentSource::Base64(data)
-        | IrDocumentSource::Text(data)
-        | IrDocumentSource::Url(data)
-        | IrDocumentSource::FileId(data) => data.len(),
+        IrDocumentSource::Base64(data) | IrDocumentSource::Text(data) => data.len(),
+        IrDocumentSource::Url(data) | IrDocumentSource::FileId(data) => {
+            data.len().max(MESSAGES_REMOTE_SOURCE_CHARS)
+        }
     };
     payload + trimmed_nonempty_len(name) + trimmed_nonempty_len(context)
 }
@@ -1155,6 +1155,12 @@ fn reasoning_prompt_chars(summary: Option<&str>, raw: Option<&Value>) -> usize {
         .map(str::len)
         .unwrap_or(0)
 }
+
+/// Chars credited so one URL or file id meets a 1024-token floor.
+///
+/// `chars / 4` is the estimator. The string Messages sends is the
+/// handle, not the image or document Anthropic bills.
+pub(super) const MESSAGES_REMOTE_SOURCE_CHARS: usize = 4096;
 
 /// Anthropic rejects more than this many `cache_control` blocks.
 const ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS: usize = 4;
