@@ -65,7 +65,7 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport)
         }),
         "assistant" => {
             if !parts.is_empty() || msg.get("tool_calls").is_none() {
-                items.push(IrItem::Assistant { parts });
+                items.push(IrItem::Assistant { parts, phase: None });
             }
             if let Some(calls) = msg.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
@@ -462,7 +462,8 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 messages.push(json!({"role": "user", "content": encode_parts(parts, report)}));
                 idx += 1;
             }
-            IrItem::Assistant { parts } => {
+            IrItem::Assistant { parts, phase } => {
+                super::drop_assistant_phase(phase, &format!("items[{idx}].phase"), report);
                 let (msg, consumed) = encode_assistant(ir, idx, parts, report);
                 messages.push(msg);
                 idx += consumed;
@@ -1344,7 +1345,7 @@ mod tests {
         assert!(
             matches!(
                 &ir.items[0],
-                crate::ir::IrItem::Assistant { parts }
+                crate::ir::IrItem::Assistant { parts, .. }
                     if *parts == [IrPart::Text("I can't help with that.".into())]
             ),
             "{ir:?}"

@@ -81,6 +81,7 @@ fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) {
     if let Some(Value::String(text)) = content {
         items.push(IrItem::Assistant {
             parts: vec![IrPart::Text(text.clone())],
+            phase: None,
         });
         return;
     }
@@ -159,6 +160,7 @@ fn flush_assistant(parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
     if !parts.is_empty() {
         items.push(IrItem::Assistant {
             parts: std::mem::take(parts),
+            phase: None,
         });
     }
 }
@@ -577,7 +579,8 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 push_alternating_message(&mut messages, msg, idx, report);
                 idx += consumed;
             }
-            IrItem::Assistant { parts } => {
+            IrItem::Assistant { parts, phase } => {
+                super::drop_assistant_phase(phase, &format!("items[{idx}].phase"), report);
                 let (msg, consumed) = encode_assistant(ir, idx, parts, report);
                 messages.push(msg);
                 idx += consumed;
@@ -1051,7 +1054,7 @@ pub(crate) fn cache_floor_tokens(req: &IrRequest) -> u32 {
     for item in &req.items {
         match item {
             IrItem::System { text } | IrItem::Developer { text } => chars += text.len(),
-            IrItem::User { parts } | IrItem::Assistant { parts } => {
+            IrItem::User { parts } | IrItem::Assistant { parts, .. } => {
                 chars += parts.iter().map(messages_part_chars).sum::<usize>();
             }
             IrItem::FunctionCall {

@@ -301,7 +301,10 @@ fn flush_parts(role: &str, parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
     }
     let taken = std::mem::take(parts);
     match role {
-        "model" => items.push(IrItem::Assistant { parts: taken }),
+        "model" => items.push(IrItem::Assistant {
+            parts: taken,
+            phase: None,
+        }),
         _ => items.push(IrItem::User { parts: taken }),
     }
 }
@@ -691,7 +694,8 @@ pub(super) fn encode(
             IrItem::User { parts } => {
                 push_encoded_turn(&mut contents, "user", parts, idx, report);
             }
-            IrItem::Assistant { parts } => {
+            IrItem::Assistant { parts, phase } => {
+                super::drop_assistant_phase(phase, &format!("items[{idx}].phase"), report);
                 push_encoded_turn(&mut contents, "model", parts, idx, report);
             }
             IrItem::FunctionCall {

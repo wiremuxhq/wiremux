@@ -361,6 +361,10 @@ pub enum IrItem {
     },
     Assistant {
         parts: Vec<IrPart>,
+        /// Responses assistant `phase` (`commentary` or `final_answer`).
+        /// A later Responses turn must send it again. Other wires drop it.
+        /// User messages never carry it.
+        phase: Option<String>,
     },
     FunctionCall {
         call_id: String,
@@ -873,6 +877,7 @@ mod tests {
         let signed = IrRequest {
             model: "claude".into(),
             items: vec![IrItem::Assistant {
+                phase: None,
                 parts: vec![IrPart::Thinking {
                     text: "x".repeat(5000),
                     signature: Some("sig".into()),
@@ -908,6 +913,7 @@ mod tests {
         let blank_signature = IrRequest {
             model: "claude".into(),
             items: vec![IrItem::Assistant {
+                phase: None,
                 parts: vec![IrPart::Thinking {
                     text: "x".repeat(5000),
                     signature: Some(String::new()),
@@ -924,6 +930,7 @@ mod tests {
         let signature_only = IrRequest {
             model: "claude".into(),
             items: vec![IrItem::Assistant {
+                phase: None,
                 parts: vec![IrPart::Thinking {
                     text: "hi".into(),
                     signature: Some("y".repeat(5000)),

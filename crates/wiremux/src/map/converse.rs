@@ -160,6 +160,7 @@ fn decode_assistant(
         if let Some(s) = content.and_then(Value::as_str) {
             items.push(IrItem::Assistant {
                 parts: vec![IrPart::Text(s.to_string())],
+                phase: None,
             });
         }
         return Ok(());
@@ -201,6 +202,7 @@ fn flush_assistant(parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
     if !parts.is_empty() {
         items.push(IrItem::Assistant {
             parts: std::mem::take(parts),
+            phase: None,
         });
     }
 }
@@ -554,7 +556,8 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 }
                 messages.push(json!({ "role": "user", "content": blocks }));
             }
-            IrItem::Assistant { parts } => {
+            IrItem::Assistant { parts, phase } => {
+                super::drop_assistant_phase(phase, &format!("items[{idx}].phase"), report);
                 let blocks: Vec<Value> = parts
                     .iter()
                     .filter_map(|p| encode_part(p, report))
