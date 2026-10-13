@@ -751,7 +751,14 @@ async fn pull_live(
         match live.bytes.next().await {
             Some(Ok(chunk)) => {
                 if !live.saw_frame {
-                    append_capped(&mut live.leftover, &chunk, MAX_ERROR_BODY);
+                    // A JSON body is not an Event Stream frame. The error
+                    // cap would truncate it and the prelude CRC would win.
+                    let cap = if json_prefix(&live.leftover) || json_prefix(&chunk) {
+                        MAX_SUCCESS_BODY
+                    } else {
+                        MAX_ERROR_BODY
+                    };
+                    append_capped(&mut live.leftover, &chunk, cap);
                 }
                 match live.reader.feed(&chunk) {
                     Ok((frames, terminal)) => {
@@ -1866,6 +1873,58 @@ mod tests {
             phase = next;
         }
         assert!(text.contains("Hi"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn converse_json_completion_over_error_cap_still_decodes() {
+        let profile = parse_profile_str("schema_version = 1\nid = \"c\"\nwire = \"converse\"\n")
+            .expect("parse");
+        let mut body =
+            br#"{"output":{"message":{"role":"assistant","content":[{"text":"PROMOTED-TAIL-"#
+                .to_vec();
+        body.extend(std::iter::repeat_n(b'a', 70_000));
+        body.extend(br#""}]}},"stopReason":"end_turn"}"#);
+        let live = LiveStream {
+            bytes: Box::pin(futures_util::stream::iter(vec![
+                Ok(Bytes::copy_from_slice(&body[..1])),
+                Ok(Bytes::copy_from_slice(&body[1..70_000])),
+                Ok(Bytes::copy_from_slice(&body[70_000..])),
+            ])),
+            reader: UpstreamFrames::for_wire(Wire::Converse),
+            decoder: StreamDecoder::new(),
+            assembler: ToolCallAssembler::new(),
+            pending: VecDeque::new(),
+            wire: Wire::Converse,
+            profile,
+            eof: false,
+            saw_frame: false,
+            saw_terminal: false,
+            leftover: Vec::new(),
+            http_status: 200,
+            stop_error: None,
+        };
+        let mut phase = StreamPhase::Live(live);
+        let mut text = String::new();
+        loop {
+            let StreamPhase::Live(live) = phase else {
+                break;
+            };
+            let Some((item, next)) = pull_live(live).await else {
+                break;
+            };
+            if let Ok(IrStreamEvent::TextDelta { text: delta }) = &item {
+                text.push_str(delta);
+            }
+            if let Err(err) = &item {
+                panic!("JSON completion past the error cap must decode, got {err}");
+            }
+            phase = next;
+        }
+        assert!(
+            text.contains("PROMOTED-TAIL-") && text.len() > super::MAX_ERROR_BODY,
+            "got {} bytes",
+            text.len()
+        );
     }
 
     #[test]
