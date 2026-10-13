@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.1](https://github.com/wiremuxhq/wiremux/compare/v0.11.0...v0.11.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* count Messages image and document bytes in the cache floor ([#571](https://github.com/wiremuxhq/wiremux/issues/571)) ([7c5f0eb](https://github.com/wiremuxhq/wiremux/commit/7c5f0eb16fe54aa67035b60ac0d0c8ac7988977e)), closes [#570](https://github.com/wiremuxhq/wiremux/issues/570)
+* do not finish a same-wire stream on an error chunk ([#580](https://github.com/wiremuxhq/wiremux/issues/580)) ([7114962](https://github.com/wiremuxhq/wiremux/commit/7114962c0351ebbe0e4653646757eba31938c527))
+* keep an assistant refusal when replaying Chat ([#579](https://github.com/wiremuxhq/wiremux/issues/579)) ([53490cb](https://github.com/wiremuxhq/wiremux/commit/53490cb204d992f0a6fd39412cce00c39cbfb235))
+* patch quinn-proto and keep stream methods at the path suffix ([#575](https://github.com/wiremuxhq/wiremux/issues/575)) ([785286b](https://github.com/wiremuxhq/wiremux/commit/785286b4c39fd8857462a77905d03f3a76fdddc4))
+* read an SSE error when choices is empty ([#578](https://github.com/wiremuxhq/wiremux/issues/578)) ([f002f41](https://github.com/wiremuxhq/wiremux/commit/f002f41600d04235f565e4d3f2e71849c94dcc75))
+* refresh model lists, name listen ports, and keep Converse tool errors ([#573](https://github.com/wiremuxhq/wiremux/issues/573)) ([c7908d6](https://github.com/wiremuxhq/wiremux/commit/c7908d6c271d0315fc696d278184cdc7f247e8a8))
+* reject a Responses gateway error that has no status ([#577](https://github.com/wiremuxhq/wiremux/issues/577)) ([001669e](https://github.com/wiremuxhq/wiremux/commit/001669e4d82f9dcbb87ae6260e55909c0515aaa8))
+* reject a Responses string error that has no output ([#576](https://github.com/wiremuxhq/wiremux/issues/576)) ([d7b2559](https://github.com/wiremuxhq/wiremux/commit/d7b255964b8e1181474b762898cd04926a0be3d7))
+* report an expired token with no refresh as unavailable ([#574](https://github.com/wiremuxhq/wiremux/issues/574)) ([658961e](https://github.com/wiremuxhq/wiremux/commit/658961ed6f255d00cf63c04c28793403e4fd3677))
+
 ## [0.11.0](https://github.com/wiremuxhq/wiremux/compare/v0.10.6...v0.11.0) (2026-10-11)
 
 
