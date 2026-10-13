@@ -827,35 +827,30 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn with_env_holds_the_process_env_lock() {
+        use std::sync::{Arc, Barrier};
+
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let entered_worker = Arc::clone(&entered);
+        let release_worker = Arc::clone(&release);
+        let worker = std::thread::spawn(move || {
+            with_env("WIREMUX_TEST_LOCK_PROBE", "1", || {
+                entered_worker.wait();
+                release_worker.wait();
+            });
+        });
+        entered.wait();
+        let busy = crate::isolated_home::env_lock_is_busy();
+        release.wait();
+        worker.join().unwrap();
+        assert!(busy, "with_env must take HOME_TEST_LOCK before set_var");
+    }
+
     fn with_env<T>(key: &str, val: &str, f: impl FnOnce() -> T) -> T {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let prev = std::env::var(key).ok();
-        // SAFETY: process-global lock; restored by EnvRestore on all paths.
-        unsafe {
-            std::env::set_var(key, val);
-        }
-        let _restore = EnvRestore {
-            key: key.to_string(),
-            prev,
-        };
+        let home = crate::isolated_home::IsolatedHome::with_extra_envs(&[key]);
+        home.set_env(key, val);
         f()
-    }
-
-    struct EnvRestore {
-        key: String,
-        prev: Option<String>,
-    }
-
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            // SAFETY: same lock as with_env is still held by the caller.
-            unsafe {
-                match &self.prev {
-                    Some(v) => std::env::set_var(&self.key, v),
-                    None => std::env::remove_var(&self.key),
-                }
-            }
-        }
     }
 }

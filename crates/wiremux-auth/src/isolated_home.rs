@@ -11,6 +11,22 @@ use crate::keychain_guard::{KeychainIsolation, TestKeychain};
 /// Acquire before any `HOME` / `USERPROFILE` mutation.
 static HOME_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// `true` while another caller holds [`HOME_TEST_LOCK`].
+#[cfg(test)]
+pub(crate) fn env_lock_is_busy() -> bool {
+    match HOME_TEST_LOCK.try_lock() {
+        Ok(guard) => {
+            drop(guard);
+            false
+        }
+        Err(std::sync::TryLockError::WouldBlock) => true,
+        Err(std::sync::TryLockError::Poisoned(guard)) => {
+            drop(guard.into_inner());
+            false
+        }
+    }
+}
+
 const COMMON_ENVS: &[&str] = &[
     "WIREMUX_NO_SHIPPED_PRESETS",
     "WIREMUX_PROFILE_DIR",
