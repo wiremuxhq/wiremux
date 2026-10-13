@@ -7602,6 +7602,78 @@ fn map_unknown_source_names_the_from_flag() {
 }
 
 #[test]
+fn proxy_missing_profile_does_not_hide_listen_or_timeout() {
+    let (_home, mut cmd) = isolated_home();
+    let listen = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1",
+            "--from",
+            "chat",
+            "--profile",
+            "no-such-profile-id",
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(listen.status.code(), Some(1), "{listen:?}");
+    let err = String::from_utf8_lossy(&listen.stderr);
+    assert!(
+        err.contains("127.0.0.1:<port>"),
+        "missing profile must not hide the listen address, got {err}"
+    );
+    assert!(
+        !err.contains("not found"),
+        "listen error is first, got {err}"
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let timeout = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:9",
+            "--from",
+            "chat",
+            "--profile",
+            "no-such-profile-id",
+            "--read-timeout-secs",
+            "0",
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(timeout.status.code(), Some(1), "{timeout:?}");
+    let err = String::from_utf8_lossy(&timeout.stderr);
+    assert!(
+        err.contains("--read-timeout-secs must be greater than 0"),
+        "{err}"
+    );
+    assert!(!err.contains("not found"), "{err}");
+
+    let (_home, mut cmd) = isolated_home();
+    let both = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1",
+            "--from",
+            "chat",
+            "--profile",
+            "no-such-profile-id",
+            "--read-timeout-secs",
+            "0",
+        ])
+        .output()
+        .expect("run");
+    let err = String::from_utf8_lossy(&both.stderr);
+    assert!(
+        err.contains("127.0.0.1:<port>"),
+        "a bad listen address wins over the timeout, got {err}"
+    );
+    assert!(!err.contains("--read-timeout-secs"), "{err}");
+}
+
+#[test]
 fn proxy_read_timeout_zero_exits_before_listen() {
     let (_home, mut cmd) = isolated_home();
     let out = cmd

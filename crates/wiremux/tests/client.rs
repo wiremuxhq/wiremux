@@ -1129,6 +1129,90 @@ async fn stream_eventstream_validation_exception_is_vendor() {
 }
 
 #[tokio::test]
+async fn send_and_stream_converse_json_exception_is_vendor() {
+    let body =
+        r#"{"__type":"ValidationException","message":"The provided model identifier is invalid."}"#;
+    let (base, handle) = spawn_one(200, "OK", "", body);
+    let err = converse_client_for(&base)
+        .send(simple_ir("amazon.nova-lite-v1:0"))
+        .await
+        .expect_err("send");
+    let _ = handle.join();
+    match err {
+        ClientError::Map(err) => panic!("JSON exception must not be Map: {err}"),
+        ClientError::Vendor { status, message } => {
+            assert_eq!(status, Some(200));
+            assert!(
+                message.contains("ValidationException") && message.contains("model identifier"),
+                "{message}"
+            );
+        }
+        other => panic!("expected Vendor, got {other:?}"),
+    }
+
+    let (base, handle) = spawn_one(200, "OK", "", body);
+    let client = converse_client_for(&base);
+    let mut stream = std::pin::pin!(client.stream(simple_ir("amazon.nova-lite-v1:0")));
+    let first = stream.next().await.expect("first stream item");
+    let _ = handle.join();
+    match first {
+        Err(ClientError::Transport(err)) => {
+            panic!("JSON exception must not be Transport: {err}");
+        }
+        Err(ClientError::Vendor { status, message }) => {
+            assert_eq!(status, Some(200));
+            assert!(
+                message.contains("ValidationException") && message.contains("model identifier"),
+                "{message}"
+            );
+        }
+        other => panic!("expected Vendor, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stream_converse_json_throttling_is_rate_limit() {
+    let body = r#"{"__type":"ThrottlingException","message":"Rate exceeded"}"#;
+    let (base, handle) = spawn_one(200, "OK", "", body);
+    let client = converse_client_for(&base);
+    let mut stream = std::pin::pin!(client.stream(simple_ir("amazon.nova-lite-v1:0")));
+    let first = stream.next().await.expect("first stream item");
+    let _ = handle.join();
+    match first {
+        Err(ClientError::RateLimit {
+            status, message, ..
+        }) => {
+            assert_eq!(status, Some(200));
+            assert!(message.contains("ThrottlingException"), "{message}");
+        }
+        other => panic!("expected RateLimit, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stream_converse_json_completion_yields_text() {
+    let body = r#"{"output":{"message":{"role":"assistant","content":[{"text":"Hi"}]}},"stopReason":"end_turn"}"#;
+    let (base, handle) = spawn_one(200, "OK", "", body);
+    let client = converse_client_for(&base);
+    let mut stream = std::pin::pin!(client.stream(simple_ir("amazon.nova-lite-v1:0")));
+    let mut text = String::new();
+    let mut err = None;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(IrStreamEvent::TextDelta { text: delta }) => text.push_str(&delta),
+            Err(e) => {
+                err = Some(e.to_string());
+                break;
+            }
+            _ => {}
+        }
+    }
+    let _ = handle.join();
+    assert!(err.is_none(), "JSON completion must decode, got {err:?}");
+    assert!(text.contains("Hi"), "{text}");
+}
+
+#[tokio::test]
 async fn http_401_is_auth() {
     let (base, handle) = spawn_one(401, "Unauthorized", "", r#"{"error":{"message":"nope"}}"#);
     let err = client_for(&base, "sk-test")

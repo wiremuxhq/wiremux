@@ -919,6 +919,98 @@ base_url = "https://generativelanguage.googleapis.com"
     }
 
     #[test]
+    fn stream_rewrite_keeps_query_and_fragment() {
+        let gemini = parse_profile_str(
+            r#"
+schema_version = 1
+id = "g"
+wire = "gemini"
+base_url = "https://generativelanguage.googleapis.com"
+chat_path = "/v1beta/models/{model}:generateContent?key=test"
+"#,
+        )
+        .expect("gemini");
+        let url = upstream_url_for_model(&gemini, Some("gemini-2.5-flash"), true).expect("query");
+        assert!(
+            url.ends_with(":streamGenerateContent?key=test&alt=sse"),
+            "{url}"
+        );
+        assert!(!url.contains("?key=test?"), "{url}");
+
+        let fragment = parse_profile_str(
+            r#"
+schema_version = 1
+id = "g"
+wire = "gemini"
+base_url = "https://generativelanguage.googleapis.com"
+chat_path = "/v1beta/models/{model}:generateContent#section"
+"#,
+        )
+        .expect("fragment");
+        let url =
+            upstream_url_for_model(&fragment, Some("gemini-2.5-flash"), true).expect("fragment");
+        assert!(
+            url.ends_with(":streamGenerateContent?alt=sse#section"),
+            "{url}"
+        );
+
+        let already = parse_profile_str(
+            r#"
+schema_version = 1
+id = "g"
+wire = "gemini"
+base_url = "https://generativelanguage.googleapis.com"
+chat_path = "/v1beta/models/{model}:streamGenerateContent?key=test"
+"#,
+        )
+        .expect("already streaming");
+        let url = upstream_url_for_model(&already, Some("gemini-2.5-flash"), true).expect("stay");
+        assert!(url.ends_with(":streamGenerateContent?key=test"), "{url}");
+        assert!(!url.contains("alt=sse"), "{url}");
+
+        let vertex = parse_profile_str(
+            r#"
+schema_version = 1
+id = "v"
+wire = "messages"
+base_url = "https://us-central1-aiplatform.googleapis.com"
+chat_path = "/v1/projects/p/locations/us-central1/publishers/anthropic/models/{model}:rawPredict?foo=1"
+"#,
+        )
+        .expect("vertex");
+        let url = upstream_url_for_model(&vertex, Some("claude-sonnet-4"), true).expect("raw");
+        assert!(url.ends_with(":streamRawPredict?foo=1"), "{url}");
+
+        let converse = parse_profile_str(
+            r#"
+schema_version = 1
+id = "c"
+wire = "converse"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+chat_path = "/model/{model}/converse?foo=1"
+"#,
+        )
+        .expect("converse");
+        let url =
+            upstream_url_for_model(&converse, Some("amazon.nova-lite-v1:0"), true).expect("stream");
+        assert!(url.ends_with("/converse-stream?foo=1"), "{url}");
+        let staying = parse_profile_str(
+            r#"
+schema_version = 1
+id = "c"
+wire = "converse"
+base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+chat_path = "/model/{model}/converse-stream?foo=1"
+"#,
+        )
+        .expect("already stream");
+        let url =
+            upstream_url_for_model(&staying, Some("amazon.nova-lite-v1:0"), true).expect("stay");
+        assert!(url.ends_with("/converse-stream?foo=1"), "{url}");
+        assert!(!url.contains("/converse-stream-stream"), "{url}");
+    }
+
+    #[test]
     fn missing_model_does_not_call_the_placeholder() {
         let profile = parse_profile_str(
             r#"

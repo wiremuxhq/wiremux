@@ -4,7 +4,7 @@ mod chat;
 mod complete;
 mod converse;
 
-#[cfg(feature = "proxy")]
+#[cfg(any(feature = "proxy", feature = "client"))]
 pub(crate) use converse::complete_exception_detail;
 mod encoder;
 mod eventstream;
@@ -1350,11 +1350,9 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
 #[cfg(any(feature = "client", feature = "proxy"))]
 pub(crate) fn sse_wrapped_error_message(data: &str) -> Option<String> {
     let value: Value = serde_json::from_str(data).ok()?;
-    let has_choice = value
-        .get("choices")
-        .and_then(Value::as_array)
-        .is_some_and(|items| !items.is_empty());
-    if has_choice || value.get("delta").is_some() {
+    // Empty choices and an empty delta are not a chunk. A top-level
+    // delta still counts when that delta has visible text.
+    if crate::completion::json_has_completion(&value) || crate::completion::choice_visible(&value) {
         return None;
     }
     if let Some(text) = value
@@ -1947,6 +1945,15 @@ base_url = "http://127.0.0.1"
         let msg =
             sse_wrapped_error_message(r#"{"choices":[{"delta":{"content":"hi"},"index":0}]}"#);
         assert!(msg.is_none(), "{msg:?}");
+    }
+
+    #[cfg(any(feature = "client", feature = "proxy"))]
+    #[test]
+    fn sse_wrapped_error_message_reads_empty_delta() {
+        let msg = sse_wrapped_error_message(
+            r#"{"choices":[{"delta":{}}],"error":{"message":"overloaded"}}"#,
+        );
+        assert_eq!(msg.as_deref(), Some("overloaded"));
     }
 
     #[cfg(feature = "proxy")]

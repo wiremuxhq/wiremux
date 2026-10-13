@@ -178,8 +178,11 @@ do not append. Locked by
 `messages_encode_appends_continue_on_custom_tool_call_last`.
 
 Messages `min_cacheable_tokens` uses `estimate_prompt_tokens`
-(`chars / 4`). The count includes image bytes, image URLs, document
-text and base64, and tool-result parts that Messages writes. It skips
+(`chars / 4`). The count includes image bytes, document text and
+base64, and tool-result parts that Messages writes. An image URL, a
+document URL, and a document file id count as at least 4096 characters
+(1024 tokens), because the string on the wire is a handle, not the
+billed bytes. A longer handle still counts its own length. It skips
 unsigned thinking (`unsigned thinking is not replayed`) and
 whitespace-only text parts. Audio stays uncounted. Hosted items and
 unknown raw JSON stay uncounted, so a short prompt is not treated as
@@ -283,6 +286,26 @@ completed. Do not call it just because the socket closed.
 `is_connect()` is suite-abort (never reached the host).
 `is_timeout()` and `is_reset()` are after connect; do not abort a
 probe suite. Display text is unchanged from 0.7.0.
+
+`decode_response` treats an empty Chat choice or an empty Gemini
+candidate as a vendor error when an `error` field is set and that
+slot has no text, refusal, audio, or tool call. A numeric `code` or
+`status` is part of the error text. A choice or candidate that
+already has that payload stays a completion. Messages
+`{"error":{"message":"..."}}` with no `type` and no content blocks
+is the same kind of error. Content blocks still win.
+
+A Converse HTTP 200 JSON exception (`__type` and `message`) is
+`ClientError::Vendor` with status 200 on `send` and on `stream`,
+not `ClientError::Map` and not an Event Stream CRC error.
+`ThrottlingException` is `ClientError::RateLimit`. An internal
+exception is `ClientError::Transient`. A Converse JSON completion
+(`output` and `stopReason`) on `stream` is decoded, including when
+the proxy is same-wire.
+
+A profile `chat_path` may carry a query. Gemini, Vertex Messages,
+and Converse streaming rewrites keep that query. Gemini appends
+`alt=sse` with `&` when a query is already present.
 
 `WireClient::from_profile` loads a catalog id (shipped `base_url`,
 `chat_path`, `auth_scheme`, `[headers]`, `[betas]`) and

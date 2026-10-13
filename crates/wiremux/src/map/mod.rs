@@ -599,7 +599,8 @@ fn hinted_pdf_uri_chars(raw: &Value) -> Option<usize> {
     let file = raw.get("fileData")?;
     let media = file.get("mimeType").and_then(Value::as_str).unwrap_or("");
     let uri = file.get("fileUri").and_then(Value::as_str).unwrap_or("");
-    (is_pdf_media_type(media) && !uri.is_empty()).then_some(uri.len())
+    (is_pdf_media_type(media) && !uri.is_empty())
+        .then_some(uri.len().max(messages::MESSAGES_REMOTE_SOURCE_CHARS))
 }
 
 fn inline_image_prompt_chars(raw: &Value) -> Option<usize> {
