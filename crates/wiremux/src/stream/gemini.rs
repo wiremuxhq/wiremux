@@ -55,6 +55,17 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                 detail,
             });
         }
+        if let Some(text) = value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            return Err(MapError::HardError {
+                path: "error".into(),
+                detail: text.to_string(),
+            });
+        }
         if let Some(ev) = usage_from_chunk(value) {
             return Ok(Some(ev));
         }
@@ -711,5 +722,25 @@ pub(super) fn encode_finish(reason: &str) -> &'static str {
         "content_filter" => "SAFETY",
         "tool_calls" => "STOP",
         _ => "STOP",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn string_error_without_candidate_is_an_error() {
+        let err = decode(&serde_json::json!({"error": "model catalog unavailable"}))
+            .expect_err("string error");
+        assert!(
+            err.to_string().contains("model catalog unavailable"),
+            "{err}"
+        );
+        let kept = decode(&serde_json::json!({
+            "candidates": [{"content": {"parts": [{"text": "Hi"}]}, "finishReason": "STOP"}]
+        }))
+        .expect("candidate");
+        assert!(kept.is_some(), "{kept:?}");
     }
 }

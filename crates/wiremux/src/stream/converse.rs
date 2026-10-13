@@ -8,6 +8,9 @@ use crate::map::MapError;
 use super::{MAX_CONTENT_BLOCK_INDEX, check_index};
 
 pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
+    if let Some(detail) = complete_exception_detail(value) {
+        return Err(MapError::Invalid(detail));
+    }
     if let Some(delta) = value.pointer("/contentBlockDelta/delta") {
         if let Some(text) = delta.get("text").and_then(Value::as_str) {
             return Ok(Some(IrStreamEvent::TextDelta {
@@ -833,6 +836,28 @@ fn finish_reason(reason: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exception_frame_is_an_error() {
+        let err = decode(&json!({
+            "__type": "ValidationException",
+            "message": "The provided model identifier is invalid."
+        }))
+        .expect_err("exception frame");
+        let text = err.to_string();
+        assert!(
+            text.contains("ValidationException") && text.contains("model identifier"),
+            "{text}"
+        );
+        let kept = decode(&json!({
+            "contentBlockDelta": { "delta": { "text": "Hi" } }
+        }))
+        .expect("text frame");
+        assert!(
+            matches!(kept, Some(IrStreamEvent::TextDelta { ref text }) if text == "Hi"),
+            "{kept:?}"
+        );
+    }
 
     #[test]
     fn converse_encode_finish_maps_chat_stop_and_tool_calls() {

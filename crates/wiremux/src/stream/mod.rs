@@ -1345,12 +1345,25 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
 
 /// Chat-shaped SSE `data` that is only an `error` object.
 ///
-/// `choices` or `delta` means a normal chunk, even if `error` is also set.
+/// A nonempty `choices` array, or a `delta`, is a normal chunk even if
+/// `error` is also set. An empty `choices` array is not visible text.
 #[cfg(any(feature = "client", feature = "proxy"))]
 pub(crate) fn sse_wrapped_error_message(data: &str) -> Option<String> {
     let value: Value = serde_json::from_str(data).ok()?;
-    if value.get("choices").is_some() || value.get("delta").is_some() {
+    let has_choice = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty());
+    if has_choice || value.get("delta").is_some() {
         return None;
+    }
+    if let Some(text) = value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return Some(text.to_string());
     }
     // Responses `event: error` is a flat object. Other wires nest `error`.
     let error = if let Some(error) = value.get("error").filter(|v| v.is_object()) {
@@ -1909,9 +1922,16 @@ base_url = "http://127.0.0.1"
 
     #[cfg(any(feature = "client", feature = "proxy"))]
     #[test]
-    fn sse_wrapped_error_message_ignores_error_when_choices_present() {
+    fn sse_wrapped_error_message_reads_error_when_choices_are_empty() {
         let msg = sse_wrapped_error_message(r#"{"choices":[],"error":{"message":"nope"}}"#);
-        assert!(msg.is_none(), "{msg:?}");
+        assert_eq!(msg.as_deref(), Some("nope"));
+    }
+
+    #[cfg(any(feature = "client", feature = "proxy"))]
+    #[test]
+    fn sse_wrapped_error_message_reads_string_error() {
+        let msg = sse_wrapped_error_message(r#"{"error":"model catalog unavailable"}"#);
+        assert_eq!(msg.as_deref(), Some("model catalog unavailable"));
     }
 
     #[cfg(any(feature = "client", feature = "proxy"))]
