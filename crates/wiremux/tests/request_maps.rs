@@ -11725,6 +11725,35 @@ fn converse_tool_result_json_blocks_round_trip() {
 }
 
 #[test]
+fn converse_tool_result_json_then_text_keeps_order() {
+    let req = br#"{
+      "messages": [{"role": "user", "content": [{
+        "toolResult": {
+          "toolUseId": "t1",
+          "content": [
+            {"json": {"a": 1}},
+            {"text": "note"}
+          ]
+        }
+      }]}]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/0/json/a"),
+        Some(&serde_json::json!(1)),
+        "json must stay before the text, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/1/text")
+            .and_then(Value::as_str),
+        Some("note"),
+        "text must stay after the json, got {body}"
+    );
+}
+
+#[test]
 fn converse_whitespace_only_assistant_text_with_tool_use_omits_blank_text() {
     let ir = IrRequest::new(
         "amazon.nova-lite-v1:0",

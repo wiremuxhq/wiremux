@@ -1514,7 +1514,9 @@ fn tool_result_block(
         content.push(json!({"type": "text", "text": text}));
     }
     for part in parts {
-        if matches!(part, IrPart::Raw { type_name, .. } if type_name == "json") {
+        if matches!(part, IrPart::Raw { type_name, .. } if type_name == "json")
+            || matches!(part, IrPart::Text(_))
+        {
             continue;
         }
         if let Some(encoded) = encode_part(part, report) {
