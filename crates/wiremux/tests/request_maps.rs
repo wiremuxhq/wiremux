@@ -9524,6 +9524,48 @@ fn converse_cache_point_round_trips() {
 }
 
 #[test]
+fn converse_guard_content_round_trips() {
+    let req = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"text": "Only answer with a list of songs."},
+                {"guardContent": {"text": {"text": "Create a playlist of heavy metal songs."}}}
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/1/guardContent/text/text")
+            .and_then(Value::as_str),
+        Some("Create a playlist of heavy metal songs."),
+        "guardContent must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("Only answer with a list of songs."),
+        "the unguarded text must stay, got {body}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("chat json");
+    assert!(
+        !chat.to_string().contains("guardContent"),
+        "Chat has no guardContent slot, got {chat}"
+    );
+    assert!(
+        chat_report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.to_lowercase().contains("raw")
+        }),
+        "Chat must record that the guard block was dropped, got {chat_report:?}"
+    );
+}
+
+#[test]
 fn converse_request_audio_s3_round_trips() {
     let req = br#"{
         "messages": [{
