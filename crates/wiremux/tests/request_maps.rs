@@ -2561,6 +2561,35 @@ fn responses_data_url_becomes_image_base64_for_gemini() {
 }
 
 #[test]
+fn responses_input_image_file_id_round_trips() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": [{
+            "role": "user",
+            "content": [{
+                "type": "input_image",
+                "file_id": "file_abc"
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/input/0/content/0/type")
+            .and_then(serde_json::Value::as_str),
+        Some("input_image"),
+        "file id image must stay an input_image, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/input/0/content/0/file_id")
+            .and_then(serde_json::Value::as_str),
+        Some("file_abc"),
+        "file id must round-trip, got {body}"
+    );
+}
+
+#[test]
 fn gemini_https_image_url_degrades_to_text_placeholder() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",
@@ -2571,6 +2600,7 @@ fn gemini_https_image_url_degrades_to_text_placeholder() {
                     url: "https://example.com/cat.png".into(),
                     detail: None,
                     bucket_owner: None,
+                    file_id: None,
                 },
             ],
         }],
@@ -3487,6 +3517,7 @@ fn short_image_and_document_urls_meet_min_cacheable_tokens() {
             url: "https://cdn.example/a.png".into(),
             detail: None,
             bucket_owner: None,
+            file_id: None,
         }],
     }]);
     assert!(
@@ -3545,6 +3576,7 @@ fn large_image_url_at_min_cacheable_tokens_still_tags() {
             url: url.clone(),
             detail: Some("high".into()),
             bucket_owner: None,
+            file_id: None,
         }],
     }]);
     assert!(

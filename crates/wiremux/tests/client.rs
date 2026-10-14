@@ -125,6 +125,7 @@ fn image_detail_ir(model: &str, url: &str) -> IrRequest {
                 url: url.into(),
                 detail: Some("high".into()),
                 bucket_owner: None,
+                file_id: None,
             }],
         }],
     )

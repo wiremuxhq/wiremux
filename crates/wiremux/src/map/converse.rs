@@ -471,6 +471,7 @@ fn decode_image(image: &Value) -> Option<IrPart> {
             url: uri.to_string(),
             detail: None,
             bucket_owner,
+            file_id: None,
         });
     }
     None
@@ -877,7 +878,15 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                             url,
                             detail,
                             bucket_owner,
+                            file_id,
                         } => {
+                            if super::drop_image_file_id_without_url(
+                                url,
+                                file_id.as_deref(),
+                                report,
+                            ) {
+                                continue;
+                            }
                             super::note_dropped_image_detail(detail.as_deref(), "converse", report);
                             if let Some(block) =
                                 encode_image_url(url, bucket_owner.as_deref(), report)
@@ -1060,7 +1069,11 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             url,
             detail,
             bucket_owner,
+            file_id,
         } => {
+            if super::drop_image_file_id_without_url(url, file_id.as_deref(), report) {
+                return None;
+            }
             super::note_dropped_image_detail(detail.as_deref(), "converse", report);
             encode_image_url(url, bucket_owner.as_deref(), report)
         }

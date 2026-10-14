@@ -217,6 +217,7 @@ fn decode_image(block: &Value) -> Option<IrPart> {
             url,
             detail: None,
             bucket_owner: None,
+            file_id: None,
         }),
         Some("base64") => Some(IrPart::ImageBase64 {
             media_type: str_field(source, "media_type").unwrap_or_else(|| "image/png".into()),
@@ -226,6 +227,7 @@ fn decode_image(block: &Value) -> Option<IrPart> {
             url,
             detail: None,
             bucket_owner: None,
+            file_id: None,
         }),
     }
 }
@@ -970,7 +972,11 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             url,
             detail,
             bucket_owner: _,
+            file_id,
         } => {
+            if super::drop_image_file_id_without_url(url, file_id.as_deref(), report) {
+                return None;
+            }
             super::note_dropped_image_detail(detail.as_deref(), "messages", report);
             Some(json!({
                 "type": "image",
@@ -1142,7 +1148,13 @@ fn messages_part_chars(part: &IrPart) -> usize {
     match part {
         IrPart::Text(text) if text.trim().is_empty() => 0,
         IrPart::Text(text) => text.len(),
-        IrPart::ImageUrl { url, .. } => url.len().max(MESSAGES_REMOTE_SOURCE_CHARS),
+        IrPart::ImageUrl { url, file_id, .. } => {
+            if super::image_file_id_without_url(url, file_id.as_deref()) {
+                0
+            } else {
+                url.len().max(MESSAGES_REMOTE_SOURCE_CHARS)
+            }
+        }
         IrPart::ImageBase64 { data, .. } => data.len(),
         IrPart::Document {
             source,

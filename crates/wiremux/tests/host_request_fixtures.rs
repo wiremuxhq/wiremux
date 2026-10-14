@@ -177,11 +177,13 @@ fn gemini_images_and_thought_signatures_replay_on_the_next_request() {
                         url: "https://example.com/photo.png".into(),
                         detail: None,
                         bucket_owner: None,
+                        file_id: None,
                     },
                     IrPart::ImageUrl {
                         url: "see the notes".into(),
                         detail: None,
                         bucket_owner: None,
+                        file_id: None,
                     },
                 ],
             }],
@@ -364,6 +366,7 @@ fn chat_request_fixtures_match_host_encode() {
                         url: "https://example.com/img.png".into(),
                         detail: None,
                         bucket_owner: None,
+                        file_id: None,
                     },
                     IrPart::ImageBase64 {
                         media_type: "image/jpeg".into(),
@@ -566,6 +569,7 @@ fn responses_input_item_fixtures() {
                         url: "https://example.com/img.png".into(),
                         detail: None,
                         bucket_owner: None,
+                        file_id: None,
                     },
                     IrPart::ImageBase64 {
                         media_type: "image/png".into(),
