@@ -352,6 +352,11 @@ pub enum IrItem {
     System {
         text: String,
     },
+    /// Converse system `cachePoint`. Other wires drop it.
+    /// It stays between the system texts that surround it.
+    SystemCache {
+        raw: serde_json::Value,
+    },
     /// Chat Completions `developer` degrades to this on Messages.
     Developer {
         text: String,

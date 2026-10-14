@@ -573,6 +573,14 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 system_blocks.push(text_block(text, false, None));
                 idx += 1;
             }
+            IrItem::SystemCache { .. } => {
+                report.record(
+                    format!("items[{idx}]"),
+                    LossAction::Drop,
+                    "system cache point has no slot",
+                );
+                idx += 1;
+            }
             IrItem::Developer { text } => {
                 report.record(
                     format!("items[{idx}]"),
@@ -1066,6 +1074,7 @@ pub(crate) fn cache_floor_tokens(req: &IrRequest) -> u32 {
     for item in &req.items {
         match item {
             IrItem::System { text } | IrItem::Developer { text } => chars += text.len(),
+            IrItem::SystemCache { .. } => {}
             IrItem::User { parts } | IrItem::Assistant { parts, .. } => {
                 chars += parts.iter().map(messages_part_chars).sum::<usize>();
             }

@@ -9566,6 +9566,80 @@ fn converse_guard_content_round_trips() {
 }
 
 #[test]
+fn converse_system_cache_point_round_trips() {
+    let req = br#"{
+        "system": [
+            {"text": "Be brief."},
+            {"cachePoint": {"type": "default", "ttl": "5m"}},
+            {"text": "Use lists."}
+        ],
+        "messages": [{
+            "role": "user",
+            "content": [{"text": "Hi"}]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/system/0/text").and_then(Value::as_str),
+        Some("Be brief."),
+        "first system text must stay first, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/system/1/cachePoint/type")
+            .and_then(Value::as_str),
+        Some("default"),
+        "system cachePoint must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/system/1/cachePoint/ttl")
+            .and_then(Value::as_str),
+        Some("5m"),
+        "system cachePoint ttl must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/system/2/text").and_then(Value::as_str),
+        Some("Use lists."),
+        "text after the cache point must stay after it, got {body}"
+    );
+
+    let text_only = br#"{
+        "system": [{"text": "Be brief."}],
+        "messages": [{"role": "user", "content": [{"text": "Hi"}]}]
+    }"#;
+    let (ir_only, _) = decode(Wire::Converse, text_only).expect("decode text");
+    let (only_bytes, _) =
+        encode(Wire::Converse, &ir_only, &converse_profile()).expect("encode text");
+    let only: Value = serde_json::from_slice(&only_bytes).expect("json text");
+    assert_eq!(
+        only.pointer("/system/0/text").and_then(Value::as_str),
+        Some("Be brief."),
+        "text-only system must stay text, got {only}"
+    );
+    assert!(
+        only["system"]
+            .as_array()
+            .is_some_and(|blocks| blocks.iter().all(|block| block.get("cachePoint").is_none())),
+        "text-only system must not gain a cachePoint, got {only}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("chat json");
+    assert!(
+        !chat.to_string().contains("cachePoint"),
+        "Chat has no system cachePoint slot, got {chat}"
+    );
+    assert!(
+        chat_report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.to_lowercase().contains("cache")
+        }),
+        "Chat must record that the system cache point was dropped, got {chat_report:?}"
+    );
+}
+
+#[test]
 fn converse_request_audio_s3_round_trips() {
     let req = br#"{
         "messages": [{

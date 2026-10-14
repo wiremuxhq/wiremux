@@ -520,6 +520,13 @@ fn encode_items(
                 }
                 instructions.push(text.clone());
             }
+            IrItem::SystemCache { .. } => {
+                report.record(
+                    format!("items[{idx}]"),
+                    LossAction::Drop,
+                    "system cache point has no slot",
+                );
+            }
             IrItem::Developer { text } => {
                 report.record(
                     format!("items[{idx}]"),
