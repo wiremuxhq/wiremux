@@ -1207,6 +1207,16 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 out.push(json!({ "text": data }));
             }
             IrPart::Document {
+                source: IrDocumentSource::S3 { .. },
+                ..
+            } => {
+                report.record(
+                    "part.document",
+                    LossAction::Drop,
+                    "S3 document has no Gemini slot",
+                );
+            }
+            IrPart::Document {
                 source, media_type, ..
             } => out.push(encode_document(source, media_type)),
             IrPart::Audio { data, format } => {

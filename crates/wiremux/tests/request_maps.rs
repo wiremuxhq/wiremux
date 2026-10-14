@@ -10356,6 +10356,50 @@ fn converse_document_s3_bucket_owner_round_trips() {
 }
 
 #[test]
+fn converse_document_s3_is_not_sent_as_a_foreign_url() {
+    let req = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"text": "Read this."},
+                {"document": {
+                    "format": "pdf",
+                    "name": "report",
+                    "source": {
+                        "s3Location": {
+                            "uri": "s3://bucket/a.pdf",
+                            "bucketOwner": "111122223333"
+                        }
+                    }
+                }}
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    for (wire, profile, label) in [
+        (Wire::Responses, hard_error_profile(), "Responses"),
+        (Wire::Messages, messages_profile(), "Messages"),
+        (Wire::Gemini, gemini_profile(), "Gemini"),
+    ] {
+        let (bytes, report) = encode(wire, &ir, &profile).expect(label);
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        let text = body.to_string();
+        assert!(
+            !text.contains("s3://bucket/a.pdf") && !text.contains("111122223333"),
+            "{label} must not send the S3 document or account id, got {body}"
+        );
+        assert!(
+            text.contains("Read this."),
+            "{label} must keep the text part, got {body}"
+        );
+        assert!(
+            loss_dropped(&report, "part.document"),
+            "{label} must record that the S3 document has no slot, got {report:?}"
+        );
+    }
+}
+
+#[test]
 fn converse_image_s3_bucket_owner_round_trips() {
     let req = br#"{
         "messages": [{
