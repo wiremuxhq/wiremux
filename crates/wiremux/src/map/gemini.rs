@@ -1116,13 +1116,27 @@ fn encode_prepared_tools(prepared: &[PreparedTool], report: &mut LossReport) -> 
     tools
 }
 
-fn is_gemini_hosted_raw(raw: &Value) -> bool {
-    let Some(obj) = raw.as_object() else {
+const GEMINI_BUILTIN_TOOL_KEYS: &[&str] = &[
+    "googleSearch",
+    "codeExecution",
+    "googleSearchRetrieval",
+    "urlContext",
+    "googleMaps",
+    "enterpriseWebSearch",
+    "computerUse",
+];
+
+fn is_gemini_builtin_tool(value: &Value) -> bool {
+    let Some(obj) = value.as_object() else {
         return false;
     };
-    obj.contains_key("googleSearch")
-        || obj.contains_key("codeExecution")
-        || obj.contains_key("googleSearchRetrieval")
+    GEMINI_BUILTIN_TOOL_KEYS
+        .iter()
+        .any(|key| obj.contains_key(*key))
+}
+
+fn is_gemini_hosted_raw(raw: &Value) -> bool {
+    is_gemini_builtin_tool(raw)
 }
 
 fn push_encoded_turn(
@@ -1615,11 +1629,7 @@ fn keep_mixed_builtin_tool_flag(body: &mut Value, report: &mut LossReport) {
             .and_then(Value::as_array)
             .is_some_and(|items| !items.is_empty())
     });
-    let has_builtin = tools.iter().any(|tool| {
-        tool.get("googleSearch").is_some()
-            || tool.get("codeExecution").is_some()
-            || tool.get("googleSearchRetrieval").is_some()
-    });
+    let has_builtin = tools.iter().any(is_gemini_builtin_tool);
     if !has_functions || !has_builtin {
         return;
     }
