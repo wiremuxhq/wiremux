@@ -101,13 +101,27 @@ fn decode_function_output(item: &Value) -> IrItem {
     let call_id = str_field(item, "call_id").unwrap_or_default();
     let (output, parts) = match item.get("output") {
         Some(Value::Array(arr)) => {
-            let decoded: Vec<IrPart> = arr.iter().filter_map(decode_part).collect();
-            let text = parts_text(&decoded);
-            let parts = decoded
-                .into_iter()
-                .filter(|part| !matches!(part, IrPart::Text(_)))
+            let decoded: Vec<IrPart> = arr
+                .iter()
+                .filter_map(decode_part)
+                .filter(|part| !matches!(part, IrPart::Text(text) if text.is_empty()))
                 .collect();
-            (text, parts)
+            // Text beside an image or file must stay in part order. Text-only
+            // results stay one string.
+            let keep_text_in_order = decoded.iter().any(|part| !matches!(part, IrPart::Text(_)));
+            if keep_text_in_order {
+                (String::new(), decoded)
+            } else {
+                let text = decoded
+                    .into_iter()
+                    .filter_map(|part| match part {
+                        IrPart::Text(text) => Some(text),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                (text, Vec::new())
+            }
         }
         Some(other) => (value_as_string(other), Vec::new()),
         None => (String::new(), Vec::new()),
@@ -876,7 +890,14 @@ fn encode_function_output(
             "no slot",
         );
     }
-    let text = super::function_output_text(output, parts);
+    let ordered_text = parts
+        .iter()
+        .any(|part| matches!(part, IrPart::Text(text) if !text.is_empty()));
+    let text = if ordered_text {
+        String::new()
+    } else {
+        super::function_output_text(output, parts)
+    };
     let mut content = Vec::new();
     if !text.is_empty() {
         content.push(json!({"type": "input_text", "text": text}));
@@ -884,6 +905,10 @@ fn encode_function_output(
     let mut kept_structured = false;
     for part in parts {
         match part {
+            IrPart::Text(text) if ordered_text && !text.is_empty() => {
+                content.push(json!({"type": "input_text", "text": text}));
+                kept_structured = true;
+            }
             IrPart::Text(_) => {}
             IrPart::ImageUrl {
                 url,
@@ -914,6 +939,10 @@ fn encode_function_output(
                     "input_text",
                     report,
                 ));
+                kept_structured = true;
+            }
+            IrPart::Raw { type_name, raw } if type_name == "json" && ordered_text => {
+                content.push(json!({"type": "input_text", "text": raw.to_string()}));
                 kept_structured = true;
             }
             IrPart::Raw { type_name, .. } if type_name == "json" => {}

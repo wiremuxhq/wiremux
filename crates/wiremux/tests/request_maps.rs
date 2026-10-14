@@ -8764,6 +8764,72 @@ fn responses_function_output_keeps_input_file_same_wire() {
 }
 
 #[test]
+fn messages_tool_result_image_then_text_keeps_order() {
+    let req = br#"{
+        "model": "claude-opus-4-6",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}
+                    },
+                    {"type": "text", "text": "see this"}
+                ]
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/content/0/type")
+            .and_then(Value::as_str),
+        Some("image"),
+        "image must stay before the text, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/content/1/text")
+            .and_then(Value::as_str),
+        Some("see this"),
+        "text must stay after the image, got {body}"
+    );
+}
+
+#[test]
+fn responses_function_output_image_then_text_keeps_order() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": [{
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": [
+                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                {"type": "input_text", "text": "see this"}
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/input/0/output/0/type")
+            .and_then(Value::as_str),
+        Some("input_image"),
+        "image must stay before the text, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/input/0/output/1/text")
+            .and_then(Value::as_str),
+        Some("see this"),
+        "text must stay after the image, got {body}"
+    );
+}
+
+#[test]
 fn messages_text_document_to_converse_keeps_text() {
     let req = br#"{
         "model": "claude-sonnet-4-5",
@@ -11750,6 +11816,36 @@ fn converse_tool_result_json_then_text_keeps_order() {
             .and_then(Value::as_str),
         Some("note"),
         "text must stay after the json, got {body}"
+    );
+}
+
+#[test]
+fn converse_tool_result_image_then_text_keeps_order() {
+    let req = br#"{
+      "messages": [{"role": "user", "content": [{
+        "toolResult": {
+          "toolUseId": "t1",
+          "content": [
+            {"image": {"format": "png", "source": {"bytes": "AAAA"}}},
+            {"text": "see this"}
+          ]
+        }
+      }]}]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/0/image/source/bytes")
+            .and_then(Value::as_str),
+        Some("AAAA"),
+        "image must stay before the text, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/1/text")
+            .and_then(Value::as_str),
+        Some("see this"),
+        "text must stay after the image, got {body}"
     );
 }
 
