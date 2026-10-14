@@ -11660,40 +11660,67 @@ fn converse_decode_tool_result_json_round_trips_nonempty() {
       ]
     }"#;
     let (ir, _) = decode(Wire::Converse, req).expect("decode json toolResult");
-    let output = ir.items.iter().find_map(|item| match item {
-        IrItem::FunctionOutput {
-            call_id, output, ..
-        } if call_id == "t1" => Some(output.as_str()),
-        _ => None,
+    let kept = ir.items.iter().any(|item| {
+        matches!(
+            item,
+            IrItem::FunctionOutput { call_id, parts, .. }
+                if call_id == "t1"
+                    && parts.iter().any(|part| matches!(
+                        part,
+                        IrPart::Raw { type_name, raw }
+                            if type_name == "json" && raw.get("ok") == Some(&serde_json::json!(true))
+                    ))
+        )
     });
-    let output = output.expect("FunctionOutput t1");
     assert!(
-        !output.is_empty(),
-        "json toolResult must not decode to empty string, got {output:?}"
-    );
-    assert_eq!(
-        output, r#"{"n":1,"ok":true}"#,
-        "json toolResult must keep the object, got {output:?}"
+        kept,
+        "json toolResult must stay a json block, got {:?}",
+        ir.items
     );
     let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
-    let arr = body
-        .pointer("/messages/0/content/0/toolResult/content")
-        .and_then(Value::as_array)
-        .expect("toolResult content");
-    assert!(
-        !arr.is_empty(),
-        "re-encode must keep toolResult content, got {body}"
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/0/json/ok"),
+        Some(&serde_json::json!(true)),
+        "json toolResult must round-trip, got {body}"
     );
-    let lost = arr.iter().all(|p| {
-        p.get("text")
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-            && p.get("json").is_none()
-    });
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/0/json/n"),
+        Some(&serde_json::json!(1)),
+        "json toolResult number must round-trip, got {body}"
+    );
+}
+
+#[test]
+fn converse_tool_result_json_blocks_round_trip() {
+    let req = br#"{
+      "messages": [{"role": "user", "content": [{
+        "toolResult": {
+          "toolUseId": "t1",
+          "content": [
+            {"json": {"a": 1}},
+            {"json": {"b": 2}}
+          ]
+        }
+      }]}]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/0/json/a"),
+        Some(&serde_json::json!(1)),
+        "first json block must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/1/json/b"),
+        Some(&serde_json::json!(2)),
+        "second json block must round-trip, got {body}"
+    );
+    let glued = body.to_string();
     assert!(
-        !lost,
-        "re-encode must not be empty text-only loss, got {body}"
+        !glued.contains("}{"),
+        "json blocks must not be glued into one string, got {body}"
     );
 }
 

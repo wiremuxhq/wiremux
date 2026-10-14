@@ -1148,6 +1148,7 @@ fn messages_part_chars(part: &IrPart) -> usize {
                 0
             }
         }
+        IrPart::Raw { type_name, raw } if type_name == "json" => raw.to_string().len(),
         IrPart::Raw { .. } => super::raw_prompt_chars(part),
     }
 }
@@ -1503,15 +1504,19 @@ fn tool_result_block(
     if is_error {
         block["is_error"] = json!(true);
     }
+    let text = super::function_output_text(output, parts);
     if parts.is_empty() {
-        block["content"] = json!(output);
+        block["content"] = json!(text);
         return block;
     }
     let mut content = Vec::new();
-    if !output.is_empty() {
-        content.push(json!({"type": "text", "text": output}));
+    if !text.is_empty() {
+        content.push(json!({"type": "text", "text": text}));
     }
     for part in parts {
+        if matches!(part, IrPart::Raw { type_name, .. } if type_name == "json") {
+            continue;
+        }
         if let Some(encoded) = encode_part(part, report) {
             content.push(encoded);
         }

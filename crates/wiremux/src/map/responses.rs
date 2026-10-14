@@ -876,9 +876,10 @@ fn encode_function_output(
             "no slot",
         );
     }
+    let text = super::function_output_text(output, parts);
     let mut content = Vec::new();
-    if !output.is_empty() {
-        content.push(json!({"type": "input_text", "text": output}));
+    if !text.is_empty() {
+        content.push(json!({"type": "input_text", "text": text}));
     }
     let mut kept_structured = false;
     for part in parts {
@@ -915,6 +916,7 @@ fn encode_function_output(
                 ));
                 kept_structured = true;
             }
+            IrPart::Raw { type_name, .. } if type_name == "json" => {}
             IrPart::Raw { .. } => {
                 if let Some((media_type, data)) = super::function_response_image(part) {
                     content.push(json!({

@@ -528,7 +528,7 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call_id,
-                    "content": output,
+                    "content": super::function_output_text(output, parts),
                 }));
                 idx += 1;
             }

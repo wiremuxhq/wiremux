@@ -550,6 +550,26 @@ fn function_response_mime_allowed(mime: &str) -> bool {
 
 /// Image bytes inside a function result, including a Gemini part that
 /// kept `displayName` as raw `inlineData`.
+/// Text other wires can show for a tool result. JSON blocks stay structured
+/// on Converse and become text here.
+pub(super) fn function_output_text(output: &str, parts: &[IrPart]) -> String {
+    let mut text = String::new();
+    if !output.is_empty() {
+        text.push_str(output);
+    }
+    for part in parts {
+        if let IrPart::Raw { type_name, raw } = part
+            && type_name == "json"
+        {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&raw.to_string());
+        }
+    }
+    text
+}
+
 pub(super) fn function_response_image(part: &IrPart) -> Option<(String, String)> {
     let inline = function_response_inline(part)?;
     inline

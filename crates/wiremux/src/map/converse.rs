@@ -314,7 +314,11 @@ fn tool_result_output(result: &Value) -> (String, Vec<IrPart>) {
                         return None;
                     }
                     if let Some(v) = p.get("json") {
-                        Some(v.to_string())
+                        parts.push(IrPart::Raw {
+                            type_name: "json".into(),
+                            raw: v.clone(),
+                        });
+                        None
                     } else {
                         p.get("text").and_then(Value::as_str).map(str::to_string)
                     }
@@ -827,7 +831,9 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                     ) || matches!(
                         part,
                         IrPart::Raw { type_name, .. }
-                            if type_name == "video" || type_name == "searchResult"
+                            if type_name == "video"
+                                || type_name == "searchResult"
+                                || type_name == "json"
                     ) || super::function_response_image(part).is_some()
                 });
                 let text = if output.trim().is_empty() && !has_media {
@@ -891,6 +897,9 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                             if type_name == "searchResult" && raw.is_object() =>
                         {
                             content.push(json!({ "searchResult": raw }));
+                        }
+                        IrPart::Raw { type_name, raw } if type_name == "json" => {
+                            content.push(json!({ "json": raw }));
                         }
                         IrPart::Raw { .. } => {
                             if let Some((media_type, data)) = super::function_response_image(part) {
