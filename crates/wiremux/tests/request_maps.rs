@@ -9481,6 +9481,49 @@ fn converse_request_video_round_trips() {
 }
 
 #[test]
+fn converse_cache_point_round_trips() {
+    let req = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"text": "Remember this prefix."},
+                {"cachePoint": {"type": "default"}}
+            ]
+        }]
+    }"#;
+    let (ir, report) = decode(Wire::Converse, req).expect("decode");
+    assert!(
+        !report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.to_lowercase().contains("cache")
+        }),
+        "same-wire cachePoint must not be dropped, got {report:?}"
+    );
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/1/cachePoint/type")
+            .and_then(Value::as_str),
+        Some("default"),
+        "cachePoint must round-trip, got {body}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("chat json");
+    let chat_text = chat.to_string();
+    assert!(
+        !chat_text.contains("cachePoint"),
+        "Chat has no cachePoint slot, got {chat}"
+    );
+    assert!(
+        chat_report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.to_lowercase().contains("raw")
+        }),
+        "Chat must record that the cache point was dropped, got {chat_report:?}"
+    );
+}
+
+#[test]
 fn converse_request_audio_s3_round_trips() {
     let req = br#"{
         "messages": [{
