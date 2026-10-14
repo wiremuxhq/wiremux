@@ -561,21 +561,40 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
             }
             IrItem::Assistant { parts, phase } => {
                 super::drop_assistant_phase(phase, &format!("items[{idx}].phase"), report);
-                let blocks: Vec<Value> = parts
+                let encoded: Vec<Value> = parts
                     .iter()
                     .filter_map(|p| encode_part(p, report))
                     .collect();
-                if blocks.is_empty() {
-                    continue;
+                let mut blocks = Vec::new();
+                let mut media = Vec::new();
+                for block in encoded {
+                    if block.get("document").is_some() || block.get("image").is_some() {
+                        media.push(block);
+                    } else {
+                        blocks.push(block);
+                    }
                 }
-                if let Some(last) = messages.last_mut()
-                    && last.get("role").and_then(Value::as_str) == Some("assistant")
-                    && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)
-                {
-                    arr.extend(blocks);
-                    continue;
+                if !media.is_empty() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "document and image blocks moved to a user turn",
+                    );
                 }
-                messages.push(json!({ "role": "assistant", "content": blocks }));
+                if !blocks.is_empty() {
+                    if let Some(last) = messages.last_mut()
+                        && last.get("role").and_then(Value::as_str) == Some("assistant")
+                        && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)
+                    {
+                        arr.extend(blocks);
+                    } else {
+                        messages.push(json!({ "role": "assistant", "content": blocks }));
+                    }
+                }
+                if !media.is_empty() {
+                    ensure_document_text(&mut media, report);
+                    messages.push(json!({ "role": "user", "content": media }));
+                }
             }
             IrItem::FunctionCall {
                 call_id,

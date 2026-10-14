@@ -9314,6 +9314,66 @@ fn converse_document_only_message_includes_a_text_prompt() {
 }
 
 #[test]
+fn converse_assistant_document_moves_to_a_user_turn() {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::Assistant {
+            parts: vec![
+                IrPart::Text("I read it.".into()),
+                IrPart::Document {
+                    source: IrDocumentSource::Base64("AAAA".into()),
+                    media_type: "application/pdf".into(),
+                    name: Some("report".into()),
+                    citations_enabled: None,
+                    context: None,
+                },
+            ],
+            phase: None,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    assert_eq!(
+        messages
+            .first()
+            .and_then(|m| m.get("role"))
+            .and_then(Value::as_str),
+        Some("assistant"),
+        "assistant text stays on the assistant turn, got {body}"
+    );
+    assert!(
+        messages.first().is_some_and(|m| {
+            m.get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|blocks| blocks.iter().all(|b| b.get("document").is_none()))
+        }),
+        "assistant turn must not carry a document, got {body}"
+    );
+    assert!(
+        messages.iter().any(|m| {
+            m.get("role").and_then(Value::as_str) == Some("user")
+                && m.get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|blocks| {
+                        blocks.iter().any(|b| b.get("document").is_some())
+                            && blocks.iter().any(|b| b.get("text").is_some())
+                    })
+        }),
+        "document must move to a user turn with a text prompt, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Degrade && event.detail.contains("user turn")
+        }),
+        "moved document must be a degrade, got {report:?}"
+    );
+}
+
+#[test]
 fn converse_document_file_id_records_loss() {
     let ir = IrRequest::new(
         "amazon.nova-lite-v1:0",
