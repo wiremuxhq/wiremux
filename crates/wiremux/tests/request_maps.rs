@@ -3216,6 +3216,52 @@ tool_type_policy = "passthrough"
     );
 }
 
+#[test]
+fn gemini_builtin_tools_round_trip() {
+    let passthrough = profile(
+        r#"
+schema_version = 1
+id = "test-gemini-builtin-tools"
+wire = "gemini"
+tool_type_policy = "passthrough"
+"#,
+    );
+    for key in ["googleMaps", "enterpriseWebSearch", "computerUse"] {
+        let bytes = format!(
+            r#"{{
+                "model": "gemini-2.5-flash",
+                "contents": [{{"role": "user", "parts": [{{"text": "go"}}]}}],
+                "tools": [{{"{key}": {{}}}}]
+            }}"#
+        );
+        let (ir, _) = decode(Wire::Gemini, bytes.as_bytes()).expect("decode");
+        let (out, report) = encode(Wire::Gemini, &ir, &passthrough).expect("encode");
+        let body: Value = serde_json::from_slice(&out).expect("json");
+        assert!(
+            body.get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|tools| { tools.iter().any(|tool| tool.get(key).is_some()) }),
+            "{key} must stay on the Gemini request, got {body} report={report:?}"
+        );
+    }
+    let mixed = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "go"}]}],
+        "tools": [
+            {"functionDeclarations": [{"name": "lookup", "parameters": {"type": "object"}}]},
+            {"googleMaps": {}}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, mixed).expect("decode mixed");
+    let (out, _) = encode(Wire::Gemini, &ir, &passthrough).expect("encode mixed");
+    let body: Value = serde_json::from_slice(&out).expect("json mixed");
+    assert_eq!(
+        body.pointer("/toolConfig/includeServerSideToolInvocations"),
+        Some(&Value::Bool(true)),
+        "googleMaps beside a function must set the builtin flag, got {body}"
+    );
+}
+
 fn count_cache_control(value: &Value) -> usize {
     match value {
         Value::Object(map) => {
