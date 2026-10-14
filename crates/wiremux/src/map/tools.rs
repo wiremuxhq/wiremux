@@ -156,6 +156,13 @@ pub(super) fn prepare_tools(
             IrTool::Hosted { kind, raw } => {
                 push_hosted(&mut out, kind, raw, &path, policy, wire, report)?;
             }
+            IrTool::CachePoint { raw } => {
+                if wire == Wire::Converse {
+                    out.push(PreparedTool::Raw(json!({ "cachePoint": raw })));
+                } else {
+                    report.record(path, LossAction::Drop, "tool cache point has no slot");
+                }
+            }
             IrTool::Unknown { type_name, raw } if type_name == "custom" => {
                 push_custom_tool(&mut out, raw, &path, wire, case, report)?;
             }

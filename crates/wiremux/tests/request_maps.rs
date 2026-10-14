@@ -9697,6 +9697,90 @@ fn converse_system_guard_content_round_trips() {
 }
 
 #[test]
+fn converse_tool_cache_point_round_trips() {
+    let req = br#"{
+        "messages": [{"role": "user", "content": [{"text": "Hi"}]}],
+        "toolConfig": {
+            "tools": [
+                {"toolSpec": {
+                    "name": "lookup",
+                    "description": "Look up",
+                    "inputSchema": {"json": {"type": "object"}}
+                }},
+                {"cachePoint": {"type": "default", "ttl": "5m"}},
+                {"toolSpec": {
+                    "name": "search",
+                    "description": "Search",
+                    "inputSchema": {"json": {"type": "object"}}
+                }}
+            ]
+        }
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/toolConfig/tools/0/toolSpec/name")
+            .and_then(Value::as_str),
+        Some("lookup"),
+        "first tool must stay first, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/toolConfig/tools/1/cachePoint/type")
+            .and_then(Value::as_str),
+        Some("default"),
+        "tool cachePoint must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/toolConfig/tools/1/cachePoint/ttl")
+            .and_then(Value::as_str),
+        Some("5m"),
+        "tool cachePoint ttl must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/toolConfig/tools/2/toolSpec/name")
+            .and_then(Value::as_str),
+        Some("search"),
+        "tool after the cache point must stay after it, got {body}"
+    );
+
+    let specs_only = br#"{
+        "messages": [{"role": "user", "content": [{"text": "Hi"}]}],
+        "toolConfig": {
+            "tools": [{"toolSpec": {
+                "name": "lookup",
+                "description": "Look up",
+                "inputSchema": {"json": {"type": "object"}}
+            }}]
+        }
+    }"#;
+    let (ir_only, _) = decode(Wire::Converse, specs_only).expect("decode specs");
+    let (only_bytes, _) =
+        encode(Wire::Converse, &ir_only, &converse_profile()).expect("encode specs");
+    let only: Value = serde_json::from_slice(&only_bytes).expect("json specs");
+    assert!(
+        only.pointer("/toolConfig/tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| tools.iter().all(|tool| tool.get("cachePoint").is_none())),
+        "tool specs must not gain a cachePoint, got {only}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("chat json");
+    assert!(
+        !chat.to_string().contains("cachePoint"),
+        "Chat has no tool cachePoint slot, got {chat}"
+    );
+    assert!(
+        chat_report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.to_lowercase().contains("cache")
+        }),
+        "Chat must record that the tool cache point was dropped, got {chat_report:?}"
+    );
+}
+
+#[test]
 fn converse_request_audio_s3_round_trips() {
     let req = br#"{
         "messages": [{
