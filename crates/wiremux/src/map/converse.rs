@@ -552,8 +552,11 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                         );
                     }
                     arr.extend(blocks);
+                    ensure_document_text(arr, report);
                     continue;
                 }
+                let mut blocks = blocks;
+                ensure_document_text(&mut blocks, report);
                 messages.push(json!({ "role": "user", "content": blocks }));
             }
             IrItem::Assistant { parts, phase } => {
@@ -900,6 +903,20 @@ fn converse_document_name(name: Option<&str>, report: &mut LossReport) -> String
         );
     }
     cleaned
+}
+
+/// Converse rejects a user message that has a document and no text block.
+fn ensure_document_text(blocks: &mut Vec<Value>, report: &mut LossReport) {
+    let has_document = blocks.iter().any(|block| block.get("document").is_some());
+    let has_text = blocks.iter().any(|block| block.get("text").is_some());
+    if has_document && !has_text {
+        report.record(
+            "part.document",
+            LossAction::Degrade,
+            "document needs a text prompt",
+        );
+        blocks.push(json!({ "text": "See the attached document." }));
+    }
 }
 
 fn encode_document(

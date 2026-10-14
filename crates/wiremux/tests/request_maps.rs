@@ -9278,6 +9278,42 @@ fn converse_document_name_matches_bedrock_rules() {
 }
 
 #[test]
+fn converse_document_only_message_includes_a_text_prompt() {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::User {
+            parts: vec![IrPart::Document {
+                source: IrDocumentSource::Base64("AAAA".into()),
+                media_type: "application/pdf".into(),
+                name: Some("report".into()),
+                citations_enabled: None,
+                context: None,
+            }],
+        }],
+    );
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("content");
+    assert!(
+        content.iter().any(|block| block.get("document").is_some()),
+        "document must stay, got {body}"
+    );
+    assert!(
+        content.iter().any(|block| block.get("text").is_some()),
+        "Bedrock rejects a document with no text prompt, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Degrade && event.detail.contains("text prompt")
+        }),
+        "added prompt must be a degrade, got {report:?}"
+    );
+}
+
+#[test]
 fn converse_document_file_id_records_loss() {
     let ir = IrRequest::new(
         "amazon.nova-lite-v1:0",
