@@ -332,6 +332,16 @@ fn decode_part(block: &Value) -> Option<IrPart> {
             signature,
         });
     }
+    if let Some(blob) = block
+        .pointer("/reasoningContent/redactedContent")
+        .and_then(Value::as_str)
+        .filter(|blob| !blob.is_empty())
+    {
+        return Some(IrPart::Raw {
+            type_name: "redactedContent".into(),
+            raw: Value::String(blob.to_string()),
+        });
+    }
     if let Some(doc) = block.get("document") {
         return decode_document(doc);
     }
@@ -1038,6 +1048,14 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
         }
         IrPart::Raw { type_name, raw } if type_name == "citationsContent" && raw.is_object() => {
             Some(json!({ "citationsContent": raw }))
+        }
+        IrPart::Raw { type_name, raw }
+            if type_name == "redactedContent"
+                && raw.as_str().is_some_and(|blob| !blob.is_empty()) =>
+        {
+            Some(json!({
+                "reasoningContent": { "redactedContent": raw }
+            }))
         }
         IrPart::Raw { .. } => {
             if let Some(plain) = super::plain_media_part(part) {

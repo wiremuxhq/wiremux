@@ -11819,6 +11819,68 @@ fn converse_reasoning_text_signature_round_trips() {
 }
 
 #[test]
+fn converse_redacted_reasoning_round_trips() {
+    let req = br#"{
+        "messages": [
+            {"role": "user", "content": [{"text": "hi"}]},
+            {"role": "assistant", "content": [
+                {"reasoningContent": {"redactedContent": "YmxvYg=="}},
+                {"text": "done"}
+            ]}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/1/content/0/reasoningContent/redactedContent")
+            .and_then(Value::as_str),
+        Some("YmxvYg=="),
+        "redacted reasoning must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/1/content/1/text")
+            .and_then(Value::as_str),
+        Some("done"),
+        "assistant text stays after redacted reasoning, got {body}"
+    );
+
+    let plain = br#"{
+        "messages": [
+            {"role": "assistant", "content": [
+                {"reasoningContent": {"reasoningText": {"text": "plan", "signature": "sig_abc"}}},
+                {"text": "done"}
+            ]}
+        ]
+    }"#;
+    let (ir_plain, _) = decode(Wire::Converse, plain).expect("decode plain");
+    let (plain_bytes, _) =
+        encode(Wire::Converse, &ir_plain, &converse_profile()).expect("encode plain");
+    let plain_body: Value = serde_json::from_slice(&plain_bytes).expect("json plain");
+    assert!(
+        !plain_body.to_string().contains("redactedContent"),
+        "signed reasoning text must not gain redactedContent, got {plain_body}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat_text = serde_json::from_slice::<Value>(&chat_bytes)
+        .expect("chat json")
+        .to_string();
+    assert!(
+        !chat_text.contains("YmxvYg=="),
+        "Chat must not send the redacted blob, got {chat_text}"
+    );
+    assert!(
+        chat_report
+            .events
+            .iter()
+            .any(|event| event.action == LossAction::Drop),
+        "Chat must record that redacted reasoning was dropped, got {chat_report:?}"
+    );
+}
+
+#[test]
 fn converse_encode_drops_thinking_schema_and_parallel() {
     let schema = serde_json::json!({"type": "object"});
     let ir = user_ir(IrSampling::patch(|s| {
