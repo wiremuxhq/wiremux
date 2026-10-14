@@ -9478,6 +9478,54 @@ fn converse_request_video_round_trips() {
 }
 
 #[test]
+fn converse_request_audio_s3_round_trips() {
+    let req = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "audio": {
+                    "format": "mp3",
+                    "source": {
+                        "s3Location": {
+                            "uri": "s3://bucket/a.mp3",
+                            "bucketOwner": "111122223333"
+                        }
+                    }
+                }
+            }]
+        }]
+    }"#;
+    let (ir, report) = decode(Wire::Converse, req).expect("decode");
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| event.path == "part.audio" && event.action == LossAction::Drop),
+        "same-wire S3 audio must not be dropped, got {report:?}"
+    );
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/audio/source/s3Location/uri")
+            .and_then(Value::as_str),
+        Some("s3://bucket/a.mp3"),
+        "S3 audio uri must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/audio/source/s3Location/bucketOwner")
+            .and_then(Value::as_str),
+        Some("111122223333"),
+        "S3 audio bucket owner must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/audio/format")
+            .and_then(Value::as_str),
+        Some("mp3"),
+        "S3 audio format must round-trip, got {body}"
+    );
+}
+
+#[test]
 fn converse_document_file_id_records_loss() {
     let ir = IrRequest::new(
         "amazon.nova-lite-v1:0",

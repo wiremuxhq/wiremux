@@ -91,8 +91,8 @@ fn decode_message(
     let role = msg.get("role").and_then(Value::as_str).unwrap_or("");
     let content = msg.get("content");
     match role {
-        "user" => decode_user(content, items, report),
-        "assistant" => decode_assistant(content, items, report),
+        "user" => decode_user(content, items),
+        "assistant" => decode_assistant(content, items),
         _ => {
             let shown = if role.is_empty() { "missing" } else { role };
             report.record(
@@ -105,11 +105,7 @@ fn decode_message(
     }
 }
 
-fn decode_user(
-    content: Option<&Value>,
-    items: &mut Vec<IrItem>,
-    report: &mut LossReport,
-) -> Result<(), MapError> {
+fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), MapError> {
     let Some(arr) = content.and_then(Value::as_array) else {
         if let Some(s) = content.and_then(Value::as_str) {
             items.push(IrItem::User {
@@ -135,7 +131,7 @@ fn decode_user(
             });
             continue;
         }
-        if let Some(part) = decode_part(block, report) {
+        if let Some(part) = decode_part(block) {
             parts.push(part);
         }
     }
@@ -151,11 +147,7 @@ fn flush_user(parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
     }
 }
 
-fn decode_assistant(
-    content: Option<&Value>,
-    items: &mut Vec<IrItem>,
-    report: &mut LossReport,
-) -> Result<(), MapError> {
+fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), MapError> {
     let Some(arr) = content.and_then(Value::as_array) else {
         if let Some(s) = content.and_then(Value::as_str) {
             items.push(IrItem::Assistant {
@@ -190,7 +182,7 @@ fn decode_assistant(
             });
             continue;
         }
-        if let Some(part) = decode_part(block, report) {
+        if let Some(part) = decode_part(block) {
             parts.push(part);
         }
     }
@@ -241,7 +233,7 @@ fn tool_result_output(result: &Value) -> (String, Vec<IrPart>) {
     (output, parts)
 }
 
-fn decode_part(block: &Value, report: &mut LossReport) -> Option<IrPart> {
+fn decode_part(block: &Value) -> Option<IrPart> {
     if let Some(text) = block.get("text").and_then(Value::as_str) {
         return Some(IrPart::Text(text.to_string()));
     }
@@ -266,7 +258,7 @@ fn decode_part(block: &Value, report: &mut LossReport) -> Option<IrPart> {
         return decode_image(image);
     }
     if let Some(audio) = block.get("audio") {
-        return decode_audio(audio, report);
+        return decode_audio(audio);
     }
     if let Some(video) = block.get("video").filter(|value| value.is_object()) {
         return Some(IrPart::Raw {
@@ -324,7 +316,7 @@ fn decode_image(image: &Value) -> Option<IrPart> {
     None
 }
 
-fn decode_audio(audio: &Value, report: &mut LossReport) -> Option<IrPart> {
+fn decode_audio(audio: &Value) -> Option<IrPart> {
     let format = str_field(audio, "format").unwrap_or_else(|| "mp3".into());
     let source = audio.get("source")?;
     if let Some(bytes) = str_field(source, "bytes") {
@@ -338,7 +330,10 @@ fn decode_audio(audio: &Value, report: &mut LossReport) -> Option<IrPart> {
         .and_then(Value::as_str)
         .is_some_and(|s| !s.is_empty())
     {
-        report.record("part.audio", LossAction::Drop, "audio s3 has no chat slot");
+        return Some(IrPart::Raw {
+            type_name: "audio".into(),
+            raw: audio.clone(),
+        });
     }
     None
 }
@@ -830,6 +825,9 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
         IrPart::ImageBase64 { media_type, data } => encode_image_bytes(media_type, data, report),
         IrPart::Raw { type_name, raw } if type_name == "video" && raw.is_object() => {
             Some(json!({ "video": raw }))
+        }
+        IrPart::Raw { type_name, raw } if type_name == "audio" && raw.is_object() => {
+            Some(json!({ "audio": raw }))
         }
         IrPart::Raw { .. } => {
             if let Some(plain) = super::plain_media_part(part) {
