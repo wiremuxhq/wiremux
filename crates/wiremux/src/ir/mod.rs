@@ -503,6 +503,9 @@ pub enum IrTool {
         type_name: String,
         raw: serde_json::Value,
     },
+    /// Converse `toolConfig.tools` cachePoint. Other wires drop it.
+    /// It stays between the tool specs that surround it.
+    CachePoint { raw: serde_json::Value },
 }
 
 #[derive(Clone, Debug, PartialEq)]

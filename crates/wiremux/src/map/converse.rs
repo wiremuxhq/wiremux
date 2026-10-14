@@ -41,19 +41,26 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         .and_then(|c| c.get("tools"))
         .and_then(Value::as_array)
         .map(|arr| {
-            arr.iter()
-                .filter_map(|t| {
-                    let spec = t.get("toolSpec")?;
-                    Some(super::tools::decode_tool(&json!({
+            let mut tools = Vec::new();
+            for entry in arr {
+                if let Some(spec) = entry.get("toolSpec") {
+                    tools.push(super::tools::decode_tool(&json!({
                         "type": "function",
                         "function": {
                             "name": spec.get("name"),
                             "description": spec.get("description"),
                             "parameters": spec.pointer("/inputSchema/json").cloned().unwrap_or(json!({})),
                         }
-                    })))
-                })
-                .collect()
+                    })));
+                } else if let Some(point) =
+                    entry.get("cachePoint").filter(|value| value.is_object())
+                {
+                    tools.push(crate::ir::IrTool::CachePoint {
+                        raw: point.clone(),
+                    });
+                }
+            }
+            tools
         })
         .unwrap_or_default();
     Ok((
