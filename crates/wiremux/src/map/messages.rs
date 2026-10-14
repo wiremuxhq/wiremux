@@ -213,12 +213,20 @@ fn decode_content_part(block: &Value) -> Option<IrPart> {
 fn decode_image(block: &Value) -> Option<IrPart> {
     let source = block.get("source")?;
     match source.get("type").and_then(Value::as_str) {
-        Some("url") => str_field(source, "url").map(|url| IrPart::ImageUrl { url, detail: None }),
+        Some("url") => str_field(source, "url").map(|url| IrPart::ImageUrl {
+            url,
+            detail: None,
+            bucket_owner: None,
+        }),
         Some("base64") => Some(IrPart::ImageBase64 {
             media_type: str_field(source, "media_type").unwrap_or_else(|| "image/png".into()),
             data: str_field(source, "data").unwrap_or_default(),
         }),
-        _ => str_field(source, "url").map(|url| IrPart::ImageUrl { url, detail: None }),
+        _ => str_field(source, "url").map(|url| IrPart::ImageUrl {
+            url,
+            detail: None,
+            bucket_owner: None,
+        }),
     }
 }
 
@@ -922,7 +930,11 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
     match part {
         IrPart::Text(text) if text.trim().is_empty() => None,
         IrPart::Text(text) => Some(json!({"type": "text", "text": text})),
-        IrPart::ImageUrl { url, detail } => {
+        IrPart::ImageUrl {
+            url,
+            detail,
+            bucket_owner: _,
+        } => {
             super::note_dropped_image_detail(detail.as_deref(), "messages", report);
             Some(json!({
                 "type": "image",

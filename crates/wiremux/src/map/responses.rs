@@ -226,7 +226,11 @@ fn decode_image(part: &Value) -> Option<IrPart> {
                 data: data.to_string(),
             });
         }
-        return Some(IrPart::ImageUrl { url, detail: None });
+        return Some(IrPart::ImageUrl {
+            url,
+            detail: None,
+            bucket_owner: None,
+        });
     }
     if let Some(data) =
         str_field(part, "data").or_else(|| part.get("source").and_then(|s| str_field(s, "data")))
@@ -734,7 +738,11 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
             .iter()
             .map(|part| match part {
                 IrPart::Text(text) => json!({"type": text_ty, "text": text}),
-                IrPart::ImageUrl { url, detail } => {
+                IrPart::ImageUrl {
+                    url,
+                    detail,
+                    bucket_owner: _,
+                } => {
                     super::note_dropped_image_detail(detail.as_deref(), "responses", report);
                     json!({"type": "input_image", "image_url": url})
                 }
@@ -853,7 +861,11 @@ fn encode_function_output(
     for part in parts {
         match part {
             IrPart::Text(_) => {}
-            IrPart::ImageUrl { url, detail } => {
+            IrPart::ImageUrl {
+                url,
+                detail,
+                bucket_owner: _,
+            } => {
                 super::note_dropped_image_detail(detail.as_deref(), "responses", report);
                 content.push(json!({"type": "input_image", "image_url": url}));
                 kept_structured = true;
