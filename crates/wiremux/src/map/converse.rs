@@ -272,6 +272,12 @@ fn decode_part(block: &Value) -> Option<IrPart> {
             raw: point.clone(),
         });
     }
+    if let Some(guard) = block.get("guardContent").filter(|value| value.is_object()) {
+        return Some(IrPart::Raw {
+            type_name: "guardContent".into(),
+            raw: guard.clone(),
+        });
+    }
     None
 }
 
@@ -861,6 +867,9 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
         }
         IrPart::Raw { type_name, raw } if type_name == "cachePoint" && raw.is_object() => {
             Some(json!({ "cachePoint": raw }))
+        }
+        IrPart::Raw { type_name, raw } if type_name == "guardContent" && raw.is_object() => {
+            Some(json!({ "guardContent": raw }))
         }
         IrPart::Raw { .. } => {
             if let Some(plain) = super::plain_media_part(part) {
