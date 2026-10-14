@@ -280,7 +280,15 @@ fn decode_document(doc: &Value) -> Option<IrPart> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
     {
-        IrDocumentSource::Url(uri.to_string())
+        let bucket_owner = source
+            .pointer("/s3Location/bucketOwner")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        IrDocumentSource::S3 {
+            uri: uri.to_string(),
+            bucket_owner,
+        }
     } else {
         return None;
     };
@@ -1005,6 +1013,19 @@ fn encode_document(
                 "source": { "s3Location": { "uri": url } }
             }
         }),
+        IrDocumentSource::S3 { uri, bucket_owner } => {
+            let mut location = json!({ "uri": uri });
+            if let Some(owner) = bucket_owner.as_deref().filter(|s| !s.is_empty()) {
+                location["bucketOwner"] = json!(owner);
+            }
+            json!({
+                "document": {
+                    "format": format,
+                    "name": name,
+                    "source": { "s3Location": location }
+                }
+            })
+        }
         IrDocumentSource::Url(_) => {
             report.record(
                 "part.document",

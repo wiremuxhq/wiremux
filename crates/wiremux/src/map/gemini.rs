@@ -1225,7 +1225,9 @@ fn encode_document(source: &IrDocumentSource, media_type: &str) -> Value {
         IrDocumentSource::Base64(data) => json!({
             "inlineData": { "mimeType": media_type, "data": data }
         }),
-        IrDocumentSource::Url(uri) | IrDocumentSource::FileId(uri) => {
+        IrDocumentSource::Url(uri)
+        | IrDocumentSource::FileId(uri)
+        | IrDocumentSource::S3 { uri, .. } => {
             let mut file = json!({ "fileUri": uri });
             if !media_type.is_empty() {
                 file["mimeType"] = json!(media_type);

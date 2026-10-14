@@ -460,6 +460,12 @@ pub enum IrDocumentSource {
     /// Messages PlainTextSource `data`. The string is the document text, not base64.
     Text(String),
     Url(String),
+    /// Converse `s3Location`. `bucket_owner` is the AWS account id when the
+    /// request included `bucketOwner`.
+    S3 {
+        uri: String,
+        bucket_owner: Option<String>,
+    },
     FileId(String),
 }
 

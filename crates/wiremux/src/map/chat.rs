@@ -675,7 +675,7 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                 }
             },
             IrPart::Document {
-                source: IrDocumentSource::Url(_),
+                source: IrDocumentSource::Url(_) | IrDocumentSource::S3 { .. },
                 ..
             } => {
                 report.record(
@@ -794,7 +794,7 @@ fn encode_document(
             }
             json!({ "type": "file", "file": file })
         }
-        IrDocumentSource::Url(_) => {
+        IrDocumentSource::Url(_) | IrDocumentSource::S3 { .. } => {
             report.record(
                 "part.document",
                 LossAction::Drop,

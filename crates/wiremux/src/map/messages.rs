@@ -1021,7 +1021,7 @@ fn encode_document(source: &IrDocumentSource, media_type: &str, name: Option<&st
             },
             "data": data
         }),
-        IrDocumentSource::Url(url) => json!({
+        IrDocumentSource::Url(url) | IrDocumentSource::S3 { uri: url, .. } => json!({
             "type": "url",
             "url": url
         }),
@@ -1120,9 +1120,9 @@ fn document_written_chars(
 ) -> usize {
     let payload = match source {
         IrDocumentSource::Base64(data) | IrDocumentSource::Text(data) => data.len(),
-        IrDocumentSource::Url(data) | IrDocumentSource::FileId(data) => {
-            data.len().max(MESSAGES_REMOTE_SOURCE_CHARS)
-        }
+        IrDocumentSource::Url(data)
+        | IrDocumentSource::FileId(data)
+        | IrDocumentSource::S3 { uri: data, .. } => data.len().max(MESSAGES_REMOTE_SOURCE_CHARS),
     };
     payload + trimmed_nonempty_len(name) + trimmed_nonempty_len(context)
 }
