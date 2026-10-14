@@ -10937,6 +10937,64 @@ fn converse_tool_result_document_and_video_round_trip() {
 }
 
 #[test]
+fn converse_tool_result_search_result_round_trips() {
+    let req = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "toolResult": {
+                    "toolUseId": "t1",
+                    "content": [{
+                        "searchResult": {
+                            "source": "https://example.com/a",
+                            "title": "Example",
+                            "content": [{"text": "A short snippet."}]
+                        }
+                    }]
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/0/searchResult/source")
+            .and_then(Value::as_str),
+        Some("https://example.com/a"),
+        "search result source must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/0/searchResult/title")
+            .and_then(Value::as_str),
+        Some("Example"),
+        "search result title must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/0/searchResult/content/0/text")
+            .and_then(Value::as_str),
+        Some("A short snippet."),
+        "search result snippet must round-trip, got {body}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat_text = serde_json::from_slice::<Value>(&chat_bytes)
+        .expect("chat json")
+        .to_string();
+    assert!(
+        !chat_text.contains("A short snippet.") && !chat_text.contains("https://example.com/a"),
+        "Chat has no search result slot, got {chat_text}"
+    );
+    assert!(
+        chat_report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.to_lowercase().contains("search")
+        }),
+        "Chat must record that the search result was dropped, got {chat_report:?}"
+    );
+}
+
+#[test]
 fn converse_decode_tool_use_missing_id_fails() {
     let req = br#"{
       "messages": [

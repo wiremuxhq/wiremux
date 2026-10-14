@@ -507,13 +507,14 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                     } else if matches!(part, IrPart::Document { .. })
                         || matches!(
                             part,
-                            IrPart::Raw { type_name, .. } if type_name == "video"
+                            IrPart::Raw { type_name, .. }
+                                if type_name == "video" || type_name == "searchResult"
                         )
                     {
                         report.record(
                             format!("items[{idx}].part"),
                             LossAction::Drop,
-                            "tool result document or video has no slot",
+                            "tool result document, video, or search result has no slot",
                         );
                     }
                 }
