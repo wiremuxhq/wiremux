@@ -820,7 +820,7 @@ fn encode_document(
             }
             obj["file_data"] = json!(format!("data:{media_type};base64,{data}"));
         }
-        IrDocumentSource::Url(url) => {
+        IrDocumentSource::Url(url) | IrDocumentSource::S3 { uri: url, .. } => {
             obj["file_url"] = json!(url);
         }
         IrDocumentSource::FileId(id) => {
