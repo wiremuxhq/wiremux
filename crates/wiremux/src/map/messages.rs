@@ -581,6 +581,14 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 );
                 idx += 1;
             }
+            IrItem::SystemGuard { .. } => {
+                report.record(
+                    format!("items[{idx}]"),
+                    LossAction::Drop,
+                    "system guard content has no slot",
+                );
+                idx += 1;
+            }
             IrItem::Developer { text } => {
                 report.record(
                     format!("items[{idx}]"),
@@ -1074,7 +1082,7 @@ pub(crate) fn cache_floor_tokens(req: &IrRequest) -> u32 {
     for item in &req.items {
         match item {
             IrItem::System { text } | IrItem::Developer { text } => chars += text.len(),
-            IrItem::SystemCache { .. } => {}
+            IrItem::SystemCache { .. } | IrItem::SystemGuard { .. } => {}
             IrItem::User { parts } | IrItem::Assistant { parts, .. } => {
                 chars += parts.iter().map(messages_part_chars).sum::<usize>();
             }

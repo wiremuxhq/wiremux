@@ -681,6 +681,13 @@ pub(super) fn encode(
                     "system cache point has no slot",
                 );
             }
+            IrItem::SystemGuard { .. } => {
+                report.record(
+                    format!("items[{idx}]"),
+                    LossAction::Drop,
+                    "system guard content has no slot",
+                );
+            }
             IrItem::System { text } | IrItem::Developer { text } => {
                 if !contents.is_empty() {
                     report.record(

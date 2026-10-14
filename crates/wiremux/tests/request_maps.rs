@@ -9640,6 +9640,63 @@ fn converse_system_cache_point_round_trips() {
 }
 
 #[test]
+fn converse_system_guard_content_round_trips() {
+    let req = br#"{
+        "system": [
+            {"text": "Only answer with a list of songs."},
+            {"guardContent": {"text": {"text": "Create a playlist of heavy metal songs."}}}
+        ],
+        "messages": [{
+            "role": "user",
+            "content": [{"text": "Hi"}]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/system/0/text").and_then(Value::as_str),
+        Some("Only answer with a list of songs."),
+        "unguarded system text must stay, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/system/1/guardContent/text/text")
+            .and_then(Value::as_str),
+        Some("Create a playlist of heavy metal songs."),
+        "system guardContent must round-trip, got {body}"
+    );
+
+    let text_only = br#"{
+        "system": [{"text": "Only answer with a list of songs."}],
+        "messages": [{"role": "user", "content": [{"text": "Hi"}]}]
+    }"#;
+    let (ir_only, _) = decode(Wire::Converse, text_only).expect("decode text");
+    let (only_bytes, _) =
+        encode(Wire::Converse, &ir_only, &converse_profile()).expect("encode text");
+    let only: Value = serde_json::from_slice(&only_bytes).expect("json text");
+    assert!(
+        only["system"].as_array().is_some_and(|blocks| blocks
+            .iter()
+            .all(|block| block.get("guardContent").is_none())),
+        "text-only system must not gain guardContent, got {only}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("chat json");
+    assert!(
+        !chat.to_string().contains("guardContent"),
+        "Chat has no system guardContent slot, got {chat}"
+    );
+    assert!(
+        chat_report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.to_lowercase().contains("guard")
+        }),
+        "Chat must record that the system guard block was dropped, got {chat_report:?}"
+    );
+}
+
+#[test]
 fn converse_request_audio_s3_round_trips() {
     let req = br#"{
         "messages": [{
