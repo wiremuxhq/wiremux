@@ -224,8 +224,17 @@ fn decode_part(part: &Value) -> Option<IrPart> {
     }
 }
 
+fn responses_image_detail(part: &Value) -> Option<String> {
+    part.get("detail")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|detail| !detail.is_empty() && *detail != "auto")
+        .map(str::to_string)
+}
+
 fn decode_image(part: &Value) -> Option<IrPart> {
     let file_id = str_field(part, "file_id").filter(|id| !id.is_empty());
+    let detail = responses_image_detail(part);
     if let Some(url) = part
         .get("image_url")
         .and_then(|u| {
@@ -235,7 +244,10 @@ fn decode_image(part: &Value) -> Option<IrPart> {
         })
         .or_else(|| str_field(part, "url"))
     {
+        // A data URL with no detail and no file id stays raw bytes. Detail
+        // has to stay on the image URL, because base64 parts have no detail.
         if file_id.is_none()
+            && detail.is_none()
             && let Some((media_type, data)) = super::split_data_url(&url)
         {
             return Some(IrPart::ImageBase64 {
@@ -245,7 +257,7 @@ fn decode_image(part: &Value) -> Option<IrPart> {
         }
         return Some(IrPart::ImageUrl {
             url,
-            detail: None,
+            detail,
             bucket_owner: None,
             file_id,
         });
@@ -262,25 +274,22 @@ fn decode_image(part: &Value) -> Option<IrPart> {
     }
     file_id.map(|file_id| IrPart::ImageUrl {
         url: String::new(),
-        detail: None,
+        detail,
         bucket_owner: None,
         file_id: Some(file_id),
     })
 }
 
-fn encode_input_image(
-    url: &str,
-    detail: Option<&str>,
-    file_id: Option<&str>,
-    report: &mut LossReport,
-) -> Value {
-    super::note_dropped_image_detail(detail, "responses", report);
+fn encode_input_image(url: &str, detail: Option<&str>, file_id: Option<&str>) -> Value {
     let mut image = json!({ "type": "input_image" });
     if let Some(file_id) = file_id.filter(|id| !id.is_empty()) {
         image["file_id"] = json!(file_id);
     }
     if !url.is_empty() {
         image["image_url"] = json!(url);
+    }
+    if let Some(detail) = detail.filter(|text| !text.is_empty()) {
+        image["detail"] = json!(detail);
     }
     image
 }
@@ -806,7 +815,7 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                     detail,
                     bucket_owner: _,
                     file_id,
-                } => encode_input_image(url, detail.as_deref(), file_id.as_deref(), report),
+                } => encode_input_image(url, detail.as_deref(), file_id.as_deref()),
                 IrPart::ImageBase64 { media_type, data } => json!({
                     "type": "input_image",
                     "image_url": format!("data:{media_type};base64,{data}")
@@ -944,7 +953,6 @@ fn encode_function_output(
                     url,
                     detail.as_deref(),
                     file_id.as_deref(),
-                    report,
                 ));
                 kept_structured = true;
             }

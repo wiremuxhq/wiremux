@@ -134,7 +134,7 @@ pub fn decode(wire: Wire, bytes: &[u8]) -> Result<(IrRequest, LossReport), MapEr
     }
 }
 
-/// `detail` has a slot only on Chat Completions. Other wires must say so.
+/// `detail` has a slot on Chat Completions and Responses. Other wires must say so.
 pub(super) fn note_dropped_image_detail(detail: Option<&str>, wire: &str, report: &mut LossReport) {
     if detail.is_some_and(|text| !text.is_empty()) {
         report.record(
@@ -1132,24 +1132,34 @@ mod tests {
     }
 
     #[test]
-    fn chat_image_detail_loss_line_names_responses_gemini_and_converse() {
+    fn chat_image_detail_stays_on_responses_and_drops_on_gemini_and_converse() {
         let src = br#"{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/cat.png","detail":"low"}}]}]}"#;
         let (ir, _) = decode(Wire::ChatCompletions, src).expect("decode");
-        let cases = [(Wire::Responses, "responses"), (Wire::Gemini, "gemini")];
-        for (wire, name) in cases {
-            let profile = crate::parse_profile_str(&format!(
-                "schema_version = 1\nid = \"t\"\nwire = \"{name}\"\n"
-            ))
-            .expect("profile");
-            let (_body, loss) = encode(wire, &ir, &profile).expect(name);
-            assert!(
-                loss.events.iter().any(|event| {
-                    event.path == "part.image.detail"
-                        && event.detail.contains(&format!("no {name} slot"))
-                }),
-                "{name} dropped image detail without a loss line: {loss:?}"
-            );
-        }
+        let responses =
+            crate::parse_profile_str("schema_version = 1\nid = \"t\"\nwire = \"responses\"\n")
+                .expect("profile");
+        let (body, loss) = encode(Wire::Responses, &ir, &responses).expect("responses");
+        let text = String::from_utf8(body).expect("utf8");
+        assert!(
+            text.contains("low"),
+            "responses must keep image detail: {text}"
+        );
+        assert!(
+            loss.events
+                .iter()
+                .all(|event| event.path != "part.image.detail"),
+            "responses must not drop image detail: {loss:?}"
+        );
+        let gemini =
+            crate::parse_profile_str("schema_version = 1\nid = \"t\"\nwire = \"gemini\"\n")
+                .expect("profile");
+        let (_body, loss) = encode(Wire::Gemini, &ir, &gemini).expect("gemini");
+        assert!(
+            loss.events.iter().any(|event| {
+                event.path == "part.image.detail" && event.detail.contains("no gemini slot")
+            }),
+            "gemini dropped image detail without a loss line: {loss:?}"
+        );
         let profile =
             crate::parse_profile_str("schema_version = 1\nid = \"t\"\nwire = \"converse\"\n")
                 .expect("profile");

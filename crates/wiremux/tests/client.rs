@@ -2694,17 +2694,28 @@ async fn send_and_stream_with_loss_report_dropped_image_detail() {
     let responses_ok = r#"{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}"#;
     let gemini_ok =
         r#"{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"#;
+    let (send_loss, send_req, stream_loss, stream_req) = send_and_stream_loss(
+        responses_client_for,
+        image_detail_ir("gpt-4o", url),
+        responses_ok,
+    )
+    .await;
+    assert!(
+        !has_image_detail(&send_loss, "responses") && !has_image_detail(&stream_loss, "responses"),
+        "responses must keep image detail\nsend: {send_loss:?}\nstream: {stream_loss:?}"
+    );
+    assert!(
+        send_req.contains(url)
+            && stream_req.contains(url)
+            && send_req.contains("high")
+            && stream_req.contains("high"),
+        "responses image detail must stay on the request\nsend: {send_req}\nstream: {stream_req}"
+    );
     let dropped = [
         send_and_stream_loss(
             messages_client_for,
             image_detail_ir("claude-3-5-sonnet", url),
             messages_ok,
-        )
-        .await,
-        send_and_stream_loss(
-            responses_client_for,
-            image_detail_ir("gpt-4o", url),
-            responses_ok,
         )
         .await,
         send_and_stream_loss(
@@ -2715,7 +2726,7 @@ async fn send_and_stream_with_loss_report_dropped_image_detail() {
         .await,
     ];
     for (wire, (send_loss, send_req, stream_loss, stream_req)) in
-        ["messages", "responses", "gemini"].into_iter().zip(dropped)
+        ["messages", "gemini"].into_iter().zip(dropped)
     {
         assert!(
             has_image_detail(&send_loss, wire),

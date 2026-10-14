@@ -2590,6 +2590,56 @@ fn responses_input_image_file_id_round_trips() {
 }
 
 #[test]
+fn responses_input_image_detail_round_trips() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": [{
+            "role": "user",
+            "content": [{
+                "type": "input_image",
+                "image_url": "https://example.com/cat.png",
+                "detail": "original"
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/input/0/content/0/detail")
+            .and_then(serde_json::Value::as_str),
+        Some("original"),
+        "image detail must stay on the next request, got {body}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .all(|event| event.path != "part.image.detail"),
+        "same-wire detail must not be recorded as dropped, got {report:?}"
+    );
+
+    let auto = br#"{
+        "model": "gpt-5",
+        "input": [{
+            "role": "user",
+            "content": [{
+                "type": "input_image",
+                "image_url": "https://example.com/cat.png",
+                "detail": "auto"
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, auto).expect("decode auto");
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode auto");
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.pointer("/input/0/content/0/detail").is_none(),
+        "default auto detail must stay omitted, got {body}"
+    );
+}
+
+#[test]
 fn gemini_https_image_url_degrades_to_text_placeholder() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",
