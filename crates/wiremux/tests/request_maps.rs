@@ -10777,6 +10777,52 @@ fn converse_tool_use_non_object_json_input_round_trips() {
 }
 
 #[test]
+fn converse_custom_tool_json_array_input_is_not_wrapped() {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::CustomToolCall {
+            call_id: "c1".into(),
+            name: "lookup".into(),
+            input: "[1,2]".into(),
+            responses_item: None,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolUse/input"),
+        Some(&serde_json::json!([1, 2])),
+        "JSON array custom input must stay an array, got {body}"
+    );
+    assert!(
+        !loss_degraded(&report, "toolUse.input"),
+        "JSON custom input must not be wrapped, got {report:?}"
+    );
+
+    let text = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::CustomToolCall {
+            call_id: "c2".into(),
+            name: "lookup".into(),
+            input: "print(1)".into(),
+            responses_item: None,
+        }],
+    );
+    let (text_bytes, text_report) =
+        encode(Wire::Converse, &text, &converse_profile()).expect("encode text");
+    let text_body: Value = serde_json::from_slice(&text_bytes).expect("json text");
+    assert_eq!(
+        text_body.pointer("/messages/0/content/0/toolUse/input"),
+        Some(&serde_json::json!({ "raw": "print(1)" })),
+        "non-JSON custom input must stay visible, got {text_body}"
+    );
+    assert!(
+        loss_degraded(&text_report, "toolUse.input"),
+        "non-JSON custom input must Degrade, got {text_report:?}"
+    );
+}
+
+#[test]
 fn converse_mixed_assistant_text_then_tool_use_round_trips_one_message() {
     let req = br#"{
       "modelId": "amazon.nova-lite-v1:0",
