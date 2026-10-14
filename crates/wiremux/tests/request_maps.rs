@@ -11055,6 +11055,68 @@ fn converse_message_search_result_round_trips() {
 }
 
 #[test]
+fn converse_citations_content_round_trips() {
+    let req = br#"{
+        "messages": [
+            {"role": "user", "content": [{"text": "Where?"}]},
+            {"role": "assistant", "content": [{
+                "citationsContent": {
+                    "content": [{"text": "Paris is the capital."}],
+                    "citations": [{"title": "Example", "source": "https://example.com/a"}]
+                }
+            }]}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/1/content/0/citationsContent/content/0/text")
+            .and_then(Value::as_str),
+        Some("Paris is the capital."),
+        "cited text must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/1/content/0/citationsContent/citations/0/source")
+            .and_then(Value::as_str),
+        Some("https://example.com/a"),
+        "citation source must round-trip, got {body}"
+    );
+
+    let plain = br#"{
+        "messages": [
+            {"role": "user", "content": [{"text": "Where?"}]},
+            {"role": "assistant", "content": [{"text": "Paris."}]}
+        ]
+    }"#;
+    let (ir_plain, _) = decode(Wire::Converse, plain).expect("decode plain");
+    let (plain_bytes, _) =
+        encode(Wire::Converse, &ir_plain, &converse_profile()).expect("encode plain");
+    let plain_body: Value = serde_json::from_slice(&plain_bytes).expect("json plain");
+    assert!(
+        !plain_body.to_string().contains("citationsContent"),
+        "a plain assistant message must not gain citationsContent, got {plain_body}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat_text = serde_json::from_slice::<Value>(&chat_bytes)
+        .expect("chat json")
+        .to_string();
+    assert!(
+        !chat_text.contains("Paris is the capital.")
+            && !chat_text.contains("https://example.com/a"),
+        "Chat has no citationsContent slot, got {chat_text}"
+    );
+    assert!(
+        chat_report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.to_lowercase().contains("raw")
+        }),
+        "Chat must record that the citations block was dropped, got {chat_report:?}"
+    );
+}
+
+#[test]
 fn converse_decode_tool_use_missing_id_fails() {
     let req = br#"{
       "messages": [
