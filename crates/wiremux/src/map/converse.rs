@@ -266,6 +266,12 @@ fn decode_part(block: &Value) -> Option<IrPart> {
             raw: video.clone(),
         });
     }
+    if let Some(point) = block.get("cachePoint").filter(|value| value.is_object()) {
+        return Some(IrPart::Raw {
+            type_name: "cachePoint".into(),
+            raw: point.clone(),
+        });
+    }
     None
 }
 
@@ -852,6 +858,9 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
         }
         IrPart::Raw { type_name, raw } if type_name == "audio" && raw.is_object() => {
             Some(json!({ "audio": raw }))
+        }
+        IrPart::Raw { type_name, raw } if type_name == "cachePoint" && raw.is_object() => {
+            Some(json!({ "cachePoint": raw }))
         }
         IrPart::Raw { .. } => {
             if let Some(plain) = super::plain_media_part(part) {
