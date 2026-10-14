@@ -504,6 +504,17 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                         || super::function_response_image(part).is_some()
                     {
                         report.record(format!("items[{idx}].image"), LossAction::Drop, "no slot");
+                    } else if matches!(part, IrPart::Document { .. })
+                        || matches!(
+                            part,
+                            IrPart::Raw { type_name, .. } if type_name == "video"
+                        )
+                    {
+                        report.record(
+                            format!("items[{idx}].part"),
+                            LossAction::Drop,
+                            "tool result document or video has no slot",
+                        );
                     }
                 }
                 if *is_error {

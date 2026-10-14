@@ -239,6 +239,19 @@ fn tool_result_output(result: &Value) -> (String, Vec<IrPart>) {
                         }
                         return None;
                     }
+                    if let Some(doc) = p.get("document") {
+                        if let Some(part) = decode_document(doc) {
+                            parts.push(part);
+                        }
+                        return None;
+                    }
+                    if let Some(video) = p.get("video").filter(|value| value.is_object()) {
+                        parts.push(IrPart::Raw {
+                            type_name: "video".into(),
+                            raw: video.clone(),
+                        });
+                        return None;
+                    }
                     if let Some(v) = p.get("json") {
                         Some(v.to_string())
                     } else {
@@ -762,6 +775,29 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                             if let Some(block) = encode_image_bytes(media_type, data, report) {
                                 content.push(block);
                             }
+                        }
+                        IrPart::Document {
+                            source,
+                            media_type,
+                            name,
+                            citations_enabled,
+                            context,
+                        } => {
+                            if let Some(block) = encode_document(
+                                source,
+                                media_type,
+                                name.as_deref(),
+                                *citations_enabled,
+                                context.as_deref(),
+                                report,
+                            ) {
+                                content.push(block);
+                            }
+                        }
+                        IrPart::Raw { type_name, raw }
+                            if type_name == "video" && raw.is_object() =>
+                        {
+                            content.push(json!({ "video": raw }));
                         }
                         IrPart::Raw { .. } => {
                             if let Some((media_type, data)) = super::function_response_image(part) {

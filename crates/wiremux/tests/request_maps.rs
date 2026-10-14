@@ -10871,6 +10871,72 @@ fn converse_system_only_and_empty_request_are_rejected() {
 }
 
 #[test]
+fn converse_tool_result_document_and_video_round_trip() {
+    let req = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "toolResult": {
+                    "toolUseId": "t1",
+                    "content": [
+                        {"document": {
+                            "format": "pdf",
+                            "name": "report",
+                            "source": {"bytes": "AAAA"}
+                        }},
+                        {"video": {
+                            "format": "mp4",
+                            "source": {"bytes": "BBBB"}
+                        }}
+                    ]
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content/0/toolResult/content")
+        .and_then(Value::as_array)
+        .expect("tool result content");
+    assert!(
+        content.iter().any(|block| {
+            block
+                .pointer("/document/source/bytes")
+                .and_then(Value::as_str)
+                == Some("AAAA")
+                && block.pointer("/document/name").and_then(Value::as_str) == Some("report")
+        }),
+        "tool result document must round-trip, got {body}"
+    );
+    assert!(
+        content.iter().any(|block| {
+            block.pointer("/video/source/bytes").and_then(Value::as_str) == Some("BBBB")
+                && block.pointer("/video/format").and_then(Value::as_str) == Some("mp4")
+        }),
+        "tool result video must round-trip, got {body}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat_text = serde_json::from_slice::<Value>(&chat_bytes)
+        .expect("chat json")
+        .to_string();
+    assert!(
+        !chat_text.contains("AAAA") && !chat_text.contains("BBBB"),
+        "Chat has no tool result document or video slot, got {chat_text}"
+    );
+    assert!(
+        chat_report
+            .events
+            .iter()
+            .any(|event| event.action == LossAction::Drop),
+        "Chat must record that the tool result media was dropped, got {chat_report:?}"
+    );
+}
+
+#[test]
 fn converse_decode_tool_use_missing_id_fails() {
     let req = br#"{
       "messages": [
