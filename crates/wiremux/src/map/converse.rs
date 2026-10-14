@@ -316,9 +316,15 @@ fn decode_image(image: &Value) -> Option<IrPart> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
     {
+        let bucket_owner = source
+            .pointer("/s3Location/bucketOwner")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         return Some(IrPart::ImageUrl {
             url: uri.to_string(),
             detail: None,
+            bucket_owner,
         });
     }
     None
@@ -689,9 +695,15 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 for part in parts {
                     match part {
                         IrPart::Text(_) => {}
-                        IrPart::ImageUrl { url, detail } => {
+                        IrPart::ImageUrl {
+                            url,
+                            detail,
+                            bucket_owner,
+                        } => {
                             super::note_dropped_image_detail(detail.as_deref(), "converse", report);
-                            if let Some(block) = encode_image_url(url, report) {
+                            if let Some(block) =
+                                encode_image_url(url, bucket_owner.as_deref(), report)
+                            {
                                 content.push(block);
                             }
                         }
@@ -826,9 +838,13 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             report,
         ),
         IrPart::Audio { data, format } => encode_audio(data, format, report),
-        IrPart::ImageUrl { url, detail } => {
+        IrPart::ImageUrl {
+            url,
+            detail,
+            bucket_owner,
+        } => {
             super::note_dropped_image_detail(detail.as_deref(), "converse", report);
-            encode_image_url(url, report)
+            encode_image_url(url, bucket_owner.as_deref(), report)
         }
         IrPart::ImageBase64 { media_type, data } => encode_image_bytes(media_type, data, report),
         IrPart::Raw { type_name, raw } if type_name == "video" && raw.is_object() => {
@@ -865,7 +881,11 @@ fn encode_image_bytes(media_type: &str, data: &str, report: &mut LossReport) -> 
     }))
 }
 
-fn encode_image_url(url: &str, report: &mut LossReport) -> Option<Value> {
+fn encode_image_url(
+    url: &str,
+    bucket_owner: Option<&str>,
+    report: &mut LossReport,
+) -> Option<Value> {
     if !url.to_ascii_lowercase().starts_with("s3://") {
         report.record(
             "part.image",
@@ -875,10 +895,14 @@ fn encode_image_url(url: &str, report: &mut LossReport) -> Option<Value> {
         return None;
     }
     let format = super::converse_image_format_from_url(url);
+    let mut location = json!({ "uri": url });
+    if let Some(owner) = bucket_owner.filter(|s| !s.is_empty()) {
+        location["bucketOwner"] = json!(owner);
+    }
     Some(json!({
         "image": {
             "format": format,
-            "source": { "s3Location": { "uri": url } }
+            "source": { "s3Location": location }
         }
     }))
 }

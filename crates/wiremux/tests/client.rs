@@ -124,6 +124,7 @@ fn image_detail_ir(model: &str, url: &str) -> IrRequest {
             parts: vec![IrPart::ImageUrl {
                 url: url.into(),
                 detail: Some("high".into()),
+                bucket_owner: None,
             }],
         }],
     )

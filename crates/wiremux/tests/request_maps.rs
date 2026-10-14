@@ -2570,6 +2570,7 @@ fn gemini_https_image_url_degrades_to_text_placeholder() {
                 IrPart::ImageUrl {
                     url: "https://example.com/cat.png".into(),
                     detail: None,
+                    bucket_owner: None,
                 },
             ],
         }],
@@ -3485,6 +3486,7 @@ fn short_image_and_document_urls_meet_min_cacheable_tokens() {
         parts: vec![IrPart::ImageUrl {
             url: "https://cdn.example/a.png".into(),
             detail: None,
+            bucket_owner: None,
         }],
     }]);
     assert!(
@@ -3542,6 +3544,7 @@ fn large_image_url_at_min_cacheable_tokens_still_tags() {
         parts: vec![IrPart::ImageUrl {
             url: url.clone(),
             detail: Some("high".into()),
+            bucket_owner: None,
         }],
     }]);
     assert!(
@@ -9604,6 +9607,76 @@ fn converse_document_s3_bucket_owner_round_trips() {
             .iter()
             .any(|event| { event.path == "part.document" && event.action == LossAction::Drop }),
         "Chat must record that the S3 document was dropped, got {chat_report:?}"
+    );
+}
+
+#[test]
+fn converse_image_s3_bucket_owner_round_trips() {
+    let req = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "image": {
+                    "format": "png",
+                    "source": {
+                        "s3Location": {
+                            "uri": "s3://bucket/a.png",
+                            "bucketOwner": "111122223333"
+                        }
+                    }
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/image/source/s3Location/uri")
+            .and_then(Value::as_str),
+        Some("s3://bucket/a.png"),
+        "image S3 uri must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/image/source/s3Location/bucketOwner")
+            .and_then(Value::as_str),
+        Some("111122223333"),
+        "image S3 bucketOwner must round-trip, got {body}"
+    );
+
+    let uri_only = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "image": {
+                    "format": "png",
+                    "source": { "s3Location": { "uri": "s3://bucket/a.png" } }
+                }
+            }]
+        }]
+    }"#;
+    let (ir_only, _) = decode(Wire::Converse, uri_only).expect("decode uri");
+    let (only_bytes, _) =
+        encode(Wire::Converse, &ir_only, &converse_profile()).expect("encode uri");
+    let only: Value = serde_json::from_slice(&only_bytes).expect("json uri");
+    assert_eq!(
+        only.pointer("/messages/0/content/0/image/source/s3Location/uri")
+            .and_then(Value::as_str),
+        Some("s3://bucket/a.png"),
+        "URI-only image must keep its uri, got {only}"
+    );
+    assert!(
+        only.pointer("/messages/0/content/0/image/source/s3Location/bucketOwner")
+            .is_none(),
+        "URI-only image must not gain bucketOwner, got {only}"
+    );
+
+    let (chat_bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("chat json");
+    let chat_text = chat.to_string();
+    assert!(
+        chat_text.contains("s3://bucket/a.png") && !chat_text.contains("111122223333"),
+        "Chat keeps the image URL and drops the account id, got {chat}"
     );
 }
 

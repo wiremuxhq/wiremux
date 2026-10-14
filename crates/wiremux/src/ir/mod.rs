@@ -411,10 +411,12 @@ pub enum IrItem {
 pub enum IrPart {
     Text(String),
     /// Chat `image_url`. `detail` is `low`, `high`, or `auto`.
-    /// Other dest wires keep the URL and drop `detail`.
+    /// `bucket_owner` is the Converse S3 account id.
+    /// Other dest wires keep the URL and drop `detail` and `bucket_owner`.
     ImageUrl {
         url: String,
         detail: Option<String>,
+        bucket_owner: Option<String>,
     },
     ImageBase64 {
         media_type: String,
@@ -976,6 +978,7 @@ mod tests {
                 parts: vec![IrPart::ImageUrl {
                     url: long.clone(),
                     detail: Some("y".repeat(5000)),
+                    bucket_owner: None,
                 }],
             }],
             tools: vec![],
@@ -991,6 +994,7 @@ mod tests {
                 parts: vec![IrPart::ImageUrl {
                     url: "https://cdn.example/a.png".into(),
                     detail: Some(long.clone()),
+                    bucket_owner: None,
                 }],
             }],
             tools: vec![],
@@ -1006,6 +1010,7 @@ mod tests {
                 parts: vec![IrPart::ImageUrl {
                     url: "https://cdn.example/a.png".into(),
                     detail: None,
+                    bucket_owner: None,
                 }],
             }],
             tools: vec![],

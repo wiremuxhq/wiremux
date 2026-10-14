@@ -161,7 +161,11 @@ fn decode_part(part: &Value) -> Option<IrPart> {
                     data: data.to_string(),
                 })
             } else {
-                Some(IrPart::ImageUrl { url, detail })
+                Some(IrPart::ImageUrl {
+                    url,
+                    detail,
+                    bucket_owner: None,
+                })
             }
         }
         "file" => decode_openai_file_part(part),
@@ -701,7 +705,11 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
             .iter()
             .map(|part| match part {
                 IrPart::Text(text) => json!({"type": "text", "text": text}),
-                IrPart::ImageUrl { url, detail } => {
+                IrPart::ImageUrl {
+                    url,
+                    detail,
+                    bucket_owner: _,
+                } => {
                     let mut image_url = json!({ "url": url });
                     if let Some(detail) = detail {
                         image_url["detail"] = json!(detail);
