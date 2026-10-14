@@ -434,8 +434,8 @@ pub enum IrPart {
     },
     /// Messages `document`, Chat/Responses `file`/`input_file`,
     /// Gemini PDF `inlineData`/`fileData`, Converse `document`.
-    /// `citations_enabled` and `context` are Messages document fields.
-    /// Other dest wires drop them.
+    /// `citations_enabled` and `context` are kept on Messages and Converse.
+    /// Chat and Gemini drop them.
     Document {
         source: IrDocumentSource,
         media_type: String,

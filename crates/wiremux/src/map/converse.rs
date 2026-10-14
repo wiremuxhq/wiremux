@@ -290,8 +290,8 @@ fn decode_document(doc: &Value) -> Option<IrPart> {
         source: src,
         media_type: super::media_type_from_converse_format(&format),
         name,
-        citations_enabled: None,
-        context: None,
+        citations_enabled: doc.pointer("/citations/enabled").and_then(Value::as_bool),
+        context: str_field(doc, "context").filter(|s| !s.is_empty()),
     })
 }
 
@@ -806,8 +806,16 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             source,
             media_type,
             name,
-            ..
-        } => encode_document(source, media_type, name.as_deref(), report),
+            citations_enabled,
+            context,
+        } => encode_document(
+            source,
+            media_type,
+            name.as_deref(),
+            *citations_enabled,
+            context.as_deref(),
+            report,
+        ),
         IrPart::Audio { data, format } => encode_audio(data, format, report),
         IrPart::ImageUrl { url, detail } => {
             super::note_dropped_image_detail(detail.as_deref(), "converse", report);
@@ -942,6 +950,8 @@ fn encode_document(
     source: &IrDocumentSource,
     media_type: &str,
     name: Option<&str>,
+    citations_enabled: Option<bool>,
+    context: Option<&str>,
     report: &mut LossReport,
 ) -> Option<Value> {
     if matches!(source, IrDocumentSource::FileId(_)) {
@@ -972,32 +982,41 @@ fn encode_document(
         return None;
     };
     let name = converse_document_name(name, report);
-    match source {
+    let mut block = match source {
         IrDocumentSource::Text(_) => unreachable!("recorded above"),
-        IrDocumentSource::Base64(data) => Some(json!({
+        IrDocumentSource::Base64(data) => json!({
             "document": {
                 "format": format,
                 "name": name,
                 "source": { "bytes": data }
             }
-        })),
-        IrDocumentSource::Url(url) if url.starts_with("s3://") => Some(json!({
+        }),
+        IrDocumentSource::Url(url) if url.starts_with("s3://") => json!({
             "document": {
                 "format": format,
                 "name": name,
                 "source": { "s3Location": { "uri": url } }
             }
-        })),
+        }),
         IrDocumentSource::Url(_) => {
             report.record(
                 "part.document",
                 LossAction::Drop,
                 "document url has no converse slot",
             );
-            None
+            return None;
         }
         IrDocumentSource::FileId(_) => unreachable!("recorded above"),
+    };
+    if let Some(doc) = block.get_mut("document") {
+        if let Some(enabled) = citations_enabled {
+            doc["citations"] = json!({ "enabled": enabled });
+        }
+        if let Some(context) = context.map(str::trim).filter(|s| !s.is_empty()) {
+            doc["context"] = json!(context);
+        }
     }
+    Some(block)
 }
 
 fn encode_tool(tool: &PreparedTool) -> Option<Value> {
