@@ -9428,6 +9428,56 @@ fn converse_document_citations_round_trip() {
 }
 
 #[test]
+fn converse_request_video_round_trips() {
+    let req = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"text": "What happens?"},
+                {"video": {"format": "mp4", "source": {"bytes": "AAAA"}}}
+            ]
+        }]
+    }"#;
+    let (ir, report) = decode(Wire::Converse, req).expect("decode");
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| event.action == LossAction::Drop),
+        "same-wire video must not be dropped on decode, got {report:?}"
+    );
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/1/video/format")
+            .and_then(Value::as_str),
+        Some("mp4"),
+        "video format must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/1/video/source/bytes")
+            .and_then(Value::as_str),
+        Some("AAAA"),
+        "video bytes must round-trip, got {body}"
+    );
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("chat json");
+    let chat_text = chat.to_string();
+    assert!(
+        !chat_text.contains("AAAA"),
+        "Chat has no video slot, got {chat}"
+    );
+    assert!(
+        chat_report.events.iter().any(|event| {
+            event.action == LossAction::Drop
+                && (event.detail.to_lowercase().contains("video") || event.detail.contains("raw"))
+        }),
+        "Chat must record that the video was dropped, got {chat_report:?}"
+    );
+}
+
+#[test]
 fn converse_document_file_id_records_loss() {
     let ir = IrRequest::new(
         "amazon.nova-lite-v1:0",
