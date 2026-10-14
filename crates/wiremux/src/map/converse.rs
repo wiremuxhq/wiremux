@@ -323,6 +323,15 @@ fn decode_part(block: &Value) -> Option<IrPart> {
             raw: found.clone(),
         });
     }
+    if let Some(cited) = block
+        .get("citationsContent")
+        .filter(|value| value.is_object())
+    {
+        return Some(IrPart::Raw {
+            type_name: "citationsContent".into(),
+            raw: cited.clone(),
+        });
+    }
     None
 }
 
@@ -975,6 +984,9 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
         }
         IrPart::Raw { type_name, raw } if type_name == "searchResult" && raw.is_object() => {
             Some(json!({ "searchResult": raw }))
+        }
+        IrPart::Raw { type_name, raw } if type_name == "citationsContent" && raw.is_object() => {
+            Some(json!({ "citationsContent": raw }))
         }
         IrPart::Raw { .. } => {
             if let Some(plain) = super::plain_media_part(part) {
