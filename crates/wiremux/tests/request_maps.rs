@@ -3160,6 +3160,62 @@ tool_type_policy = "passthrough"
     );
 }
 
+#[test]
+fn gemini_url_context_tool_round_trips() {
+    let bytes = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "Read https://example.com/a"}]}],
+        "tools": [{"urlContext": {}}]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, bytes).expect("decode");
+    let passthrough = profile(
+        r#"
+schema_version = 1
+id = "test-gemini-url-context"
+wire = "gemini"
+tool_type_policy = "passthrough"
+"#,
+    );
+    let (out, report) = encode(Wire::Gemini, &ir, &passthrough).expect("encode");
+    let body: Value = serde_json::from_slice(&out).expect("json");
+    assert!(
+        body.get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| { tools.iter().any(|tool| tool.get("urlContext").is_some()) }),
+        "urlContext must stay so the model can read the page, got {body} report={report:?}"
+    );
+    assert!(
+        body.pointer("/toolConfig/includeServerSideToolInvocations")
+            .is_none(),
+        "urlContext alone must not set the mixed-tool flag, got {body}"
+    );
+
+    let mixed = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "Read https://example.com/a"}]}],
+        "tools": [
+            {"functionDeclarations": [{"name": "lookup", "parameters": {"type": "object"}}]},
+            {"urlContext": {}}
+        ]
+    }"#;
+    let (mixed_ir, _) = decode(Wire::Gemini, mixed).expect("decode mixed");
+    let (mixed_out, mixed_report) =
+        encode(Wire::Gemini, &mixed_ir, &passthrough).expect("encode mixed");
+    let mixed_body: Value = serde_json::from_slice(&mixed_out).expect("json mixed");
+    assert!(
+        mixed_body
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| tools.iter().any(|tool| tool.get("urlContext").is_some())),
+        "urlContext must stay beside the function, got {mixed_body} report={mixed_report:?}"
+    );
+    assert_eq!(
+        mixed_body.pointer("/toolConfig/includeServerSideToolInvocations"),
+        Some(&Value::Bool(true)),
+        "urlContext beside a function must set the builtin flag, got {mixed_body}"
+    );
+}
+
 fn count_cache_control(value: &Value) -> usize {
     match value {
         Value::Object(map) => {

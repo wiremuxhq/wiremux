@@ -1123,6 +1123,7 @@ fn is_gemini_hosted_raw(raw: &Value) -> bool {
     obj.contains_key("googleSearch")
         || obj.contains_key("codeExecution")
         || obj.contains_key("googleSearchRetrieval")
+        || obj.contains_key("urlContext")
 }
 
 fn push_encoded_turn(
@@ -1619,6 +1620,7 @@ fn keep_mixed_builtin_tool_flag(body: &mut Value, report: &mut LossReport) {
         tool.get("googleSearch").is_some()
             || tool.get("codeExecution").is_some()
             || tool.get("googleSearchRetrieval").is_some()
+            || tool.get("urlContext").is_some()
     });
     if !has_functions || !has_builtin {
         return;
