@@ -252,6 +252,13 @@ fn tool_result_output(result: &Value) -> (String, Vec<IrPart>) {
                         });
                         return None;
                     }
+                    if let Some(found) = p.get("searchResult").filter(|value| value.is_object()) {
+                        parts.push(IrPart::Raw {
+                            type_name: "searchResult".into(),
+                            raw: found.clone(),
+                        });
+                        return None;
+                    }
                     if let Some(v) = p.get("json") {
                         Some(v.to_string())
                     } else {
@@ -739,10 +746,19 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 parts,
                 is_error,
             } => {
-                let has_image = parts.iter().any(|part| {
-                    matches!(part, IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. })
+                let has_media = parts.iter().any(|part| {
+                    matches!(
+                        part,
+                        IrPart::ImageUrl { .. }
+                            | IrPart::ImageBase64 { .. }
+                            | IrPart::Document { .. }
+                    ) || matches!(
+                        part,
+                        IrPart::Raw { type_name, .. }
+                            if type_name == "video" || type_name == "searchResult"
+                    ) || super::function_response_image(part).is_some()
                 });
-                let text = if output.trim().is_empty() && !has_image {
+                let text = if output.trim().is_empty() && !has_media {
                     report.record(
                         format!("items[{idx}]"),
                         LossAction::Degrade,
@@ -798,6 +814,11 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                             if type_name == "video" && raw.is_object() =>
                         {
                             content.push(json!({ "video": raw }));
+                        }
+                        IrPart::Raw { type_name, raw }
+                            if type_name == "searchResult" && raw.is_object() =>
+                        {
+                            content.push(json!({ "searchResult": raw }));
                         }
                         IrPart::Raw { .. } => {
                             if let Some((media_type, data)) = super::function_response_image(part) {
