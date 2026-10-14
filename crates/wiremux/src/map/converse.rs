@@ -284,9 +284,15 @@ fn tool_result_output(result: &Value) -> (String, Vec<IrPart>) {
     let Some(blocks) = result.get("content").and_then(Value::as_array) else {
         return (String::new(), parts);
     };
-    // Text that sits beside JSON must stay in block order. Text-only
-    // results stay one string, which is what the other wires already send.
-    let saw_json = blocks.iter().any(|block| block.get("json").is_some());
+    // Text that sits beside another block must stay in block order.
+    // Text-only results stay one string, which is what the other wires already send.
+    let keep_text_in_order = blocks.iter().any(|block| {
+        block.get("json").is_some()
+            || block.get("image").is_some()
+            || block.get("document").is_some()
+            || block.get("video").is_some()
+            || block.get("searchResult").is_some()
+    });
     let mut texts = Vec::new();
     for block in blocks {
         if let Some(image) = block.get("image") {
@@ -326,7 +332,7 @@ fn tool_result_output(result: &Value) -> (String, Vec<IrPart>) {
             if text.is_empty() {
                 continue;
             }
-            if saw_json {
+            if keep_text_in_order {
                 parts.push(IrPart::Text(text.to_string()));
             } else {
                 texts.push(text.to_string());

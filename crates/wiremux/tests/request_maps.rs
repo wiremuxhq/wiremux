@@ -11754,6 +11754,36 @@ fn converse_tool_result_json_then_text_keeps_order() {
 }
 
 #[test]
+fn converse_tool_result_image_then_text_keeps_order() {
+    let req = br#"{
+      "messages": [{"role": "user", "content": [{
+        "toolResult": {
+          "toolUseId": "t1",
+          "content": [
+            {"image": {"format": "png", "source": {"bytes": "AAAA"}}},
+            {"text": "see this"}
+          ]
+        }
+      }]}]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/0/image/source/bytes")
+            .and_then(Value::as_str),
+        Some("AAAA"),
+        "image must stay before the text, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolResult/content/1/text")
+            .and_then(Value::as_str),
+        Some("see this"),
+        "text must stay after the image, got {body}"
+    );
+}
+
+#[test]
 fn converse_whitespace_only_assistant_text_with_tool_use_omits_blank_text() {
     let ir = IrRequest::new(
         "amazon.nova-lite-v1:0",
