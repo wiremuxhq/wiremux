@@ -209,6 +209,15 @@ pub(super) fn role_text_breakpoint(parts: &[IrPart]) -> Option<String> {
     peel_prompt_cache(&parts[0]).1.map(str::to_string)
 }
 
+/// Parts to keep in order when a role has more than one block and a breakpoint.
+pub(super) fn role_content_parts(parts: &[IrPart]) -> Vec<IrPart> {
+    if parts.len() > 1 && parts.iter().any(|part| peel_prompt_cache(part).1.is_some()) {
+        parts.to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Record a dropped system or developer breakpoint on wires that have no field.
 pub(super) fn note_role_breakpoint(mode: Option<&str>, report: &mut LossReport) {
     if mode.is_some_and(|mode| !mode.is_empty()) {
@@ -295,6 +304,7 @@ fn apply_system_prefix(ir: &IrRequest, profile: &ResolvedProfile) -> IrRequest {
             IrItem::System {
                 text: prefix.to_string(),
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
         ),
     }

@@ -60,10 +60,12 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport)
         "system" => items.push(IrItem::System {
             text: parts_text(&parts),
             prompt_cache_breakpoint: super::role_text_breakpoint(&parts),
+            content_parts: super::role_content_parts(&parts),
         }),
         "developer" => items.push(IrItem::Developer {
             text: parts_text(&parts),
             prompt_cache_breakpoint: super::role_text_breakpoint(&parts),
+            content_parts: super::role_content_parts(&parts),
         }),
         "assistant" => {
             if !parts.is_empty() || msg.get("tool_calls").is_none() {
@@ -488,10 +490,16 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
             IrItem::System {
                 text,
                 prompt_cache_breakpoint,
+                content_parts,
             } => {
+                let content = if content_parts.is_empty() {
+                    role_text_content(text, prompt_cache_breakpoint.as_deref())
+                } else {
+                    encode_parts(content_parts, report)
+                };
                 messages.push(json!({
                     "role": "system",
-                    "content": role_text_content(text, prompt_cache_breakpoint.as_deref())
+                    "content": content
                 }));
                 idx += 1;
             }
@@ -514,11 +522,17 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
             IrItem::Developer {
                 text,
                 prompt_cache_breakpoint,
+                content_parts,
             } => {
                 report.record(format!("items[{idx}]"), LossAction::Preserve, "developer");
+                let content = if content_parts.is_empty() {
+                    role_text_content(text, prompt_cache_breakpoint.as_deref())
+                } else {
+                    encode_parts(content_parts, report)
+                };
                 messages.push(json!({
                     "role": "developer",
-                    "content": role_text_content(text, prompt_cache_breakpoint.as_deref())
+                    "content": content
                 }));
                 idx += 1;
             }

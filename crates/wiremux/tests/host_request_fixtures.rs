@@ -57,6 +57,7 @@ fn gemini_system_is_instruction_and_roles_are_user_or_model() {
                 text: "You are helpful.".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             user("Hi"),
             IrItem::Assistant {
@@ -323,6 +324,7 @@ fn chat_request_fixtures_match_host_encode() {
                 text: "You are helpful.".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             user("Hi"),
         ],
@@ -769,6 +771,7 @@ fn messages_cache_breakpoints_follow_host_rules() {
                 text: "rules".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             user("hi"),
         ],
@@ -798,6 +801,7 @@ fn messages_cache_breakpoints_follow_host_rules() {
             IrItem::System {
                 text: "sys".into(),
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             user("hi"),
         ],
@@ -816,6 +820,7 @@ fn messages_cache_breakpoints_follow_host_rules() {
                 text: "x".repeat(10_000),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::User {
                 parts: vec![IrPart::Text("y".repeat(10_000))],
@@ -835,6 +840,7 @@ fn messages_cache_breakpoints_follow_host_rules() {
             IrItem::System {
                 text: "sys".into(),
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             user("hi"),
         ],
@@ -864,6 +870,7 @@ fn messages_cache_breakpoints_follow_host_rules() {
             text: format!("system fragment {i}"),
 
             prompt_cache_breakpoint: None,
+            content_parts: vec![],
         });
     }
     items.push(user("do the work"));
@@ -886,11 +893,13 @@ fn messages_cache_breakpoints_follow_host_rules() {
                 text: "You are helpful.".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::System {
                 text: "Restored goal".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             user("continue"),
         ],

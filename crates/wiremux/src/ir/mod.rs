@@ -357,6 +357,9 @@ pub enum IrItem {
         /// Set when that role is one text part carrying the marker.
         /// Other wires keep `text` and record that the marker has no slot.
         prompt_cache_breakpoint: Option<String>,
+        /// Ordered parts when a multi-part role must keep a breakpoint.
+        /// Empty means `text` and `prompt_cache_breakpoint` are the whole role.
+        content_parts: Vec<IrPart>,
     },
     /// Converse system `cachePoint`. Other wires drop it.
     /// It stays between the system texts that surround it.
@@ -375,6 +378,9 @@ pub enum IrItem {
         /// Set when that role is one text part carrying the marker.
         /// Other wires keep `text` and record that the marker has no slot.
         prompt_cache_breakpoint: Option<String>,
+        /// Ordered parts when a multi-part role must keep a breakpoint.
+        /// Empty means `text` and `prompt_cache_breakpoint` are the whole role.
+        content_parts: Vec<IrPart>,
     },
     User {
         parts: Vec<IrPart>,
@@ -788,6 +794,7 @@ mod tests {
                 IrItem::System {
                     text: "You are helpful.".into(),
                     prompt_cache_breakpoint: None,
+                    content_parts: vec![],
                 },
                 IrItem::User {
                     parts: vec![IrPart::Text("Hi".into())],
@@ -871,10 +878,12 @@ mod tests {
         let system = IrItem::System {
             text: "rules".into(),
             prompt_cache_breakpoint: None,
+            content_parts: vec![],
         };
         let developer = IrItem::Developer {
             text: "rules".into(),
             prompt_cache_breakpoint: None,
+            content_parts: vec![],
         };
         assert_ne!(system, developer);
         assert!(matches!(system, IrItem::System { .. }));
@@ -888,6 +897,7 @@ mod tests {
             items: vec![IrItem::Developer {
                 text: "x".repeat(5000),
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             }],
             tools: vec![],
             sampling: IrSampling::default(),

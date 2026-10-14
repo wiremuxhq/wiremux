@@ -25,6 +25,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         items.push(IrItem::System {
             text: instructions,
             prompt_cache_breakpoint: None,
+            content_parts: vec![],
         });
     }
 
@@ -168,10 +169,12 @@ fn decode_message_item(item: &Value) -> Vec<IrItem> {
         "system" => vec![IrItem::System {
             text: parts_text(&parts),
             prompt_cache_breakpoint: super::role_text_breakpoint(&parts),
+            content_parts: super::role_content_parts(&parts),
         }],
         "developer" => vec![IrItem::Developer {
             text: parts_text(&parts),
             prompt_cache_breakpoint: super::role_text_breakpoint(&parts),
+            content_parts: super::role_content_parts(&parts),
         }],
         "assistant" => vec![IrItem::Assistant {
             parts,
@@ -579,8 +582,14 @@ fn encode_items(
             IrItem::System {
                 text,
                 prompt_cache_breakpoint,
+                content_parts,
             } => {
-                if let Some(mode) = prompt_cache_breakpoint
+                if !content_parts.is_empty() {
+                    input.push(json!({
+                        "role": "system",
+                        "content": encode_parts(content_parts, true, report),
+                    }));
+                } else if let Some(mode) = prompt_cache_breakpoint
                     .as_deref()
                     .filter(|mode| !mode.is_empty())
                 {
@@ -613,8 +622,14 @@ fn encode_items(
             IrItem::Developer {
                 text,
                 prompt_cache_breakpoint,
+                content_parts,
             } => {
-                if let Some(mode) = prompt_cache_breakpoint
+                if !content_parts.is_empty() {
+                    input.push(json!({
+                        "role": "developer",
+                        "content": encode_parts(content_parts, true, report),
+                    }));
+                } else if let Some(mode) = prompt_cache_breakpoint
                     .as_deref()
                     .filter(|mode| !mode.is_empty())
                 {
