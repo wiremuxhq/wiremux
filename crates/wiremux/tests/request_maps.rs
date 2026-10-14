@@ -9236,6 +9236,48 @@ fn converse_document_round_trips() {
 }
 
 #[test]
+fn converse_document_name_matches_bedrock_rules() {
+    let cases = [
+        ("report.pdf", "report pdf", true),
+        ("My Document (1)", "My Document (1)", false),
+        ("a  b", "a b", true),
+        ("my_file", "my file", true),
+        ("...", "document", true),
+        ("   ", "document", true),
+        ("  a b  ", "a b", true),
+    ];
+    for (raw, want, degraded) in cases {
+        let ir = IrRequest::new(
+            "amazon.nova-lite-v1:0",
+            vec![IrItem::User {
+                parts: vec![IrPart::Document {
+                    source: IrDocumentSource::Base64("AAAA".into()),
+                    media_type: "application/pdf".into(),
+                    name: Some(raw.into()),
+                    citations_enabled: None,
+                    context: None,
+                }],
+            }],
+        );
+        let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect(raw);
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            body.pointer("/messages/0/content/0/document/name")
+                .and_then(Value::as_str),
+            Some(want),
+            "Bedrock rejects {raw}, got {body}"
+        );
+        assert_eq!(
+            report.events.iter().any(|event| {
+                event.path == "part.document.name" && event.action == LossAction::Degrade
+            }),
+            degraded,
+            "degrade for {raw}, got {report:?}"
+        );
+    }
+}
+
+#[test]
 fn converse_document_file_id_records_loss() {
     let ir = IrRequest::new(
         "amazon.nova-lite-v1:0",
