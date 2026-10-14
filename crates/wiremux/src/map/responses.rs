@@ -22,7 +22,10 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     if let Some(instructions) = str_field(value, "instructions")
         && !instructions.is_empty()
     {
-        items.push(IrItem::System { text: instructions });
+        items.push(IrItem::System {
+            text: instructions,
+            prompt_cache_breakpoint: None,
+        });
     }
 
     match value.get("input") {
@@ -164,9 +167,11 @@ fn decode_message_item(item: &Value) -> Vec<IrItem> {
     match role {
         "system" => vec![IrItem::System {
             text: parts_text(&parts),
+            prompt_cache_breakpoint: super::role_text_breakpoint(&parts),
         }],
         "developer" => vec![IrItem::Developer {
             text: parts_text(&parts),
+            prompt_cache_breakpoint: super::role_text_breakpoint(&parts),
         }],
         "assistant" => vec![IrItem::Assistant {
             parts,
@@ -560,7 +565,11 @@ fn encode_items(
     let mut input = Vec::new();
     for (idx, item) in ir.items.iter().enumerate() {
         match item {
-            IrItem::System { text } => {
+            IrItem::System {
+                text,
+                prompt_cache_breakpoint,
+            } => {
+                super::note_role_breakpoint(prompt_cache_breakpoint.as_deref(), report);
                 if !input.is_empty() {
                     report.record(
                         format!("items[{idx}]"),
@@ -584,7 +593,11 @@ fn encode_items(
                     "system guard content has no slot",
                 );
             }
-            IrItem::Developer { text } => {
+            IrItem::Developer {
+                text,
+                prompt_cache_breakpoint,
+            } => {
+                super::note_role_breakpoint(prompt_cache_breakpoint.as_deref(), report);
                 report.record(
                     format!("items[{idx}]"),
                     LossAction::Degrade,

@@ -18,7 +18,10 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     let mut report = LossReport::default();
     let mut items = Vec::new();
     if let Some(sys) = system_text(value.get("systemInstruction")) {
-        items.push(IrItem::System { text: sys });
+        items.push(IrItem::System {
+            text: sys,
+            prompt_cache_breakpoint: None,
+        });
     }
     if let Some(contents) = value.get("contents").and_then(Value::as_array) {
         for content in contents {
@@ -688,7 +691,15 @@ pub(super) fn encode(
                     "system guard content has no slot",
                 );
             }
-            IrItem::System { text } | IrItem::Developer { text } => {
+            IrItem::System {
+                text,
+                prompt_cache_breakpoint,
+            }
+            | IrItem::Developer {
+                text,
+                prompt_cache_breakpoint,
+            } => {
+                super::note_role_breakpoint(prompt_cache_breakpoint.as_deref(), report);
                 if !contents.is_empty() {
                     report.record(
                         format!("items[{idx}]"),

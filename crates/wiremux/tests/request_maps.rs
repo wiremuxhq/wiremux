@@ -735,7 +735,7 @@ fn developer_degrades_to_system_on_messages() {
     let (ir, _loss) = decode(Wire::ChatCompletions, &bytes).expect("decode Chat");
     assert!(
         ir.items.iter().any(
-            |item| matches!(item, IrItem::Developer { text } if text == "Follow house style.")
+            |item| matches!(item, IrItem::Developer { text, .. } if text == "Follow house style.")
         ),
         "developer item missing: {:?}",
         ir.items
@@ -1057,7 +1057,7 @@ fn gemini_request_round_trip_text_and_function() {
     assert!(
         ir.items
             .iter()
-            .any(|item| matches!(item, IrItem::System { text } if text == "Be brief.")),
+            .any(|item| matches!(item, IrItem::System { text, .. } if text == "Be brief.")),
         "systemInstruction: {:?}",
         ir.items
     );
@@ -2707,6 +2707,91 @@ fn chat_prompt_cache_breakpoint_round_trips_and_messages_keep_text() {
 }
 
 #[test]
+fn chat_system_prompt_cache_breakpoint_round_trips() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "system",
+            "content": [{
+                "type": "text",
+                "text": "rules",
+                "prompt_cache_breakpoint": {"mode": "explicit"}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("rules"),
+        "system text must stay, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/prompt_cache_breakpoint/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "system cache breakpoint must stay, got {body}"
+    );
+}
+
+#[test]
+fn chat_developer_prompt_cache_breakpoint_round_trips() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "developer",
+            "content": [{
+                "type": "text",
+                "text": "rules",
+                "prompt_cache_breakpoint": {"mode": "explicit"}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/prompt_cache_breakpoint/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "developer cache breakpoint must stay, got {body}"
+    );
+}
+
+#[test]
+fn chat_tool_prompt_cache_breakpoint_round_trips() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": [{
+                "type": "text",
+                "text": "prefix",
+                "prompt_cache_breakpoint": {"mode": "explicit"}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("prefix"),
+        "tool text must stay, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/prompt_cache_breakpoint/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "tool cache breakpoint must stay, got {body}"
+    );
+}
+
+#[test]
 fn gemini_https_image_url_degrades_to_text_placeholder() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",
@@ -2937,6 +3022,8 @@ fn prompt_caching_on_system_and_first_user() {
         vec![
             IrItem::System {
                 text: "rules".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello world".into())],
@@ -2971,6 +3058,8 @@ fn long_ttl_with_tools_tags_last_tool_before_system() {
         vec![
             IrItem::System {
                 text: "rules".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -3032,6 +3121,8 @@ fn cache_disabled_no_cache_control_blocks() {
         vec![
             IrItem::System {
                 text: "rules".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -3057,6 +3148,8 @@ fn cache_retention_none_skips_cache_control() {
         vec![
             IrItem::System {
                 text: "rules".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -3089,6 +3182,8 @@ fn multi_fragment_system_stays_at_or_under_cache_control_limit() {
     let mut items: Vec<IrItem> = (0..6)
         .map(|i| IrItem::System {
             text: format!("system fragment {i}"),
+
+            prompt_cache_breakpoint: None,
         })
         .collect();
     items.push(IrItem::User {
@@ -3143,9 +3238,13 @@ fn multi_fragment_long_ttl_with_tools_tags_first_system_not_last() {
         vec![
             IrItem::System {
                 text: "You are a coding agent.".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::System {
                 text: "Restored goal state from previous session:\nGoal: current task".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::User {
                 parts: vec![IrPart::Text("continue the work".into())],
@@ -3200,9 +3299,13 @@ fn short_ttl_multi_system_tags_last_system_and_first_user() {
         vec![
             IrItem::System {
                 text: "static".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::System {
                 text: "resume".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -3279,7 +3382,10 @@ fn cached_messages_ir(text: &str, floor: Option<u32>) -> IrRequest {
     IrRequest::new(
         "claude-opus-4-6",
         vec![
-            IrItem::System { text: text.into() },
+            IrItem::System {
+                text: text.into(),
+                prompt_cache_breakpoint: None,
+            },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
             },
@@ -3335,6 +3441,8 @@ fn long_developer_at_min_cacheable_tokens_still_tags() {
         vec![
             IrItem::Developer {
                 text: "x".repeat(5000),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -3377,6 +3485,8 @@ fn large_function_output_at_min_cacheable_tokens_still_tags() {
         vec![
             IrItem::System {
                 text: "rules".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::FunctionOutput {
                 call_id: "c1".into(),
@@ -3449,6 +3559,8 @@ fn large_custom_tool_input_at_min_cacheable_tokens_still_tags() {
         vec![
             IrItem::System {
                 text: "rules".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::CustomToolCall {
                 call_id: "call_custom".into(),
@@ -3473,6 +3585,8 @@ fn short_custom_tool_input_below_min_cacheable_tokens_drops_cache_control() {
         vec![
             IrItem::System {
                 text: "rules".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::CustomToolCall {
                 call_id: "call_custom".into(),
@@ -3494,6 +3608,8 @@ fn large_reasoning_summary_at_min_cacheable_tokens_still_tags() {
         vec![
             IrItem::System {
                 text: "rules".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::Reasoning {
                 encrypted: Some("sig".into()),
@@ -3517,6 +3633,8 @@ fn reasoning_signature_alone_stays_below_min_cacheable_tokens() {
         vec![
             IrItem::System {
                 text: "rules".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -11087,7 +11205,7 @@ fn converse_round_trip_text_and_tool() {
     }"#;
     let (ir, _) = decode(Wire::Converse, req).expect("decode converse");
     assert_eq!(ir.model, "amazon.nova-lite-v1:0");
-    assert!(matches!(&ir.items[0], IrItem::System { text } if text == "sys"));
+    assert!(matches!(&ir.items[0], IrItem::System { text, .. } if text == "sys"));
     assert_eq!(ir.sampling.max_tokens, Some(32));
     let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
@@ -11108,7 +11226,10 @@ fn converse_round_trip_text_and_tool() {
 fn converse_encode_empty_messages_fails() {
     let ir = IrRequest::new(
         "amazon.nova-lite-v1:0",
-        vec![IrItem::System { text: "sys".into() }],
+        vec![IrItem::System {
+            text: "sys".into(),
+            prompt_cache_breakpoint: None,
+        }],
     );
     let err = encode(Wire::Converse, &ir, &converse_profile())
         .expect_err("Converse encode must fail when messages would be empty");
@@ -11122,6 +11243,8 @@ fn converse_system_only_and_empty_request_are_rejected() {
         "amazon.nova-lite-v1:0",
         vec![IrItem::System {
             text: "rules".into(),
+
+            prompt_cache_breakpoint: None,
         }],
     );
     let err = encode(Wire::Converse, &system_only, &converse_profile())
@@ -11743,7 +11866,7 @@ fn converse_unknown_message_role_records_a_drop() {
     assert!(
         !ir.items
             .iter()
-            .any(|item| matches!(item, IrItem::System { text } if text == "hidden")),
+            .any(|item| matches!(item, IrItem::System { text, .. } if text == "hidden")),
         "a message role of system is not the top-level system field, got {:?}",
         ir.items
     );

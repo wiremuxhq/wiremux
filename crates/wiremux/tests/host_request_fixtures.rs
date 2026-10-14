@@ -55,6 +55,8 @@ fn gemini_system_is_instruction_and_roles_are_user_or_model() {
         vec![
             IrItem::System {
                 text: "You are helpful.".into(),
+
+                prompt_cache_breakpoint: None,
             },
             user("Hi"),
             IrItem::Assistant {
@@ -319,6 +321,8 @@ fn chat_request_fixtures_match_host_encode() {
         vec![
             IrItem::System {
                 text: "You are helpful.".into(),
+
+                prompt_cache_breakpoint: None,
             },
             user("Hi"),
         ],
@@ -763,6 +767,8 @@ fn messages_cache_breakpoints_follow_host_rules() {
         vec![
             IrItem::System {
                 text: "rules".into(),
+
+                prompt_cache_breakpoint: None,
             },
             user("hi"),
         ],
@@ -788,7 +794,13 @@ fn messages_cache_breakpoints_follow_host_rules() {
 
     let floor = IrRequest::new(
         "claude-haiku-4-5",
-        vec![IrItem::System { text: "sys".into() }, user("hi")],
+        vec![
+            IrItem::System {
+                text: "sys".into(),
+                prompt_cache_breakpoint: None,
+            },
+            user("hi"),
+        ],
     )
     .with_sampling(IrSampling::patch(|s| {
         s.cache = IrCache::enabled()
@@ -802,6 +814,8 @@ fn messages_cache_breakpoints_follow_host_rules() {
         vec![
             IrItem::System {
                 text: "x".repeat(10_000),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::User {
                 parts: vec![IrPart::Text("y".repeat(10_000))],
@@ -817,7 +831,13 @@ fn messages_cache_breakpoints_follow_host_rules() {
 
     let small = IrRequest::new(
         "claude-haiku-4-5",
-        vec![IrItem::System { text: "sys".into() }, user("hi")],
+        vec![
+            IrItem::System {
+                text: "sys".into(),
+                prompt_cache_breakpoint: None,
+            },
+            user("hi"),
+        ],
     )
     .with_sampling(IrSampling::patch(|s| {
         s.cache = IrCache::enabled()
@@ -842,6 +862,8 @@ fn messages_cache_breakpoints_follow_host_rules() {
     for i in 0..6 {
         items.push(IrItem::System {
             text: format!("system fragment {i}"),
+
+            prompt_cache_breakpoint: None,
         });
     }
     items.push(user("do the work"));
@@ -862,9 +884,13 @@ fn messages_cache_breakpoints_follow_host_rules() {
         vec![
             IrItem::System {
                 text: "You are helpful.".into(),
+
+                prompt_cache_breakpoint: None,
             },
             IrItem::System {
                 text: "Restored goal".into(),
+
+                prompt_cache_breakpoint: None,
             },
             user("continue"),
         ],

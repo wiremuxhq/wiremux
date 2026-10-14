@@ -50,6 +50,7 @@ fn decode_system(system: Option<&Value>, items: &mut Vec<IrItem>) {
     if let Some(text) = system.as_str() {
         items.push(IrItem::System {
             text: text.to_string(),
+            prompt_cache_breakpoint: None,
         });
         return;
     }
@@ -63,7 +64,10 @@ fn decode_system(system: Option<&Value>, items: &mut Vec<IrItem>) {
             .unwrap_or("")
             .to_string();
         if !text.is_empty() {
-            items.push(IrItem::System { text });
+            items.push(IrItem::System {
+                text,
+                prompt_cache_breakpoint: None,
+            });
         }
     }
 }
@@ -574,7 +578,11 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
     let mut idx = 0;
     while idx < ir.items.len() {
         match &ir.items[idx] {
-            IrItem::System { text } => {
+            IrItem::System {
+                text,
+                prompt_cache_breakpoint,
+            } => {
+                super::note_role_breakpoint(prompt_cache_breakpoint.as_deref(), report);
                 if !messages.is_empty() {
                     report.record(
                         format!("items[{idx}]"),
@@ -601,7 +609,11 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 );
                 idx += 1;
             }
-            IrItem::Developer { text } => {
+            IrItem::Developer {
+                text,
+                prompt_cache_breakpoint,
+            } => {
+                super::note_role_breakpoint(prompt_cache_breakpoint.as_deref(), report);
                 report.record(
                     format!("items[{idx}]"),
                     LossAction::Degrade,
@@ -1121,7 +1133,7 @@ pub(crate) fn cache_floor_tokens(req: &IrRequest) -> u32 {
     let mut chars = 0usize;
     for item in &req.items {
         match item {
-            IrItem::System { text } | IrItem::Developer { text } => chars += text.len(),
+            IrItem::System { text, .. } | IrItem::Developer { text, .. } => chars += text.len(),
             IrItem::SystemCache { .. } | IrItem::SystemGuard { .. } => {}
             IrItem::User { parts } | IrItem::Assistant { parts, .. } => {
                 chars += parts.iter().map(messages_part_chars).sum::<usize>();
