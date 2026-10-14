@@ -285,16 +285,26 @@ fn decode_tool_result(block: &Value) -> (String, Vec<IrPart>) {
     let Some(arr) = content.as_array() else {
         return (value_as_string(content), Vec::new());
     };
-    let mut texts = Vec::new();
-    let mut parts = Vec::new();
-    for item in arr {
-        match decode_content_part(item) {
-            Some(IrPart::Text(text)) => texts.push(text),
-            Some(part) => parts.push(part),
-            None => {}
-        }
+    let decoded: Vec<IrPart> = arr
+        .iter()
+        .filter_map(decode_content_part)
+        .filter(|part| !matches!(part, IrPart::Text(text) if text.is_empty()))
+        .collect();
+    // Text beside an image or document must stay in block order. Text-only
+    // results stay one string.
+    let keep_text_in_order = decoded.iter().any(|part| !matches!(part, IrPart::Text(_)));
+    if keep_text_in_order {
+        return (String::new(), decoded);
     }
-    (texts.join(""), parts)
+    let text = decoded
+        .into_iter()
+        .filter_map(|part| match part {
+            IrPart::Text(text) => Some(text),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    (text, Vec::new())
 }
 
 fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
@@ -1504,7 +1514,14 @@ fn tool_result_block(
     if is_error {
         block["is_error"] = json!(true);
     }
-    let text = super::function_output_text(output, parts);
+    let ordered_text = parts
+        .iter()
+        .any(|part| matches!(part, IrPart::Text(text) if !text.is_empty()));
+    let text = if ordered_text {
+        String::new()
+    } else {
+        super::function_output_text(output, parts)
+    };
     if parts.is_empty() {
         block["content"] = json!(text);
         return block;
@@ -1514,13 +1531,20 @@ fn tool_result_block(
         content.push(json!({"type": "text", "text": text}));
     }
     for part in parts {
-        if matches!(part, IrPart::Raw { type_name, .. } if type_name == "json")
-            || matches!(part, IrPart::Text(_))
-        {
-            continue;
-        }
-        if let Some(encoded) = encode_part(part, report) {
-            content.push(encoded);
+        match part {
+            IrPart::Text(text) if ordered_text && !text.is_empty() => {
+                content.push(json!({"type": "text", "text": text}));
+            }
+            IrPart::Text(_) => {}
+            IrPart::Raw { type_name, raw } if type_name == "json" && ordered_text => {
+                content.push(json!({"type": "text", "text": raw.to_string()}));
+            }
+            IrPart::Raw { type_name, .. } if type_name == "json" => {}
+            _ => {
+                if let Some(encoded) = encode_part(part, report) {
+                    content.push(encoded);
+                }
+            }
         }
     }
     block["content"] = if content.is_empty() {
