@@ -2707,6 +2707,63 @@ fn chat_prompt_cache_breakpoint_round_trips_and_messages_keep_text() {
 }
 
 #[test]
+fn responses_system_prompt_cache_breakpoint_round_trips() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": [{
+            "role": "system",
+            "content": [{
+                "type": "input_text",
+                "text": "rules",
+                "prompt_cache_breakpoint": {"mode": "explicit"}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/input/0/content/0/prompt_cache_breakpoint/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "system cache breakpoint must stay on the Responses turn, got {body}"
+    );
+    assert!(
+        body.get("instructions").is_none(),
+        "a breakpoint cannot live on the instructions string, got {body}"
+    );
+}
+
+#[test]
+fn responses_developer_prompt_cache_breakpoint_round_trips() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": [{
+            "role": "developer",
+            "content": [{
+                "type": "input_text",
+                "text": "rules",
+                "prompt_cache_breakpoint": {"mode": "explicit"}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/input/0/role").and_then(Value::as_str),
+        Some("developer"),
+        "developer breakpoint must stay a developer turn, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/input/0/content/0/prompt_cache_breakpoint/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "developer cache breakpoint must stay, got {body}"
+    );
+}
+
+#[test]
 fn chat_system_prompt_cache_breakpoint_round_trips() {
     let req = br#"{
         "model": "gpt-4o",

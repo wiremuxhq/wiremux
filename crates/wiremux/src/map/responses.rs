@@ -556,6 +556,17 @@ pub(super) fn encode(
     Ok(body)
 }
 
+fn role_text_message(role: &str, text: &str, mode: &str) -> Value {
+    json!({
+        "role": role,
+        "content": [{
+            "type": "input_text",
+            "text": text,
+            "prompt_cache_breakpoint": {"mode": mode}
+        }]
+    })
+}
+
 fn encode_items(
     ir: &IrRequest,
     restore_calls: bool,
@@ -569,15 +580,21 @@ fn encode_items(
                 text,
                 prompt_cache_breakpoint,
             } => {
-                super::note_role_breakpoint(prompt_cache_breakpoint.as_deref(), report);
-                if !input.is_empty() {
-                    report.record(
-                        format!("items[{idx}]"),
-                        LossAction::Degrade,
-                        "system message moved out of the turn list",
-                    );
+                if let Some(mode) = prompt_cache_breakpoint
+                    .as_deref()
+                    .filter(|mode| !mode.is_empty())
+                {
+                    input.push(role_text_message("system", text, mode));
+                } else {
+                    if !input.is_empty() {
+                        report.record(
+                            format!("items[{idx}]"),
+                            LossAction::Degrade,
+                            "system message moved out of the turn list",
+                        );
+                    }
+                    instructions.push(text.clone());
                 }
-                instructions.push(text.clone());
             }
             IrItem::SystemCache { .. } => {
                 report.record(
@@ -597,20 +614,26 @@ fn encode_items(
                 text,
                 prompt_cache_breakpoint,
             } => {
-                super::note_role_breakpoint(prompt_cache_breakpoint.as_deref(), report);
-                report.record(
-                    format!("items[{idx}]"),
-                    LossAction::Degrade,
-                    "developer to system",
-                );
-                if !input.is_empty() {
+                if let Some(mode) = prompt_cache_breakpoint
+                    .as_deref()
+                    .filter(|mode| !mode.is_empty())
+                {
+                    input.push(role_text_message("developer", text, mode));
+                } else {
                     report.record(
                         format!("items[{idx}]"),
                         LossAction::Degrade,
-                        "system message moved out of the turn list",
+                        "developer to system",
                     );
+                    if !input.is_empty() {
+                        report.record(
+                            format!("items[{idx}]"),
+                            LossAction::Degrade,
+                            "system message moved out of the turn list",
+                        );
+                    }
+                    instructions.push(text.clone());
                 }
-                instructions.push(text.clone());
             }
             IrItem::User { parts } => input.push(json!({
                 "role": "user",
