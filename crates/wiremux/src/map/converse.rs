@@ -112,6 +112,7 @@ fn decode_message(
     match role {
         "user" => decode_user(content, items),
         "assistant" => decode_assistant(content, items),
+        "system" => decode_system_role_tool_change(content, items, report),
         _ => {
             let shown = if role.is_empty() { "missing" } else { role };
             report.record(
@@ -121,6 +122,47 @@ fn decode_message(
             );
             Ok(())
         }
+    }
+}
+
+/// Bedrock adds or removes one tool on a system-role message.
+/// Other system-role content stays dropped.
+fn decode_system_role_tool_change(
+    content: Option<&Value>,
+    items: &mut Vec<IrItem>,
+    report: &mut LossReport,
+) -> Result<(), MapError> {
+    let mut kept = false;
+    if let Some(blocks) = content.and_then(Value::as_array) {
+        for block in blocks {
+            let Some(type_name) = tool_set_change_name(block) else {
+                continue;
+            };
+            items.push(IrItem::Unknown {
+                type_name: type_name.to_string(),
+                raw: block.clone(),
+            });
+            kept = true;
+        }
+    }
+    if !kept {
+        report.record(
+            "message.role",
+            LossAction::Drop,
+            "system not user or assistant",
+        );
+    }
+    Ok(())
+}
+
+fn tool_set_change_name(block: &Value) -> Option<&'static str> {
+    let obj = block.as_object()?;
+    if obj.get("toolAddition").is_some_and(Value::is_object) {
+        Some("toolAddition")
+    } else if obj.get("toolRemoval").is_some_and(Value::is_object) {
+        Some("toolRemoval")
+    } else {
+        None
     }
 }
 
@@ -893,6 +935,15 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                         }]
                     }));
                 }
+            }
+            IrItem::Unknown { type_name, raw }
+                if matches!(type_name.as_str(), "toolAddition" | "toolRemoval")
+                    && raw.is_object() =>
+            {
+                messages.push(json!({
+                    "role": "system",
+                    "content": [raw.clone()],
+                }));
             }
             IrItem::HostedToolCall { kind, .. }
             | IrItem::Unknown {
