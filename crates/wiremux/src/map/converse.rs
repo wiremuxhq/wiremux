@@ -281,53 +281,59 @@ fn tool_result_status_is_error(result: &Value) -> bool {
 
 fn tool_result_output(result: &Value) -> (String, Vec<IrPart>) {
     let mut parts = Vec::new();
-    let output = result
-        .get("content")
-        .and_then(Value::as_array)
-        .map(|c| {
-            c.iter()
-                .filter_map(|p| {
-                    if let Some(image) = p.get("image") {
-                        if let Some(part) = decode_image(image) {
-                            parts.push(part);
-                        }
-                        return None;
-                    }
-                    if let Some(doc) = p.get("document") {
-                        if let Some(part) = decode_document(doc) {
-                            parts.push(part);
-                        }
-                        return None;
-                    }
-                    if let Some(video) = p.get("video").filter(|value| value.is_object()) {
-                        parts.push(IrPart::Raw {
-                            type_name: "video".into(),
-                            raw: video.clone(),
-                        });
-                        return None;
-                    }
-                    if let Some(found) = p.get("searchResult").filter(|value| value.is_object()) {
-                        parts.push(IrPart::Raw {
-                            type_name: "searchResult".into(),
-                            raw: found.clone(),
-                        });
-                        return None;
-                    }
-                    if let Some(v) = p.get("json") {
-                        parts.push(IrPart::Raw {
-                            type_name: "json".into(),
-                            raw: v.clone(),
-                        });
-                        None
-                    } else {
-                        p.get("text").and_then(Value::as_str).map(str::to_string)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
-    (output, parts)
+    let Some(blocks) = result.get("content").and_then(Value::as_array) else {
+        return (String::new(), parts);
+    };
+    // Text that sits beside JSON must stay in block order. Text-only
+    // results stay one string, which is what the other wires already send.
+    let saw_json = blocks.iter().any(|block| block.get("json").is_some());
+    let mut texts = Vec::new();
+    for block in blocks {
+        if let Some(image) = block.get("image") {
+            if let Some(part) = decode_image(image) {
+                parts.push(part);
+            }
+            continue;
+        }
+        if let Some(doc) = block.get("document") {
+            if let Some(part) = decode_document(doc) {
+                parts.push(part);
+            }
+            continue;
+        }
+        if let Some(video) = block.get("video").filter(|value| value.is_object()) {
+            parts.push(IrPart::Raw {
+                type_name: "video".into(),
+                raw: video.clone(),
+            });
+            continue;
+        }
+        if let Some(found) = block.get("searchResult").filter(|value| value.is_object()) {
+            parts.push(IrPart::Raw {
+                type_name: "searchResult".into(),
+                raw: found.clone(),
+            });
+            continue;
+        }
+        if let Some(value) = block.get("json") {
+            parts.push(IrPart::Raw {
+                type_name: "json".into(),
+                raw: value.clone(),
+            });
+            continue;
+        }
+        if let Some(text) = block.get("text").and_then(Value::as_str) {
+            if text.is_empty() {
+                continue;
+            }
+            if saw_json {
+                parts.push(IrPart::Text(text.to_string()));
+            } else {
+                texts.push(text.to_string());
+            }
+        }
+    }
+    (texts.join(""), parts)
 }
 
 fn decode_part(block: &Value) -> Option<IrPart> {
@@ -836,13 +842,18 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                                 || type_name == "json"
                     ) || super::function_response_image(part).is_some()
                 });
-                let text = if output.trim().is_empty() && !has_media {
+                let ordered_text = parts
+                    .iter()
+                    .any(|part| matches!(part, IrPart::Text(text) if !text.is_empty()));
+                let text = if output.trim().is_empty() && !has_media && !ordered_text {
                     report.record(
                         format!("items[{idx}]"),
                         LossAction::Degrade,
                         "empty content became '.'",
                     );
                     "."
+                } else if ordered_text {
+                    ""
                 } else {
                     output.as_str()
                 };
@@ -852,6 +863,9 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 }
                 for part in parts {
                     match part {
+                        IrPart::Text(text) if !text.is_empty() => {
+                            content.push(json!({ "text": text }));
+                        }
                         IrPart::Text(_) => {}
                         IrPart::ImageUrl {
                             url,

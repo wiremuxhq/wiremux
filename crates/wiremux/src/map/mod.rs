@@ -548,11 +548,28 @@ fn function_response_mime_allowed(mime: &str) -> bool {
     mime.starts_with("image/") || is_pdf_media_type(&mime) || mime == "text/plain"
 }
 
-/// Image bytes inside a function result, including a Gemini part that
-/// kept `displayName` as raw `inlineData`.
 /// Text other wires can show for a tool result. JSON blocks stay structured
-/// on Converse and become text here.
+/// on Converse and become text here. When text parts are present they already
+/// carry the prose, in block order with the JSON.
 pub(super) fn function_output_text(output: &str, parts: &[IrPart]) -> String {
+    let has_text_part = parts
+        .iter()
+        .any(|part| matches!(part, IrPart::Text(text) if !text.is_empty()));
+    if has_text_part {
+        let mut text = String::new();
+        for part in parts {
+            let piece = match part {
+                IrPart::Text(piece) if !piece.is_empty() => piece.clone(),
+                IrPart::Raw { type_name, raw } if type_name == "json" => raw.to_string(),
+                _ => continue,
+            };
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&piece);
+        }
+        return text;
+    }
     let mut text = String::new();
     if !output.is_empty() {
         text.push_str(output);
@@ -570,6 +587,8 @@ pub(super) fn function_output_text(output: &str, parts: &[IrPart]) -> String {
     text
 }
 
+/// Image bytes inside a function result, including a Gemini part that
+/// kept `displayName` as raw `inlineData`.
 pub(super) fn function_response_image(part: &IrPart) -> Option<(String, String)> {
     let inline = function_response_inline(part)?;
     inline
