@@ -674,6 +674,13 @@ pub(super) fn encode(
     let mut call_names = Vec::new();
     for (idx, item) in ir.items.iter().enumerate() {
         match item {
+            IrItem::SystemCache { .. } => {
+                report.record(
+                    format!("items[{idx}]"),
+                    LossAction::Drop,
+                    "system cache point has no slot",
+                );
+            }
             IrItem::System { text } | IrItem::Developer { text } => {
                 if !contents.is_empty() {
                     report.record(

@@ -68,18 +68,26 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
 }
 
 fn decode_system(system: &Value, items: &mut Vec<IrItem>) {
-    let texts: Vec<String> = match system {
-        Value::String(s) => vec![s.clone()],
-        Value::Array(arr) => arr
-            .iter()
-            .filter_map(|b| b.get("text").and_then(Value::as_str).map(str::to_string))
-            .collect(),
-        _ => Vec::new(),
-    };
-    for text in texts {
-        if !text.is_empty() {
-            items.push(IrItem::System { text });
+    match system {
+        Value::String(text) if !text.is_empty() => {
+            items.push(IrItem::System { text: text.clone() });
         }
+        Value::Array(blocks) => {
+            for block in blocks {
+                if let Some(text) = block.get("text").and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        items.push(IrItem::System {
+                            text: text.to_string(),
+                        });
+                    }
+                } else if let Some(point) =
+                    block.get("cachePoint").filter(|value| value.is_object())
+                {
+                    items.push(IrItem::SystemCache { raw: point.clone() });
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -553,6 +561,16 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                     );
                 }
                 system.push(json!({ "text": text }));
+            }
+            IrItem::SystemCache { raw } => {
+                if !messages.is_empty() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "system message moved out of the turn list",
+                    );
+                }
+                system.push(json!({ "cachePoint": raw }));
             }
             IrItem::User { parts } => {
                 let blocks: Vec<Value> = parts
