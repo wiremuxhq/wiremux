@@ -12114,6 +12114,67 @@ fn converse_decode_reads_output_config_schema_and_effort() {
 }
 
 #[test]
+fn converse_json_schema_description_round_trips() {
+    let req = br#"{
+      "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+      "outputConfig": {
+        "textFormat": {
+          "type": "json_schema",
+          "structure": {
+            "jsonSchema": {
+              "schema": "{\"type\":\"object\"}",
+              "name": "extract",
+              "description": "Extract structured data from unstructured text"
+            }
+          }
+        }
+      }
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    assert_eq!(
+        ir.sampling.json_schema_description.as_deref(),
+        Some("Extract structured data from unstructured text")
+    );
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/outputConfig/textFormat/structure/jsonSchema/description")
+            .and_then(Value::as_str),
+        Some("Extract structured data from unstructured text"),
+        "schema description must round-trip, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.json_schema_description"),
+        "Converse has a description slot, got {report:?}"
+    );
+
+    let plain = br#"{
+      "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+      "outputConfig": {
+        "textFormat": {
+          "type": "json_schema",
+          "structure": {
+            "jsonSchema": {
+              "schema": "{\"type\":\"object\"}",
+              "name": "extract"
+            }
+          }
+        }
+      }
+    }"#;
+    let (ir_plain, _) = decode(Wire::Converse, plain).expect("decode plain");
+    let (plain_bytes, _) =
+        encode(Wire::Converse, &ir_plain, &converse_profile()).expect("encode plain");
+    let plain_body: Value = serde_json::from_slice(&plain_bytes).expect("json plain");
+    assert!(
+        plain_body
+            .pointer("/outputConfig/textFormat/structure/jsonSchema/description")
+            .is_none(),
+        "a schema with no description must not gain one, got {plain_body}"
+    );
+}
+
+#[test]
 fn converse_non_object_json_schema_is_dropped() {
     let ir = user_ir(IrSampling::patch(|s| {
         s.json_schema = Some(serde_json::json!(["not", "object"]));

@@ -112,8 +112,10 @@ pub struct IrSampling {
     /// Optional schema name (Responses `text.format.name` / Chat json_schema.name /
     /// Converse `outputConfig.textFormat.structure.jsonSchema.name`).
     pub json_schema_name: Option<String>,
-    /// Chat `response_format.json_schema.description` and Responses
-    /// `text.format.description`. Other dests drop when set.
+    /// Chat `response_format.json_schema.description`, Responses
+    /// `text.format.description`, and Converse
+    /// `outputConfig.textFormat.structure.jsonSchema.description`.
+    /// Gemini and Messages drop when set.
     pub json_schema_description: Option<String>,
     /// Chat Completions `response_format.json_schema.strict`.
     /// Other dests drop when `Some`.

@@ -527,6 +527,11 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
                 .and_then(Value::as_str)
                 .filter(|s| !s.trim().is_empty())
                 .map(str::to_string);
+            sampling.json_schema_description = js
+                .get("description")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
         }
     }
     sampling.metadata = string_object_field(value, "requestMetadata");
@@ -1371,13 +1376,6 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
     }
-    if s.json_schema_description.is_some() {
-        report.record(
-            "sampling.json_schema_description",
-            LossAction::Drop,
-            "no slot",
-        );
-    }
     if !s.stop.is_empty() {
         cfg.insert("stopSequences".into(), json!(s.stop));
     }
@@ -1438,6 +1436,13 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
                 if let Some(name) = &s.json_schema_name {
                     json_schema.insert("name".into(), json!(name));
                 }
+                if let Some(description) = s
+                    .json_schema_description
+                    .as_deref()
+                    .filter(|text| !text.trim().is_empty())
+                {
+                    json_schema.insert("description".into(), json!(description));
+                }
                 output.insert(
                     "textFormat".into(),
                     json!({
@@ -1492,6 +1497,19 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     if !output.is_empty() {
         body["outputConfig"] = Value::Object(output);
+    }
+    if s.json_schema_description
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty())
+        && body
+            .pointer("/outputConfig/textFormat/structure/jsonSchema/description")
+            .is_none()
+    {
+        report.record(
+            "sampling.json_schema_description",
+            LossAction::Drop,
+            "description needs a json schema",
+        );
     }
     if s.max_reasoning_tokens.is_some() {
         report.record("sampling.max_reasoning_tokens", LossAction::Drop, "no slot");
