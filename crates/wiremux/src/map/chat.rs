@@ -59,9 +59,11 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport)
     match role {
         "system" => items.push(IrItem::System {
             text: parts_text(&parts),
+            prompt_cache_breakpoint: super::role_text_breakpoint(&parts),
         }),
         "developer" => items.push(IrItem::Developer {
             text: parts_text(&parts),
+            prompt_cache_breakpoint: super::role_text_breakpoint(&parts),
         }),
         "assistant" => {
             if !parts.is_empty() || msg.get("tool_calls").is_none() {
@@ -74,16 +76,30 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport)
             }
         }
         "tool" => {
-            let output = parts_text(&parts);
-            let images = parts
+            let has_breakpoint = parts
                 .iter()
-                .filter(|part| matches!(part, IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. }))
-                .cloned()
-                .collect();
+                .any(|part| super::peel_prompt_cache(part).1.is_some());
+            let (output, kept) = if has_breakpoint {
+                let text_parts = parts
+                    .iter()
+                    .filter(|part| matches!(super::peel_prompt_cache(part).0, IrPart::Text(_)))
+                    .cloned()
+                    .collect();
+                (String::new(), text_parts)
+            } else {
+                let images = parts
+                    .iter()
+                    .filter(|part| {
+                        matches!(part, IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. })
+                    })
+                    .cloned()
+                    .collect();
+                (parts_text(&parts), images)
+            };
             items.push(IrItem::FunctionOutput {
                 call_id: str_field(msg, "tool_call_id").unwrap_or_default(),
                 output,
-                parts: images,
+                parts: kept,
                 is_error: false,
             });
         }
@@ -192,6 +208,17 @@ fn decode_part(part: &Value) -> Option<IrPart> {
             .map(|t| IrPart::Text(t.to_string())),
     };
     super::with_prompt_cache(decoded, part)
+}
+
+fn role_text_content(text: &str, mode: Option<&str>) -> Value {
+    let Some(mode) = mode.filter(|mode| !mode.is_empty()) else {
+        return json!(text);
+    };
+    json!([{
+        "type": "text",
+        "text": text,
+        "prompt_cache_breakpoint": {"mode": mode}
+    }])
 }
 
 fn parts_text(parts: &[IrPart]) -> String {
@@ -458,8 +485,14 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
     let mut idx = 0;
     while idx < ir.items.len() {
         match &ir.items[idx] {
-            IrItem::System { text } => {
-                messages.push(json!({"role": "system", "content": text}));
+            IrItem::System {
+                text,
+                prompt_cache_breakpoint,
+            } => {
+                messages.push(json!({
+                    "role": "system",
+                    "content": role_text_content(text, prompt_cache_breakpoint.as_deref())
+                }));
                 idx += 1;
             }
             IrItem::SystemCache { .. } => {
@@ -478,9 +511,15 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 );
                 idx += 1;
             }
-            IrItem::Developer { text } => {
+            IrItem::Developer {
+                text,
+                prompt_cache_breakpoint,
+            } => {
                 report.record(format!("items[{idx}]"), LossAction::Preserve, "developer");
-                messages.push(json!({"role": "developer", "content": text}));
+                messages.push(json!({
+                    "role": "developer",
+                    "content": role_text_content(text, prompt_cache_breakpoint.as_deref())
+                }));
                 idx += 1;
             }
             IrItem::User { parts } => {
@@ -530,10 +569,23 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                         "no slot",
                     );
                 }
+                let has_breakpoint = parts
+                    .iter()
+                    .any(|part| super::peel_prompt_cache(part).1.is_some());
+                let content = if has_breakpoint {
+                    let text_parts: Vec<IrPart> = parts
+                        .iter()
+                        .filter(|part| matches!(super::peel_prompt_cache(part).0, IrPart::Text(_)))
+                        .cloned()
+                        .collect();
+                    encode_parts(&text_parts, report)
+                } else {
+                    json!(super::function_output_text(output, parts))
+                };
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call_id,
-                    "content": super::function_output_text(output, parts),
+                    "content": content,
                 }));
                 idx += 1;
             }

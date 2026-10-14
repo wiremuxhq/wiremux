@@ -201,6 +201,25 @@ pub(super) fn apply_prompt_cache(
     }
 }
 
+/// Mode when a system or developer role is one text part with a breakpoint.
+pub(super) fn role_text_breakpoint(parts: &[IrPart]) -> Option<String> {
+    if parts.len() != 1 {
+        return None;
+    }
+    peel_prompt_cache(&parts[0]).1.map(str::to_string)
+}
+
+/// Record a dropped system or developer breakpoint on wires that have no field.
+pub(super) fn note_role_breakpoint(mode: Option<&str>, report: &mut LossReport) {
+    if mode.is_some_and(|mode| !mode.is_empty()) {
+        report.record(
+            "part.prompt_cache_breakpoint",
+            LossAction::Drop,
+            "prompt cache breakpoint has no slot",
+        );
+    }
+}
+
 /// Responses `input_image.file_id` with no URL.
 /// Chat, Messages, Converse, and Gemini have no slot for that image.
 pub(super) fn image_file_id_without_url(url: &str, file_id: Option<&str>) -> bool {
@@ -266,7 +285,7 @@ fn apply_system_prefix(ir: &IrRequest, profile: &ResolvedProfile) -> IrRequest {
         .iter_mut()
         .find(|item| matches!(item, IrItem::System { .. }))
     {
-        Some(IrItem::System { text }) => {
+        Some(IrItem::System { text, .. }) => {
             if !text.starts_with(prefix) {
                 *text = format!("{prefix}{text}");
             }
@@ -275,6 +294,7 @@ fn apply_system_prefix(ir: &IrRequest, profile: &ResolvedProfile) -> IrRequest {
             0,
             IrItem::System {
                 text: prefix.to_string(),
+                prompt_cache_breakpoint: None,
             },
         ),
     }

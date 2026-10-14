@@ -2805,6 +2805,8 @@ async fn stream_with_loss_encode_failure_does_not_connect() {
                 "claude-3-5-sonnet",
                 vec![IrItem::System {
                     text: "be brief".into(),
+
+                    prompt_cache_breakpoint: None,
                 }],
             ),
         ),

@@ -22,7 +22,10 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     if let Some(instructions) = str_field(value, "instructions")
         && !instructions.is_empty()
     {
-        items.push(IrItem::System { text: instructions });
+        items.push(IrItem::System {
+            text: instructions,
+            prompt_cache_breakpoint: None,
+        });
     }
 
     match value.get("input") {
@@ -164,9 +167,11 @@ fn decode_message_item(item: &Value) -> Vec<IrItem> {
     match role {
         "system" => vec![IrItem::System {
             text: parts_text(&parts),
+            prompt_cache_breakpoint: super::role_text_breakpoint(&parts),
         }],
         "developer" => vec![IrItem::Developer {
             text: parts_text(&parts),
+            prompt_cache_breakpoint: super::role_text_breakpoint(&parts),
         }],
         "assistant" => vec![IrItem::Assistant {
             parts,
@@ -551,6 +556,17 @@ pub(super) fn encode(
     Ok(body)
 }
 
+fn role_text_message(role: &str, text: &str, mode: &str) -> Value {
+    json!({
+        "role": role,
+        "content": [{
+            "type": "input_text",
+            "text": text,
+            "prompt_cache_breakpoint": {"mode": mode}
+        }]
+    })
+}
+
 fn encode_items(
     ir: &IrRequest,
     restore_calls: bool,
@@ -560,15 +576,25 @@ fn encode_items(
     let mut input = Vec::new();
     for (idx, item) in ir.items.iter().enumerate() {
         match item {
-            IrItem::System { text } => {
-                if !input.is_empty() {
-                    report.record(
-                        format!("items[{idx}]"),
-                        LossAction::Degrade,
-                        "system message moved out of the turn list",
-                    );
+            IrItem::System {
+                text,
+                prompt_cache_breakpoint,
+            } => {
+                if let Some(mode) = prompt_cache_breakpoint
+                    .as_deref()
+                    .filter(|mode| !mode.is_empty())
+                {
+                    input.push(role_text_message("system", text, mode));
+                } else {
+                    if !input.is_empty() {
+                        report.record(
+                            format!("items[{idx}]"),
+                            LossAction::Degrade,
+                            "system message moved out of the turn list",
+                        );
+                    }
+                    instructions.push(text.clone());
                 }
-                instructions.push(text.clone());
             }
             IrItem::SystemCache { .. } => {
                 report.record(
@@ -584,20 +610,30 @@ fn encode_items(
                     "system guard content has no slot",
                 );
             }
-            IrItem::Developer { text } => {
-                report.record(
-                    format!("items[{idx}]"),
-                    LossAction::Degrade,
-                    "developer to system",
-                );
-                if !input.is_empty() {
+            IrItem::Developer {
+                text,
+                prompt_cache_breakpoint,
+            } => {
+                if let Some(mode) = prompt_cache_breakpoint
+                    .as_deref()
+                    .filter(|mode| !mode.is_empty())
+                {
+                    input.push(role_text_message("developer", text, mode));
+                } else {
                     report.record(
                         format!("items[{idx}]"),
                         LossAction::Degrade,
-                        "system message moved out of the turn list",
+                        "developer to system",
                     );
+                    if !input.is_empty() {
+                        report.record(
+                            format!("items[{idx}]"),
+                            LossAction::Degrade,
+                            "system message moved out of the turn list",
+                        );
+                    }
+                    instructions.push(text.clone());
                 }
-                instructions.push(text.clone());
             }
             IrItem::User { parts } => input.push(json!({
                 "role": "user",

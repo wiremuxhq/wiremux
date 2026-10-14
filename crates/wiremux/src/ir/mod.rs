@@ -353,6 +353,10 @@ impl IrCache {
 pub enum IrItem {
     System {
         text: String,
+        /// Chat system `prompt_cache_breakpoint` mode.
+        /// Set when that role is one text part carrying the marker.
+        /// Other wires keep `text` and record that the marker has no slot.
+        prompt_cache_breakpoint: Option<String>,
     },
     /// Converse system `cachePoint`. Other wires drop it.
     /// It stays between the system texts that surround it.
@@ -367,6 +371,10 @@ pub enum IrItem {
     /// Chat Completions `developer` degrades to this on Messages.
     Developer {
         text: String,
+        /// Chat developer `prompt_cache_breakpoint` mode.
+        /// Set when that role is one text part carrying the marker.
+        /// Other wires keep `text` and record that the marker has no slot.
+        prompt_cache_breakpoint: Option<String>,
     },
     User {
         parts: Vec<IrPart>,
@@ -779,6 +787,7 @@ mod tests {
             items: vec![
                 IrItem::System {
                     text: "You are helpful.".into(),
+                    prompt_cache_breakpoint: None,
                 },
                 IrItem::User {
                     parts: vec![IrPart::Text("Hi".into())],
@@ -861,9 +870,11 @@ mod tests {
     fn ir_item_developer_is_distinct_from_system() {
         let system = IrItem::System {
             text: "rules".into(),
+            prompt_cache_breakpoint: None,
         };
         let developer = IrItem::Developer {
             text: "rules".into(),
+            prompt_cache_breakpoint: None,
         };
         assert_ne!(system, developer);
         assert!(matches!(system, IrItem::System { .. }));
@@ -876,6 +887,7 @@ mod tests {
             model: "claude".into(),
             items: vec![IrItem::Developer {
                 text: "x".repeat(5000),
+                prompt_cache_breakpoint: None,
             }],
             tools: vec![],
             sampling: IrSampling::default(),

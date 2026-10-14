@@ -89,7 +89,10 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
 fn decode_system(system: &Value, items: &mut Vec<IrItem>) {
     match system {
         Value::String(text) if !text.is_empty() => {
-            items.push(IrItem::System { text: text.clone() });
+            items.push(IrItem::System {
+                text: text.clone(),
+                prompt_cache_breakpoint: None,
+            });
         }
         Value::Array(blocks) => {
             for block in blocks {
@@ -97,6 +100,7 @@ fn decode_system(system: &Value, items: &mut Vec<IrItem>) {
                     if !text.is_empty() {
                         items.push(IrItem::System {
                             text: text.to_string(),
+                            prompt_cache_breakpoint: None,
                         });
                     }
                 } else if let Some(point) =
@@ -681,7 +685,15 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
     let mut messages = Vec::new();
     for (idx, item) in ir.items.iter().enumerate() {
         match item {
-            IrItem::System { text } | IrItem::Developer { text } => {
+            IrItem::System {
+                text,
+                prompt_cache_breakpoint,
+            }
+            | IrItem::Developer {
+                text,
+                prompt_cache_breakpoint,
+            } => {
+                super::note_role_breakpoint(prompt_cache_breakpoint.as_deref(), report);
                 if text.is_empty() {
                     continue;
                 }
