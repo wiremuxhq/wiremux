@@ -965,7 +965,21 @@ fn encode_assistant_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Valu
 }
 
 fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
+    if let IrPart::PromptCacheBreakpoint { inner, mode } = part {
+        let encoded = encode_part(inner, report);
+        return match encoded {
+            Some(mut value) => {
+                super::apply_prompt_cache(&mut value, Some(mode), false, report);
+                Some(value)
+            }
+            None => {
+                super::apply_prompt_cache(&mut serde_json::Value::Null, Some(mode), false, report);
+                None
+            }
+        };
+    }
     match part {
+        IrPart::PromptCacheBreakpoint { .. } => unreachable!("handled above"),
         IrPart::Text(text) if text.trim().is_empty() => None,
         IrPart::Text(text) => Some(json!({"type": "text", "text": text})),
         IrPart::ImageUrl {
@@ -1145,7 +1159,11 @@ pub(crate) fn cache_floor_tokens(req: &IrRequest) -> u32 {
 }
 
 fn messages_part_chars(part: &IrPart) -> usize {
+    if let IrPart::PromptCacheBreakpoint { inner, .. } = part {
+        return messages_part_chars(inner);
+    }
     match part {
+        IrPart::PromptCacheBreakpoint { .. } => unreachable!("handled above"),
         IrPart::Text(text) if text.trim().is_empty() => 0,
         IrPart::Text(text) => text.len(),
         IrPart::ImageUrl { url, file_id, .. } => {

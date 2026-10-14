@@ -2640,6 +2640,73 @@ fn responses_input_image_detail_round_trips() {
 }
 
 #[test]
+fn responses_prompt_cache_breakpoint_round_trips() {
+    let req = br#"{
+        "model": "gpt-5",
+        "input": [{
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": "prefix",
+                "prompt_cache_breakpoint": {"mode": "explicit"}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Responses, req).expect("decode");
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/input/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("prefix"),
+        "breakpoint text must stay, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/input/0/content/0/prompt_cache_breakpoint/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "cache breakpoint must stay on the next request, got {body}"
+    );
+}
+
+#[test]
+fn chat_prompt_cache_breakpoint_round_trips_and_messages_keep_text() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": "prefix",
+                "prompt_cache_breakpoint": {"mode": "explicit"}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/prompt_cache_breakpoint/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "cache breakpoint must stay on the next request, got {body}"
+    );
+    let (msg_bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("messages");
+    let msg: Value = serde_json::from_slice(&msg_bytes).expect("json");
+    let msg_text = msg.to_string();
+    assert!(
+        msg_text.contains("prefix"),
+        "messages must still show the text, got {msg}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.action == LossAction::Drop && event.detail.contains("prompt cache breakpoint")
+        }),
+        "messages must record that the breakpoint has no slot, got {report:?}"
+    );
+}
+
+#[test]
 fn gemini_https_image_url_degrades_to_text_placeholder() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",

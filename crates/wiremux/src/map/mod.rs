@@ -145,6 +145,62 @@ pub(super) fn note_dropped_image_detail(detail: Option<&str>, wire: &str, report
     }
 }
 
+/// Chat and Responses `prompt_cache_breakpoint`, when the part carries one.
+pub(super) fn with_prompt_cache(part: Option<IrPart>, src: &Value) -> Option<IrPart> {
+    let part = part?;
+    let Some(marker) = src.get("prompt_cache_breakpoint") else {
+        return Some(part);
+    };
+    if !marker.is_object() {
+        return Some(part);
+    }
+    let mode = marker
+        .get("mode")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+        .unwrap_or("explicit");
+    Some(IrPart::PromptCacheBreakpoint {
+        mode: mode.to_string(),
+        inner: Box::new(part),
+    })
+}
+
+/// Split a part into its payload and an optional cache breakpoint mode.
+pub(super) fn peel_prompt_cache(part: &IrPart) -> (&IrPart, Option<&str>) {
+    match part {
+        IrPart::PromptCacheBreakpoint { mode, inner } => (inner, Some(mode.as_str())),
+        other => (other, None),
+    }
+}
+
+/// Write `prompt_cache_breakpoint` when this wire has the field.
+/// Other wires keep the part and record the drop.
+pub(super) fn apply_prompt_cache(
+    value: &mut Value,
+    mode: Option<&str>,
+    keep: bool,
+    report: &mut LossReport,
+) {
+    let Some(mode) = mode.filter(|mode| !mode.is_empty()) else {
+        return;
+    };
+    if !keep {
+        report.record(
+            "part.prompt_cache_breakpoint",
+            LossAction::Drop,
+            "prompt cache breakpoint has no slot",
+        );
+        return;
+    }
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "prompt_cache_breakpoint".to_string(),
+            serde_json::json!({ "mode": mode }),
+        );
+    }
+}
+
 /// Responses `input_image.file_id` with no URL.
 /// Chat, Messages, Converse, and Gemini have no slot for that image.
 pub(super) fn image_file_id_without_url(url: &str, file_id: Option<&str>) -> bool {

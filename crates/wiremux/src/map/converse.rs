@@ -944,6 +944,11 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                                 );
                             }
                         }
+                        IrPart::PromptCacheBreakpoint { .. } => {
+                            if let Some(block) = encode_part(part, report) {
+                                content.push(block);
+                            }
+                        }
                         _ => {
                             report.record(format!("items[{idx}].part"), LossAction::Drop, "no slot")
                         }
@@ -1038,7 +1043,21 @@ fn last_user_has_tool_result(messages: &[Value]) -> bool {
 }
 
 fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
+    if let IrPart::PromptCacheBreakpoint { inner, mode } = part {
+        let encoded = encode_part(inner, report);
+        return match encoded {
+            Some(mut value) => {
+                super::apply_prompt_cache(&mut value, Some(mode), false, report);
+                Some(value)
+            }
+            None => {
+                super::apply_prompt_cache(&mut serde_json::Value::Null, Some(mode), false, report);
+                None
+            }
+        };
+    }
     match part {
+        IrPart::PromptCacheBreakpoint { .. } => unreachable!("handled above"),
         IrPart::Text(text) if text.trim().is_empty() => None,
         IrPart::Text(text) => Some(json!({ "text": text })),
         IrPart::Thinking { text, signature } => {
