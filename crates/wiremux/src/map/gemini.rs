@@ -21,6 +21,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         items.push(IrItem::System {
             text: sys,
             prompt_cache_breakpoint: None,
+            content_parts: vec![],
         });
     }
     if let Some(contents) = value.get("contents").and_then(Value::as_array) {
@@ -694,12 +695,17 @@ pub(super) fn encode(
             IrItem::System {
                 text,
                 prompt_cache_breakpoint,
+                content_parts,
             }
             | IrItem::Developer {
                 text,
                 prompt_cache_breakpoint,
+                content_parts,
             } => {
                 super::note_role_breakpoint(prompt_cache_breakpoint.as_deref(), report);
+                if !content_parts.is_empty() {
+                    super::note_role_breakpoint(Some("explicit"), report);
+                }
                 if !contents.is_empty() {
                     report.record(
                         format!("items[{idx}]"),

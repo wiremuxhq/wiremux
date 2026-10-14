@@ -92,6 +92,7 @@ fn decode_system(system: &Value, items: &mut Vec<IrItem>) {
             items.push(IrItem::System {
                 text: text.clone(),
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             });
         }
         Value::Array(blocks) => {
@@ -101,6 +102,7 @@ fn decode_system(system: &Value, items: &mut Vec<IrItem>) {
                         items.push(IrItem::System {
                             text: text.to_string(),
                             prompt_cache_breakpoint: None,
+                            content_parts: vec![],
                         });
                     }
                 } else if let Some(point) =
@@ -688,12 +690,17 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
             IrItem::System {
                 text,
                 prompt_cache_breakpoint,
+                content_parts,
             }
             | IrItem::Developer {
                 text,
                 prompt_cache_breakpoint,
+                content_parts,
             } => {
                 super::note_role_breakpoint(prompt_cache_breakpoint.as_deref(), report);
+                if !content_parts.is_empty() {
+                    super::note_role_breakpoint(Some("explicit"), report);
+                }
                 if text.is_empty() {
                     continue;
                 }

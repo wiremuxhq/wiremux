@@ -51,6 +51,7 @@ fn decode_system(system: Option<&Value>, items: &mut Vec<IrItem>) {
         items.push(IrItem::System {
             text: text.to_string(),
             prompt_cache_breakpoint: None,
+            content_parts: vec![],
         });
         return;
     }
@@ -67,6 +68,7 @@ fn decode_system(system: Option<&Value>, items: &mut Vec<IrItem>) {
             items.push(IrItem::System {
                 text,
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             });
         }
     }
@@ -581,8 +583,12 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
             IrItem::System {
                 text,
                 prompt_cache_breakpoint,
+                content_parts,
             } => {
                 super::note_role_breakpoint(prompt_cache_breakpoint.as_deref(), report);
+                if !content_parts.is_empty() {
+                    super::note_role_breakpoint(Some("explicit"), report);
+                }
                 if !messages.is_empty() {
                     report.record(
                         format!("items[{idx}]"),
@@ -612,8 +618,12 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
             IrItem::Developer {
                 text,
                 prompt_cache_breakpoint,
+                content_parts,
             } => {
                 super::note_role_breakpoint(prompt_cache_breakpoint.as_deref(), report);
+                if !content_parts.is_empty() {
+                    super::note_role_breakpoint(Some("explicit"), report);
+                }
                 report.record(
                     format!("items[{idx}]"),
                     LossAction::Degrade,

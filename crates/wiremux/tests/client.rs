@@ -2807,6 +2807,7 @@ async fn stream_with_loss_encode_failure_does_not_connect() {
                     text: "be brief".into(),
 
                     prompt_cache_breakpoint: None,
+                    content_parts: vec![],
                 }],
             ),
         ),

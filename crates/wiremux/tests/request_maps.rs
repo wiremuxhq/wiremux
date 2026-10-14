@@ -2794,6 +2794,45 @@ fn chat_system_prompt_cache_breakpoint_round_trips() {
 }
 
 #[test]
+fn chat_system_second_part_prompt_cache_breakpoint_round_trips() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "system",
+            "content": [
+                {"type": "text", "text": "stable"},
+                {
+                    "type": "text",
+                    "text": "today",
+                    "prompt_cache_breakpoint": {"mode": "explicit"}
+                }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("stable"),
+        "first system part must stay first, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/1/text")
+            .and_then(Value::as_str),
+        Some("today"),
+        "second system part must stay second, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/1/prompt_cache_breakpoint/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "breakpoint must stay on the second part, got {body}"
+    );
+}
+
+#[test]
 fn chat_developer_prompt_cache_breakpoint_round_trips() {
     let req = br#"{
         "model": "gpt-4o",
@@ -3081,6 +3120,7 @@ fn prompt_caching_on_system_and_first_user() {
                 text: "rules".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello world".into())],
@@ -3117,6 +3157,7 @@ fn long_ttl_with_tools_tags_last_tool_before_system() {
                 text: "rules".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -3180,6 +3221,7 @@ fn cache_disabled_no_cache_control_blocks() {
                 text: "rules".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -3207,6 +3249,7 @@ fn cache_retention_none_skips_cache_control() {
                 text: "rules".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -3241,6 +3284,7 @@ fn multi_fragment_system_stays_at_or_under_cache_control_limit() {
             text: format!("system fragment {i}"),
 
             prompt_cache_breakpoint: None,
+            content_parts: vec![],
         })
         .collect();
     items.push(IrItem::User {
@@ -3297,11 +3341,13 @@ fn multi_fragment_long_ttl_with_tools_tags_first_system_not_last() {
                 text: "You are a coding agent.".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::System {
                 text: "Restored goal state from previous session:\nGoal: current task".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::User {
                 parts: vec![IrPart::Text("continue the work".into())],
@@ -3358,11 +3404,13 @@ fn short_ttl_multi_system_tags_last_system_and_first_user() {
                 text: "static".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::System {
                 text: "resume".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -3442,6 +3490,7 @@ fn cached_messages_ir(text: &str, floor: Option<u32>) -> IrRequest {
             IrItem::System {
                 text: text.into(),
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -3500,6 +3549,7 @@ fn long_developer_at_min_cacheable_tokens_still_tags() {
                 text: "x".repeat(5000),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -3544,6 +3594,7 @@ fn large_function_output_at_min_cacheable_tokens_still_tags() {
                 text: "rules".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::FunctionOutput {
                 call_id: "c1".into(),
@@ -3618,6 +3669,7 @@ fn large_custom_tool_input_at_min_cacheable_tokens_still_tags() {
                 text: "rules".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::CustomToolCall {
                 call_id: "call_custom".into(),
@@ -3644,6 +3696,7 @@ fn short_custom_tool_input_below_min_cacheable_tokens_drops_cache_control() {
                 text: "rules".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::CustomToolCall {
                 call_id: "call_custom".into(),
@@ -3667,6 +3720,7 @@ fn large_reasoning_summary_at_min_cacheable_tokens_still_tags() {
                 text: "rules".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::Reasoning {
                 encrypted: Some("sig".into()),
@@ -3692,6 +3746,7 @@ fn reasoning_signature_alone_stays_below_min_cacheable_tokens() {
                 text: "rules".into(),
 
                 prompt_cache_breakpoint: None,
+                content_parts: vec![],
             },
             IrItem::User {
                 parts: vec![IrPart::Text("hello".into())],
@@ -11286,6 +11341,7 @@ fn converse_encode_empty_messages_fails() {
         vec![IrItem::System {
             text: "sys".into(),
             prompt_cache_breakpoint: None,
+            content_parts: vec![],
         }],
     );
     let err = encode(Wire::Converse, &ir, &converse_profile())
@@ -11302,6 +11358,7 @@ fn converse_system_only_and_empty_request_are_rejected() {
             text: "rules".into(),
 
             prompt_cache_breakpoint: None,
+            content_parts: vec![],
         }],
     );
     let err = encode(Wire::Converse, &system_only, &converse_profile())
