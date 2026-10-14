@@ -855,6 +855,53 @@ fn encode_audio(data: &str, format: &str, report: &mut LossReport) -> Option<Val
     }))
 }
 
+/// Bedrock allows letters, digits, one space in a row, `-`, `()`, and `[]`.
+/// A dot in `report.pdf` is a validation error. Anything else becomes a space.
+fn converse_document_name(name: Option<&str>, report: &mut LossReport) -> String {
+    let Some(original) = name.filter(|s| !s.is_empty()) else {
+        return "document".to_string();
+    };
+    let raw = original.trim();
+    if raw.is_empty() {
+        report.record(
+            "part.document.name",
+            LossAction::Degrade,
+            "document name had characters Converse rejects",
+        );
+        return "document".to_string();
+    }
+    let mut out = String::new();
+    let mut spaced = false;
+    for ch in raw.chars() {
+        let keep = ch.is_ascii_alphanumeric() || matches!(ch, '-' | '(' | ')' | '[' | ']');
+        if keep {
+            out.push(ch);
+            spaced = false;
+            continue;
+        }
+        if !spaced && !out.is_empty() {
+            out.push(' ');
+            spaced = true;
+        }
+    }
+    let mut cleaned = out.trim().to_string();
+    if cleaned.chars().count() > 200 {
+        cleaned = cleaned.chars().take(200).collect();
+        cleaned = cleaned.trim().to_string();
+    }
+    if cleaned.is_empty() {
+        cleaned = "document".to_string();
+    }
+    if cleaned != original {
+        report.record(
+            "part.document.name",
+            LossAction::Degrade,
+            "document name had characters Converse rejects",
+        );
+    }
+    cleaned
+}
+
 fn encode_document(
     source: &IrDocumentSource,
     media_type: &str,
@@ -888,10 +935,7 @@ fn encode_document(
         );
         return None;
     };
-    let name = name
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("document");
+    let name = converse_document_name(name, report);
     match source {
         IrDocumentSource::Text(_) => unreachable!("recorded above"),
         IrDocumentSource::Base64(data) => Some(json!({
