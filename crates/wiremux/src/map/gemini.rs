@@ -909,6 +909,7 @@ pub(super) fn encode(
         body["tools"] = json!(tools);
     }
     encode_sampling(ir, &mut body, report);
+    keep_mixed_builtin_tool_flag(&mut body, report);
     Ok(body)
 }
 
@@ -1601,6 +1602,40 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if !s.include.is_empty() {
         report.record("sampling.include", LossAction::Drop, "no slot");
     }
+}
+
+/// Gemini rejects function declarations beside a built-in tool unless this
+/// flag is set. The error asks for `toolConfig.includeServerSideToolInvocations`.
+fn keep_mixed_builtin_tool_flag(body: &mut Value, report: &mut LossReport) {
+    let Some(tools) = body.get("tools").and_then(Value::as_array) else {
+        return;
+    };
+    let has_functions = tools.iter().any(|tool| {
+        tool.get("functionDeclarations")
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty())
+    });
+    let has_builtin = tools.iter().any(|tool| {
+        tool.get("googleSearch").is_some()
+            || tool.get("codeExecution").is_some()
+            || tool.get("googleSearchRetrieval").is_some()
+    });
+    if !has_functions || !has_builtin {
+        return;
+    }
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+    let cfg = obj.entry("toolConfig").or_insert_with(|| json!({}));
+    let Some(cfg) = cfg.as_object_mut() else {
+        return;
+    };
+    cfg.insert("includeServerSideToolInvocations".into(), json!(true));
+    report.record(
+        "toolConfig.includeServerSideToolInvocations",
+        LossAction::Preserve,
+        "gemini builtin tool beside a function call",
+    );
 }
 
 fn encode_tool_choice(choice: &IrToolChoice, body: &mut Value) {

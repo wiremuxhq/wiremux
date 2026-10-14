@@ -3098,6 +3098,66 @@ tool_type_policy = "passthrough"
         tools.is_some_and(|tools| tools.iter().any(|tool| tool.get("googleSearch").is_some())),
         "passthrough encode must emit googleSearch, got {body} report={report:?}"
     );
+    assert!(
+        body.pointer("/toolConfig/includeServerSideToolInvocations")
+            .is_none(),
+        "googleSearch alone must not set the mixed-tool flag, got {body}"
+    );
+}
+
+#[test]
+fn gemini_mixed_function_and_google_search_keeps_server_side_tool_flag() {
+    let bytes = br#"{
+        "model": "gemini-2.5-flash",
+        "contents": [{"role": "user", "parts": [{"text": "search"}]}],
+        "tools": [
+            {"functionDeclarations": [{"name": "lookup", "parameters": {"type": "object"}}]},
+            {"googleSearch": {}}
+        ],
+        "toolConfig": {"includeServerSideToolInvocations": true}
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, bytes).expect("decode");
+    let passthrough = profile(
+        r#"
+schema_version = 1
+id = "test-gemini-mixed-tools"
+wire = "gemini"
+tool_type_policy = "passthrough"
+"#,
+    );
+    let (out, report) = encode(Wire::Gemini, &ir, &passthrough).expect("encode");
+    let body: Value = serde_json::from_slice(&out).expect("json");
+    let tools = body.get("tools").and_then(Value::as_array).expect("tools");
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.get("functionDeclarations").is_some()),
+        "function tool must stay, got {body}"
+    );
+    assert!(
+        tools.iter().any(|tool| tool.get("googleSearch").is_some()),
+        "googleSearch must stay, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/toolConfig/includeServerSideToolInvocations"),
+        Some(&Value::Bool(true)),
+        "mixed function and Google Search must keep includeServerSideToolInvocations or Gemini rejects the request, got {body} report={report:?}"
+    );
+
+    let mut forced = ir;
+    forced.sampling.tool_choice = IrToolChoice::Required;
+    let (forced_out, _) = encode(Wire::Gemini, &forced, &passthrough).expect("encode required");
+    let forced_body: Value = serde_json::from_slice(&forced_out).expect("json");
+    assert_eq!(
+        forced_body.pointer("/toolConfig/functionCallingConfig/mode"),
+        Some(&Value::String("ANY".into())),
+        "tool choice must stay beside the builtin flag, got {forced_body}"
+    );
+    assert_eq!(
+        forced_body.pointer("/toolConfig/includeServerSideToolInvocations"),
+        Some(&Value::Bool(true)),
+        "required tool choice must not drop the builtin flag, got {forced_body}"
+    );
 }
 
 fn count_cache_control(value: &Value) -> usize {
