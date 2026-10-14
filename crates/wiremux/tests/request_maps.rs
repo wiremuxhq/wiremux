@@ -10744,6 +10744,39 @@ fn converse_encode_does_not_invent_empty_function_call_args() {
 }
 
 #[test]
+fn converse_tool_use_non_object_json_input_round_trips() {
+    let req = br#"{
+      "messages": [{"role": "assistant", "content": [
+        {"toolUse": {"toolUseId": "t1", "name": "lookup", "input": ["a", "b"]}},
+        {"toolUse": {"toolUseId": "t2", "name": "label", "input": "paris"}},
+        {"toolUse": {"toolUseId": "t3", "name": "count", "input": 3}}
+      ]}]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/toolUse/input"),
+        Some(&serde_json::json!(["a", "b"])),
+        "array tool input must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/1/toolUse/input"),
+        Some(&serde_json::json!("paris")),
+        "string tool input must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/2/toolUse/input"),
+        Some(&serde_json::json!(3)),
+        "number tool input must round-trip, got {body}"
+    );
+    assert!(
+        !loss_degraded(&report, "toolUse.input"),
+        "JSON tool input must not be wrapped, got {report:?}"
+    );
+}
+
+#[test]
 fn converse_mixed_assistant_text_then_tool_use_round_trips_one_message() {
     let req = br#"{
       "modelId": "amazon.nova-lite-v1:0",

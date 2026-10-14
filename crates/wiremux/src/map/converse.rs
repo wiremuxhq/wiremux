@@ -772,13 +772,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 arguments,
                 ..
             } => {
-                let input = super::json_object_or_raw(
-                    arguments,
-                    "toolUse.input",
-                    report,
-                    "tool arguments are not a JSON object",
-                    "raw",
-                );
+                let input = converse_tool_input(arguments, report);
                 let block = json!({
                     "toolUse": {
                         "toolUseId": call_id,
@@ -1290,6 +1284,20 @@ fn encode_document(
         }
     }
     Some(block)
+}
+
+fn converse_tool_input(arguments: &str, report: &mut LossReport) -> Value {
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(value) => value,
+        Err(_) => {
+            report.record(
+                "toolUse.input",
+                LossAction::Degrade,
+                "tool arguments are not JSON",
+            );
+            json!({ "raw": arguments })
+        }
+    }
 }
 
 fn encode_tool(tool: &PreparedTool) -> Option<Value> {
