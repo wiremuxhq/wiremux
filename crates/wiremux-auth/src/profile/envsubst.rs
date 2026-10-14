@@ -1,4 +1,4 @@
-//! One-pass env substitution. Missing vars unset the field (not `""`).
+//! One-pass env substitution. A missing or empty value unsets the field.
 
 use serde_json::Value;
 
@@ -7,7 +7,7 @@ enum Subst {
     Unset,
 }
 
-/// Walk every string. A missing `$VAR` / `${VAR}` / `{env:VAR}` unsets the field.
+/// Walk every string. A missing or empty `$VAR` / `${VAR}` / `{env:VAR}` unsets the field.
 pub(crate) fn walk(value: Value) -> Value {
     match value {
         Value::String(s) => match subst_string(&s) {
@@ -38,8 +38,8 @@ fn subst_string(input: &str) -> Subst {
     while i < input.len() {
         if let Some((var, consumed)) = match_env_ref(&input[i..]) {
             match std::env::var(var) {
-                Ok(v) => out.push_str(&v),
-                Err(_) => unset = true,
+                Ok(v) if !v.trim().is_empty() => out.push_str(&v),
+                _ => unset = true,
             }
             i += consumed;
             continue;
@@ -117,6 +117,34 @@ mod tests {
             "{env:WIREMUX_TEST_UNSET_VAR_9f3c2e1a}".into(),
         ));
         assert_eq!(v, Value::Null);
+    }
+
+    #[test]
+    fn empty_var_unsets_a_host_template() {
+        let home = crate::isolated_home::IsolatedHome::with_extra_envs(&[
+            "WIREMUX_TEST_EMPTY_REGION_9f3c",
+            "WIREMUX_TEST_BLANK_REGION_9f3c",
+            "WIREMUX_TEST_SET_REGION_9f3c",
+        ]);
+        home.set_env("WIREMUX_TEST_EMPTY_REGION_9f3c", "");
+        home.set_env("WIREMUX_TEST_BLANK_REGION_9f3c", "  ");
+        home.set_env("WIREMUX_TEST_SET_REGION_9f3c", "us-east-1");
+        let empty = walk(Value::String(
+            "https://bedrock-runtime.{env:WIREMUX_TEST_EMPTY_REGION_9f3c}.amazonaws.com".into(),
+        ));
+        assert_eq!(empty, Value::Null, "an empty region must not build a host");
+        let blank = walk(Value::String(
+            "https://{env:WIREMUX_TEST_BLANK_REGION_9f3c}-aiplatform.googleapis.com".into(),
+        ));
+        assert_eq!(blank, Value::Null, "a blank location must not build a host");
+        let set = walk(Value::String(
+            "https://bedrock-runtime.{env:WIREMUX_TEST_SET_REGION_9f3c}.amazonaws.com".into(),
+        ));
+        assert_eq!(
+            set,
+            Value::String("https://bedrock-runtime.us-east-1.amazonaws.com".into())
+        );
+        drop(home);
     }
 
     #[test]
