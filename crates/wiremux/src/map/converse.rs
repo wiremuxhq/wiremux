@@ -317,6 +317,12 @@ fn decode_part(block: &Value) -> Option<IrPart> {
             raw: guard.clone(),
         });
     }
+    if let Some(found) = block.get("searchResult").filter(|value| value.is_object()) {
+        return Some(IrPart::Raw {
+            type_name: "searchResult".into(),
+            raw: found.clone(),
+        });
+    }
     None
 }
 
@@ -966,6 +972,9 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
         }
         IrPart::Raw { type_name, raw } if type_name == "guardContent" && raw.is_object() => {
             Some(json!({ "guardContent": raw }))
+        }
+        IrPart::Raw { type_name, raw } if type_name == "searchResult" && raw.is_object() => {
+            Some(json!({ "searchResult": raw }))
         }
         IrPart::Raw { .. } => {
             if let Some(plain) = super::plain_media_part(part) {
