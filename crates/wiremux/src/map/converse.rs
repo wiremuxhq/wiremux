@@ -795,13 +795,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 input: tool_input,
                 ..
             } => {
-                let input = super::json_object_or_raw(
-                    tool_input,
-                    "toolUse.input",
-                    report,
-                    "tool arguments are not a JSON object",
-                    "raw",
-                );
+                let input = converse_tool_input(tool_input, report);
                 let block = json!({
                     "toolUse": {
                         "toolUseId": call_id,
