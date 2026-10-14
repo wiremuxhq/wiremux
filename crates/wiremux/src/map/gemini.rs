@@ -794,7 +794,7 @@ pub(super) fn encode(
                     .find_map(|(id, name)| (*id == call_id).then_some(*name))
                     .unwrap_or(call_id.as_str());
                 let response = super::json_object_or_raw(
-                    output,
+                    &super::function_output_text(output, parts),
                     "functionResponse.response",
                     report,
                     "tool output is not a JSON object",
