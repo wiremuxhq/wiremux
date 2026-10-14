@@ -436,7 +436,9 @@ impl WireClient {
     }
 
     /// GET the models catalog. OpenAI-compat uses the chat version prefix
-    /// (`{base}/v1/models` for `/v1/chat/completions`). HTTP 404 after the
+    /// (`{base}/v1/models` for `/v1/chat/completions`,
+    /// `{base}/openai/v1/models` for `/openai/v1/chat/completions`).
+    /// HTTP 404 after the
     /// request is sent is an empty list, including a SigV4-signed GET.
     /// HTTP 401 is [`ClientError::Auth`] for a static token. A provider
     /// that can refresh retries that GET once after `mark_stale`. When
@@ -1557,9 +1559,13 @@ fn gemini_listed_vision(item: &Value) -> Option<bool> {
 
 /// Catalog URL for `list_models`.
 ///
-/// `/v1/chat/completions` and `/v1/messages` become `{base}/v1/models`.
-/// Gemini `/v1beta/models/{model}:generateContent` becomes `{base}/v1beta/models`.
-/// A path with no version prefix stays `{base}/models`.
+/// The prefix runs through the first `v1` / `v1beta` segment, including
+/// directories in front of it. `/v1/chat/completions` becomes
+/// `{base}/v1/models`. `/openai/v1/chat/completions` becomes
+/// `{base}/openai/v1/models`. `/api/v3/chat/completions` becomes
+/// `{base}/api/v3/models`. Gemini
+/// `/v1beta/models/{model}:generateContent` becomes `{base}/v1beta/models`.
+/// A path with no version segment stays `{base}/models`.
 fn models_url(base: &str, chat_path: &str) -> String {
     let base = base.trim_end_matches('/');
     match chat_version_prefix(chat_path) {
@@ -1568,20 +1574,33 @@ fn models_url(base: &str, chat_path: &str) -> String {
     }
 }
 
-/// First path segment when it looks like `v1` or `v1beta`.
+/// Chat path up through the first version segment (`v1`, `v1beta`, `v3`).
 fn chat_version_prefix(chat_path: &str) -> Option<&str> {
     let path = chat_path.trim().trim_start_matches('/');
-    let first = path.split('/').next().unwrap_or("");
-    let rest = first.strip_prefix('v')?;
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let mut end = 0usize;
+    for (index, segment) in path.split('/').enumerate() {
+        if segment.is_empty() {
+            return None;
+        }
+        if index > 0 {
+            end += 1;
+        }
+        end += segment.len();
+        if version_segment(segment) {
+            return Some(&path[..end]);
+        }
+    }
+    None
+}
+
+/// `v` plus a digit, then only ASCII letters and digits (`v1`, `v1beta`).
+fn version_segment(segment: &str) -> bool {
+    let Some(rest) = segment.strip_prefix('v') else {
+        return false;
+    };
     let mut chars = rest.chars();
-    if !chars.next().is_some_and(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    if chars.all(|c| c.is_ascii_alphanumeric()) {
-        Some(first)
-    } else {
-        None
-    }
+    chars.next().is_some_and(|c| c.is_ascii_digit()) && chars.all(|c| c.is_ascii_alphanumeric())
 }
 
 fn allows_ollama_show(base_url: &str) -> bool {
@@ -1630,6 +1649,50 @@ fn vision_from_show(value: &Value) -> Option<bool> {
 mod tests {
     use super::*;
     use wiremux_auth::parse_profile_str;
+
+    #[test]
+    fn models_url_keeps_a_version_segment_that_is_not_first() {
+        assert_eq!(
+            models_url("https://api.groq.com", "/openai/v1/chat/completions"),
+            "https://api.groq.com/openai/v1/models"
+        );
+        assert_eq!(
+            models_url(
+                "https://ark.cn-beijing.volces.com",
+                "/api/v3/chat/completions"
+            ),
+            "https://ark.cn-beijing.volces.com/api/v3/models"
+        );
+        assert_eq!(
+            models_url(
+                "https://dashscope-intl.aliyuncs.com",
+                "/compatible-mode/v1/chat/completions"
+            ),
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models"
+        );
+        assert_eq!(
+            models_url("https://api.groq.com/", "/v1/chat/completions"),
+            "https://api.groq.com/v1/models"
+        );
+        assert_eq!(
+            models_url(
+                "https://generativelanguage.googleapis.com",
+                "/v1beta/models/{model}:generateContent"
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/models"
+        );
+        assert_eq!(
+            models_url("https://api.perplexity.ai", "/chat/completions"),
+            "https://api.perplexity.ai/models"
+        );
+        assert_eq!(
+            models_url(
+                "https://example.openai.azure.com",
+                "/openai/deployments/{model}/chat/completions?api-version=2024-10-21"
+            ),
+            "https://example.openai.azure.com/models"
+        );
+    }
 
     #[test]
     fn eventstream_throttle_is_rate_limit_with_caller_status() {
