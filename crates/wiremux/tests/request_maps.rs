@@ -9374,6 +9374,60 @@ fn converse_assistant_document_moves_to_a_user_turn() {
 }
 
 #[test]
+fn converse_document_citations_round_trip() {
+    let req = br#"{
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "text": "Read this."
+            }, {
+                "document": {
+                    "format": "pdf",
+                    "name": "report",
+                    "source": { "bytes": "AAAA" },
+                    "citations": { "enabled": true },
+                    "context": "section 2"
+                }
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    assert!(
+        ir.items.iter().any(|item| matches!(
+            item,
+            IrItem::User { parts } if parts.iter().any(|p| matches!(
+                p,
+                IrPart::Document {
+                    citations_enabled: Some(true),
+                    context: Some(context),
+                    ..
+                } if context == "section 2"
+            ))
+        )),
+        "Converse citations and context must be kept, got {:?}",
+        ir.items
+    );
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let doc = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .and_then(|blocks| blocks.iter().find(|b| b.get("document").is_some()))
+        .and_then(|b| b.get("document"))
+        .expect("document");
+    assert_eq!(
+        doc.pointer("/citations/enabled").and_then(Value::as_bool),
+        Some(true),
+        "encode must keep citations.enabled, got {body}"
+    );
+    assert_eq!(
+        doc.get("context").and_then(Value::as_str),
+        Some("section 2"),
+        "encode must keep document context, got {body}"
+    );
+}
+
+#[test]
 fn converse_document_file_id_records_loss() {
     let ir = IrRequest::new(
         "amazon.nova-lite-v1:0",
