@@ -268,6 +268,12 @@ fn decode_part(block: &Value, report: &mut LossReport) -> Option<IrPart> {
     if let Some(audio) = block.get("audio") {
         return decode_audio(audio, report);
     }
+    if let Some(video) = block.get("video").filter(|value| value.is_object()) {
+        return Some(IrPart::Raw {
+            type_name: "video".into(),
+            raw: video.clone(),
+        });
+    }
     None
 }
 
@@ -822,6 +828,9 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             encode_image_url(url, report)
         }
         IrPart::ImageBase64 { media_type, data } => encode_image_bytes(media_type, data, report),
+        IrPart::Raw { type_name, raw } if type_name == "video" && raw.is_object() => {
+            Some(json!({ "video": raw }))
+        }
         IrPart::Raw { .. } => {
             if let Some(plain) = super::plain_media_part(part) {
                 report.record("part.media_hint", LossAction::Drop, "no slot");
