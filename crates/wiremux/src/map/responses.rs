@@ -225,6 +225,7 @@ fn decode_part(part: &Value) -> Option<IrPart> {
 }
 
 fn decode_image(part: &Value) -> Option<IrPart> {
+    let file_id = str_field(part, "file_id").filter(|id| !id.is_empty());
     if let Some(url) = part
         .get("image_url")
         .and_then(|u| {
@@ -234,7 +235,9 @@ fn decode_image(part: &Value) -> Option<IrPart> {
         })
         .or_else(|| str_field(part, "url"))
     {
-        if let Some((media_type, data)) = super::split_data_url(&url) {
+        if file_id.is_none()
+            && let Some((media_type, data)) = super::split_data_url(&url)
+        {
             return Some(IrPart::ImageBase64 {
                 media_type: media_type.to_string(),
                 data: data.to_string(),
@@ -244,6 +247,7 @@ fn decode_image(part: &Value) -> Option<IrPart> {
             url,
             detail: None,
             bucket_owner: None,
+            file_id,
         });
     }
     if let Some(data) =
@@ -256,7 +260,29 @@ fn decode_image(part: &Value) -> Option<IrPart> {
             data,
         });
     }
-    None
+    file_id.map(|file_id| IrPart::ImageUrl {
+        url: String::new(),
+        detail: None,
+        bucket_owner: None,
+        file_id: Some(file_id),
+    })
+}
+
+fn encode_input_image(
+    url: &str,
+    detail: Option<&str>,
+    file_id: Option<&str>,
+    report: &mut LossReport,
+) -> Value {
+    super::note_dropped_image_detail(detail, "responses", report);
+    let mut image = json!({ "type": "input_image" });
+    if let Some(file_id) = file_id.filter(|id| !id.is_empty()) {
+        image["file_id"] = json!(file_id);
+    }
+    if !url.is_empty() {
+        image["image_url"] = json!(url);
+    }
+    image
 }
 
 fn parts_text(parts: &[IrPart]) -> String {
@@ -779,10 +805,8 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                     url,
                     detail,
                     bucket_owner: _,
-                } => {
-                    super::note_dropped_image_detail(detail.as_deref(), "responses", report);
-                    json!({"type": "input_image", "image_url": url})
-                }
+                    file_id,
+                } => encode_input_image(url, detail.as_deref(), file_id.as_deref(), report),
                 IrPart::ImageBase64 { media_type, data } => json!({
                     "type": "input_image",
                     "image_url": format!("data:{media_type};base64,{data}")
@@ -914,9 +938,14 @@ fn encode_function_output(
                 url,
                 detail,
                 bucket_owner: _,
+                file_id,
             } => {
-                super::note_dropped_image_detail(detail.as_deref(), "responses", report);
-                content.push(json!({"type": "input_image", "image_url": url}));
+                content.push(encode_input_image(
+                    url,
+                    detail.as_deref(),
+                    file_id.as_deref(),
+                    report,
+                ));
                 kept_structured = true;
             }
             IrPart::ImageBase64 { media_type, data } => {

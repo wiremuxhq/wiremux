@@ -145,6 +145,26 @@ pub(super) fn note_dropped_image_detail(detail: Option<&str>, wire: &str, report
     }
 }
 
+/// Responses `input_image.file_id` with no URL.
+/// Chat, Messages, Converse, and Gemini have no slot for that image.
+pub(super) fn image_file_id_without_url(url: &str, file_id: Option<&str>) -> bool {
+    url.is_empty() && file_id.is_some_and(|id| !id.is_empty())
+}
+
+/// Record a Drop when `file_id` is the only image identity and this wire cannot send it.
+pub(super) fn drop_image_file_id_without_url(
+    url: &str,
+    file_id: Option<&str>,
+    report: &mut LossReport,
+) -> bool {
+    if image_file_id_without_url(url, file_id) {
+        report.record("part.image.file_id", LossAction::Drop, "no slot");
+        true
+    } else {
+        false
+    }
+}
+
 /// Encode IR into a dialect request body. Applies `tool_type_policy` and fingerprint.
 pub fn encode(
     wire: Wire,

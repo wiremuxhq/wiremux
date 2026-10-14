@@ -165,6 +165,7 @@ fn decode_part(part: &Value) -> Option<IrPart> {
                     url,
                     detail,
                     bucket_owner: None,
+                    file_id: None,
                 })
             }
         }
@@ -683,6 +684,12 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
     let visible: Vec<&IrPart> = parts
         .iter()
         .filter(|part| match part {
+            IrPart::ImageUrl { url, file_id, .. }
+                if super::image_file_id_without_url(url, file_id.as_deref()) =>
+            {
+                report.record("part.image.file_id", LossAction::Drop, "no slot");
+                false
+            }
             IrPart::Thinking { .. } => {
                 report.record(
                     "part.thinking",
@@ -747,6 +754,7 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                     url,
                     detail,
                     bucket_owner: _,
+                    file_id: _,
                 } => {
                     let mut image_url = json!({ "url": url });
                     if let Some(detail) = detail {

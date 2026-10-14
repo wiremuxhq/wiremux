@@ -424,11 +424,14 @@ pub enum IrPart {
     Text(String),
     /// Chat `image_url`. `detail` is `low`, `high`, or `auto`.
     /// `bucket_owner` is the Converse S3 account id.
+    /// `file_id` is the Responses `input_image.file_id`.
+    /// Chat, Messages, Converse, and Gemini have no slot for it.
     /// Other dest wires keep the URL and drop `detail` and `bucket_owner`.
     ImageUrl {
         url: String,
         detail: Option<String>,
         bucket_owner: Option<String>,
+        file_id: Option<String>,
     },
     ImageBase64 {
         media_type: String,
@@ -994,6 +997,7 @@ mod tests {
                     url: long.clone(),
                     detail: Some("y".repeat(5000)),
                     bucket_owner: None,
+                    file_id: None,
                 }],
             }],
             tools: vec![],
@@ -1010,6 +1014,7 @@ mod tests {
                     url: "https://cdn.example/a.png".into(),
                     detail: Some(long.clone()),
                     bucket_owner: None,
+                    file_id: None,
                 }],
             }],
             tools: vec![],
@@ -1026,6 +1031,7 @@ mod tests {
                     url: "https://cdn.example/a.png".into(),
                     detail: None,
                     bucket_owner: None,
+                    file_id: None,
                 }],
             }],
             tools: vec![],

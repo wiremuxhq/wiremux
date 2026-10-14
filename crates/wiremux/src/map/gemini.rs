@@ -1215,7 +1215,11 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 url,
                 detail,
                 bucket_owner: _,
+                file_id,
             } => {
+                if super::drop_image_file_id_without_url(url, file_id.as_deref(), report) {
+                    continue;
+                }
                 super::note_dropped_image_detail(detail.as_deref(), "gemini", report);
                 if let Some(rest) = url.strip_prefix("data:")
                     && let Some((mime, b64)) = rest.split_once(";base64,")
