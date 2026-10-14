@@ -682,6 +682,16 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 messages.push(raw.clone());
                 idx += 1;
             }
+            IrItem::Unknown { type_name, .. }
+                if matches!(type_name.as_str(), "toolAddition" | "toolRemoval") =>
+            {
+                report.record(
+                    format!("items[{idx}]"),
+                    LossAction::Drop,
+                    "tool addition or removal has no slot",
+                );
+                idx += 1;
+            }
             IrItem::Unknown { raw, .. } => {
                 messages.push(raw.clone());
                 idx += 1;

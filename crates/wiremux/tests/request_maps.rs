@@ -11117,6 +11117,141 @@ fn converse_citations_content_round_trips() {
 }
 
 #[test]
+fn converse_system_role_tool_add_and_remove_round_trip() {
+    let req = br#"{
+        "messages": [
+            {"role": "user", "content": [{"text": "hi"}]},
+            {"role": "system", "content": [
+                {"toolAddition": {"tool": {"toolSpec": {"name": "lookup", "inputSchema": {"json": {"type": "object"}}}}}},
+                {"toolRemoval": {"toolName": "old"}}
+            ]}
+        ]
+    }"#;
+    let (ir, report) = decode(Wire::Converse, req).expect("decode");
+    assert!(
+        matches!(
+            ir.items.as_slice(),
+            [
+                IrItem::User { .. },
+                IrItem::Unknown { type_name: add, .. },
+                IrItem::Unknown { type_name: remove, .. },
+            ] if add == "toolAddition" && remove == "toolRemoval"
+        ),
+        "system-role tool changes must stay in order, got {:?}",
+        ir.items
+    );
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "message.role" && event.detail.contains("not user or assistant")
+        }),
+        "a tool add or remove is not an unknown role, got {report:?}"
+    );
+    let (bytes, encode_report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/1/role").and_then(Value::as_str),
+        Some("system"),
+        "tool add stays on a system-role message, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/1/content/0/toolAddition/tool/toolSpec/name")
+            .and_then(Value::as_str),
+        Some("lookup"),
+        "added tool name must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/2/role").and_then(Value::as_str),
+        Some("system"),
+        "tool remove stays on a system-role message, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/2/content/0/toolRemoval/toolName")
+            .and_then(Value::as_str),
+        Some("old"),
+        "removed tool name must round-trip, got {body}"
+    );
+    let system_text = body
+        .get("system")
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    assert!(
+        !system_text.contains("lookup") && !system_text.contains("toolAddition"),
+        "tool add is not a top-level system prompt, got {body}"
+    );
+    assert!(
+        !encode_report
+            .events
+            .iter()
+            .any(|event| { event.action == LossAction::Drop && event.detail.contains("no slot") }),
+        "same-wire encode must keep the tool change, got {encode_report:?}"
+    );
+
+    let plain = br#"{
+        "messages": [
+            {"role": "user", "content": [{"text": "hi"}]},
+            {"role": "assistant", "content": [{"text": "ok"}]}
+        ]
+    }"#;
+    let (ir_plain, _) = decode(Wire::Converse, plain).expect("decode plain");
+    let (plain_bytes, _) =
+        encode(Wire::Converse, &ir_plain, &converse_profile()).expect("encode plain");
+    let plain_body: Value = serde_json::from_slice(&plain_bytes).expect("json plain");
+    assert!(
+        !plain_body.to_string().contains("toolAddition")
+            && !plain_body.to_string().contains("toolRemoval"),
+        "a user and assistant turn must not gain a tool change, got {plain_body}"
+    );
+
+    let bogus = br#"{
+        "messages": [
+            {"role": "system", "content": [{"toolAddition": "lookup"}]},
+            {"role": "user", "content": [{"text": "hi"}]}
+        ]
+    }"#;
+    let (ir_bogus, bogus_report) = decode(Wire::Converse, bogus).expect("decode string");
+    assert!(
+        bogus_report.events.iter().any(|event| {
+            event.path == "message.role"
+                && event.detail.contains("system")
+                && event.detail.contains("not user or assistant")
+        }),
+        "a string toolAddition is not a tool change, got {bogus_report:?}"
+    );
+    assert!(
+        !ir_bogus.items.iter().any(
+            |item| matches!(item, IrItem::Unknown { type_name, .. } if type_name == "toolAddition")
+        ),
+        "a string toolAddition must not be kept, got {:?}",
+        ir_bogus.items
+    );
+
+    for (wire, profile, label) in [
+        (Wire::ChatCompletions, chat_profile(), "Chat"),
+        (Wire::Messages, messages_profile(), "Messages"),
+        (Wire::Responses, hard_error_profile(), "Responses"),
+        (Wire::Gemini, gemini_profile(), "Gemini"),
+    ] {
+        let (dest_bytes, dest_report) = encode(wire, &ir, &profile).expect(label);
+        let dest_text = serde_json::from_slice::<Value>(&dest_bytes)
+            .expect("dest json")
+            .to_string();
+        assert!(
+            !dest_text.contains("lookup")
+                && !dest_text.contains("toolAddition")
+                && !dest_text.contains("toolRemoval"),
+            "{label} must not send the tool change, got {dest_text}"
+        );
+        assert!(
+            dest_report
+                .events
+                .iter()
+                .any(|event| event.action == LossAction::Drop),
+            "{label} must record that the tool change was dropped, got {dest_report:?}"
+        );
+    }
+}
+
+#[test]
 fn converse_decode_tool_use_missing_id_fails() {
     let req = br#"{
       "messages": [

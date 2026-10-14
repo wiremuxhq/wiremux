@@ -557,6 +557,16 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 }
                 idx += 1;
             }
+            IrItem::Unknown { type_name, .. }
+                if matches!(type_name.as_str(), "toolAddition" | "toolRemoval") =>
+            {
+                report.record(
+                    format!("items[{idx}]"),
+                    LossAction::Drop,
+                    "tool addition or removal has no slot",
+                );
+                idx += 1;
+            }
             IrItem::Unknown { raw, .. } => {
                 if chat_string_role(raw) {
                     messages.push(raw.clone());

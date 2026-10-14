@@ -626,6 +626,15 @@ fn encode_items(
                 summary.as_deref(),
                 raw.as_ref(),
             )),
+            IrItem::Unknown { type_name, .. }
+                if matches!(type_name.as_str(), "toolAddition" | "toolRemoval") =>
+            {
+                report.record(
+                    format!("items[{idx}]"),
+                    LossAction::Drop,
+                    "tool addition or removal has no slot",
+                );
+            }
             IrItem::HostedToolCall { raw, .. } | IrItem::Unknown { raw, .. } => {
                 input.push(raw.clone());
             }
