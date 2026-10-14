@@ -465,6 +465,14 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 );
                 idx += 1;
             }
+            IrItem::SystemGuard { .. } => {
+                report.record(
+                    format!("items[{idx}]"),
+                    LossAction::Drop,
+                    "system guard content has no slot",
+                );
+                idx += 1;
+            }
             IrItem::Developer { text } => {
                 report.record(format!("items[{idx}]"), LossAction::Preserve, "developer");
                 messages.push(json!({"role": "developer", "content": text}));

@@ -357,6 +357,11 @@ pub enum IrItem {
     SystemCache {
         raw: serde_json::Value,
     },
+    /// Converse system `guardContent`. Other wires drop it.
+    /// Once present, the guardrail assesses only these blocks.
+    SystemGuard {
+        raw: serde_json::Value,
+    },
     /// Chat Completions `developer` degrades to this on Messages.
     Developer {
         text: String,

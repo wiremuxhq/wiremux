@@ -84,6 +84,10 @@ fn decode_system(system: &Value, items: &mut Vec<IrItem>) {
                     block.get("cachePoint").filter(|value| value.is_object())
                 {
                     items.push(IrItem::SystemCache { raw: point.clone() });
+                } else if let Some(guard) =
+                    block.get("guardContent").filter(|value| value.is_object())
+                {
+                    items.push(IrItem::SystemGuard { raw: guard.clone() });
                 }
             }
         }
@@ -571,6 +575,16 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                     );
                 }
                 system.push(json!({ "cachePoint": raw }));
+            }
+            IrItem::SystemGuard { raw } => {
+                if !messages.is_empty() {
+                    report.record(
+                        format!("items[{idx}]"),
+                        LossAction::Degrade,
+                        "system message moved out of the turn list",
+                    );
+                }
+                system.push(json!({ "guardContent": raw }));
             }
             IrItem::User { parts } => {
                 let blocks: Vec<Value> = parts
