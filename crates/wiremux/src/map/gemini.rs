@@ -1153,6 +1153,17 @@ fn push_role_part(contents: &mut Vec<Value>, role: &str, part: Value) {
 fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
     let mut out = Vec::new();
     for part in parts {
+        if let IrPart::PromptCacheBreakpoint { inner, mode } = part {
+            let encoded = encode_parts(std::slice::from_ref(inner.as_ref()), report);
+            if encoded.is_empty() {
+                super::apply_prompt_cache(&mut serde_json::Value::Null, Some(mode), false, report);
+            }
+            for mut value in encoded {
+                super::apply_prompt_cache(&mut value, Some(mode), false, report);
+                out.push(value);
+            }
+            continue;
+        }
         match part {
             IrPart::Text(text) => out.push(json!({ "text": text })),
             IrPart::Thinking { text, signature } => {
@@ -1236,6 +1247,7 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                     out.push(json!({ "text": format!("[image: {url}]") }));
                 }
             }
+            IrPart::PromptCacheBreakpoint { .. } => unreachable!("handled above"),
         }
     }
     out

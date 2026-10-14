@@ -194,7 +194,7 @@ fn decode_part(part: &Value) -> Option<IrPart> {
         return Some(IrPart::Text(text.to_string()));
     }
     let type_name = part.get("type").and_then(Value::as_str).unwrap_or("text");
-    match type_name {
+    let decoded = match type_name {
         "input_text" | "output_text" | "text" => part
             .get("text")
             .and_then(Value::as_str)
@@ -221,7 +221,8 @@ fn decode_part(part: &Value) -> Option<IrPart> {
                     raw: part.clone(),
                 })
             }),
-    }
+    };
+    super::with_prompt_cache(decoded, part)
 }
 
 fn responses_image_detail(part: &Value) -> Option<String> {
@@ -808,59 +809,65 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
     Value::Array(
         visible
             .iter()
-            .map(|part| match part {
-                IrPart::Text(text) => json!({"type": text_ty, "text": text}),
-                IrPart::ImageUrl {
-                    url,
-                    detail,
-                    bucket_owner: _,
-                    file_id,
-                } => encode_input_image(url, detail.as_deref(), file_id.as_deref()),
-                IrPart::ImageBase64 { media_type, data } => json!({
-                    "type": "input_image",
-                    "image_url": format!("data:{media_type};base64,{data}")
-                }),
-                IrPart::Document {
-                    source,
-                    media_type,
-                    name,
-                    ..
-                } => encode_document(source, media_type, name.as_deref(), text_ty, report),
-                IrPart::Audio { data, format } => json!({
-                    "type": "input_audio",
-                    "input_audio": { "data": data, "format": format }
-                }),
-                IrPart::Raw { raw, .. } => {
-                    if let Some(plain) = super::plain_media_part(part) {
-                        match plain {
-                            IrPart::ImageBase64 { media_type, data } => json!({
-                                "type": "input_image",
-                                "image_url": format!("data:{media_type};base64,{data}")
-                            }),
-                            IrPart::Document {
-                                source,
-                                media_type,
-                                name,
-                                ..
-                            } => encode_document(
-                                &source,
-                                &media_type,
-                                name.as_deref(),
-                                text_ty,
-                                report,
-                            ),
-                            IrPart::Audio { data, format } => json!({
-                                "type": "input_audio",
-                                "input_audio": { "data": data, "format": format }
-                            }),
-                            IrPart::Text(text) => json!({"type": text_ty, "text": text}),
-                            _ => raw.clone(),
+            .map(|part| {
+                let (part, mode) = super::peel_prompt_cache(part);
+                let mut value = match part {
+                    IrPart::Text(text) => json!({"type": text_ty, "text": text}),
+                    IrPart::ImageUrl {
+                        url,
+                        detail,
+                        bucket_owner: _,
+                        file_id,
+                    } => encode_input_image(url, detail.as_deref(), file_id.as_deref()),
+                    IrPart::ImageBase64 { media_type, data } => json!({
+                        "type": "input_image",
+                        "image_url": format!("data:{media_type};base64,{data}")
+                    }),
+                    IrPart::Document {
+                        source,
+                        media_type,
+                        name,
+                        ..
+                    } => encode_document(source, media_type, name.as_deref(), text_ty, report),
+                    IrPart::Audio { data, format } => json!({
+                        "type": "input_audio",
+                        "input_audio": { "data": data, "format": format }
+                    }),
+                    IrPart::Raw { raw, .. } => {
+                        if let Some(plain) = super::plain_media_part(part) {
+                            match plain {
+                                IrPart::ImageBase64 { media_type, data } => json!({
+                                    "type": "input_image",
+                                    "image_url": format!("data:{media_type};base64,{data}")
+                                }),
+                                IrPart::Document {
+                                    source,
+                                    media_type,
+                                    name,
+                                    ..
+                                } => encode_document(
+                                    &source,
+                                    &media_type,
+                                    name.as_deref(),
+                                    text_ty,
+                                    report,
+                                ),
+                                IrPart::Audio { data, format } => json!({
+                                    "type": "input_audio",
+                                    "input_audio": { "data": data, "format": format }
+                                }),
+                                IrPart::Text(text) => json!({"type": text_ty, "text": text}),
+                                _ => raw.clone(),
+                            }
+                        } else {
+                            raw.clone()
                         }
-                    } else {
-                        raw.clone()
                     }
-                }
-                IrPart::Thinking { .. } => unreachable!("filtered"),
+                    IrPart::Thinking { .. } => unreachable!("filtered"),
+                    IrPart::PromptCacheBreakpoint { .. } => unreachable!("peeled"),
+                };
+                super::apply_prompt_cache(&mut value, mode, true, report);
+                value
             })
             .collect(),
     )
@@ -997,6 +1004,25 @@ fn encode_function_output(
                         "function_call_output has no slot",
                     );
                 }
+            }
+            IrPart::PromptCacheBreakpoint { inner, mode } => {
+                let before = content.len();
+                let encoded = encode_parts(std::slice::from_ref(inner.as_ref()), true, report);
+                if let Some(mut items) = encoded.as_array().cloned() {
+                    for item in &mut items {
+                        super::apply_prompt_cache(item, Some(mode), true, report);
+                    }
+                    content.extend(items);
+                }
+                if content.len() == before {
+                    super::apply_prompt_cache(
+                        &mut serde_json::Value::Null,
+                        Some(mode),
+                        false,
+                        report,
+                    );
+                }
+                kept_structured = content.len() > before;
             }
             _ => report.record(
                 format!("items[{idx}].part"),

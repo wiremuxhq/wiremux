@@ -139,7 +139,7 @@ fn decode_part(part: &Value) -> Option<IrPart> {
     if let Some(text) = part.as_str() {
         return Some(IrPart::Text(text.to_string()));
     }
-    match part.get("type").and_then(Value::as_str).unwrap_or("text") {
+    let decoded = match part.get("type").and_then(Value::as_str).unwrap_or("text") {
         "text" => part
             .get("text")
             .and_then(Value::as_str)
@@ -190,16 +190,20 @@ fn decode_part(part: &Value) -> Option<IrPart> {
             .get("text")
             .and_then(Value::as_str)
             .map(|t| IrPart::Text(t.to_string())),
-    }
+    };
+    super::with_prompt_cache(decoded, part)
 }
 
 fn parts_text(parts: &[IrPart]) -> String {
     parts
         .iter()
-        .filter_map(|part| match part {
-            IrPart::Text(text) => Some(text.as_str()),
-            IrPart::Thinking { text, .. } => Some(text.as_str()),
-            _ => None,
+        .filter_map(|part| {
+            let (part, _) = super::peel_prompt_cache(part);
+            match part {
+                IrPart::Text(text) => Some(text.as_str()),
+                IrPart::Thinking { text, .. } => Some(text.as_str()),
+                _ => None,
+            }
         })
         .collect::<Vec<_>>()
         .join("")
@@ -683,26 +687,52 @@ fn custom_tool_call_json(call_id: &str, name: &str, input: &str) -> Value {
 fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
     let visible: Vec<&IrPart> = parts
         .iter()
-        .filter(|part| match part {
-            IrPart::ImageUrl { url, file_id, .. }
-                if super::image_file_id_without_url(url, file_id.as_deref()) =>
-            {
-                report.record("part.image.file_id", LossAction::Drop, "no slot");
-                false
-            }
-            IrPart::Thinking { .. } => {
-                report.record(
-                    "part.thinking",
-                    LossAction::Drop,
-                    "thinking has no Chat Completions slot",
-                );
-                false
-            }
-            IrPart::Raw { .. } => match super::plain_media_part(part) {
-                Some(IrPart::Document {
-                    source: IrDocumentSource::Url(_),
+        .filter(|part| {
+            let (part, mode) = super::peel_prompt_cache(part);
+            let keep = match part {
+                IrPart::ImageUrl { url, file_id, .. }
+                    if super::image_file_id_without_url(url, file_id.as_deref()) =>
+                {
+                    report.record("part.image.file_id", LossAction::Drop, "no slot");
+                    false
+                }
+                IrPart::Thinking { .. } => {
+                    report.record(
+                        "part.thinking",
+                        LossAction::Drop,
+                        "thinking has no Chat Completions slot",
+                    );
+                    false
+                }
+                IrPart::Raw { .. } => match super::plain_media_part(part) {
+                    Some(IrPart::Document {
+                        source: IrDocumentSource::Url(_),
+                        ..
+                    }) => {
+                        report.record(
+                            "part.document",
+                            LossAction::Drop,
+                            "document url has no Chat Completions slot",
+                        );
+                        false
+                    }
+                    Some(_) => {
+                        report.record("part.media_hint", LossAction::Drop, "no slot");
+                        true
+                    }
+                    None => {
+                        report.record(
+                            "part.raw",
+                            LossAction::Drop,
+                            "raw part has no Chat Completions slot",
+                        );
+                        false
+                    }
+                },
+                IrPart::Document {
+                    source: IrDocumentSource::Url(_) | IrDocumentSource::S3 { .. },
                     ..
-                }) => {
+                } => {
                     report.record(
                         "part.document",
                         LossAction::Drop,
@@ -710,102 +740,93 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                     );
                     false
                 }
-                Some(_) => {
-                    report.record("part.media_hint", LossAction::Drop, "no slot");
-                    true
-                }
-                None => {
-                    report.record(
-                        "part.raw",
-                        LossAction::Drop,
-                        "raw part has no Chat Completions slot",
-                    );
-                    false
-                }
-            },
-            IrPart::Document {
-                source: IrDocumentSource::Url(_) | IrDocumentSource::S3 { .. },
-                ..
-            } => {
-                report.record(
-                    "part.document",
-                    LossAction::Drop,
-                    "document url has no Chat Completions slot",
-                );
-                false
+                _ => true,
+            };
+            if !keep && mode.is_some() {
+                super::apply_prompt_cache(&mut serde_json::Value::Null, mode, false, report);
             }
-            _ => true,
+            keep
         })
         .collect();
     if visible.is_empty() {
         return Value::String(String::new());
     }
+    let (only, only_mode) = super::peel_prompt_cache(visible[0]);
     if visible.len() == 1
-        && let IrPart::Text(text) = visible[0]
+        && only_mode.is_none()
+        && let IrPart::Text(text) = only
     {
         return Value::String(text.clone());
     }
     Value::Array(
         visible
             .iter()
-            .map(|part| match part {
-                IrPart::Text(text) => json!({"type": "text", "text": text}),
-                IrPart::ImageUrl {
-                    url,
-                    detail,
-                    bucket_owner: _,
-                    file_id: _,
-                } => {
-                    let mut image_url = json!({ "url": url });
-                    if let Some(detail) = detail {
-                        image_url["detail"] = json!(detail);
+            .map(|part| {
+                let (part, mode) = super::peel_prompt_cache(part);
+                let mut value = match part {
+                    IrPart::Text(text) => json!({"type": "text", "text": text}),
+                    IrPart::ImageUrl {
+                        url,
+                        detail,
+                        bucket_owner: _,
+                        file_id: _,
+                    } => {
+                        let mut image_url = json!({ "url": url });
+                        if let Some(detail) = detail {
+                            image_url["detail"] = json!(detail);
+                        }
+                        json!({ "type": "image_url", "image_url": image_url })
                     }
-                    json!({ "type": "image_url", "image_url": image_url })
-                }
-                IrPart::ImageBase64 { media_type, data } => json!({
-                    "type": "image_url",
-                    "image_url": {"url": format!("data:{media_type};base64,{data}")}
-                }),
-                IrPart::Document {
-                    source,
-                    media_type,
-                    name,
-                    ..
-                } => encode_document(source, media_type, name.as_deref(), report),
-                IrPart::Audio { data, format } => json!({
-                    "type": "input_audio",
-                    "input_audio": { "data": data, "format": format }
-                }),
-                IrPart::Raw { .. } => match super::plain_media_part(part).expect("media hint") {
                     IrPart::ImageBase64 { media_type, data } => json!({
                         "type": "image_url",
                         "image_url": {"url": format!("data:{media_type};base64,{data}")}
                     }),
                     IrPart::Document {
-                        source: IrDocumentSource::Url(_),
-                        ..
-                    } => {
-                        report.record(
-                            "part.document",
-                            LossAction::Drop,
-                            "document url has no Chat Completions slot",
-                        );
-                        json!({"type": "text", "text": ""})
-                    }
-                    IrPart::Document {
                         source,
                         media_type,
                         name,
                         ..
-                    } => encode_document(&source, &media_type, name.as_deref(), report),
+                    } => encode_document(source, media_type, name.as_deref(), report),
                     IrPart::Audio { data, format } => json!({
                         "type": "input_audio",
                         "input_audio": { "data": data, "format": format }
                     }),
-                    IrPart::Text(text) => json!({"type": "text", "text": text}),
-                    _ => unreachable!("plain media"),
-                },
-                IrPart::Thinking { .. } => unreachable!("filtered"),
+                    IrPart::Raw { .. } => {
+                        match super::plain_media_part(part).expect("media hint") {
+                            IrPart::ImageBase64 { media_type, data } => json!({
+                                "type": "image_url",
+                                "image_url": {"url": format!("data:{media_type};base64,{data}")}
+                            }),
+                            IrPart::Document {
+                                source: IrDocumentSource::Url(_),
+                                ..
+                            } => {
+                                report.record(
+                                    "part.document",
+                                    LossAction::Drop,
+                                    "document url has no Chat Completions slot",
+                                );
+                                json!({"type": "text", "text": ""})
+                            }
+                            IrPart::Document {
+                                source,
+                                media_type,
+                                name,
+                                ..
+                            } => encode_document(&source, &media_type, name.as_deref(), report),
+                            IrPart::Audio { data, format } => json!({
+                                "type": "input_audio",
+                                "input_audio": { "data": data, "format": format }
+                            }),
+                            IrPart::Text(text) => json!({"type": "text", "text": text}),
+                            _ => unreachable!("plain media"),
+                        }
+                    }
+                    IrPart::Thinking { .. } => unreachable!("filtered"),
+                    IrPart::PromptCacheBreakpoint { .. } => unreachable!("peeled"),
+                };
+                super::apply_prompt_cache(&mut value, mode, true, report);
+                value
             })
             .collect(),
     )
