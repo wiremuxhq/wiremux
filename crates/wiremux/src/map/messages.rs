@@ -1024,6 +1024,17 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             "source": {"type": "base64", "media_type": media_type, "data": data}
         })),
         IrPart::Document {
+            source: IrDocumentSource::S3 { .. },
+            ..
+        } => {
+            report.record(
+                "part.document",
+                LossAction::Drop,
+                "S3 document has no Messages slot",
+            );
+            None
+        }
+        IrPart::Document {
             source,
             media_type,
             name,

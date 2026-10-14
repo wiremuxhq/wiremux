@@ -860,7 +860,7 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
     Value::Array(
         visible
             .iter()
-            .map(|part| {
+            .filter_map(|part| {
                 let (part, mode) = super::peel_prompt_cache(part);
                 let mut value = match part {
                     IrPart::Text(text) => json!({"type": text_ty, "text": text}),
@@ -879,7 +879,7 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                         media_type,
                         name,
                         ..
-                    } => encode_document(source, media_type, name.as_deref(), text_ty, report),
+                    } => encode_document(source, media_type, name.as_deref(), text_ty, report)?,
                     IrPart::Audio { data, format } => json!({
                         "type": "input_audio",
                         "input_audio": { "data": data, "format": format }
@@ -902,7 +902,7 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                                     name.as_deref(),
                                     text_ty,
                                     report,
-                                ),
+                                )?,
                                 IrPart::Audio { data, format } => json!({
                                     "type": "input_audio",
                                     "input_audio": { "data": data, "format": format }
@@ -918,7 +918,7 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                     IrPart::PromptCacheBreakpoint { .. } => unreachable!("peeled"),
                 };
                 super::apply_prompt_cache(&mut value, mode, true, report);
-                value
+                Some(value)
             })
             .collect(),
     )
@@ -930,21 +930,29 @@ fn encode_document(
     name: Option<&str>,
     text_ty: &str,
     report: &mut LossReport,
-) -> Value {
+) -> Option<Value> {
+    if let IrDocumentSource::S3 { .. } = source {
+        report.record(
+            "part.document",
+            LossAction::Drop,
+            "S3 document has no Responses slot",
+        );
+        return None;
+    }
     if let IrDocumentSource::Text(data) = source {
         report.record(
             "part.document",
             LossAction::Degrade,
             "plain text document becomes text",
         );
-        return json!({ "type": text_ty, "text": data });
+        return Some(json!({ "type": text_ty, "text": data }));
     }
     let mut obj = json!({ "type": "input_file" });
     if let Some(name) = name.map(str::trim).filter(|s| !s.is_empty()) {
         obj["filename"] = json!(name);
     }
     match source {
-        IrDocumentSource::Text(_) => unreachable!("returned above"),
+        IrDocumentSource::Text(_) | IrDocumentSource::S3 { .. } => unreachable!("returned above"),
         IrDocumentSource::Base64(data) => {
             let media_type = if media_type.is_empty() {
                 "application/pdf"
@@ -956,14 +964,14 @@ fn encode_document(
             }
             obj["file_data"] = json!(format!("data:{media_type};base64,{data}"));
         }
-        IrDocumentSource::Url(url) | IrDocumentSource::S3 { uri: url, .. } => {
+        IrDocumentSource::Url(url) => {
             obj["file_url"] = json!(url);
         }
         IrDocumentSource::FileId(id) => {
             obj["file_id"] = json!(id);
         }
     }
-    obj
+    Some(obj)
 }
 
 fn encode_function_output(
@@ -1027,14 +1035,12 @@ fn encode_function_output(
                 name,
                 ..
             } => {
-                content.push(encode_document(
-                    source,
-                    media_type,
-                    name.as_deref(),
-                    "input_text",
-                    report,
-                ));
-                kept_structured = true;
+                if let Some(value) =
+                    encode_document(source, media_type, name.as_deref(), "input_text", report)
+                {
+                    content.push(value);
+                    kept_structured = true;
+                }
             }
             IrPart::Raw { type_name, raw } if type_name == "json" && ordered_text => {
                 content.push(json!({"type": "input_text", "text": raw.to_string()}));
