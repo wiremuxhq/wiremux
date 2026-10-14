@@ -98,7 +98,10 @@ fn function_from(src: &Value) -> IrTool {
 }
 
 fn wire_keeps_strict(wire: Wire) -> bool {
-    matches!(wire, Wire::ChatCompletions | Wire::Responses)
+    matches!(
+        wire,
+        Wire::ChatCompletions | Wire::Responses | Wire::Converse
+    )
 }
 
 fn is_hosted(type_name: &str) -> bool {
@@ -161,6 +164,13 @@ pub(super) fn prepare_tools(
                     out.push(PreparedTool::Raw(json!({ "cachePoint": raw })));
                 } else {
                     report.record(path, LossAction::Drop, "tool cache point has no slot");
+                }
+            }
+            IrTool::Unknown { type_name, raw } if type_name == "systemTool" => {
+                if wire == Wire::Converse && raw.is_object() {
+                    out.push(PreparedTool::Raw(json!({ "systemTool": raw })));
+                } else {
+                    report.record(path, LossAction::Drop, "system tool has no slot");
                 }
             }
             IrTool::Unknown { type_name, raw } if type_name == "custom" => {

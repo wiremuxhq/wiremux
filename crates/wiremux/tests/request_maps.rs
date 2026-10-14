@@ -11881,6 +11881,95 @@ fn converse_redacted_reasoning_round_trips() {
 }
 
 #[test]
+fn converse_tool_strict_and_system_tool_round_trip() {
+    let req = br#"{
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+        "toolConfig": {"tools": [
+            {"toolSpec": {
+                "name": "lookup",
+                "description": "Look up a record",
+                "inputSchema": {"json": {"type": "object", "properties": {}}},
+                "strict": true
+            }},
+            {"toolSpec": {
+                "name": "loose",
+                "description": "Free form",
+                "inputSchema": {"json": {"type": "object", "properties": {}}},
+                "strict": false
+            }},
+            {"systemTool": {"name": "web_search"}}
+        ]}
+    }"#;
+    let (ir, _) = decode(Wire::Converse, req).expect("decode");
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/toolConfig/tools/0/toolSpec/strict")
+            .and_then(Value::as_bool),
+        Some(true),
+        "strict true must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/toolConfig/tools/1/toolSpec/strict")
+            .and_then(Value::as_bool),
+        Some(false),
+        "strict false must round-trip, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/toolConfig/tools/2/systemTool/name")
+            .and_then(Value::as_str),
+        Some("web_search"),
+        "system tool must round-trip, got {body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| { event.action == LossAction::Drop && event.detail.contains("strict") }),
+        "Converse has a strict slot, got {report:?}"
+    );
+
+    let plain = br#"{
+        "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+        "toolConfig": {"tools": [{
+            "toolSpec": {
+                "name": "lookup",
+                "description": "Look up a record",
+                "inputSchema": {"json": {"type": "object", "properties": {}}}
+            }
+        }]}
+    }"#;
+    let (ir_plain, _) = decode(Wire::Converse, plain).expect("decode plain");
+    let (plain_bytes, _) =
+        encode(Wire::Converse, &ir_plain, &converse_profile()).expect("encode plain");
+    let plain_body: Value = serde_json::from_slice(&plain_bytes).expect("json plain");
+    assert!(
+        plain_body
+            .pointer("/toolConfig/tools/0/toolSpec/strict")
+            .is_none()
+            && !plain_body.to_string().contains("systemTool"),
+        "a plain tool must not gain strict or a system tool, got {plain_body}"
+    );
+
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat_text = serde_json::from_slice::<Value>(&chat_bytes)
+        .expect("chat json")
+        .to_string();
+    assert!(
+        !chat_text.contains("web_search"),
+        "Chat must not send the system tool, got {chat_text}"
+    );
+    assert!(
+        chat_report
+            .events
+            .iter()
+            .any(|event| event.action == LossAction::Drop),
+        "Chat must record that the system tool was dropped, got {chat_report:?}"
+    );
+}
+
+#[test]
 fn converse_encode_drops_thinking_schema_and_parallel() {
     let schema = serde_json::json!({"type": "object"});
     let ir = user_ir(IrSampling::patch(|s| {

@@ -44,20 +44,32 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
             let mut tools = Vec::new();
             for entry in arr {
                 if let Some(spec) = entry.get("toolSpec") {
+                    let mut function = json!({
+                        "name": spec.get("name"),
+                        "description": spec.get("description"),
+                        "parameters": spec
+                            .pointer("/inputSchema/json")
+                            .cloned()
+                            .unwrap_or(json!({})),
+                    });
+                    if let Some(strict) = spec.get("strict").and_then(Value::as_bool) {
+                        function["strict"] = json!(strict);
+                    }
                     tools.push(super::tools::decode_tool(&json!({
                         "type": "function",
-                        "function": {
-                            "name": spec.get("name"),
-                            "description": spec.get("description"),
-                            "parameters": spec.pointer("/inputSchema/json").cloned().unwrap_or(json!({})),
-                        }
+                        "function": function,
                     })));
+                } else if let Some(system_tool) =
+                    entry.get("systemTool").filter(|value| value.is_object())
+                {
+                    tools.push(crate::ir::IrTool::Unknown {
+                        type_name: "systemTool".into(),
+                        raw: system_tool.clone(),
+                    });
                 } else if let Some(point) =
                     entry.get("cachePoint").filter(|value| value.is_object())
                 {
-                    tools.push(crate::ir::IrTool::CachePoint {
-                        raw: point.clone(),
-                    });
+                    tools.push(crate::ir::IrTool::CachePoint { raw: point.clone() });
                 }
             }
             tools
@@ -1288,13 +1300,15 @@ fn encode_tool(tool: &PreparedTool) -> Option<Value> {
             if *strict == Some(true) {
                 super::messages::strict_object_schema(&mut schema);
             }
-            Some(json!({
-                "toolSpec": {
-                    "name": name,
-                    "description": description,
-                    "inputSchema": { "json": schema }
-                }
-            }))
+            let mut tool_spec = json!({
+                "name": name,
+                "description": description,
+                "inputSchema": { "json": schema }
+            });
+            if let Some(strict) = *strict {
+                tool_spec["strict"] = json!(strict);
+            }
+            Some(json!({ "toolSpec": tool_spec }))
         }
         PreparedTool::Raw(raw) => Some(raw.clone()),
     }
