@@ -2938,6 +2938,35 @@ fn chat_tool_breakpoint_keeps_the_image_for_messages() {
         msg_text.contains("prefix") && msg_text.contains("https://example.com/cat.png"),
         "Messages must keep the tool text and the image, got {msg}"
     );
+    let (resp_bytes, _) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("responses");
+    let resp: Value = serde_json::from_slice(&resp_bytes).expect("responses json");
+    let resp_text = resp.to_string();
+    assert!(
+        resp_text.contains("prefix") && resp_text.contains("https://example.com/cat.png"),
+        "Responses must keep the tool text and the image, got {resp}"
+    );
+    assert_eq!(
+        resp.pointer("/input/0/output/0/prompt_cache_breakpoint/mode")
+            .or_else(|| resp.pointer("/input/0/content/0/prompt_cache_breakpoint/mode"))
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "Responses must keep the breakpoint on the tool text, got {resp}"
+    );
+    let (conv_bytes, conv_report) =
+        encode(Wire::Converse, &ir, &converse_profile()).expect("converse");
+    let conv: Value = serde_json::from_slice(&conv_bytes).expect("converse json");
+    let conv_text = conv.to_string();
+    assert!(
+        conv_text.contains("prefix"),
+        "Converse must keep the tool text, got {conv}"
+    );
+    assert!(
+        conv_report.events.iter().any(|event| {
+            event.action == LossAction::Drop
+                && event.detail.contains("image url has no converse slot")
+        }),
+        "Converse must record that an https image has no slot, got {conv_report:?} body={conv}"
+    );
 }
 
 #[test]
@@ -10090,6 +10119,10 @@ fn converse_assistant_media_only_joins_the_previous_user_turn() {
         assert!(
             text.contains("Look.") && text.contains("Next."),
             "{label} must keep both user texts, got {body}"
+        );
+        assert!(
+            !text.contains("See the attached document."),
+            "{label} must not add a canned prompt when the user turn already has text, got {body}"
         );
         assert!(
             messages.iter().any(|message| {

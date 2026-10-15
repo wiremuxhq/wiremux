@@ -322,6 +322,10 @@ including directories in front of it.
 `/v1/chat/completions` and `/v1/messages` become `{base}/v1/models`.
 `/openai/v1/chat/completions` becomes `{base}/openai/v1/models`.
 `/api/v3/chat/completions` becomes `{base}/api/v3/models`.
+A Vertex path keeps `publishers/.../models`, so
+`/v1/projects/p/locations/us-central1/publishers/google/models/{model}:generateContent`
+becomes `{base}/v1/projects/p/locations/us-central1/publishers/google/models`,
+not `{base}/v1/models`.
 It reads `context_length` then `context_window`
 (Grok Build `/v1/models` sends the second key). That second key
 is not in crates.io `0.5.0`. `list_models` retries HTTP 401 once
