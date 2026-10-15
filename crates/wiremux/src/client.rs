@@ -1494,7 +1494,10 @@ fn parse_listed_models(bytes: &[u8]) -> Result<Vec<ListedModel>, ClientError> {
     if let Some(models) = value.get("models").and_then(Value::as_array) {
         return Ok(parse_gemini_listed_models(models));
     }
-    Ok(Vec::new())
+    Err(ClientError::Vendor {
+        status: Some(200),
+        message: "model list has no data or models array".into(),
+    })
 }
 
 fn parse_openai_listed_models(data: &[Value]) -> Vec<ListedModel> {
@@ -2169,6 +2172,29 @@ wire = "messages"
             }
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn model_list_without_an_array_is_not_an_empty_catalog() {
+        let err = super::parse_listed_models(br#"{"object":"list"}"#)
+            .expect_err("object without data or models");
+        match err {
+            super::ClientError::Vendor { status, message } => {
+                assert_eq!(status, Some(200));
+                assert!(message.contains("data or models"), "{message}");
+            }
+            other => panic!("expected Vendor, got {other:?}"),
+        }
+        assert!(
+            super::parse_listed_models(br#"{"data":[]}"#)
+                .expect("empty data")
+                .is_empty()
+        );
+        assert!(
+            super::parse_listed_models(br#"{"models":[]}"#)
+                .expect("empty models")
+                .is_empty()
+        );
     }
 
     #[test]
