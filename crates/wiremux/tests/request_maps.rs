@@ -2888,6 +2888,59 @@ fn chat_tool_prompt_cache_breakpoint_round_trips() {
 }
 
 #[test]
+fn chat_tool_breakpoint_keeps_the_image_for_messages() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "prefix",
+                    "prompt_cache_breakpoint": {"mode": "explicit"}
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.com/cat.png"}
+                }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (chat_bytes, chat_report) =
+        encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("chat");
+    let chat: Value = serde_json::from_slice(&chat_bytes).expect("chat json");
+    assert_eq!(
+        chat.pointer("/messages/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("prefix"),
+        "tool text must stay, got {chat}"
+    );
+    assert_eq!(
+        chat.pointer("/messages/0/content/0/prompt_cache_breakpoint/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "tool cache breakpoint must stay, got {chat}"
+    );
+    assert!(
+        !chat.to_string().contains("cat.png"),
+        "Chat tool messages have no image slot, got {chat}"
+    );
+    assert!(
+        loss_dropped(&chat_report, "items[0].image"),
+        "Chat must record the image drop, got {chat_report:?}"
+    );
+    let (msg_bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("messages");
+    let msg: Value = serde_json::from_slice(&msg_bytes).expect("messages json");
+    let msg_text = msg.to_string();
+    assert!(
+        msg_text.contains("prefix") && msg_text.contains("https://example.com/cat.png"),
+        "Messages must keep the tool text and the image, got {msg}"
+    );
+}
+
+#[test]
 fn gemini_https_image_url_degrades_to_text_placeholder() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",
@@ -9981,6 +10034,74 @@ fn converse_assistant_document_moves_to_a_user_turn() {
         }),
         "moved document must be a degrade, got {report:?}"
     );
+}
+
+#[test]
+fn converse_assistant_media_only_joins_the_previous_user_turn() {
+    for (label, part) in [
+        (
+            "image",
+            IrPart::ImageBase64 {
+                media_type: "image/png".into(),
+                data: "AAAA".into(),
+            },
+        ),
+        (
+            "document",
+            IrPart::Document {
+                source: IrDocumentSource::Base64("AAAA".into()),
+                media_type: "application/pdf".into(),
+                name: Some("report".into()),
+                citations_enabled: None,
+                context: None,
+            },
+        ),
+    ] {
+        let ir = IrRequest::new(
+            "amazon.nova-lite-v1:0",
+            vec![
+                IrItem::User {
+                    parts: vec![IrPart::Text("Look.".into())],
+                },
+                IrItem::Assistant {
+                    parts: vec![part],
+                    phase: None,
+                },
+                IrItem::User {
+                    parts: vec![IrPart::Text("Next.".into())],
+                },
+            ],
+        );
+        let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect(label);
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        let messages = body
+            .get("messages")
+            .and_then(Value::as_array)
+            .expect("messages");
+        let roles: Vec<&str> = messages
+            .iter()
+            .filter_map(|message| message.get("role").and_then(Value::as_str))
+            .collect();
+        assert!(
+            roles.windows(2).all(|pair| pair != ["user", "user"]),
+            "{label} must not leave two user messages in a row, got {body}"
+        );
+        let text = body.to_string();
+        assert!(
+            text.contains("Look.") && text.contains("Next."),
+            "{label} must keep both user texts, got {body}"
+        );
+        assert!(
+            messages.iter().any(|message| {
+                message.get("role").and_then(Value::as_str) == Some("user")
+                    && message
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|blocks| blocks.iter().any(|block| block.get(label).is_some()))
+            }),
+            "{label} must stay on a user turn, got {body}"
+        );
+    }
 }
 
 #[test]

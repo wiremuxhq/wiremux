@@ -82,12 +82,17 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport)
                 .iter()
                 .any(|part| super::peel_prompt_cache(part).1.is_some());
             let (output, kept) = if has_breakpoint {
-                let text_parts = parts
+                let kept = parts
                     .iter()
-                    .filter(|part| matches!(super::peel_prompt_cache(part).0, IrPart::Text(_)))
+                    .filter(|part| {
+                        matches!(
+                            super::peel_prompt_cache(part).0,
+                            IrPart::Text(_) | IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. }
+                        )
+                    })
                     .cloned()
                     .collect();
-                (String::new(), text_parts)
+                (String::new(), kept)
             } else {
                 let images = parts
                     .iter()
