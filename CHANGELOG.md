@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.11.2](https://github.com/wiremuxhq/wiremux/compare/v0.11.1...v0.11.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* add a text prompt beside a Converse document ([#600](https://github.com/wiremuxhq/wiremux/issues/600)) ([1b25667](https://github.com/wiremuxhq/wiremux/commit/1b2566755e50d227c011a205828830d2f2ba0e9e))
+* decode a large Converse JSON completion on stream ([#593](https://github.com/wiremuxhq/wiremux/issues/593)) ([1e8c86c](https://github.com/wiremuxhq/wiremux/commit/1e8c86ce51a1dcb8bcc23b9d457ff965c98ee756))
+* do not send a Converse S3 document as a URL ([#642](https://github.com/wiremuxhq/wiremux/issues/642)) ([fd1800f](https://github.com/wiremuxhq/wiremux/commit/fd1800f7532e5713d5dbd4dec178dc710546834f))
+* join assistant media and keep tool images ([#645](https://github.com/wiremuxhq/wiremux/issues/645)) ([e768f71](https://github.com/wiremuxhq/wiremux/commit/e768f7124b43b54c0c5042779bb5a24505704972))
+* keep a cache breakpoint on a later system part ([#641](https://github.com/wiremuxhq/wiremux/issues/641)) ([2c1a1ae](https://github.com/wiremuxhq/wiremux/commit/2c1a1ae8fe48199d6a35ad2bddd85924bb3c5031))
+* keep cache breakpoints on system, developer, and tool messages ([#640](https://github.com/wiremuxhq/wiremux/issues/640)) ([7a46e94](https://github.com/wiremuxhq/wiremux/commit/7a46e94694f390b9eb677c42cf1b14ea6237ff2e))
+* keep Chat and Responses prompt cache breakpoints ([#639](https://github.com/wiremuxhq/wiremux/issues/639)) ([eddecee](https://github.com/wiremuxhq/wiremux/commit/eddecee048a8995b3dcbba84e50e0bbd9ff7eb3c))
+* keep Converse audio that comes from S3 ([#604](https://github.com/wiremuxhq/wiremux/issues/604)) ([a269651](https://github.com/wiremuxhq/wiremux/commit/a2696518c7d44a8c8b30bfe2a100a5c34622170b))
+* keep Converse cachePoint blocks ([#610](https://github.com/wiremuxhq/wiremux/issues/610)) ([e7162d3](https://github.com/wiremuxhq/wiremux/commit/e7162d33cd72645fc4a64c7381b0c4e7e364447a))
+* keep Converse citationsContent blocks ([#626](https://github.com/wiremuxhq/wiremux/issues/626)) ([ffd4c79](https://github.com/wiremuxhq/wiremux/commit/ffd4c79de299f9be12c4853c8cbc84f87edecd32))
+* keep Converse document citations and context ([#601](https://github.com/wiremuxhq/wiremux/issues/601)) ([0d15a10](https://github.com/wiremuxhq/wiremux/commit/0d15a105873c727567d98f2482df79f307a79a27))
+* keep Converse document names inside Bedrock's rules ([#599](https://github.com/wiremuxhq/wiremux/issues/599)) ([d62d49e](https://github.com/wiremuxhq/wiremux/commit/d62d49e272373790509a5779efb582c38f1dbf9c))
+* keep Converse document S3 bucketOwner ([#606](https://github.com/wiremuxhq/wiremux/issues/606)) ([d022995](https://github.com/wiremuxhq/wiremux/commit/d0229951b996c995d85feafd09b93e91396d0658))
+* keep Converse guardContent blocks ([#612](https://github.com/wiremuxhq/wiremux/issues/612)) ([e5c3991](https://github.com/wiremuxhq/wiremux/commit/e5c3991e6963c0cd254bb11a84740faf43f84fe5))
+* keep Converse image S3 bucketOwner ([#608](https://github.com/wiremuxhq/wiremux/issues/608)) ([1688136](https://github.com/wiremuxhq/wiremux/commit/16881364231854d6dd8a36dd3233ebc90bc5c684))
+* keep Converse JSON custom tool input ([#633](https://github.com/wiremuxhq/wiremux/issues/633)) ([7e6150c](https://github.com/wiremuxhq/wiremux/commit/7e6150c33d2487ef46b43e3a663f39b81a105f5c))
+* keep Converse JSON schema description ([#631](https://github.com/wiremuxhq/wiremux/issues/631)) ([6a84894](https://github.com/wiremuxhq/wiremux/commit/6a8489416ef93f083759eb7ab3fac04522bfe34e))
+* keep Converse JSON tool input values ([#632](https://github.com/wiremuxhq/wiremux/issues/632)) ([2ae6562](https://github.com/wiremuxhq/wiremux/commit/2ae656204d7d5e8ebe1dd3b225860557ff86022a))
+* keep Converse message search results ([#624](https://github.com/wiremuxhq/wiremux/issues/624)) ([adae742](https://github.com/wiremuxhq/wiremux/commit/adae742486e770f57943655be4838703184ff684))
+* keep Converse redacted reasoning on the next request ([#629](https://github.com/wiremuxhq/wiremux/issues/629)) ([9ac14b7](https://github.com/wiremuxhq/wiremux/commit/9ac14b78ca8bc652fb7eb6c081f3d81f872ed871))
+* keep Converse request video blocks ([#603](https://github.com/wiremuxhq/wiremux/issues/603)) ([916d6fb](https://github.com/wiremuxhq/wiremux/commit/916d6fb9b0f7fe7a4e650ee49eedb50ff960fa3a))
+* keep Converse system cachePoint blocks ([#614](https://github.com/wiremuxhq/wiremux/issues/614)) ([86ac2b8](https://github.com/wiremuxhq/wiremux/commit/86ac2b84e515a24963963ebec4e05f9e7422f527))
+* keep Converse system guardContent blocks ([#616](https://github.com/wiremuxhq/wiremux/issues/616)) ([590af3a](https://github.com/wiremuxhq/wiremux/commit/590af3aeb76ad85c3e7dc968bbdc884affa1fb58))
+* keep Converse system-role tool add and remove ([#628](https://github.com/wiremuxhq/wiremux/issues/628)) ([e5c132d](https://github.com/wiremuxhq/wiremux/commit/e5c132d122c72345e262daf79231529b916b0e7a)), closes [#627](https://github.com/wiremuxhq/wiremux/issues/627)
+* keep Converse tool list cachePoint blocks ([#618](https://github.com/wiremuxhq/wiremux/issues/618)) ([fb9323b](https://github.com/wiremuxhq/wiremux/commit/fb9323b056716d198ac4fb02e51ec6312b79d3c3))
+* keep Converse tool result documents and video ([#620](https://github.com/wiremuxhq/wiremux/issues/620)) ([36cf602](https://github.com/wiremuxhq/wiremux/commit/36cf602ef622162d4be19a42777646595a5a8155))
+* keep Converse tool result JSON and text order ([#635](https://github.com/wiremuxhq/wiremux/issues/635)) ([5141574](https://github.com/wiremuxhq/wiremux/commit/5141574e2d9fce41afa4ef5202a556c8e42f9b9f))
+* keep Converse tool result JSON blocks ([#634](https://github.com/wiremuxhq/wiremux/issues/634)) ([5fa1dae](https://github.com/wiremuxhq/wiremux/commit/5fa1dae5fa5b8b6b4d0bf331be8752cc0e4da94b))
+* keep Converse tool result search results ([#622](https://github.com/wiremuxhq/wiremux/issues/622)) ([5923019](https://github.com/wiremuxhq/wiremux/commit/59230192ceb80ed62c967ac3fa59fa3bcb2e40fe))
+* keep Converse tool strict and system tools ([#630](https://github.com/wiremuxhq/wiremux/issues/630)) ([6da501e](https://github.com/wiremuxhq/wiremux/commit/6da501e55057ccd8de320727ae0850990dc65561))
+* keep Gemini server-side tools beside a function call ([#643](https://github.com/wiremuxhq/wiremux/issues/643)) ([3363fda](https://github.com/wiremuxhq/wiremux/commit/3363fdad7f8cf4623f2bfdb8e3ef6b2a4d34aed2))
+* keep Gemini urlContext so the model can read the page ([#644](https://github.com/wiremuxhq/wiremux/issues/644)) ([cca7ac2](https://github.com/wiremuxhq/wiremux/commit/cca7ac27501202d79a471e96b379d78e75751293))
+* keep Responses assistant phase on the next request ([#595](https://github.com/wiremuxhq/wiremux/issues/595)) ([b79c373](https://github.com/wiremuxhq/wiremux/commit/b79c373b9ce77ebb780660e59ccff3d91a8addb6))
+* keep Responses input image detail ([#638](https://github.com/wiremuxhq/wiremux/issues/638)) ([4e80384](https://github.com/wiremuxhq/wiremux/commit/4e8038440ddd763d02e7c4cfbca56412ad2eda1f))
+* keep Responses input image file id ([#637](https://github.com/wiremuxhq/wiremux/issues/637)) ([4fc0ed4](https://github.com/wiremuxhq/wiremux/commit/4fc0ed48058dad3c265bcbda9f38c7ce2c1636e3))
+* keep tool result image and text order ([#636](https://github.com/wiremuxhq/wiremux/issues/636)) ([762b037](https://github.com/wiremuxhq/wiremux/commit/762b0371ba4fb828e58e1483c03d99b73beda5d2))
+* keep Vertex model catalogs and skip a spare document prompt ([#646](https://github.com/wiremuxhq/wiremux/issues/646)) ([5e29fb7](https://github.com/wiremuxhq/wiremux/commit/5e29fb79220db49d4e9af524ee4699aa4e6aa9a7))
+* list models under a nested version prefix ([#597](https://github.com/wiremuxhq/wiremux/issues/597)) ([7d559a4](https://github.com/wiremuxhq/wiremux/commit/7d559a43e72a987d1e2070f59f2dadc2434d30da))
+* surface hidden vendor errors and check proxy flags first ([#592](https://github.com/wiremuxhq/wiremux/issues/592)) ([8fed635](https://github.com/wiremuxhq/wiremux/commit/8fed6358dcbb90e274df3a52a87eccabae895358))
+* unset profile fields when an env value is empty ([#598](https://github.com/wiremuxhq/wiremux/issues/598)) ([c7ab08d](https://github.com/wiremuxhq/wiremux/commit/c7ab08d28fd1f2c1e3a0005bdc9e570ee6a82a64))
+
 ## [0.11.1](https://github.com/wiremuxhq/wiremux/compare/v0.11.0...v0.11.1) (2026-10-13)
 
 
