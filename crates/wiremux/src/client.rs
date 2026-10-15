@@ -1184,7 +1184,7 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
         {
             return Some(ClientError::Vendor {
                 status: Some(status),
-                message: message.to_string(),
+                message: clip_client_message(message),
             });
         }
         if error_obj.is_some() && !success_body_has_completion(parsed.as_ref()) {
@@ -1382,7 +1382,10 @@ fn looks_like_overload(text: &str) -> bool {
 }
 
 fn clip_client_message(text: &str) -> String {
-    redact_embedded_url(&sanitize_oauth_error_text(text))
+    // Redact the URL before the 200-character cut. Otherwise a password
+    // whose @ sits past the cut is kept as the host.
+    let urls_first = redact_embedded_url(text);
+    redact_client_text(&sanitize_oauth_error_text(&urls_first))
 }
 
 fn error_message(body: &str) -> String {
@@ -1405,7 +1408,7 @@ fn error_message(body: &str) -> String {
     } else {
         fallback_error_text(body)
     };
-    redact_embedded_url(&sanitize_oauth_error_text(&extracted))
+    clip_client_message(&extracted)
 }
 
 fn redact_embedded_url(s: &str) -> String {
@@ -2116,6 +2119,40 @@ wire = "messages"
             }
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn http_200_string_error_is_clipped() {
+        let long = "x".repeat(500);
+        let body =
+            format!(r#"{{"error":"callback https://user:s3cret@evil.test/x failed {long}"}}"#);
+        let err = classify_http(200, &body, None).expect("string error");
+        let ClientError::Vendor { message, .. } = err else {
+            panic!("expected Vendor, got {err:?}");
+        };
+        assert!(!message.contains("user:s3cret"), "{message}");
+        assert!(
+            message.chars().filter(|c| *c == 'x').count() <= 200,
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn stored_message_redacts_gsk_and_bearer() {
+        let body = r#"{"error":{"message":"bad key gsk_LIVE0123456789abcdef and Bearer ya29.a0AfH6SM_token"}}"#;
+        let message = error_message(body);
+        assert!(!message.contains("gsk_LIVE"), "{message}");
+        assert!(!message.contains("ya29."), "{message}");
+    }
+
+    #[test]
+    fn url_userinfo_past_the_cap_is_still_redacted() {
+        let prefix = "w".repeat(160);
+        let password = "S".repeat(40);
+        let text = format!("vendor rejected {prefix} https://user:{password}@evil.test/object");
+        let message = clip_client_message(&text);
+        assert!(!message.contains(&password), "{message}");
+        assert!(!message.contains("user:"), "{message}");
     }
 
     #[test]
