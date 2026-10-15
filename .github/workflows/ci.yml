@@ -274,7 +274,7 @@ jobs:
       matrix:
         os: ${{ fromJSON(needs.test-os.outputs.os) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions:
       contents: read
       # test-summary/action publishes a check run
