@@ -527,8 +527,11 @@ chat_path = "/v1/responses"
     let _ = child.wait();
     let lower = resp.to_ascii_lowercase();
     assert!(
-        resp.contains("413") || lower.contains("too large"),
-        "oversized Content-Length must 413 before collect, got: {resp:?}"
+        resp.contains("413")
+            && lower.contains("too large")
+            && resp.contains("8388608")
+            && resp.contains("16000000"),
+        "oversized Content-Length must 413 and name the cap before collect, got: {resp:?}"
     );
 }
 

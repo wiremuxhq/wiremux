@@ -52,3 +52,8 @@ credential chain on the profile, not a Bearer paste.
 The listener refuses non-loopback binds. Do not put this binary on
 a public interface. Host CSRF checks apply to `Host` / `Origin` on
 that loopback listener.
+
+A POST larger than 8388608 bytes is refused with 413
+`request body too large` before the proxy forwards it. When the
+request included `Content-Length`, that 413 names the declared
+length and the maximum.

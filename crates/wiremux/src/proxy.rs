@@ -36,6 +36,20 @@ type ProxyBody = UnsyncBoxBody<Bytes, Infallible>;
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const MAX_UPSTREAM_BODY: usize = 16 * 1024 * 1024;
 
+fn request_body_too_large() -> Response<ProxyBody> {
+    text(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        format!("request body too large (max {MAX_BODY} bytes)\n"),
+    )
+}
+
+fn request_body_too_large_len(len: u64) -> Response<ProxyBody> {
+    text(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        format!("request body too large (Content-Length: {len} bytes, max {MAX_BODY} bytes)\n"),
+    )
+}
+
 /// Bind 127.0.0.1 and serve until the process is signaled.
 pub async fn run(
     listen: &str,
@@ -347,7 +361,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         .and_then(|s| s.parse::<u64>().ok())
         && len > MAX_BODY as u64
     {
-        return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
+        return request_body_too_large_len(len);
     }
     let inbound_headers = req.headers().clone();
     let collected = match read_capped_body(req.into_body(), MAX_BODY).await {
@@ -357,12 +371,12 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
                 .downcast_ref::<http_body_util::LengthLimitError>()
                 .is_some() =>
         {
-            return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
+            return request_body_too_large();
         }
         Err(err) => return text(StatusCode::BAD_REQUEST, format!("read body: {err}\n")),
     };
     if collected.len() > MAX_BODY {
-        return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
+        return request_body_too_large();
     }
 
     if let Some(route) = count_route(&path) {
@@ -2299,6 +2313,42 @@ anthropic-beta = "context-1m-2025-08-07"
             err.downcast_ref::<http_body_util::LengthLimitError>()
                 .is_some(),
             "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_body_too_large_names_the_cap() {
+        use http_body_util::BodyExt;
+
+        let response = super::request_body_too_large();
+        assert_eq!(response.status(), hyper::StatusCode::PAYLOAD_TOO_LARGE);
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let text = String::from_utf8(bytes.to_vec()).expect("utf8");
+        assert_eq!(
+            text,
+            format!("request body too large (max {} bytes)\n", super::MAX_BODY)
+        );
+
+        let response = super::request_body_too_large_len(16_000_000);
+        assert_eq!(response.status(), hyper::StatusCode::PAYLOAD_TOO_LARGE);
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let text = String::from_utf8(bytes.to_vec()).expect("utf8");
+        assert_eq!(
+            text,
+            format!(
+                "request body too large (Content-Length: 16000000 bytes, max {} bytes)\n",
+                super::MAX_BODY
+            )
         );
     }
 
