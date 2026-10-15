@@ -2404,6 +2404,23 @@ wire = "gemini"
             }
             other => panic!("empty candidate must stay HardError, got {other}"),
         }
+        let stopped = RawSse {
+            event: None,
+            data: r#"{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"error":{"code":503,"message":"The model is overloaded. Please try again later.","status":"UNAVAILABLE"}}"#.into(),
+        };
+        let err = decode_stream_events(Wire::Gemini, &stopped, &gemini)
+            .expect_err("finishReason must not hide the error");
+        assert!(
+            err.to_string().contains("overloaded"),
+            "{err}"
+        );
+        let usage = RawSse {
+            event: None,
+            data: r#"{"candidates":[{"content":{"parts":[]}}],"usageMetadata":{"promptTokenCount":1},"error":{"message":"overloaded","status":"UNAVAILABLE"}}"#.into(),
+        };
+        let err = decode_stream_events(Wire::Gemini, &usage, &gemini)
+            .expect_err("usage must not hide the error");
+        assert!(err.to_string().contains("overloaded"), "{err}");
         let kept_gemini = decode_response(
             Wire::Gemini,
             br#"{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}],"error":{"message":"overloaded"}}"#,
