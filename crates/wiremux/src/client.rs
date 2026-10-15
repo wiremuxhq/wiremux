@@ -500,9 +500,19 @@ impl WireClient {
     }
 
     async fn access_token(&self) -> Result<Option<String>, ClientError> {
+        if matches!(
+            self.profile.http.auth_scheme,
+            Some(wiremux_auth::AuthScheme::None)
+        ) && self.profile.oauth.is_none()
+        {
+            return Ok(None);
+        }
         let token = self.provider.get_token().await.map_err(auth_err)?;
         if token.trim().is_empty() {
-            Ok(None)
+            Err(ClientError::Auth {
+                status: None,
+                message: "empty token is not auth_scheme none".into(),
+            })
         } else {
             Ok(Some(token))
         }
@@ -2068,6 +2078,45 @@ wire = "messages"
             !err.contains("http.base_url"),
             "must not tell the user to set http.base_url, got {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn empty_client_token_is_auth_error() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "bearer"
+wire = "chat-completions"
+auth_scheme = "bearer"
+base_url = "http://127.0.0.1:9"
+"#,
+        )
+        .expect("parse");
+        let client = WireClient::from_resolved(
+            profile,
+            AnyTokenProvider::from(wiremux_auth::StaticToken::new("   ")),
+        )
+        .expect("client");
+        let err = client.access_token().await.expect_err("empty bearer");
+        assert!(err.to_string().contains("empty token"), "{err}");
+
+        let none = parse_profile_str(
+            r#"
+schema_version = 1
+id = "none-auth"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://127.0.0.1:9"
+"#,
+        )
+        .expect("parse");
+        let client = WireClient::from_resolved(
+            none,
+            AnyTokenProvider::from(wiremux_auth::StaticToken::new("")),
+        )
+        .expect("client");
+        let token = client.access_token().await.expect("none");
+        assert!(token.is_none(), "{token:?}");
     }
 
     #[tokio::test]
