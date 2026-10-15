@@ -1619,19 +1619,6 @@ fn complete_chat_tool_call(call: &Value) -> Result<Vec<IrStreamEvent>, MapError>
 }
 
 fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
-    let has_content = value
-        .get("content")
-        .and_then(Value::as_array)
-        .is_some_and(|items| !items.is_empty());
-    let typed_error = value.get("type").and_then(Value::as_str) == Some("error");
-    let string_error = value.get("error").and_then(Value::as_str).is_some();
-    let object_error = value.get("error").is_some_and(Value::is_object);
-    if !has_content
-        && (typed_error || string_error || object_error)
-        && let Some(detail) = plain_error_detail(value)
-    {
-        return Err(MapError::Invalid(detail));
-    }
     let mut out = Vec::new();
     let mut tool_index = 0u32;
     if let Some(content) = value.get("content").and_then(Value::as_array) {
@@ -1703,6 +1690,12 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
                 None => {}
             }
         }
+    }
+    // An empty block is not a message. It must not hide a vendor error.
+    if out.is_empty()
+        && let Some(detail) = plain_error_detail(value)
+    {
+        return Err(MapError::Invalid(detail));
     }
     if let Some(text) = value
         .pointer("/stop_details/explanation")
@@ -2353,6 +2346,20 @@ wire = "messages"
         )
         .expect_err("messages object without type");
         assert!(err.to_string().contains("model not found"), "{err}");
+        let err = decode_response(
+            Wire::Messages,
+            br#"{"content":[{"type":"text","text":""}],"error":{"type":"api_error","message":"overloaded"}}"#,
+            &messages,
+        )
+        .expect_err("empty text block hides the error");
+        assert!(err.to_string().contains("overloaded"), "{err}");
+        let err = decode_response(
+            Wire::Messages,
+            br#"{"content":[{}],"error":{"message":"overloaded"}}"#,
+            &messages,
+        )
+        .expect_err("empty block hides the error");
+        assert!(err.to_string().contains("overloaded"), "{err}");
         let kept_messages = decode_response(
             Wire::Messages,
             br#"{"content":[{"type":"text","text":"Hi"}],"error":{"message":"model not found"}}"#,
