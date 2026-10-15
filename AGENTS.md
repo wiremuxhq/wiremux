@@ -10,7 +10,8 @@ make check
 ```
 
 `make check` needs rustc 1.95 (see `rust-toolchain.toml`), rustfmt,
-clippy, `cargo-deny`, actionlint 1.7.12, and zizmor 1.16.0.
+clippy, `cargo-deny`, actionlint 1.7.12, zizmor 1.16.0, and Python 3
+(the standard library only).
 Sign commits with `git commit -s` (DCO).
 
 Two crates: `wiremux-auth` (profile AST + TokenProvider) and `wiremux`
