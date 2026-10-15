@@ -348,6 +348,45 @@ impl IrCache {
     }
 }
 
+/// One conversation turn.
+///
+/// `System`, `Developer`, and `Assistant` name every field.
+/// `#[non_exhaustive]` does not let an outside crate skip one.
+/// A 0.11.1 literal that omits the fields below does not compile.
+///
+/// ```
+/// use wiremux::{IrItem, IrPart};
+/// let system = IrItem::System {
+///     text: "You are concise.".into(),
+///     prompt_cache_breakpoint: None,
+///     content_parts: vec![],
+/// };
+/// let developer = IrItem::Developer {
+///     text: "Prefer short answers.".into(),
+///     prompt_cache_breakpoint: None,
+///     content_parts: vec![],
+/// };
+/// let assistant = IrItem::Assistant {
+///     parts: vec![IrPart::Text("Hi".into())],
+///     phase: None,
+/// };
+/// let image = IrPart::ImageUrl {
+///     url: "https://example.com/a.png".into(),
+///     detail: None,
+///     bucket_owner: None,
+///     file_id: None,
+/// };
+/// assert!(matches!(system, IrItem::System { prompt_cache_breakpoint: None, .. }));
+/// assert!(matches!(
+///     developer,
+///     IrItem::Developer { content_parts, .. } if content_parts.is_empty()
+/// ));
+/// assert!(matches!(assistant, IrItem::Assistant { phase: None, .. }));
+/// assert!(matches!(
+///     image,
+///     IrPart::ImageUrl { file_id: None, bucket_owner: None, .. }
+/// ));
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum IrItem {
