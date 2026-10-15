@@ -924,10 +924,20 @@ fn expand_responses_function_call(
 /// Merge Chat tool-call starts that arrive as id-only then name-only.
 ///
 /// Pending starts are keyed by `index` so interleaved parallel calls
-/// do not overwrite each other.
+/// do not overwrite each other. Argument deltas for a held start stay
+/// with it until the id and the name have both arrived.
 #[derive(Debug, Default)]
 pub struct ToolCallAssembler {
-    pending: std::collections::BTreeMap<u32, IrStreamEvent>,
+    pending: std::collections::BTreeMap<u32, PendingToolStart>,
+}
+
+#[derive(Debug)]
+struct PendingToolStart {
+    id: String,
+    name: String,
+    thought_signature: Option<String>,
+    index: u32,
+    args: Vec<String>,
 }
 
 impl ToolCallAssembler {
@@ -947,12 +957,11 @@ impl ToolCallAssembler {
                 index,
             } => self.push_start(id, name, thought_signature, index),
             IrStreamEvent::ToolCallArgDelta { delta, index } => {
-                let mut out = Vec::new();
-                if let Some(pending) = self.pending.remove(&index) {
-                    out.push(pending);
+                if let Some(pending) = self.pending.get_mut(&index) {
+                    pending.args.push(delta);
+                    return Vec::new();
                 }
-                out.push(IrStreamEvent::ToolCallArgDelta { delta, index });
-                out
+                vec![IrStreamEvent::ToolCallArgDelta { delta, index }]
             }
             other => {
                 let mut out = self.flush();
@@ -964,7 +973,12 @@ impl ToolCallAssembler {
 
     /// Emit held starts at end of stream.
     pub fn flush(&mut self) -> Vec<IrStreamEvent> {
-        std::mem::take(&mut self.pending).into_values().collect()
+        let pending = std::mem::take(&mut self.pending);
+        let mut out = Vec::new();
+        for (_, pending) in pending {
+            out.extend(pending.into_events());
+        }
+        out
     }
 
     fn push_start(
@@ -974,58 +988,47 @@ impl ToolCallAssembler {
         thought_signature: Option<String>,
         index: u32,
     ) -> Vec<IrStreamEvent> {
-        let incoming = IrStreamEvent::ToolCallStart {
+        let (id, name, thought_signature, args) = if let Some(prev) = self.pending.remove(&index) {
+            (
+                if id.is_empty() { prev.id } else { id },
+                if name.is_empty() { prev.name } else { name },
+                thought_signature.or(prev.thought_signature),
+                prev.args,
+            )
+        } else {
+            (id, name, thought_signature, Vec::new())
+        };
+        let pending = PendingToolStart {
             id,
             name,
             thought_signature,
             index,
+            args,
         };
-        match self.pending.remove(&index) {
-            Some(IrStreamEvent::ToolCallStart {
-                id: pid,
-                name: pname,
-                thought_signature: psig,
-                index: _,
-            }) => {
-                let IrStreamEvent::ToolCallStart {
-                    id,
-                    name,
-                    thought_signature,
-                    index,
-                } = incoming
-                else {
-                    unreachable!("incoming is ToolCallStart");
-                };
-                let merged = IrStreamEvent::ToolCallStart {
-                    id: if id.is_empty() { pid } else { id },
-                    name: if name.is_empty() { pname } else { name },
-                    thought_signature: thought_signature.or(psig),
-                    index,
-                };
-                if let IrStreamEvent::ToolCallStart { id, name, .. } = &merged
-                    && (id.is_empty() || name.is_empty())
-                {
-                    self.pending.insert(index, merged);
-                    Vec::new()
-                } else {
-                    vec![merged]
-                }
-            }
-            Some(other) => {
-                self.pending.insert(index, incoming);
-                vec![other]
-            }
-            None => {
-                if let IrStreamEvent::ToolCallStart { id, name, .. } = &incoming
-                    && (id.is_empty() || name.is_empty())
-                {
-                    self.pending.insert(index, incoming);
-                    Vec::new()
-                } else {
-                    vec![incoming]
-                }
-            }
+        if pending.id.is_empty() || pending.name.is_empty() {
+            self.pending.insert(index, pending);
+            Vec::new()
+        } else {
+            pending.into_events()
         }
+    }
+}
+
+impl PendingToolStart {
+    fn into_events(self) -> Vec<IrStreamEvent> {
+        let mut out = vec![IrStreamEvent::ToolCallStart {
+            id: self.id,
+            name: self.name,
+            thought_signature: self.thought_signature,
+            index: self.index,
+        }];
+        for delta in self.args {
+            out.push(IrStreamEvent::ToolCallArgDelta {
+                delta,
+                index: self.index,
+            });
+        }
+        out
     }
 }
 
