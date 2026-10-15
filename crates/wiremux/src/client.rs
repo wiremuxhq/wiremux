@@ -1266,16 +1266,17 @@ fn classify_error_payload(
     body: &str,
     retry_after: Option<u64>,
 ) -> ClientError {
+    let stored = clip_client_message(message);
     if looks_like_bad_key(body) || looks_like_bad_key(message) {
         return ClientError::Auth {
             status,
-            message: message.to_string(),
+            message: stored,
         };
     }
     if looks_like_model_not_found(body) || looks_like_model_not_found(message) {
         return ClientError::NotFound {
             status,
-            message: message.to_string(),
+            message: stored,
         };
     }
     if code == Some(429)
@@ -1286,7 +1287,7 @@ fn classify_error_payload(
         return ClientError::RateLimit {
             status,
             retry_after,
-            message: message.to_string(),
+            message: stored,
         };
     }
     if code.is_some_and(is_transient_code)
@@ -1294,11 +1295,11 @@ fn classify_error_payload(
         || looks_like_overload(body)
         || looks_like_overload(message)
     {
-        return transient(status, message.to_string(), TransientKind::Http);
+        return transient(status, stored, TransientKind::Http);
     }
     ClientError::Vendor {
         status,
-        message: message.to_string(),
+        message: stored,
     }
 }
 
@@ -2153,6 +2154,25 @@ wire = "messages"
         let message = clip_client_message(&text);
         assert!(!message.contains(&password), "{message}");
         assert!(!message.contains("user:"), "{message}");
+    }
+
+    #[test]
+    fn validation_exception_message_is_clipped() {
+        let long = "x".repeat(400);
+        let err = classify_aws_exception_type(
+            400,
+            "ValidationException",
+            &format!("bad key gsk_LIVE0123456789abcdef {long}"),
+            "eventstream exception ValidationException: ignored",
+        );
+        let ClientError::Vendor { message, .. } = err else {
+            panic!("expected Vendor, got {err:?}");
+        };
+        assert!(!message.contains("gsk_LIVE"), "{message}");
+        assert!(
+            message.chars().filter(|c| *c == 'x').count() <= 200,
+            "{message}"
+        );
     }
 
     #[test]
