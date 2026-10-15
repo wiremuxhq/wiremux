@@ -438,6 +438,7 @@ impl WireClient {
     /// GET the models catalog. OpenAI-compat uses the chat version prefix
     /// (`{base}/v1/models` for `/v1/chat/completions`,
     /// `{base}/openai/v1/models` for `/openai/v1/chat/completions`).
+    /// A Vertex `chat_path` keeps `publishers/.../models`.
     /// HTTP 404 after the
     /// request is sent is an empty list, including a SigV4-signed GET.
     /// HTTP 401 is [`ClientError::Auth`] for a static token. A provider
@@ -1565,10 +1566,12 @@ fn gemini_listed_vision(item: &Value) -> Option<bool> {
 /// `{base}/openai/v1/models`. `/api/v3/chat/completions` becomes
 /// `{base}/api/v3/models`. Gemini
 /// `/v1beta/models/{model}:generateContent` becomes `{base}/v1beta/models`.
-/// A path with no version segment stays `{base}/models`.
+/// A Vertex path keeps `publishers/.../models`, so the catalog is not
+/// `{base}/v1/models`. A path with no version segment stays `{base}/models`.
 fn models_url(base: &str, chat_path: &str) -> String {
     let base = base.trim_end_matches('/');
     match chat_version_prefix(chat_path) {
+        Some(prefix) if prefix.ends_with("/models") => format!("{base}/{prefix}"),
         Some(prefix) => format!("{base}/{prefix}/models"),
         None => format!("{base}/models"),
     }
@@ -1588,10 +1591,24 @@ fn chat_version_prefix(chat_path: &str) -> Option<&str> {
         }
         end += segment.len();
         if version_segment(segment) {
-            return Some(&path[..end]);
+            return Some(catalog_prefix(path, end));
         }
     }
     None
+}
+
+/// Vertex chat paths are `/v1/projects/.../publishers/{name}/models/{model}:...`.
+/// The catalog is that `models` collection, not `{base}/v1/models`.
+fn catalog_prefix(path: &str, version_end: usize) -> &str {
+    let Some(publishers) = path[version_end..].find("/publishers/") else {
+        return &path[..version_end];
+    };
+    let after_publishers = version_end + publishers;
+    let Some(models) = path[after_publishers..].find("/models") else {
+        return &path[..version_end];
+    };
+    let models_end = after_publishers + models + "/models".len();
+    &path[..models_end]
 }
 
 /// `v` plus a digit, then only ASCII letters and digits (`v1`, `v1beta`).
@@ -1684,6 +1701,20 @@ mod tests {
         assert_eq!(
             models_url("https://api.perplexity.ai", "/chat/completions"),
             "https://api.perplexity.ai/models"
+        );
+        assert_eq!(
+            models_url(
+                "https://us-central1-aiplatform.googleapis.com",
+                "/v1/projects/p/locations/us-central1/publishers/google/models/{model}:generateContent"
+            ),
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1/publishers/google/models"
+        );
+        assert_eq!(
+            models_url(
+                "https://us-central1-aiplatform.googleapis.com",
+                "/v1/projects/p/locations/us-central1/publishers/anthropic/models/{model}:rawPredict"
+            ),
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1/publishers/anthropic/models"
         );
         assert_eq!(
             models_url(

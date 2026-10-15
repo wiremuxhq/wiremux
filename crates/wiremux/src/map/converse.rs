@@ -798,16 +798,18 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                     }
                 }
                 if !media.is_empty() {
-                    ensure_document_text(&mut media, report);
                     let tool_result_tail = last_user_has_tool_result(&messages);
-                    if messages
+                    let join_user = messages
                         .last()
                         .and_then(|message| message.get("role"))
                         .and_then(Value::as_str)
                         == Some("user")
-                        && let Some(last) = messages.last_mut()
-                        && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)
-                    {
+                        && messages
+                            .last()
+                            .and_then(|message| message.get("content"))
+                            .and_then(Value::as_array)
+                            .is_some();
+                    if join_user {
                         if !tool_result_tail {
                             report.record(
                                 format!("items[{idx}]"),
@@ -815,8 +817,14 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                                 "consecutive turns with the same role were joined",
                             );
                         }
-                        arr.extend(media);
+                        if let Some(last) = messages.last_mut()
+                            && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)
+                        {
+                            arr.extend(media);
+                            ensure_document_text(arr, report);
+                        }
                     } else {
+                        ensure_document_text(&mut media, report);
                         messages.push(json!({ "role": "user", "content": media }));
                     }
                 }
