@@ -312,7 +312,12 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             };
             Err(MapError::Invalid(detail))
         }
-        other => Ok(Some(protocol(other, value))),
+        other => {
+            // Known names that are not their own arm, such as
+            // response.created, still must not hide a bare error.
+            reject_bare_responses_error(value)?;
+            Ok(Some(protocol(other, value)))
+        }
     }
 }
 

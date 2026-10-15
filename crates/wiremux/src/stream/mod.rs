@@ -2290,6 +2290,11 @@ base_url = "http://127.0.0.1"
                 r#"{"type":"response.incomplete","error":{"message":"overloaded","type":"server_error"}}"#,
                 "server_error: overloaded",
             ),
+            (
+                "response.created",
+                r#"{"type":"response.created","error":{"code":"server_error","message":"overloaded"}}"#,
+                "server_error: overloaded",
+            ),
         ];
         for (event, body, detail) in cases {
             assert_stream_invalid(Wire::Responses, &frame(Some(event), body), &profile, detail);
