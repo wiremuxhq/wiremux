@@ -109,7 +109,14 @@ impl UpstreamFrames {
     }
 }
 
-/// Decode one SSE frame. `None` is a recognized no-op (ping, empty delta).
+/// Decode one SSE frame. `None` is a recognized no-op (ping, or an empty
+/// Chat delta with no `error`).
+///
+/// A Chat chunk with no text, refusal, tool call, audio, or reasoning,
+/// and an `error` object or string, is [`MapError::Invalid`]. The detail
+/// is the vendor code and message (`server_error: overloaded`). `code`
+/// wins over `type`. `id`, `created`, and `finish_reason` do not count
+/// as visible.
 ///
 /// Unknown names follow `profile.dialect.stream_unknown_policy`. A
 /// tool-bearing frame is never `Ok(None)`.
@@ -186,7 +193,13 @@ impl StreamDecoder {
 /// Chat Completions can put content, `finish_reason`, and `usage` on
 /// one chunk. A Messages `message_delta` can carry a stop reason and
 /// `usage`. Singular decode keeps one of those. Empty vec is a
-/// recognized no-op.
+/// recognized no-op when the chunk has no `error`.
+///
+/// A Chat `error` on a chunk with no visible delta is
+/// [`MapError::Invalid`], not an empty vec. `id` and `created` do not
+/// hide that error. Visible text, a refusal, or a tool call stays `Ok`.
+/// An event name that is not in `stream_events` still follows
+/// `stream_unknown_policy`.
 ///
 /// Gemini function-call ids start at 0. Use [`StreamDecoder`] to keep
 /// the sequence across chunks of one stream.
@@ -199,6 +212,18 @@ pub fn decode_stream_events(
     decode_stream_events_seq(wire, raw, profile, &mut seq)
 }
 
+/// The SSE name was in `stream_events`, or singular decode asked for
+/// the plural tool path. An unknown-event `HardError` or `Unknown`
+/// frame must keep `stream_unknown_policy`.
+fn chat_named_frame(first: &Result<Option<IrStreamEvent>, MapError>) -> bool {
+    match first {
+        Ok(Some(IrStreamEvent::Unknown { .. })) => false,
+        Ok(_) => true,
+        Err(MapError::Invalid(detail)) if detail.contains("decode_stream_events") => true,
+        Err(_) => false,
+    }
+}
+
 fn decode_stream_events_seq(
     wire: Wire,
     raw: &RawSse,
@@ -209,7 +234,14 @@ fn decode_stream_events_seq(
     if matches!(wire, Wire::ChatCompletions)
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
     {
-        let events = chat::decode_all(&value)?;
+        // decode_all runs on every Chat JSON body, including a name that
+        // stream_unknown_policy already refused. Do not replace that policy
+        // with the vendor error.
+        let events = match chat::decode_all(&value) {
+            Ok(events) => events,
+            Err(err) if chat_named_frame(&first) => return Err(err),
+            Err(_) => Vec::new(),
+        };
         // Singular refuses a frame that would drop arguments or a second
         // call. The plural decode above already kept them.
         let singular_limit = matches!(
@@ -1559,6 +1591,159 @@ base_url = "http://127.0.0.1"
             events.iter().any(
                 |ev| matches!(ev, IrStreamEvent::ReasoningSignature { signature } if signature == "sig")
             ),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn chat_empty_delta_with_error_is_invalid() {
+        let profile = profile();
+        let empty = frame(
+            None,
+            r#"{"choices":[{"index":0,"delta":{}}],"error":{"message":"overloaded","type":"server_error"}}"#,
+        );
+        let err = decode_stream_events(Wire::ChatCompletions, &empty, &profile)
+            .expect_err("empty delta plus error");
+        assert_eq!(err.to_string(), "server_error: overloaded");
+        let singular = decode_stream_event(Wire::ChatCompletions, &empty, &profile)
+            .expect_err("singular decode hides the same error");
+        assert_eq!(singular.to_string(), "server_error: overloaded");
+
+        let with_id = frame(
+            None,
+            r#"{"id":"chatcmpl-1","created":1,"choices":[{"index":0,"delta":{}}],"error":{"message":"overloaded","type":"server_error"}}"#,
+        );
+        let err = decode_stream_events(Wire::ChatCompletions, &with_id, &profile)
+            .expect_err("id and created must not hide the error");
+        assert_eq!(err.to_string(), "server_error: overloaded");
+
+        let blank = frame(
+            None,
+            r#"{"choices":[{"index":0,"delta":{"content":""}}],"error":{"message":"overloaded","type":"server_error"}}"#,
+        );
+        let err = decode_stream_events(Wire::ChatCompletions, &blank, &profile)
+            .expect_err("empty content is not a completion");
+        assert_eq!(err.to_string(), "server_error: overloaded");
+
+        let stopped = frame(
+            None,
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"error":{"message":"overloaded","type":"server_error"}}"#,
+        );
+        let err = decode_stream_events(Wire::ChatCompletions, &stopped, &profile)
+            .expect_err("finish_reason is not visible text");
+        assert_eq!(err.to_string(), "server_error: overloaded");
+
+        let err = decode_stream_events(
+            Wire::ChatCompletions,
+            &frame(
+                None,
+                r#"{"choices":[{"index":0,"delta":{}}],"error":"overloaded"}"#,
+            ),
+            &profile,
+        )
+        .expect_err("string error");
+        assert_eq!(err.to_string(), "overloaded");
+
+        let err = decode_stream_events(
+            Wire::ChatCompletions,
+            &frame(
+                None,
+                r#"{"choices":[{"index":0,"delta":{}}],"error":{"code":"model_not_found","type":"invalid_request_error","message":"no such model"}}"#,
+            ),
+            &profile,
+        )
+        .expect_err("code wins over type");
+        assert_eq!(err.to_string(), "model_not_found: no such model");
+
+        let text = decode_stream_events(
+            Wire::ChatCompletions,
+            &frame(
+                None,
+                r#"{"choices":[{"index":0,"delta":{"content":"Hi"}}],"error":{"message":"overloaded","type":"server_error"}}"#,
+            ),
+            &profile,
+        )
+        .expect("visible text stays");
+        assert!(
+            text.iter()
+                .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
+            "{text:?}"
+        );
+
+        let refusal = decode_stream_events(
+            Wire::ChatCompletions,
+            &frame(
+                None,
+                r#"{"choices":[{"index":0,"delta":{"refusal":"no"}}],"error":{"message":"overloaded"}}"#,
+            ),
+            &profile,
+        )
+        .expect("refusal stays");
+        assert!(
+            refusal
+                .iter()
+                .any(|ev| matches!(ev, IrStreamEvent::RefusalDelta { text } if text == "no")),
+            "{refusal:?}"
+        );
+
+        let calls = decode_stream_events(
+            Wire::ChatCompletions,
+            &frame(
+                None,
+                r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"lookup","arguments":""}}]}}],"error":{"message":"overloaded"}}"#,
+            ),
+            &profile,
+        )
+        .expect("tool call stays");
+        assert!(
+            calls.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::ToolCallStart { id, name, .. } if id == "call_1" && name == "lookup"
+            )),
+            "{calls:?}"
+        );
+
+        let quiet = decode_stream_events(
+            Wire::ChatCompletions,
+            &frame(None, r#"{"choices":[{"index":0,"delta":{}}]}"#),
+            &profile,
+        )
+        .expect("empty delta without an error is a no-op");
+        assert!(quiet.is_empty(), "{quiet:?}");
+    }
+
+    #[test]
+    fn chat_error_on_an_unknown_event_keeps_stream_policy() {
+        let raw = frame(
+            Some("error"),
+            r#"{"error":{"message":"overloaded","type":"server_error"}}"#,
+        );
+        let err = decode_stream_events(Wire::ChatCompletions, &raw, &profile())
+            .expect_err("default policy is hard-error");
+        match err {
+            MapError::HardError { path, detail } => {
+                assert_eq!(path, "error");
+                assert!(detail.contains("unknown stream event"), "{detail}");
+            }
+            other => panic!("expected HardError, got {other}"),
+        }
+
+        let pass = wiremux_auth::parse_profile_str(
+            r#"
+schema_version = 1
+id = "t"
+wire = "chat-completions"
+stream_unknown_policy = "passthrough"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("passthrough");
+        let events = decode_stream_events(Wire::ChatCompletions, &raw, &pass)
+            .expect("passthrough keeps the frame");
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, IrStreamEvent::Unknown { event, .. } if event == "error")),
             "{events:?}"
         );
     }

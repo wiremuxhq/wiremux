@@ -415,6 +415,44 @@ number as `minimum` or `maximum`.
 Product README and architecture live at the repository root and in
 `docs/ARCHITECTURE.md`. This page stays the host attach contract.
 
+## Fields added in 0.11.2
+
+`IrItem::System`, `IrItem::Developer`, `IrItem::Assistant`, and
+`IrPart::ImageUrl` gained fields in crates.io `0.11.2`. A struct
+literal from `0.11.1` does not compile (`E0063`).
+`#[non_exhaustive]` does not let an outside crate omit them.
+Set a field you do not use to `None` or an empty vec.
+
+```rust
+IrItem::System {
+    text: "You are concise.".into(),
+    prompt_cache_breakpoint: None,
+    content_parts: vec![],
+}
+IrItem::Developer {
+    text: "Prefer short answers.".into(),
+    prompt_cache_breakpoint: None,
+    content_parts: vec![],
+}
+IrItem::Assistant {
+    parts: vec![IrPart::Text("Hi".into())],
+    phase: None,
+}
+IrPart::ImageUrl {
+    url: "https://example.com/a.png".into(),
+    detail: None,
+    bucket_owner: None,
+    file_id: None,
+}
+```
+
+`prompt_cache_breakpoint` is the Chat mode on a one-part system or
+developer role. `content_parts` keeps a later breakpoint on that role.
+`phase` is the Responses assistant phase (`commentary` or
+`final_answer`). `bucket_owner` is the Converse S3 account id.
+`file_id` is the Responses input image file id. Chat, Messages,
+Converse, and Gemini have no slot for `file_id`.
+
 ## Pin
 
 Published hosts pin crates.io `0.11.2`. <!-- x-release-please-version -->

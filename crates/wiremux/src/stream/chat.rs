@@ -9,6 +9,7 @@ use super::usage;
 use super::{MAX_TOOL_CALL_INDEX, RawSse, check_index, str_field};
 
 pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
+    reject_bare_chat_error(value)?;
     let choices = value.get("choices").and_then(Value::as_array);
     let empty_choices = choices.map(|c| c.is_empty()).unwrap_or(true);
     if empty_choices && let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
@@ -133,8 +134,30 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     Ok(None)
 }
 
+/// Vendor error when the chunk has no visible choice.
+///
+/// `id`, `created`, and `finish_reason` are not a completion. Same rule
+/// as unary `decode_chat_complete`.
+fn reject_bare_chat_error(value: &Value) -> Result<(), MapError> {
+    if crate::completion::json_has_completion(value) {
+        return Ok(());
+    }
+    if let Some(text) = crate::completion::json_string_error(value) {
+        return Err(MapError::Invalid(text.to_string()));
+    }
+    if let Some(detail) = value
+        .get("error")
+        .filter(|err| err.is_object())
+        .and_then(crate::completion::error_object_detail)
+    {
+        return Err(MapError::Invalid(detail));
+    }
+    Ok(())
+}
+
 /// Every signal on one Chat chunk. First-wins lives in [`decode`].
 pub(super) fn decode_all(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
+    reject_bare_chat_error(value)?;
     let choices = value.get("choices").and_then(Value::as_array);
     let empty_choices = choices.map(|c| c.is_empty()).unwrap_or(true);
     if empty_choices && let Some(usage) = value.get("usage").filter(|v| v.is_object()) {
