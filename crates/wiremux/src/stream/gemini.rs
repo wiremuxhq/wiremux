@@ -299,8 +299,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             thought_signature,
             ..
         } => {
-            let n = if name.is_empty() { id } else { name };
-            let mut function_call = json!({ "name": n, "args": {} });
+            let mut function_call = json!({ "name": name, "args": {} });
             if !id.is_empty() {
                 function_call["id"] = json!(id);
             }
@@ -318,8 +317,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
             })
         }
         IrStreamEvent::CustomToolCallStart { id, name, .. } => {
-            let n = if name.is_empty() { id } else { name };
-            let mut function_call = json!({ "name": n, "args": {} });
+            let mut function_call = json!({ "name": name, "args": {} });
             if !id.is_empty() {
                 function_call["id"] = json!(id);
             }

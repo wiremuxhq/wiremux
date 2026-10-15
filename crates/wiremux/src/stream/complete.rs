@@ -674,14 +674,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 thought_signature,
                 ..
             } => {
-                if let Some((id, name, args, signature, custom)) = current.take() {
-                    tool_calls.push(gemini_function_call_value(
-                        &id,
-                        &name,
-                        &args,
-                        signature.as_deref(),
-                        custom,
-                    ));
+                if let Some((id, name, args, signature, custom)) = current.take()
+                    && let Some(part) =
+                        gemini_function_call_value(&id, &name, &args, signature.as_deref(), custom)
+                {
+                    tool_calls.push(part);
                 }
                 current = Some((
                     id.clone(),
@@ -695,14 +692,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 ));
             }
             IrStreamEvent::CustomToolCallStart { id, name, .. } => {
-                if let Some((id, name, args, signature, custom)) = current.take() {
-                    tool_calls.push(gemini_function_call_value(
-                        &id,
-                        &name,
-                        &args,
-                        signature.as_deref(),
-                        custom,
-                    ));
+                if let Some((id, name, args, signature, custom)) = current.take()
+                    && let Some(part) =
+                        gemini_function_call_value(&id, &name, &args, signature.as_deref(), custom)
+                {
+                    tool_calls.push(part);
                 }
                 current = Some((id.clone(), name.clone(), String::new(), None, true));
             }
@@ -713,14 +707,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 }
             }
             IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args, signature, custom)) = current.take() {
-                    tool_calls.push(gemini_function_call_value(
-                        &id,
-                        &name,
-                        &args,
-                        signature.as_deref(),
-                        custom,
-                    ));
+                if let Some((id, name, args, signature, custom)) = current.take()
+                    && let Some(part) =
+                        gemini_function_call_value(&id, &name, &args, signature.as_deref(), custom)
+                {
+                    tool_calls.push(part);
                 }
             }
             IrStreamEvent::ServiceTier { tier } => {
@@ -814,14 +805,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             _ => {}
         }
     }
-    if let Some((id, name, args, signature, custom)) = current.take() {
-        tool_calls.push(gemini_function_call_value(
-            &id,
-            &name,
-            &args,
-            signature.as_deref(),
-            custom,
-        ));
+    if let Some((id, name, args, signature, custom)) = current.take()
+        && let Some(part) =
+            gemini_function_call_value(&id, &name, &args, signature.as_deref(), custom)
+    {
+        tool_calls.push(part);
     }
 
     let mut parts = Vec::new();
@@ -966,15 +954,17 @@ fn gemini_function_call_value(
     args: &str,
     thought_signature: Option<&str>,
     custom: bool,
-) -> Value {
-    let n = if name.is_empty() { id } else { name };
+) -> Option<Value> {
+    if name.is_empty() {
+        return None;
+    }
     let parsed = if custom {
         crate::map::response_custom_tool_input(args)
     } else {
         serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({}))
     };
     let mut function_call = json!({
-        "name": n,
+        "name": name,
         "args": parsed,
     });
     if !id.is_empty() {
@@ -984,7 +974,7 @@ fn gemini_function_call_value(
     if let Some(sig) = thought_signature.filter(|sig| !sig.is_empty()) {
         part["thoughtSignature"] = json!(sig);
     }
-    part
+    Some(part)
 }
 
 fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {

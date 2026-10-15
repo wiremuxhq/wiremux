@@ -2330,10 +2330,10 @@ impl StreamEncoder {
             thought_signature,
             custom,
         } = call;
-        if name.is_empty() && id.is_empty() {
+        // A call id is not a function name. An unnamed call is not sent.
+        if name.is_empty() {
             return None;
         }
-        let display = if name.is_empty() { id.clone() } else { name };
         let parsed = if custom {
             crate::map::response_custom_tool_input(&args)
         } else if args.is_empty() {
@@ -2341,7 +2341,7 @@ impl StreamEncoder {
         } else {
             serde_json::from_str::<Value>(&args).unwrap_or_else(|_| json!({}))
         };
-        let mut function_call = json!({ "name": display, "args": parsed });
+        let mut function_call = json!({ "name": name, "args": parsed });
         if !id.is_empty() {
             function_call["id"] = json!(id);
         }
@@ -2505,6 +2505,34 @@ mod tests {
             "output_item.done must keep assembled text, got {}",
             item_done.data
         );
+    }
+
+    #[test]
+    fn gemini_encoder_does_not_name_a_call_after_its_id() {
+        let mut enc = StreamEncoder::new(Wire::Gemini);
+        enc.push(IrStreamEvent::ToolCallStart {
+            id: "call_1".into(),
+            name: String::new(),
+            thought_signature: None,
+            index: 0,
+        })
+        .expect("start");
+        enc.push(IrStreamEvent::ToolCallArgDelta {
+            delta: "{\"q\":1}".into(),
+            index: 0,
+        })
+        .expect("args");
+        let frames = enc.finish().expect("finish");
+        let joined = frames
+            .iter()
+            .map(|frame| frame.data.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !joined.contains("functionCall"),
+            "unnamed call must not be sent, got {joined}"
+        );
+        assert!(!joined.contains("call_1"), "got {joined}");
     }
 
     #[test]
