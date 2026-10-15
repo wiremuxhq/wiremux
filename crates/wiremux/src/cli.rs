@@ -1105,6 +1105,22 @@ base_url = "https://generativelanguage.googleapis.com"
             control.contains("/v1beta/models/a%0Ab:generateContent"),
             "control must encode, got {control}"
         );
+        let dot = upstream_url_for_model(&profile, Some("."), false).expect_err("dot segment");
+        assert!(
+            dot.contains("dot segment"),
+            "a lone dot must not collapse the path, got {dot}"
+        );
+        let dotdot = upstream_url_for_model(&profile, Some(".."), false).expect_err("dotdot");
+        assert!(
+            dotdot.contains("dot segment"),
+            "a lone dotdot must not collapse the path, got {dotdot}"
+        );
+        let dotted = upstream_url_for_model(&profile, Some("gemini-2.5-flash"), false)
+            .expect("dotted model id");
+        assert!(
+            dotted.contains("/v1beta/models/gemini-2.5-flash:generateContent"),
+            "dots inside a model id stay, got {dotted}"
+        );
     }
 
     #[test]
