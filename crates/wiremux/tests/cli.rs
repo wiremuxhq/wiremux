@@ -992,7 +992,10 @@ fn proxy_count_html_success_is_bad_gateway() {
         upstream_content_type: "text/html",
     });
     assert!(resp.starts_with("HTTP/1.1 502"), "{resp}");
-    assert!(resp.contains("not JSON"), "{resp}");
+    assert!(
+        resp.contains("content type is not application/json"),
+        "{resp}"
+    );
     assert!(!resp.contains("<html>"), "{resp}");
 }
 

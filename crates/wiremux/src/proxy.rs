@@ -278,6 +278,17 @@ fn same_wire_success_is_json(content_type: &str, body: &[u8]) -> bool {
     trimmed.starts_with(b"{") || trimmed.starts_with(b"[")
 }
 
+/// Why a same-wire 2xx was refused, or `None` when it can be passed through.
+fn same_wire_success_rejection(content_type: &str, body: &[u8]) -> Option<&'static str> {
+    if same_wire_success_is_json(content_type, body) {
+        return None;
+    }
+    if !content_type.is_empty() && !is_json_content_type(content_type) {
+        return Some("upstream success content type is not application/json\n");
+    }
+    Some("upstream success body is not a JSON object or array\n")
+}
+
 fn request_guard(req: &Request<Incoming>, post: bool) -> Option<Response<ProxyBody>> {
     let host = req
         .headers()
@@ -423,7 +434,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         Ok(u) => u,
         Err(err) => {
             log_upstream_send_error(&method, &path, &state.profile.id, &err);
-            return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
+            return text(StatusCode::BAD_REQUEST, format!("{err}\n"));
         }
     };
     let resp = match send_upstream(
@@ -508,12 +519,9 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     if target == state.from || !status.is_success() {
         if target == state.from
             && status.is_success()
-            && !same_wire_success_is_json(&content_type, &body)
+            && let Some(message) = same_wire_success_rejection(&content_type, &body)
         {
-            return text(
-                StatusCode::BAD_GATEWAY,
-                "upstream success body is not JSON\n",
-            );
+            return text(StatusCode::BAD_GATEWAY, message);
         }
         return bytes_response(status_from_reqwest(status), &content_type, body);
     }
@@ -673,6 +681,21 @@ fn count_body_hides_vendor_error(route: CountRoute, body: &[u8]) -> bool {
     vendor_error_detail(err).is_some()
 }
 
+/// 501 text when this count URL cannot be served for the profile.
+///
+/// A same-wire profile on the other count path is the wrong URL.
+/// Different source and destination wires are an unmapped count.
+fn count_dialect_rejection(from: Wire, target: Wire, route: Wire) -> Option<&'static str> {
+    if from == route && target == route {
+        return None;
+    }
+    if from != target {
+        Some("token count is not mapped across dialects\n")
+    } else {
+        Some("this count URL does not match the profile wire\n")
+    }
+}
+
 fn count_upstream_url(
     profile: &ResolvedProfile,
     model: Option<&str>,
@@ -700,15 +723,12 @@ async fn handle_count(
         None => {
             return text(
                 StatusCode::BAD_REQUEST,
-                "profile has no wire; cannot encode\n",
+                "profile has no wire; set `wire` on the profile\n",
             );
         }
     };
-    if state.from != route_wire || target != route_wire {
-        return text(
-            StatusCode::NOT_IMPLEMENTED,
-            "token count is not mapped across dialects\n",
-        );
+    if let Some(message) = count_dialect_rejection(state.from, target, route_wire) {
+        return text(StatusCode::NOT_IMPLEMENTED, message);
     }
     let mut header_profile = state.profile.clone();
     let mut loss = LossReport::default();
@@ -746,7 +766,7 @@ async fn handle_count(
         }
         Err(CountUrlError::Upstream(err)) => {
             log_upstream_send_error(method, path, &state.profile.id, &err);
-            return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
+            return text(StatusCode::BAD_REQUEST, format!("{err}\n"));
         }
     };
     let resp = match send_upstream(
@@ -784,11 +804,10 @@ async fn handle_count(
         status.as_u16(),
         loss_summary(&loss, &LossReport::default())
     );
-    if status.is_success() && !same_wire_success_is_json(&content_type, &upstream_body) {
-        return text(
-            StatusCode::BAD_GATEWAY,
-            "upstream success body is not JSON\n",
-        );
+    if status.is_success()
+        && let Some(message) = same_wire_success_rejection(&content_type, &upstream_body)
+    {
+        return text(StatusCode::BAD_GATEWAY, message);
     }
     if status.is_success() && count_body_hides_vendor_error(route, &upstream_body) {
         // 5xx is retried as a transient HTTP failure. A vendor error
@@ -1989,10 +2008,10 @@ fn status_from_reqwest(status: reqwest::StatusCode) -> StatusCode {
 mod tests {
     use super::{
         CountRoute, CountUrlError, chat_complete_vendor_failure, converse_complete_vendor_failure,
-        count_body_hides_vendor_error, count_model, count_route, count_upstream_url,
-        gemini_complete_vendor_failure, host_is_loopback, is_json_content_type,
+        count_body_hides_vendor_error, count_dialect_rejection, count_model, count_route,
+        count_upstream_url, gemini_complete_vendor_failure, host_is_loopback, is_json_content_type,
         messages_complete_vendor_failure, read_capped_body, responses_complete_vendor_failure,
-        rewrite_count_body_model, same_wire_success_is_json,
+        rewrite_count_body_model, same_wire_success_is_json, same_wire_success_rejection,
     };
     use crate::Wire;
 
@@ -2298,6 +2317,34 @@ anthropic-beta = "context-1m-2025-08-07"
             b" {\"id\":\"x\"}"
         ));
         assert!(same_wire_success_is_json("", b"[1]"));
+        assert_eq!(
+            same_wire_success_rejection("text/html", b"{\"totalTokens\":3}"),
+            Some("upstream success content type is not application/json\n")
+        );
+        assert_eq!(
+            same_wire_success_rejection("application/json", b"<html></html>"),
+            Some("upstream success body is not a JSON object or array\n")
+        );
+        assert_eq!(
+            same_wire_success_rejection("application/json", b"{\"totalTokens\":3}"),
+            None
+        );
+    }
+
+    #[test]
+    fn count_url_on_the_same_wire_is_not_a_cross_dialect_gap() {
+        assert_eq!(
+            count_dialect_rejection(Wire::Messages, Wire::Messages, Wire::Gemini),
+            Some("this count URL does not match the profile wire\n")
+        );
+        assert_eq!(
+            count_dialect_rejection(Wire::Messages, Wire::Gemini, Wire::Gemini),
+            Some("token count is not mapped across dialects\n")
+        );
+        assert_eq!(
+            count_dialect_rejection(Wire::Messages, Wire::Messages, Wire::Messages),
+            None
+        );
     }
 
     #[test]
