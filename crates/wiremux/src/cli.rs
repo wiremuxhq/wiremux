@@ -648,7 +648,9 @@ pub fn wire_name(wire: Wire) -> &'static str {
     }
 }
 
-/// Resolve an API token for the proxy. Empty means send no auth header.
+/// Resolve an API token for the proxy.
+///
+/// `Ok(None)` is only `auth_scheme = "none"`. An empty bearer is an error.
 pub async fn proxy_token(
     profile: &ResolvedProfile,
     provider: &AnyTokenProvider,
@@ -672,11 +674,11 @@ pub async fn proxy_token(
     if profile.oauth.is_some() || !profile.access_env.is_empty() || provider_has_token(provider) {
         let token = provider.get_token().await.map_err(|e| e.to_string())?;
         if token.trim().is_empty() {
-            return Ok(None);
+            return Err("empty token is not auth_scheme none".into());
         }
         return Ok(Some(token));
     }
-    Ok(None)
+    Err("no credentials (set [headers] Authorization or x-api-key, [oauth], or auth_scheme = \"none\")".into())
 }
 
 fn provider_has_token(provider: &AnyTokenProvider) -> bool {
@@ -1465,6 +1467,43 @@ base_url = "http://127.0.0.1:9"
         assert!(text.contains("auth_scheme is none"), "{text}");
         assert!(!text.contains("token: available"), "{text}");
         assert!(!text.contains("http://"));
+        let provider = AnyTokenProvider::from(StaticToken::new(""));
+        let token = proxy_token(&profile, &provider).await.expect("none");
+        assert!(token.is_none(), "{token:?}");
+    }
+
+    #[tokio::test]
+    async fn empty_bearer_is_not_sent() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "bearer"
+wire = "chat-completions"
+auth_scheme = "bearer"
+access_env = ["WIREMUX_EMPTY_BEARER"]
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("parse");
+        let provider = AnyTokenProvider::from(StaticToken::new("   "));
+        let err = proxy_token(&profile, &provider)
+            .await
+            .expect_err("empty bearer");
+        assert!(err.contains("empty token"), "{err}");
+
+        let bare = parse_profile_str(
+            r#"
+schema_version = 1
+id = "bare"
+wire = "chat-completions"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("parse");
+        let err = proxy_token(&bare, &provider)
+            .await
+            .expect_err("no credentials");
+        assert!(err.contains("auth_scheme"), "{err}");
     }
 
     #[cfg(any(feature = "proxy", feature = "client"))]
