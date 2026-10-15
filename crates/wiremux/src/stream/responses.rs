@@ -36,6 +36,39 @@ pub(super) fn failure_object(value: &Value) -> Option<&Value> {
         })
 }
 
+/// `error` on a done or completed frame that has no text and no output.
+fn reject_bare_responses_error(value: &Value) -> Result<(), MapError> {
+    if responses_frame_has_visible_body(value) {
+        return Ok(());
+    }
+    if let Some(text) = crate::completion::json_string_error(value) {
+        return Err(MapError::Invalid(text.to_string()));
+    }
+    if let Some(detail) = value
+        .get("error")
+        .filter(|err| err.is_object())
+        .and_then(crate::completion::error_object_detail)
+    {
+        return Err(MapError::Invalid(detail));
+    }
+    Ok(())
+}
+
+fn responses_frame_has_visible_body(value: &Value) -> bool {
+    value
+        .get("text")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty())
+        || nonempty_output(value.get("output"))
+        || nonempty_output(value.pointer("/response/output"))
+}
+
+fn nonempty_output(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty())
+}
+
 fn last_error_code(last: &Value) -> Option<String> {
     let code = last.get("code")?;
     if let Some(text) = code.as_str() {
@@ -200,6 +233,7 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             }
         },
         "response.completed" => {
+            reject_bare_responses_error(value)?;
             if let Some("cancelled" | "canceled") =
                 value.pointer("/response/status").and_then(Value::as_str)
             {
@@ -240,8 +274,11 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             vendor: None,
         })),
         // These bracket a part, or repeat text the matching delta already delivered.
-        "response.output_text.done"
-        | "response.content_part.done"
+        "response.output_text.done" => {
+            reject_bare_responses_error(value)?;
+            Ok(None)
+        }
+        "response.content_part.done"
         | "response.function_call_arguments.done"
         | "response.refusal.done"
         | "response.audio.done"

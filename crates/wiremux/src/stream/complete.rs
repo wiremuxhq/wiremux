@@ -1767,7 +1767,7 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
     Ok(out)
 }
 
-fn responses_gateway_error(value: &Value) -> Option<String> {
+pub(super) fn responses_gateway_error(value: &Value) -> Option<String> {
     // A real Responses object carries `status` or `object`. A gateway
     // failure is only an `error` string or object. Treating that as
     // `response.completed` emits Done, which encodes as a finished stop.

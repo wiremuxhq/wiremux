@@ -1022,7 +1022,8 @@ fn json_prefix(bytes: &[u8]) -> bool {
         .is_some_and(|byte| matches!(byte, b'{' | b'['))
 }
 
-/// Converse HTTP 200 JSON uses `__type` and `message`, not `error`.
+/// Converse HTTP 200 JSON uses `__type` and `message`, or an `error`
+/// envelope when `output` and `stopReason` are absent.
 ///
 /// `classify_http` misses that shape, so `send` would report `Map` and
 /// `stream` would report a prelude CRC error.

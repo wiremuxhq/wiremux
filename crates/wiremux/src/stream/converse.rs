@@ -438,6 +438,8 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
     Ok(body)
 }
 
+/// Bedrock `__type` and `message`, or an OpenAI `error` when the body
+/// has no `output`, `stopReason`, or Converse stream frame.
 pub(crate) fn complete_exception_detail(value: &Value) -> Option<String> {
     if value.get("output").is_some() || value.get("stopReason").and_then(Value::as_str).is_some() {
         return None;
@@ -456,8 +458,32 @@ pub(crate) fn complete_exception_detail(value: &Value) -> Option<String> {
         (Some(ty), Some(message)) => Some(format!("{ty}: {message}")),
         (Some(ty), None) => Some(ty.to_string()),
         (None, Some(message)) => Some(message.to_string()),
-        (None, None) => None,
+        (None, None) if converse_stream_frame(value) => None,
+        (None, None) => openai_error_detail(value),
     }
+}
+
+fn converse_stream_frame(value: &Value) -> bool {
+    [
+        "messageStart",
+        "contentBlockStart",
+        "contentBlockDelta",
+        "contentBlockStop",
+        "messageStop",
+        "metadata",
+    ]
+    .iter()
+    .any(|key| value.get(*key).is_some())
+}
+
+fn openai_error_detail(value: &Value) -> Option<String> {
+    if let Some(text) = crate::completion::json_string_error(value) {
+        return Some(text.to_string());
+    }
+    value
+        .get("error")
+        .filter(|err| err.is_object())
+        .and_then(crate::completion::error_object_detail)
 }
 
 pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
