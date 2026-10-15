@@ -948,6 +948,9 @@ impl ToolCallAssembler {
     }
 
     /// Feed one event. Incomplete starts are held until the name or id arrives.
+    ///
+    /// A completion id, or any other non-terminal event, does not release
+    /// a held start. [`IrStreamEvent::FinishReason`] and [`IrStreamEvent::Done`] do.
     pub fn push(&mut self, ev: IrStreamEvent) -> Vec<IrStreamEvent> {
         match ev {
             IrStreamEvent::ToolCallStart {
@@ -964,7 +967,18 @@ impl ToolCallAssembler {
                 vec![IrStreamEvent::ToolCallArgDelta { delta, index }]
             }
             other => {
-                let mut out = self.flush();
+                // Every Chat chunk carries `id` before the tool fields.
+                // Flushing on that protocol event would emit the held
+                // start before the name arrives. Finish still releases
+                // a start the name never completed.
+                let mut out = if matches!(
+                    other,
+                    IrStreamEvent::FinishReason { .. } | IrStreamEvent::Done
+                ) {
+                    self.flush()
+                } else {
+                    Vec::new()
+                };
                 out.push(other);
                 out
             }
