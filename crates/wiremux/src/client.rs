@@ -1062,11 +1062,11 @@ fn classify_aws_exception_type(
         return ClientError::RateLimit {
             status: Some(status),
             retry_after: None,
-            message: full.to_string(),
+            message: clip_client_message(full),
         };
     }
     if ty.contains("internal") || ty.contains("serviceunavailable") || ty.contains("timeout") {
-        return transient(Some(status), full.to_string(), TransientKind::Http);
+        return transient(Some(status), clip_client_message(full), TransientKind::Http);
     }
     classify_error_payload(Some(status), None, None, message, full, None)
 }
@@ -1155,6 +1155,7 @@ fn classify_responses_failed(data: &str, status: u16) -> Option<ClientError> {
     } else {
         message.to_string()
     };
+    let shown = clip_client_message(&shown);
     Some(classify_error_payload(
         Some(status),
         code,
@@ -1378,6 +1379,10 @@ fn looks_like_rate_limit(text: &str) -> bool {
 fn looks_like_overload(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
     t.contains("upstream overload") || t.contains("overloaded")
+}
+
+fn clip_client_message(text: &str) -> String {
+    redact_embedded_url(&sanitize_oauth_error_text(text))
 }
 
 fn error_message(body: &str) -> String {
@@ -2111,6 +2116,17 @@ wire = "messages"
             }
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn response_failed_message_is_capped() {
+        let long = "x".repeat(500);
+        let data = format!(
+            r#"{{"type":"response.failed","response":{{"error":{{"code":"server_error","message":"{long}"}}}}}}"#
+        );
+        let err = classify_responses_failed(&data, 200).expect("failed frame");
+        let xs = err.to_string().chars().filter(|c| *c == 'x').count();
+        assert!(xs <= 200, "message must be capped, got {xs} in {err}");
     }
 
     #[test]
