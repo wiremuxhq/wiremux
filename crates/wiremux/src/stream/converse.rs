@@ -441,7 +441,7 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
 /// Bedrock `__type` and `message`, or an OpenAI `error` when the body
 /// has no `output`, `stopReason`, or Converse stream frame.
 pub(crate) fn complete_exception_detail(value: &Value) -> Option<String> {
-    if value.get("output").is_some() || value.get("stopReason").and_then(Value::as_str).is_some() {
+    if converse_has_completion(value) {
         return None;
     }
     let ty = value
@@ -460,6 +460,22 @@ pub(crate) fn complete_exception_detail(value: &Value) -> Option<String> {
         (None, Some(message)) => Some(message.to_string()),
         (None, None) if converse_stream_frame(value) => None,
         (None, None) => openai_error_detail(value),
+    }
+}
+
+fn converse_has_completion(value: &Value) -> bool {
+    if value
+        .get("stopReason")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty())
+    {
+        return true;
+    }
+    match value.get("output") {
+        Some(Value::Object(map)) => !map.is_empty(),
+        Some(Value::Array(items)) => !items.is_empty(),
+        Some(Value::Null) | None => false,
+        Some(_) => true,
     }
 }
 

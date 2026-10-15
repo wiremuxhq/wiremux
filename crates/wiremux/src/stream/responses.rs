@@ -36,7 +36,28 @@ pub(super) fn failure_object(value: &Value) -> Option<&Value> {
         })
 }
 
-/// `error` on a done or completed frame that has no text and no output.
+/// Vendor text from `/response/error` or `/response/last_error`.
+pub(super) fn failure_detail(value: &Value) -> Option<String> {
+    let last = failure_object(value)?;
+    let message = last
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
+    let code = last_error_code(last);
+    match (code, message) {
+        (Some(code), Some(message)) => Some(format!("{code}: {message}")),
+        (None, Some(message)) => Some(message),
+        (Some(code), None) => Some(code),
+        (None, None) => None,
+    }
+}
+
+/// `error` on a frame that has no text and no output.
+///
+/// The object may sit on the frame or under `response`. A nested
+/// `response.error` is the shape `response.failed` already reads.
 fn reject_bare_responses_error(value: &Value) -> Result<(), MapError> {
     if responses_frame_has_visible_body(value) {
         return Ok(());
@@ -49,6 +70,9 @@ fn reject_bare_responses_error(value: &Value) -> Result<(), MapError> {
         .filter(|err| err.is_object())
         .and_then(crate::completion::error_object_detail)
     {
+        return Err(MapError::Invalid(detail));
+    }
+    if let Some(detail) = failure_detail(value) {
         return Err(MapError::Invalid(detail));
     }
     Ok(())
@@ -249,36 +273,22 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             }
         }
         "response.failed" => {
-            let last = failure_object(value);
-            let message = last
-                .and_then(|err| err.get("message"))
-                .and_then(Value::as_str)
-                .filter(|text| !text.is_empty());
-            let code = last.and_then(last_error_code);
-            if message.is_some() || code.is_some() {
-                let detail = match (code, message) {
-                    (Some(code), Some(message)) => format!("{code}: {message}"),
-                    (None, Some(message)) => message.to_string(),
-                    (Some(code), None) => code,
-                    (None, None) => "vendor error".to_string(),
-                };
-                return Err(MapError::Invalid(detail));
-            }
+            reject_bare_responses_error(value)?;
             Ok(Some(IrStreamEvent::FinishReason {
                 reason: "failed".into(),
                 vendor: None,
             }))
         }
-        "response.incomplete" => Ok(Some(IrStreamEvent::FinishReason {
-            reason: decode_incomplete_reason(value, "incomplete"),
-            vendor: None,
-        })),
-        // These bracket a part, or repeat text the matching delta already delivered.
-        "response.output_text.done" => {
+        "response.incomplete" => {
             reject_bare_responses_error(value)?;
-            Ok(None)
+            Ok(Some(IrStreamEvent::FinishReason {
+                reason: decode_incomplete_reason(value, "incomplete"),
+                vendor: None,
+            }))
         }
-        "response.content_part.done"
+        // These bracket a part, or repeat text the matching delta already delivered.
+        "response.output_text.done"
+        | "response.content_part.done"
         | "response.function_call_arguments.done"
         | "response.refusal.done"
         | "response.audio.done"
@@ -287,7 +297,10 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
         | "response.reasoning_summary_part.done"
         | "response.reasoning_summary_text.done"
         | "response.reasoning_text.done"
-        | "response.custom_tool_call_input.done" => Ok(None),
+        | "response.custom_tool_call_input.done" => {
+            reject_bare_responses_error(value)?;
+            Ok(None)
+        }
         "error" => {
             let message = str_field(value, "message").filter(|text| !text.is_empty());
             let code = str_field(value, "code").filter(|text| !text.is_empty());

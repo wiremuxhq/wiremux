@@ -1332,7 +1332,7 @@ fn unknown_event(
     // has no gateway detail and stays a no-op.
     if wire == Wire::Responses
         && !responses_unknown_carries_payload(data)
-        && let Some(detail) = responses_gateway_frame_error(data)
+        && let Some(detail) = responses_bare_error(data)
     {
         return Err(MapError::Invalid(detail));
     }
@@ -1387,9 +1387,24 @@ fn responses_unknown_carries_payload(data: &str) -> bool {
         .any(|key| obj.get(*key).is_some_and(responses_payload_value_present))
 }
 
-fn responses_gateway_frame_error(data: &str) -> Option<String> {
+fn responses_bare_error(data: &str) -> Option<String> {
     let value = serde_json::from_str::<Value>(data).ok()?;
-    complete::responses_gateway_error(&value)
+    if let Some(detail) = complete::responses_gateway_error(&value) {
+        return Some(detail);
+    }
+    // `status` or `object: response` hides the gateway check. A frame
+    // with no text or output is still the vendor error.
+    if let Some(text) = crate::completion::json_string_error(&value) {
+        return Some(text.to_string());
+    }
+    if let Some(detail) = value
+        .get("error")
+        .filter(|err| err.is_object())
+        .and_then(crate::completion::error_object_detail)
+    {
+        return Some(detail);
+    }
+    responses::failure_detail(&value)
 }
 
 fn responses_payload_value_present(value: &Value) -> bool {
@@ -2188,6 +2203,14 @@ base_url = "http://127.0.0.1"
                 "model catalog unavailable",
             ),
             (r#"{"error":{"code":503}}"#, "503"),
+            (
+                r#"{"status":"failed","error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                r#"{"type":"response.queued","error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
         ];
         for (body, detail) in cases {
             assert_stream_invalid(Wire::Responses, &frame(None, body), &profile, detail);
@@ -2247,6 +2270,26 @@ base_url = "http://127.0.0.1"
                 r#"{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}},"error":{"message":"overloaded","type":"server_error"}}"#,
                 "server_error: overloaded",
             ),
+            (
+                "response.completed",
+                r#"{"type":"response.completed","response":{"status":"failed","error":{"code":"server_error","message":"overloaded"}}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                "response.failed",
+                r#"{"type":"response.failed","error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                "response.refusal.done",
+                r#"{"type":"response.refusal.done","error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                "response.incomplete",
+                r#"{"type":"response.incomplete","error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
         ];
         for (event, body, detail) in cases {
             assert_stream_invalid(Wire::Responses, &frame(Some(event), body), &profile, detail);
@@ -2300,6 +2343,18 @@ base_url = "http://127.0.0.1"
             ),
             (
                 r#"{"error":"model catalog unavailable"}"#,
+                "model catalog unavailable",
+            ),
+            (
+                r#"{"output":null,"error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                r#"{"output":{},"error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                r#"{"stopReason":"","error":"model catalog unavailable"}"#,
                 "model catalog unavailable",
             ),
         ];
