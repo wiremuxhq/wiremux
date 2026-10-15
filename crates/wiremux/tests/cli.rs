@@ -7812,7 +7812,7 @@ chat_path = "/model/{model}/converse"
     let _ = child.wait();
     let mut err = String::new();
     err_handle.read_to_string(&mut err).expect("read stderr");
-    assert!(resp.contains("502"), "{resp}");
+    assert!(resp.contains("400"), "{resp}");
     assert!(resp.contains("{model}"), "{resp}");
     assert!(
         err.contains("upstream=error") && err.contains("{model}"),
