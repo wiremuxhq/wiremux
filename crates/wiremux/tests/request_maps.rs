@@ -3508,6 +3508,53 @@ fn cache_retention_none_skips_cache_control() {
     assert_eq!(count_cache_control(&body), 0, "retention=none, got {body}");
 }
 
+#[test]
+fn cache_without_system_does_not_preserve_before_a_marker() {
+    let none = IrRequest::new(
+        "claude-opus-4-6",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache::enabled().with_retention("none");
+    }));
+    let (bytes, report) = encode(Wire::Messages, &none, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(count_cache_control(&body), 0, "{body}");
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "sampling.cache" && event.action == LossAction::Preserve
+        }),
+        "retention none must not say Preserve, got {report:?}"
+    );
+
+    let kept = IrRequest::new(
+        "claude-opus-4-6",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache::enabled();
+    }));
+    let (bytes, report) = encode(Wire::Messages, &kept, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        count_cache_control(&body) > 0,
+        "a user turn must still be tagged, got {body}"
+    );
+    assert_eq!(
+        report
+            .events
+            .iter()
+            .filter(|event| event.path == "sampling.cache" && event.action == LossAction::Preserve)
+            .count(),
+        1,
+        "one Preserve after the marker, got {report:?}"
+    );
+}
+
 const ANTHROPIC_MAX_CACHE_CONTROL: usize = 4;
 const ANTHROPIC_PREFERRED_CACHE_CONTROL: usize = 2;
 

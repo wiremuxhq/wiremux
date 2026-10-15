@@ -1301,7 +1301,6 @@ fn apply_cache_breakpoints(body: &mut Value, ir: &IrRequest, report: &mut LossRe
             return;
         }
     }
-    report.record("sampling.cache", LossAction::Preserve, "messages cache");
     let ttl = match cache.retention.as_deref() {
         Some("1h") | Some("long") => Some("1h"),
         Some("5m") | Some("short") | None => None,
@@ -1310,6 +1309,11 @@ fn apply_cache_breakpoints(body: &mut Value, ir: &IrRequest, report: &mut LossRe
     strip_all_cache_control(body);
     apply_preferred_cache_breakpoints(body, ttl);
     enforce_cache_control_limit(body, ttl);
+    if count_cache_control(body) == 0 {
+        report.record("sampling.cache", LossAction::Drop, "no cacheable block");
+        return;
+    }
+    report.record("sampling.cache", LossAction::Preserve, "messages cache");
 }
 
 fn apply_preferred_cache_breakpoints(body: &mut Value, ttl: Option<&str>) {
@@ -1872,9 +1876,6 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             LossAction::Degrade,
             "drop id, rebuild full input",
         );
-    }
-    if s.cache.enabled && body.get("system").is_none() {
-        report.record("sampling.cache", LossAction::Preserve, "messages cache");
     }
     if let Some(stream) = s.stream {
         body["stream"] = json!(stream);
