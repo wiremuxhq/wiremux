@@ -37,21 +37,25 @@ impl SseFrameReader {
         }
         self.buffer.extend_from_slice(bytes);
         let mut out = Vec::new();
-        while let Some(newline_pos) = self.buffer.iter().position(|&b| b == b'\n') {
-            if newline_pos > MAX_SSE_PENDING {
+        let mut cursor = 0;
+        while let Some(rel) = self.buffer[cursor..].iter().position(|&b| b == b'\n') {
+            if rel > MAX_SSE_PENDING {
                 self.reset();
                 return Err(format!("SSE line exceeds {MAX_SSE_PENDING} bytes"));
             }
-            let mut line_bytes: Vec<u8> = self.buffer.drain(..=newline_pos).collect();
-            line_bytes.pop();
+            let end = cursor + rel;
+            let mut line_bytes = self.buffer[cursor..end].to_vec();
             if line_bytes.last() == Some(&b'\r') {
                 line_bytes.pop();
             }
             let line = String::from_utf8_lossy(&line_bytes);
+            cursor = end + 1;
             if let Some(frame) = self.push_line(&line)? {
                 out.push(frame);
             }
         }
+        // One drain for the consumed prefix. A per-line drain copies the tail.
+        self.buffer.drain(..cursor);
         if self.buffer.len() > MAX_SSE_PENDING {
             self.reset();
             return Err(format!("SSE line exceeds {MAX_SSE_PENDING} bytes"));
@@ -232,5 +236,34 @@ mod tests {
             reader.finish().is_err(),
             "pending data line that crosses the joined cap must fail"
         );
+    }
+
+    #[test]
+    fn many_short_frames_in_one_feed_stay_fast() {
+        let n = 300_000;
+        let body = "data: z\n\n".repeat(n);
+        let mut reader = SseFrameReader::new();
+        let started = std::time::Instant::now();
+        let frames = reader.feed(body.as_bytes()).expect("feed");
+        let elapsed = started.elapsed();
+        assert_eq!(frames.len(), n);
+        assert_eq!(frames.first().expect("first").data, "z");
+        assert_eq!(frames.last().expect("last").data, "z");
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "one-chunk feed took {} ms",
+            elapsed.as_millis()
+        );
+    }
+
+    #[test]
+    fn partial_tail_after_many_frames_completes_on_next_feed() {
+        let mut reader = SseFrameReader::new();
+        let first = reader.feed(b"data: a\n\ndata: hel").expect("first");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].data, "a");
+        let second = reader.feed(b"lo\n\n").expect("second");
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].data, "hello");
     }
 }
