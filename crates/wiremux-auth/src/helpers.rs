@@ -428,14 +428,68 @@ pub(crate) fn sanitize_oauth_error_body(body: &str) -> String {
 }
 
 /// Strip controls, redact secret-looking tokens, and cap length.
+///
+/// Userinfo is removed before the cap. A password whose `@` would
+/// otherwise sit past 200 characters must not become the host.
 pub fn sanitize_oauth_error_text(text: &str) -> String {
     const MAX_CHARS: usize = 200;
-    let mut summary: String = text.chars().filter(|c| !c.is_control()).collect();
+    let urls_first = redact_embedded_urls(text);
+    let mut summary: String = urls_first.chars().filter(|c| !c.is_control()).collect();
     summary = redact_secret_looking(&summary);
     if summary.chars().count() > MAX_CHARS {
         summary = summary.chars().take(MAX_CHARS).collect();
     }
     summary
+}
+
+fn redact_embedded_urls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while let Some(rel) = s[i..].find("://") {
+        let sep = i + rel;
+        let scheme_start = scheme_start_before(s, sep);
+        if scheme_start == sep {
+            out.push_str(&s[i..sep + 3]);
+            i = sep + 3;
+            continue;
+        }
+        out.push_str(&s[i..scheme_start]);
+        let after = sep + 3;
+        let url_end = url_end_from(s, after);
+        out.push_str(&redact_url_origin(&s[scheme_start..url_end]));
+        i = url_end;
+    }
+    out.push_str(&s[i..]);
+    out
+}
+
+fn scheme_start_before(s: &str, sep: usize) -> usize {
+    let prefix = &s[..sep];
+    let mut start = sep;
+    for (idx, ch) in prefix.char_indices().rev() {
+        if ch.is_ascii_alphanumeric() || ch == '+' || ch == '.' || ch == '-' {
+            start = idx;
+        } else {
+            break;
+        }
+    }
+    if start < sep
+        && s[start..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+    {
+        return start;
+    }
+    sep
+}
+
+fn url_end_from(s: &str, start: usize) -> usize {
+    s[start..]
+        .char_indices()
+        .find(|(_, c)| c.is_whitespace() || matches!(*c, '<' | '>' | '"' | '\'' | ')' | ']' | '}'))
+        .map(|(idx, _)| start + idx)
+        .unwrap_or(s.len())
 }
 
 /// Short reason plus origin only. Never format a raw `reqwest` error.

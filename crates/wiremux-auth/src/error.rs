@@ -121,6 +121,17 @@ mod tests {
     }
 
     #[test]
+    fn profile_parse_error_drops_url_userinfo() {
+        let err = AuthError::from(crate::profile::ProfileError::Parse(
+            "callback https://user:s3cret@evil.test/cb".into(),
+        ));
+        let text = err.to_string();
+        assert!(!text.contains("s3cret"), "{text}");
+        assert!(!text.contains("user:"), "{text}");
+        assert!(text.contains("evil.test"), "{text}");
+    }
+
+    #[test]
     fn profile_parse_error_is_capped_on_auth_error() {
         let secret = format!("api_key = \"sk-{}\"", "a".repeat(300));
         let err = AuthError::from(crate::profile::ProfileError::Parse(secret));
