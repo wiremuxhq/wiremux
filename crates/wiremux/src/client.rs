@@ -885,7 +885,7 @@ fn profile_err(err: ProfileError) -> ClientError {
             status: None,
             message: not_found_message(&id, &known),
         },
-        other => ClientError::Transport(other.to_string()),
+        other => ClientError::Transport(clip_client_message(&other.to_string())),
     }
 }
 
@@ -2154,6 +2154,17 @@ wire = "messages"
         let message = clip_client_message(&text);
         assert!(!message.contains(&password), "{message}");
         assert!(!message.contains("user:"), "{message}");
+    }
+
+    #[test]
+    fn profile_parse_error_is_clipped() {
+        let secret = format!("api_key = \"sk-{}\"", "a".repeat(300));
+        let err = profile_err(ProfileError::Parse(secret));
+        let ClientError::Transport(message) = err else {
+            panic!("expected Transport, got {err:?}");
+        };
+        assert!(!message.contains("sk-aaaa"), "{message}");
+        assert!(message.chars().count() <= 250, "{message}");
     }
 
     #[test]
