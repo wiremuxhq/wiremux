@@ -2410,10 +2410,7 @@ wire = "gemini"
         };
         let err = decode_stream_events(Wire::Gemini, &stopped, &gemini)
             .expect_err("finishReason must not hide the error");
-        assert!(
-            err.to_string().contains("overloaded"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("overloaded"), "{err}");
         let usage = RawSse {
             event: None,
             data: r#"{"candidates":[{"content":{"parts":[]}}],"usageMetadata":{"promptTokenCount":1},"error":{"message":"overloaded","status":"UNAVAILABLE"}}"#.into(),
