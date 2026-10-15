@@ -668,7 +668,11 @@ pub async fn proxy_token(
             .strip_prefix("Bearer ")
             .or_else(|| value.strip_prefix("bearer "))
             .unwrap_or(value)
+            .trim()
             .to_string();
+        if token.is_empty() {
+            return Err("empty token is not auth_scheme none".into());
+        }
         return Ok(Some(token));
     }
     if profile.oauth.is_some() || !profile.access_env.is_empty() || provider_has_token(provider) {
@@ -1504,6 +1508,23 @@ base_url = "http://127.0.0.1"
             .await
             .expect_err("no credentials");
         assert!(err.contains("auth_scheme"), "{err}");
+
+        let header = parse_profile_str(
+            r#"
+schema_version = 1
+id = "blank-header"
+wire = "chat-completions"
+auth_scheme = "bearer"
+base_url = "http://127.0.0.1"
+[headers]
+Authorization = "Bearer "
+"#,
+        )
+        .expect("parse");
+        let err = proxy_token(&header, &provider)
+            .await
+            .expect_err("blank bearer header");
+        assert!(err.contains("empty token"), "{err}");
     }
 
     #[cfg(any(feature = "proxy", feature = "client"))]
