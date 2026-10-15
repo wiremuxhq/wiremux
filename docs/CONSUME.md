@@ -23,7 +23,9 @@ let (_body, _encode_loss) = wiremux::encode(wiremux::Wire::Messages, &ir, &profi
 
 `load_profile_for_wire` is the same attach when the host has a wire
 and no catalog id. Auth-only is a valid first attach (`wiremux-auth`
-alone).
+alone). A missing or empty `$VAR`, `${VAR}`, or `{env:VAR}` unsets
+that profile field instead of leaving the placeholder or a blank
+host.
 
 ## Crate history
 
@@ -315,9 +317,12 @@ remaps SSE frames and drops that report. `stream_with_loss` returns
 the same report before the first event. An encode error from
 `stream_with_loss` fails before any HTTP call. HTTP and SSE errors
 stay on the event stream. `list_models` GETs
-the models catalog. OpenAI-compat uses the chat version prefix
-(`{base}/v1/models` when `chat_path` is `/v1/chat/completions` or
-`/v1/messages`). It reads `context_length` then `context_window`
+the models catalog. OpenAI-compat uses the chat version prefix,
+including directories in front of it.
+`/v1/chat/completions` and `/v1/messages` become `{base}/v1/models`.
+`/openai/v1/chat/completions` becomes `{base}/openai/v1/models`.
+`/api/v3/chat/completions` becomes `{base}/api/v3/models`.
+It reads `context_length` then `context_window`
 (Grok Build `/v1/models` sends the second key). That second key
 is not in crates.io `0.5.0`. `list_models` retries HTTP 401 once
 when the provider can refresh, same as `send`. A static token still

@@ -799,7 +799,26 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 }
                 if !media.is_empty() {
                     ensure_document_text(&mut media, report);
-                    messages.push(json!({ "role": "user", "content": media }));
+                    let tool_result_tail = last_user_has_tool_result(&messages);
+                    if messages
+                        .last()
+                        .and_then(|message| message.get("role"))
+                        .and_then(Value::as_str)
+                        == Some("user")
+                        && let Some(last) = messages.last_mut()
+                        && let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut)
+                    {
+                        if !tool_result_tail {
+                            report.record(
+                                format!("items[{idx}]"),
+                                LossAction::Degrade,
+                                "consecutive turns with the same role were joined",
+                            );
+                        }
+                        arr.extend(media);
+                    } else {
+                        messages.push(json!({ "role": "user", "content": media }));
+                    }
                 }
             }
             IrItem::FunctionCall {

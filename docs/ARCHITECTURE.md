@@ -55,7 +55,9 @@ files. Overlay merges layers that share `id` (shipped, then user
 dir, then an explicit file). Different ids never merge.
 
 Data only. Refuse functions, `!command`, and URL-as-script. Allow
-`$VAR` / `${VAR}` / `{env:VAR}`. Cleartext `http` is loopback only.
+`$VAR` / `${VAR}` / `{env:VAR}`. A missing or empty value unsets
+that field, so a blank region does not build a host. Cleartext
+`http` is loopback only.
 The host is the one `url::Url` parses, the same parser reqwest dials.
 
 OAuth is a profile, not a new enum variant. A gist can restore a
