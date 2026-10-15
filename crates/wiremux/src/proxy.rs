@@ -355,7 +355,16 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     }
 
     if let Some(route) = count_route(&path) {
-        return handle_count(state, route, &method, &path, &inbound_headers, &collected).await;
+        return handle_count(
+            state,
+            route,
+            &method,
+            &path,
+            &query,
+            &inbound_headers,
+            &collected,
+        )
+        .await;
     }
 
     let (mut ir, mut dec_loss) = match decode(state.from, &collected) {
@@ -365,6 +374,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     if dest_stream_from_request(state.from, &path, &query) {
         ir.sampling.stream = Some(true);
     }
+    record_unused_query(&mut dec_loss, state.from, &query);
     if ir.model.is_empty()
         && let Some(model) = model_from_dest_path(state.from, &path)
     {
@@ -677,6 +687,7 @@ async fn handle_count(
     route: CountRoute,
     method: &str,
     path: &str,
+    query: &str,
     inbound_headers: &hyper::HeaderMap,
     body: &Bytes,
 ) -> Response<ProxyBody> {
@@ -701,6 +712,7 @@ async fn handle_count(
     }
     let mut header_profile = state.profile.clone();
     let mut loss = LossReport::default();
+    record_unused_query(&mut loss, state.from, query);
     let anthropic_version =
         forward_inbound_headers(&mut header_profile, &mut loss, target, inbound_headers);
     let override_model = state.model_override.as_deref();
@@ -1639,6 +1651,22 @@ fn model_from_dest_path(from: Wire, path: &str) -> Option<String> {
             (!model.is_empty() && !model.contains('/')).then(|| model.to_string())
         }
         _ => None,
+    }
+}
+
+fn record_unused_query(loss: &mut LossReport, from: Wire, query: &str) {
+    for part in query.split('&') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        // Gemini uses this one parameter to select a stream. The rest of
+        // the query is not copied onto the profile URL.
+        if from == Wire::Gemini && (part == "alt=sse" || part.starts_with("alt=sse")) {
+            continue;
+        }
+        let name = part.split('=').next().unwrap_or(part);
+        loss.record(format!("query.{name}"), LossAction::Drop, "not forwarded");
     }
 }
 
@@ -2593,6 +2621,31 @@ anthropic-beta = "context-1m-2025-08-07"
             "/v1beta/models/gemini-2.5-flash:generateContent",
             ""
         ));
+        let mut loss = crate::LossReport::default();
+        super::record_unused_query(&mut loss, wiremux_auth::Wire::Gemini, "alt=sse");
+        assert!(loss.events.is_empty(), "alt=sse is used, got {loss:?}");
+        super::record_unused_query(
+            &mut loss,
+            wiremux_auth::Wire::Gemini,
+            "alt=sse&fields=candidates(content)",
+        );
+        assert!(
+            loss.events.iter().any(|event| {
+                event.path == "query.fields" && event.action == crate::LossAction::Drop
+            }),
+            "unused query must Drop, got {loss:?}"
+        );
+        super::record_unused_query(
+            &mut loss,
+            wiremux_auth::Wire::ChatCompletions,
+            "api-version=2024-10-21",
+        );
+        assert!(
+            loss.events
+                .iter()
+                .any(|event| event.path == "query.api-version"),
+            "chat query must Drop, got {loss:?}"
+        );
         assert!(super::dest_stream_from_request(
             wiremux_auth::Wire::Messages,
             "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4:streamRawPredict",
