@@ -1810,9 +1810,10 @@ fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
 /// array, null, or absent. Chat uses an `error` object and no
 /// visible choice. An empty string is not a choice.
 /// Messages uses `type: error` and no content blocks, or a string
-/// `error` when those blocks are absent. A `text` or `thinking` block
-/// still counts, including an empty string. An empty `tool_use` or
-/// `image` does not. Gemini uses an
+/// `error` when those blocks are absent. An empty `text` or `thinking`
+/// block does not count. A non-empty text, a citation object with a
+/// type, a thinking string, or a signature still does. An empty
+/// `tool_use` or `image` does not. Gemini uses an
 /// `error` object, or a `promptFeedback.blockReason`, when no candidate
 /// text, tool call, or inline data is present. A non-empty candidate
 /// list with no `error` object stays on the decode path. A non-stream
@@ -1905,12 +1906,43 @@ fn chat_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
 fn messages_content_keeps_completion(items: &[serde_json::Value]) -> bool {
     items.iter().any(
         |block| match block.get("type").and_then(serde_json::Value::as_str) {
-            Some("text") | Some("thinking") => true,
+            Some("text") => messages_text_block_visible(block),
+            Some("thinking") => messages_thinking_block_visible(block),
             Some("tool_use") => crate::completion::messages_tool_block_visible(block),
             None => false,
             _ => crate::completion::messages_block_has_payload(block),
         },
     )
+}
+
+fn messages_text_block_visible(block: &serde_json::Value) -> bool {
+    block
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|text| !text.is_empty())
+        || block
+            .get("citations")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|items| items.iter().any(messages_citation_visible))
+}
+
+fn messages_citation_visible(citation: &serde_json::Value) -> bool {
+    citation.is_object()
+        && citation
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+}
+
+fn messages_thinking_block_visible(block: &serde_json::Value) -> bool {
+    block
+        .get("thinking")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|text| !text.is_empty())
+        || block
+            .get("signature")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|text| !text.is_empty())
 }
 
 fn messages_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
@@ -3843,11 +3875,6 @@ anthropic-beta = "context-1m-2025-08-07"
             }
         }
 
-        let shell = br#"{"type":"error","content":[{"type":"text","text":""}],"error":{"type":"api_error","message":"nope"}}"#;
-        assert!(
-            super::messages_complete_vendor_failure(messages, shell).is_none(),
-            "a text block stays a completion"
-        );
         let tool_shell = br#"{"content":[{"type":"tool_use"}],"error":{"message":"overloaded"}}"#;
         assert_eq!(
             super::messages_complete_vendor_failure(messages, tool_shell).as_deref(),
@@ -3892,6 +3919,61 @@ anthropic-beta = "context-1m-2025-08-07"
         .expect("same-wire safety block is still a failure");
         let text = String::from_utf8(same.to_vec()).expect("utf8");
         assert!(text.contains("SAFETY"), "{text}");
+    }
+
+    /// An empty text or thinking block is not a completion. A real
+    /// string, a typed citation, or a signature still is.
+    #[test]
+    fn messages_empty_text_is_a_vendor_failure() {
+        let messages = wiremux_auth::Wire::Messages;
+        let chat = wiremux_auth::Wire::ChatCompletions;
+        let empty_text = br#"{"type":"error","content":[{"type":"text","text":""}],"error":{"type":"api_error","message":"nope"}}"#;
+        let cases: &[(&str, &[u8], Option<&str>)] = &[
+            ("empty text", empty_text, Some("api_error: nope")),
+            (
+                "empty thinking",
+                br#"{"content":[{"type":"thinking","thinking":""}],"error":{"message":"please wait"}}"#,
+                Some("please wait"),
+            ),
+            (
+                "text beside an error",
+                br#"{"type":"error","content":[{"type":"text","text":"Hi"}],"error":{"type":"api_error","message":"nope"}}"#,
+                None,
+            ),
+            (
+                "empty text plus a citation",
+                br#"{"type":"error","content":[{"type":"text","text":"","citations":[{"type":"web_search_result_location","url":"https://example.test"}]}],"error":{"type":"api_error","message":"nope"}}"#,
+                None,
+            ),
+            (
+                "thinking signature",
+                br#"{"content":[{"type":"thinking","thinking":"","signature":"sig"}],"error":{"message":"please wait"}}"#,
+                None,
+            ),
+        ];
+        for (name, body, detail) in cases {
+            assert_eq!(
+                super::messages_complete_vendor_failure(messages, body).as_deref(),
+                *detail,
+                "{name}"
+            );
+        }
+
+        let mapped = String::from_utf8(
+            super::cross_wire_vendor_failure(chat, messages, false, empty_text)
+                .expect("empty text is a vendor failure")
+                .to_vec(),
+        )
+        .expect("utf8");
+        assert!(!mapped.contains("decode upstream"), "{mapped}");
+        let value: serde_json::Value = serde_json::from_str(&mapped).expect("json");
+        assert_eq!(value["error"]["message"], "nope", "{mapped}");
+
+        let same = String::from_utf8(super::same_wire_passthrough_bytes(messages, empty_text))
+            .expect("utf8");
+        assert!(same.contains("event: error"), "{same}");
+        assert!(same.contains("nope"), "{same}");
+        assert!(!same.contains(super::INCOMPLETE_STREAM_MESSAGE), "{same}");
     }
 
     /// An output array with no text, refusal, audio, or named tool call
