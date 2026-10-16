@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.3](https://github.com/wiremuxhq/wiremux/compare/v0.11.2...v0.11.3) (2026-10-16)
+
+
+### Bug Fixes
+
+* reject a Chat stream error when the delta is empty ([#649](https://github.com/wiremuxhq/wiremux/issues/649)) ([6bb234e](https://github.com/wiremuxhq/wiremux/commit/6bb234e31d3f1a6d27f13baf8681e42c9dd90347))
+* reject vendor error envelopes on maps-only decode ([#651](https://github.com/wiremuxhq/wiremux/issues/651)) ([53cc2eb](https://github.com/wiremuxhq/wiremux/commit/53cc2eb440454f34cd34ac95f094e2f47e337db0))
+
 ## [0.11.2](https://github.com/wiremuxhq/wiremux/compare/v0.11.1...v0.11.2) (2026-10-15)
 
 
