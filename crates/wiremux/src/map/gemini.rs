@@ -1490,11 +1490,22 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             }
         })
         .collect();
-    if !s.output_modalities.is_empty() && !modalities.is_empty() {
-        cfg["responseModalities"] = json!(modalities);
+    if !s.output_modalities.is_empty() && modalities.is_empty() {
         report.record(
             "sampling.output_modalities",
-            LossAction::Preserve,
+            LossAction::Drop,
+            "gemini modalities are text, audio, or image",
+        );
+    } else if !modalities.is_empty() {
+        cfg["responseModalities"] = json!(modalities);
+        let action = if modalities.len() < s.output_modalities.len() {
+            LossAction::Degrade
+        } else {
+            LossAction::Preserve
+        };
+        report.record(
+            "sampling.output_modalities",
+            action,
             "gemini generationConfig.responseModalities",
         );
     }

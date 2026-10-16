@@ -674,14 +674,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 thought_signature,
                 ..
             } => {
-                if let Some((id, name, args, signature, custom)) = current.take() {
-                    tool_calls.push(gemini_function_call_value(
-                        &id,
-                        &name,
-                        &args,
-                        signature.as_deref(),
-                        custom,
-                    ));
+                if let Some((id, name, args, signature, custom)) = current.take()
+                    && let Some(part) =
+                        gemini_function_call_value(&id, &name, &args, signature.as_deref(), custom)
+                {
+                    tool_calls.push(part);
                 }
                 current = Some((
                     id.clone(),
@@ -695,14 +692,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 ));
             }
             IrStreamEvent::CustomToolCallStart { id, name, .. } => {
-                if let Some((id, name, args, signature, custom)) = current.take() {
-                    tool_calls.push(gemini_function_call_value(
-                        &id,
-                        &name,
-                        &args,
-                        signature.as_deref(),
-                        custom,
-                    ));
+                if let Some((id, name, args, signature, custom)) = current.take()
+                    && let Some(part) =
+                        gemini_function_call_value(&id, &name, &args, signature.as_deref(), custom)
+                {
+                    tool_calls.push(part);
                 }
                 current = Some((id.clone(), name.clone(), String::new(), None, true));
             }
@@ -713,14 +707,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 }
             }
             IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args, signature, custom)) = current.take() {
-                    tool_calls.push(gemini_function_call_value(
-                        &id,
-                        &name,
-                        &args,
-                        signature.as_deref(),
-                        custom,
-                    ));
+                if let Some((id, name, args, signature, custom)) = current.take()
+                    && let Some(part) =
+                        gemini_function_call_value(&id, &name, &args, signature.as_deref(), custom)
+                {
+                    tool_calls.push(part);
                 }
             }
             IrStreamEvent::ServiceTier { tier } => {
@@ -814,14 +805,11 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             _ => {}
         }
     }
-    if let Some((id, name, args, signature, custom)) = current.take() {
-        tool_calls.push(gemini_function_call_value(
-            &id,
-            &name,
-            &args,
-            signature.as_deref(),
-            custom,
-        ));
+    if let Some((id, name, args, signature, custom)) = current.take()
+        && let Some(part) =
+            gemini_function_call_value(&id, &name, &args, signature.as_deref(), custom)
+    {
+        tool_calls.push(part);
     }
 
     let mut parts = Vec::new();
@@ -966,15 +954,17 @@ fn gemini_function_call_value(
     args: &str,
     thought_signature: Option<&str>,
     custom: bool,
-) -> Value {
-    let n = if name.is_empty() { id } else { name };
+) -> Option<Value> {
+    if name.is_empty() {
+        return None;
+    }
     let parsed = if custom {
         crate::map::response_custom_tool_input(args)
     } else {
         serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({}))
     };
     let mut function_call = json!({
-        "name": n,
+        "name": name,
         "args": parsed,
     });
     if !id.is_empty() {
@@ -984,7 +974,7 @@ fn gemini_function_call_value(
     if let Some(sig) = thought_signature.filter(|sig| !sig.is_empty()) {
         part["thoughtSignature"] = json!(sig);
     }
-    part
+    Some(part)
 }
 
 fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
@@ -1619,19 +1609,6 @@ fn complete_chat_tool_call(call: &Value) -> Result<Vec<IrStreamEvent>, MapError>
 }
 
 fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
-    let has_content = value
-        .get("content")
-        .and_then(Value::as_array)
-        .is_some_and(|items| !items.is_empty());
-    let typed_error = value.get("type").and_then(Value::as_str) == Some("error");
-    let string_error = value.get("error").and_then(Value::as_str).is_some();
-    let object_error = value.get("error").is_some_and(Value::is_object);
-    if !has_content
-        && (typed_error || string_error || object_error)
-        && let Some(detail) = plain_error_detail(value)
-    {
-        return Err(MapError::Invalid(detail));
-    }
     let mut out = Vec::new();
     let mut tool_index = 0u32;
     if let Some(content) = value.get("content").and_then(Value::as_array) {
@@ -1704,6 +1681,12 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
             }
         }
     }
+    // An empty block is not a message. It must not hide a vendor error.
+    if out.is_empty()
+        && let Some(detail) = plain_error_detail(value)
+    {
+        return Err(MapError::Invalid(detail));
+    }
     if let Some(text) = value
         .pointer("/stop_details/explanation")
         .and_then(Value::as_str)
@@ -1767,7 +1750,7 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
     Ok(out)
 }
 
-fn responses_gateway_error(value: &Value) -> Option<String> {
+pub(super) fn responses_gateway_error(value: &Value) -> Option<String> {
     // A real Responses object carries `status` or `object`. A gateway
     // failure is only an `error` string or object. Treating that as
     // `response.completed` emits Done, which encodes as a finished stop.
@@ -2353,6 +2336,20 @@ wire = "messages"
         )
         .expect_err("messages object without type");
         assert!(err.to_string().contains("model not found"), "{err}");
+        let err = decode_response(
+            Wire::Messages,
+            br#"{"content":[{"type":"text","text":""}],"error":{"type":"api_error","message":"overloaded"}}"#,
+            &messages,
+        )
+        .expect_err("empty text block hides the error");
+        assert!(err.to_string().contains("overloaded"), "{err}");
+        let err = decode_response(
+            Wire::Messages,
+            br#"{"content":[{}],"error":{"message":"overloaded"}}"#,
+            &messages,
+        )
+        .expect_err("empty block hides the error");
+        assert!(err.to_string().contains("overloaded"), "{err}");
         let kept_messages = decode_response(
             Wire::Messages,
             br#"{"content":[{"type":"text","text":"Hi"}],"error":{"message":"model not found"}}"#,
@@ -2397,6 +2394,20 @@ wire = "gemini"
             }
             other => panic!("empty candidate must stay HardError, got {other}"),
         }
+        let stopped = RawSse {
+            event: None,
+            data: r#"{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"error":{"code":503,"message":"The model is overloaded. Please try again later.","status":"UNAVAILABLE"}}"#.into(),
+        };
+        let err = decode_stream_events(Wire::Gemini, &stopped, &gemini)
+            .expect_err("finishReason must not hide the error");
+        assert!(err.to_string().contains("overloaded"), "{err}");
+        let usage = RawSse {
+            event: None,
+            data: r#"{"candidates":[{"content":{"parts":[]}}],"usageMetadata":{"promptTokenCount":1},"error":{"message":"overloaded","status":"UNAVAILABLE"}}"#.into(),
+        };
+        let err = decode_stream_events(Wire::Gemini, &usage, &gemini)
+            .expect_err("usage must not hide the error");
+        assert!(err.to_string().contains("overloaded"), "{err}");
         let kept_gemini = decode_response(
             Wire::Gemini,
             br#"{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}],"error":{"message":"overloaded"}}"#,

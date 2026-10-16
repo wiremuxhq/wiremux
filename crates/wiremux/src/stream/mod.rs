@@ -118,6 +118,15 @@ impl UpstreamFrames {
 /// wins over `type`. `id`, `created`, and `finish_reason` do not count
 /// as visible.
 ///
+/// A Responses gateway `error` with no event name is the same
+/// [`MapError::Invalid`] (`server_error: model catalog unavailable`,
+/// or `503`). `{"type":"response.queued"}` stays a no-op.
+/// `response.output_text.done` and `response.completed` are
+/// [`MapError::Invalid`] when that error is the only payload. Text or
+/// a non-empty `output` stays `Ok`. A Converse body with no `output`
+/// or `stopReason` is [`MapError::Invalid`] for an OpenAI `error`.
+/// `__type` and `message` stay `Type: message`.
+///
 /// Unknown names follow `profile.dialect.stream_unknown_policy`. A
 /// tool-bearing frame is never `Ok(None)`.
 ///
@@ -200,6 +209,13 @@ impl StreamDecoder {
 /// hide that error. Visible text, a refusal, or a tool call stays `Ok`.
 /// An event name that is not in `stream_events` still follows
 /// `stream_unknown_policy`.
+///
+/// A Responses gateway `error` with no event name, and
+/// `response.output_text.done` or `response.completed` that is only
+/// that error, is [`MapError::Invalid`] rather than an empty vec.
+/// A Converse OpenAI `error` with no `output` or `stopReason` is too.
+/// A status frame, done text, completed output, and Converse
+/// `output` or `stopReason` stay `Ok`.
 ///
 /// Gemini function-call ids start at 0. Use [`StreamDecoder`] to keep
 /// the sequence across chunks of one stream.
@@ -908,10 +924,20 @@ fn expand_responses_function_call(
 /// Merge Chat tool-call starts that arrive as id-only then name-only.
 ///
 /// Pending starts are keyed by `index` so interleaved parallel calls
-/// do not overwrite each other.
+/// do not overwrite each other. Argument deltas for a held start stay
+/// with it until the id and the name have both arrived.
 #[derive(Debug, Default)]
 pub struct ToolCallAssembler {
-    pending: std::collections::BTreeMap<u32, IrStreamEvent>,
+    pending: std::collections::BTreeMap<u32, PendingToolStart>,
+}
+
+#[derive(Debug)]
+struct PendingToolStart {
+    id: String,
+    name: String,
+    thought_signature: Option<String>,
+    index: u32,
+    args: Vec<String>,
 }
 
 impl ToolCallAssembler {
@@ -922,6 +948,9 @@ impl ToolCallAssembler {
     }
 
     /// Feed one event. Incomplete starts are held until the name or id arrives.
+    ///
+    /// A completion id, or any other non-terminal event, does not release
+    /// a held start. [`IrStreamEvent::FinishReason`] and [`IrStreamEvent::Done`] do.
     pub fn push(&mut self, ev: IrStreamEvent) -> Vec<IrStreamEvent> {
         match ev {
             IrStreamEvent::ToolCallStart {
@@ -931,15 +960,25 @@ impl ToolCallAssembler {
                 index,
             } => self.push_start(id, name, thought_signature, index),
             IrStreamEvent::ToolCallArgDelta { delta, index } => {
-                let mut out = Vec::new();
-                if let Some(pending) = self.pending.remove(&index) {
-                    out.push(pending);
+                if let Some(pending) = self.pending.get_mut(&index) {
+                    pending.args.push(delta);
+                    return Vec::new();
                 }
-                out.push(IrStreamEvent::ToolCallArgDelta { delta, index });
-                out
+                vec![IrStreamEvent::ToolCallArgDelta { delta, index }]
             }
             other => {
-                let mut out = self.flush();
+                // Every Chat chunk carries `id` before the tool fields.
+                // Flushing on that protocol event would emit the held
+                // start before the name arrives. Finish still releases
+                // a start the name never completed.
+                let mut out = if matches!(
+                    other,
+                    IrStreamEvent::FinishReason { .. } | IrStreamEvent::Done
+                ) {
+                    self.flush()
+                } else {
+                    Vec::new()
+                };
                 out.push(other);
                 out
             }
@@ -948,7 +987,12 @@ impl ToolCallAssembler {
 
     /// Emit held starts at end of stream.
     pub fn flush(&mut self) -> Vec<IrStreamEvent> {
-        std::mem::take(&mut self.pending).into_values().collect()
+        let pending = std::mem::take(&mut self.pending);
+        let mut out = Vec::new();
+        for (_, pending) in pending {
+            out.extend(pending.into_events());
+        }
+        out
     }
 
     fn push_start(
@@ -958,58 +1002,47 @@ impl ToolCallAssembler {
         thought_signature: Option<String>,
         index: u32,
     ) -> Vec<IrStreamEvent> {
-        let incoming = IrStreamEvent::ToolCallStart {
+        let (id, name, thought_signature, args) = if let Some(prev) = self.pending.remove(&index) {
+            (
+                if id.is_empty() { prev.id } else { id },
+                if name.is_empty() { prev.name } else { name },
+                thought_signature.or(prev.thought_signature),
+                prev.args,
+            )
+        } else {
+            (id, name, thought_signature, Vec::new())
+        };
+        let pending = PendingToolStart {
             id,
             name,
             thought_signature,
             index,
+            args,
         };
-        match self.pending.remove(&index) {
-            Some(IrStreamEvent::ToolCallStart {
-                id: pid,
-                name: pname,
-                thought_signature: psig,
-                index: _,
-            }) => {
-                let IrStreamEvent::ToolCallStart {
-                    id,
-                    name,
-                    thought_signature,
-                    index,
-                } = incoming
-                else {
-                    unreachable!("incoming is ToolCallStart");
-                };
-                let merged = IrStreamEvent::ToolCallStart {
-                    id: if id.is_empty() { pid } else { id },
-                    name: if name.is_empty() { pname } else { name },
-                    thought_signature: thought_signature.or(psig),
-                    index,
-                };
-                if let IrStreamEvent::ToolCallStart { id, name, .. } = &merged
-                    && (id.is_empty() || name.is_empty())
-                {
-                    self.pending.insert(index, merged);
-                    Vec::new()
-                } else {
-                    vec![merged]
-                }
-            }
-            Some(other) => {
-                self.pending.insert(index, incoming);
-                vec![other]
-            }
-            None => {
-                if let IrStreamEvent::ToolCallStart { id, name, .. } = &incoming
-                    && (id.is_empty() || name.is_empty())
-                {
-                    self.pending.insert(index, incoming);
-                    Vec::new()
-                } else {
-                    vec![incoming]
-                }
-            }
+        if pending.id.is_empty() || pending.name.is_empty() {
+            self.pending.insert(index, pending);
+            Vec::new()
+        } else {
+            pending.into_events()
         }
+    }
+}
+
+impl PendingToolStart {
+    fn into_events(self) -> Vec<IrStreamEvent> {
+        let mut out = vec![IrStreamEvent::ToolCallStart {
+            id: self.id,
+            name: self.name,
+            thought_signature: self.thought_signature,
+            index: self.index,
+        }];
+        for delta in self.args {
+            out.push(IrStreamEvent::ToolCallArgDelta {
+                delta,
+                index: self.index,
+            });
+        }
+        out
     }
 }
 
@@ -1311,6 +1344,15 @@ fn unknown_event(
     name: &str,
     data: &str,
 ) -> Result<Option<IrStreamEvent>, MapError> {
+    // A missing `type` is named `chunk`, which is not a Responses event.
+    // A bare `error` matches unary decode. A `response.*` status frame
+    // has no gateway detail and stays a no-op.
+    if wire == Wire::Responses
+        && !responses_unknown_carries_payload(data)
+        && let Some(detail) = responses_bare_error(data)
+    {
+        return Err(MapError::Invalid(detail));
+    }
     match profile.dialect.stream_unknown_policy {
         StreamUnknownPolicy::HardError => {
             // A Responses status frame repeats ids. Skip it. A nonempty
@@ -1360,6 +1402,26 @@ fn responses_unknown_carries_payload(data: &str) -> bool {
     ];
     KEYS.iter()
         .any(|key| obj.get(*key).is_some_and(responses_payload_value_present))
+}
+
+fn responses_bare_error(data: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(data).ok()?;
+    if let Some(detail) = complete::responses_gateway_error(&value) {
+        return Some(detail);
+    }
+    // `status` or `object: response` hides the gateway check. A frame
+    // with no text or output is still the vendor error.
+    if let Some(text) = crate::completion::json_string_error(&value) {
+        return Some(text.to_string());
+    }
+    if let Some(detail) = value
+        .get("error")
+        .filter(|err| err.is_object())
+        .and_then(crate::completion::error_object_detail)
+    {
+        return Some(detail);
+    }
+    responses::failure_detail(&value)
 }
 
 fn responses_payload_value_present(value: &Value) -> bool {
@@ -1522,6 +1584,48 @@ base_url = "http://127.0.0.1"
             event: event.map(str::to_string),
             data: data.to_string(),
         }
+    }
+
+    fn responses_profile() -> ResolvedProfile {
+        wiremux_auth::parse_profile_str(
+            r#"
+schema_version = 1
+id = "t"
+wire = "responses"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("responses profile")
+    }
+
+    fn converse_profile() -> ResolvedProfile {
+        wiremux_auth::parse_profile_str(
+            r#"
+schema_version = 1
+id = "t"
+wire = "converse"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("converse profile")
+    }
+
+    fn assert_invalid(err: MapError, detail: &str) {
+        match err {
+            MapError::Invalid(got) => assert_eq!(got, detail),
+            other => panic!("expected Invalid({detail}), got {other}"),
+        }
+    }
+
+    fn assert_stream_invalid(wire: Wire, raw: &RawSse, profile: &ResolvedProfile, detail: &str) {
+        assert_invalid(
+            decode_stream_events(wire, raw, profile).expect_err("decode_stream_events"),
+            detail,
+        );
+        assert_invalid(
+            decode_stream_event(wire, raw, profile).expect_err("decode_stream_event"),
+            detail,
+        );
     }
 
     #[test]
@@ -2100,6 +2204,234 @@ base_url = "http://127.0.0.1"
                 IrStreamEvent::Unknown { event, .. } if event == "response.queued"
             )),
             "passthrough must forward queued, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn responses_frameless_gateway_error_is_invalid() {
+        let profile = responses_profile();
+        let cases = [
+            (
+                r#"{"error":{"message":"model catalog unavailable","type":"server_error"}}"#,
+                "server_error: model catalog unavailable",
+            ),
+            (
+                r#"{"error":"model catalog unavailable"}"#,
+                "model catalog unavailable",
+            ),
+            (r#"{"error":{"code":503}}"#, "503"),
+            (
+                r#"{"status":"failed","error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                r#"{"type":"response.queued","error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+        ];
+        for (body, detail) in cases {
+            assert_stream_invalid(Wire::Responses, &frame(None, body), &profile, detail);
+        }
+
+        let queued = frame(None, r#"{"type":"response.queued"}"#);
+        let events = decode_stream_events(Wire::Responses, &queued, &profile)
+            .expect("status frame stays a no-op");
+        assert!(events.is_empty(), "{events:?}");
+        let one = decode_stream_event(Wire::Responses, &queued, &profile)
+            .expect("status frame stays a no-op");
+        assert!(one.is_none(), "{one:?}");
+
+        let failed = frame(
+            Some("response.failed"),
+            r#"{"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"model catalog unavailable"}}}"#,
+        );
+        assert_stream_invalid(
+            Wire::Responses,
+            &failed,
+            &profile,
+            "server_error: model catalog unavailable",
+        );
+    }
+
+    #[test]
+    fn responses_allowlisted_error_frame_is_invalid() {
+        let profile = responses_profile();
+        let cases = [
+            (
+                "response.output_text.done",
+                r#"{"type":"response.output_text.done","error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                "response.output_text.done",
+                r#"{"type":"response.output_text.done","error":{"code":"model_not_found","type":"invalid_request_error","message":"no such model"}}"#,
+                "model_not_found: no such model",
+            ),
+            (
+                "response.output_text.done",
+                r#"{"type":"response.output_text.done","text":"","error":"model catalog unavailable"}"#,
+                "model catalog unavailable",
+            ),
+            (
+                "response.completed",
+                r#"{"type":"response.completed","error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                "response.completed",
+                r#"{"type":"response.completed","response":{"output":[]},"error":{"code":503,"type":"server_error"}}"#,
+                "503",
+            ),
+            (
+                "response.completed",
+                r#"{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}},"error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                "response.completed",
+                r#"{"type":"response.completed","response":{"status":"failed","error":{"code":"server_error","message":"overloaded"}}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                "response.failed",
+                r#"{"type":"response.failed","error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                "response.refusal.done",
+                r#"{"type":"response.refusal.done","error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                "response.incomplete",
+                r#"{"type":"response.incomplete","error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                "response.created",
+                r#"{"type":"response.created","error":{"code":"server_error","message":"overloaded"}}"#,
+                "server_error: overloaded",
+            ),
+        ];
+        for (event, body, detail) in cases {
+            assert_stream_invalid(Wire::Responses, &frame(Some(event), body), &profile, detail);
+        }
+
+        let text = frame(
+            Some("response.output_text.done"),
+            r#"{"type":"response.output_text.done","text":"Hi","error":{"message":"overloaded","type":"server_error"}}"#,
+        );
+        let events =
+            decode_stream_events(Wire::Responses, &text, &profile).expect("done text stays");
+        assert!(events.is_empty(), "{events:?}");
+        let one = decode_stream_event(Wire::Responses, &text, &profile).expect("done text stays");
+        assert!(one.is_none(), "{one:?}");
+
+        let output = frame(
+            Some("response.completed"),
+            r#"{"type":"response.completed","response":{"status":"completed","output":[{"type":"message"}]},"error":{"message":"overloaded","type":"server_error"}}"#,
+        );
+        decode_stream_events(Wire::Responses, &output, &profile).expect("completed output stays");
+        decode_stream_event(Wire::Responses, &output, &profile).expect("completed output stays");
+
+        let top_output = frame(
+            Some("response.output_text.done"),
+            r#"{"type":"response.output_text.done","output":[{"type":"message"}],"error":{"message":"overloaded","type":"server_error"}}"#,
+        );
+        decode_stream_events(Wire::Responses, &top_output, &profile)
+            .expect("top-level output stays");
+        decode_stream_event(Wire::Responses, &top_output, &profile)
+            .expect("top-level output stays");
+
+        let usage = frame(
+            Some("response.completed"),
+            r#"{"type":"response.completed","response":{"usage":{"input_tokens":4,"output_tokens":1}}}"#,
+        );
+        decode_stream_events(Wire::Responses, &usage, &profile).expect("usage stays");
+        let one = decode_stream_event(Wire::Responses, &usage, &profile).expect("usage stays");
+        assert!(
+            one.is_some(),
+            "usage without an error is not a no-op: {one:?}"
+        );
+    }
+
+    #[test]
+    fn converse_openai_error_envelope_is_invalid() {
+        let profile = converse_profile();
+        let cases = [
+            (
+                r#"{"error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                r#"{"error":"model catalog unavailable"}"#,
+                "model catalog unavailable",
+            ),
+            (
+                r#"{"output":null,"error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                r#"{"output":{},"error":{"message":"overloaded","type":"server_error"}}"#,
+                "server_error: overloaded",
+            ),
+            (
+                r#"{"stopReason":"","error":"model catalog unavailable"}"#,
+                "model catalog unavailable",
+            ),
+        ];
+        for (body, detail) in cases {
+            assert_invalid(
+                decode_response(Wire::Converse, body.as_bytes(), &profile)
+                    .expect_err("decode_response"),
+                detail,
+            );
+            assert_stream_invalid(Wire::Converse, &frame(None, body), &profile, detail);
+        }
+
+        let bedrock = r#"{"__type":"ValidationException","message":"The provided model identifier is invalid."}"#;
+        let detail = "ValidationException: The provided model identifier is invalid.";
+        assert_invalid(
+            decode_response(Wire::Converse, bedrock.as_bytes(), &profile).expect_err("bedrock"),
+            detail,
+        );
+        assert_stream_invalid(Wire::Converse, &frame(None, bedrock), &profile, detail);
+
+        let with_output = r#"{"output":{"message":{"role":"assistant","content":[{"text":"Hi"}]}},"stopReason":"end_turn","error":{"message":"overloaded","type":"server_error"}}"#;
+        let kept = decode_response(Wire::Converse, with_output.as_bytes(), &profile)
+            .expect("output stays");
+        assert!(
+            kept.iter()
+                .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
+            "{kept:?}"
+        );
+        decode_stream_events(Wire::Converse, &frame(None, with_output), &profile)
+            .expect("output is not a stream error");
+        decode_stream_event(Wire::Converse, &frame(None, with_output), &profile)
+            .expect("output is not a stream error");
+
+        let with_stop = r#"{"stopReason":"end_turn","error":"model catalog unavailable"}"#;
+        let kept = decode_response(Wire::Converse, with_stop.as_bytes(), &profile)
+            .expect("stopReason stays");
+        assert!(
+            kept.iter().any(
+                |ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "end_turn")
+            ),
+            "{kept:?}"
+        );
+        decode_stream_events(Wire::Converse, &frame(None, with_stop), &profile)
+            .expect("stopReason is not a stream error");
+        decode_stream_event(Wire::Converse, &frame(None, with_stop), &profile)
+            .expect("stopReason is not a stream error");
+
+        let delta = r#"{"contentBlockDelta":{"delta":{"text":"Hi"}},"error":{"message":"overloaded","type":"server_error"}}"#;
+        let events = decode_stream_events(Wire::Converse, &frame(None, delta), &profile)
+            .expect("delta stays");
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
+            "{events:?}"
         );
     }
 

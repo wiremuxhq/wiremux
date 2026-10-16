@@ -36,6 +36,20 @@ type ProxyBody = UnsyncBoxBody<Bytes, Infallible>;
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const MAX_UPSTREAM_BODY: usize = 16 * 1024 * 1024;
 
+fn request_body_too_large() -> Response<ProxyBody> {
+    text(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        format!("request body too large (max {MAX_BODY} bytes)\n"),
+    )
+}
+
+fn request_body_too_large_len(len: u64) -> Response<ProxyBody> {
+    text(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        format!("request body too large (Content-Length: {len} bytes, max {MAX_BODY} bytes)\n"),
+    )
+}
+
 /// Bind 127.0.0.1 and serve until the process is signaled.
 pub async fn run(
     listen: &str,
@@ -278,6 +292,17 @@ fn same_wire_success_is_json(content_type: &str, body: &[u8]) -> bool {
     trimmed.starts_with(b"{") || trimmed.starts_with(b"[")
 }
 
+/// Why a same-wire 2xx was refused, or `None` when it can be passed through.
+fn same_wire_success_rejection(content_type: &str, body: &[u8]) -> Option<&'static str> {
+    if same_wire_success_is_json(content_type, body) {
+        return None;
+    }
+    if !content_type.is_empty() && !is_json_content_type(content_type) {
+        return Some("upstream success content type is not application/json\n");
+    }
+    Some("upstream success body is not a JSON object or array\n")
+}
+
 fn request_guard(req: &Request<Incoming>, post: bool) -> Option<Response<ProxyBody>> {
     let host = req
         .headers()
@@ -336,7 +361,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         .and_then(|s| s.parse::<u64>().ok())
         && len > MAX_BODY as u64
     {
-        return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
+        return request_body_too_large_len(len);
     }
     let inbound_headers = req.headers().clone();
     let collected = match read_capped_body(req.into_body(), MAX_BODY).await {
@@ -346,16 +371,25 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
                 .downcast_ref::<http_body_util::LengthLimitError>()
                 .is_some() =>
         {
-            return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
+            return request_body_too_large();
         }
         Err(err) => return text(StatusCode::BAD_REQUEST, format!("read body: {err}\n")),
     };
     if collected.len() > MAX_BODY {
-        return text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n");
+        return request_body_too_large();
     }
 
     if let Some(route) = count_route(&path) {
-        return handle_count(state, route, &method, &path, &inbound_headers, &collected).await;
+        return handle_count(
+            state,
+            route,
+            &method,
+            &path,
+            &query,
+            &inbound_headers,
+            &collected,
+        )
+        .await;
     }
 
     let (mut ir, mut dec_loss) = match decode(state.from, &collected) {
@@ -365,6 +399,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     if dest_stream_from_request(state.from, &path, &query) {
         ir.sampling.stream = Some(true);
     }
+    record_unused_query(&mut dec_loss, state.from, &query);
     if ir.model.is_empty()
         && let Some(model) = model_from_dest_path(state.from, &path)
     {
@@ -413,7 +448,7 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         Ok(u) => u,
         Err(err) => {
             log_upstream_send_error(&method, &path, &state.profile.id, &err);
-            return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
+            return text(StatusCode::BAD_REQUEST, format!("{err}\n"));
         }
     };
     let resp = match send_upstream(
@@ -498,12 +533,9 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     if target == state.from || !status.is_success() {
         if target == state.from
             && status.is_success()
-            && !same_wire_success_is_json(&content_type, &body)
+            && let Some(message) = same_wire_success_rejection(&content_type, &body)
         {
-            return text(
-                StatusCode::BAD_GATEWAY,
-                "upstream success body is not JSON\n",
-            );
+            return text(StatusCode::BAD_GATEWAY, message);
         }
         return bytes_response(status_from_reqwest(status), &content_type, body);
     }
@@ -663,6 +695,21 @@ fn count_body_hides_vendor_error(route: CountRoute, body: &[u8]) -> bool {
     vendor_error_detail(err).is_some()
 }
 
+/// 501 text when this count URL cannot be served for the profile.
+///
+/// A same-wire profile on the other count path is the wrong URL.
+/// Different source and destination wires are an unmapped count.
+fn count_dialect_rejection(from: Wire, target: Wire, route: Wire) -> Option<&'static str> {
+    if from == route && target == route {
+        return None;
+    }
+    if from != target {
+        Some("token count is not mapped across dialects\n")
+    } else {
+        Some("this count URL does not match the profile wire\n")
+    }
+}
+
 fn count_upstream_url(
     profile: &ResolvedProfile,
     model: Option<&str>,
@@ -677,6 +724,7 @@ async fn handle_count(
     route: CountRoute,
     method: &str,
     path: &str,
+    query: &str,
     inbound_headers: &hyper::HeaderMap,
     body: &Bytes,
 ) -> Response<ProxyBody> {
@@ -689,18 +737,16 @@ async fn handle_count(
         None => {
             return text(
                 StatusCode::BAD_REQUEST,
-                "profile has no wire; cannot encode\n",
+                "profile has no wire; set `wire` on the profile\n",
             );
         }
     };
-    if state.from != route_wire || target != route_wire {
-        return text(
-            StatusCode::NOT_IMPLEMENTED,
-            "token count is not mapped across dialects\n",
-        );
+    if let Some(message) = count_dialect_rejection(state.from, target, route_wire) {
+        return text(StatusCode::NOT_IMPLEMENTED, message);
     }
     let mut header_profile = state.profile.clone();
     let mut loss = LossReport::default();
+    record_unused_query(&mut loss, state.from, query);
     let anthropic_version =
         forward_inbound_headers(&mut header_profile, &mut loss, target, inbound_headers);
     let override_model = state.model_override.as_deref();
@@ -734,7 +780,7 @@ async fn handle_count(
         }
         Err(CountUrlError::Upstream(err)) => {
             log_upstream_send_error(method, path, &state.profile.id, &err);
-            return text(StatusCode::BAD_GATEWAY, format!("{err}\n"));
+            return text(StatusCode::BAD_REQUEST, format!("{err}\n"));
         }
     };
     let resp = match send_upstream(
@@ -772,11 +818,10 @@ async fn handle_count(
         status.as_u16(),
         loss_summary(&loss, &LossReport::default())
     );
-    if status.is_success() && !same_wire_success_is_json(&content_type, &upstream_body) {
-        return text(
-            StatusCode::BAD_GATEWAY,
-            "upstream success body is not JSON\n",
-        );
+    if status.is_success()
+        && let Some(message) = same_wire_success_rejection(&content_type, &upstream_body)
+    {
+        return text(StatusCode::BAD_GATEWAY, message);
     }
     if status.is_success() && count_body_hides_vendor_error(route, &upstream_body) {
         // 5xx is retried as a transient HTTP failure. A vendor error
@@ -1642,6 +1687,22 @@ fn model_from_dest_path(from: Wire, path: &str) -> Option<String> {
     }
 }
 
+fn record_unused_query(loss: &mut LossReport, from: Wire, query: &str) {
+    for part in query.split('&') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        // Gemini uses this one parameter to select a stream. The rest of
+        // the query is not copied onto the profile URL.
+        if from == Wire::Gemini && (part == "alt=sse" || part.starts_with("alt=sse")) {
+            continue;
+        }
+        let name = part.split('=').next().unwrap_or(part);
+        loss.record(format!("query.{name}"), LossAction::Drop, "not forwarded");
+    }
+}
+
 fn dest_stream_from_request(from: Wire, path: &str, query: &str) -> bool {
     match from {
         Wire::Converse => path.ends_with("/converse-stream"),
@@ -1961,10 +2022,10 @@ fn status_from_reqwest(status: reqwest::StatusCode) -> StatusCode {
 mod tests {
     use super::{
         CountRoute, CountUrlError, chat_complete_vendor_failure, converse_complete_vendor_failure,
-        count_body_hides_vendor_error, count_model, count_route, count_upstream_url,
-        gemini_complete_vendor_failure, host_is_loopback, is_json_content_type,
+        count_body_hides_vendor_error, count_dialect_rejection, count_model, count_route,
+        count_upstream_url, gemini_complete_vendor_failure, host_is_loopback, is_json_content_type,
         messages_complete_vendor_failure, read_capped_body, responses_complete_vendor_failure,
-        rewrite_count_body_model, same_wire_success_is_json,
+        rewrite_count_body_model, same_wire_success_is_json, same_wire_success_rejection,
     };
     use crate::Wire;
 
@@ -2255,6 +2316,42 @@ anthropic-beta = "context-1m-2025-08-07"
         );
     }
 
+    #[tokio::test]
+    async fn request_body_too_large_names_the_cap() {
+        use http_body_util::BodyExt;
+
+        let response = super::request_body_too_large();
+        assert_eq!(response.status(), hyper::StatusCode::PAYLOAD_TOO_LARGE);
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let text = String::from_utf8(bytes.to_vec()).expect("utf8");
+        assert_eq!(
+            text,
+            format!("request body too large (max {} bytes)\n", super::MAX_BODY)
+        );
+
+        let response = super::request_body_too_large_len(16_000_000);
+        assert_eq!(response.status(), hyper::StatusCode::PAYLOAD_TOO_LARGE);
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let text = String::from_utf8(bytes.to_vec()).expect("utf8");
+        assert_eq!(
+            text,
+            format!(
+                "request body too large (Content-Length: 16000000 bytes, max {} bytes)\n",
+                super::MAX_BODY
+            )
+        );
+    }
+
     #[test]
     fn html_success_is_not_a_same_wire_completion() {
         assert!(!same_wire_success_is_json(
@@ -2270,6 +2367,34 @@ anthropic-beta = "context-1m-2025-08-07"
             b" {\"id\":\"x\"}"
         ));
         assert!(same_wire_success_is_json("", b"[1]"));
+        assert_eq!(
+            same_wire_success_rejection("text/html", b"{\"totalTokens\":3}"),
+            Some("upstream success content type is not application/json\n")
+        );
+        assert_eq!(
+            same_wire_success_rejection("application/json", b"<html></html>"),
+            Some("upstream success body is not a JSON object or array\n")
+        );
+        assert_eq!(
+            same_wire_success_rejection("application/json", b"{\"totalTokens\":3}"),
+            None
+        );
+    }
+
+    #[test]
+    fn count_url_on_the_same_wire_is_not_a_cross_dialect_gap() {
+        assert_eq!(
+            count_dialect_rejection(Wire::Messages, Wire::Messages, Wire::Gemini),
+            Some("this count URL does not match the profile wire\n")
+        );
+        assert_eq!(
+            count_dialect_rejection(Wire::Messages, Wire::Gemini, Wire::Gemini),
+            Some("token count is not mapped across dialects\n")
+        );
+        assert_eq!(
+            count_dialect_rejection(Wire::Messages, Wire::Messages, Wire::Messages),
+            None
+        );
     }
 
     #[test]
@@ -2593,6 +2718,31 @@ anthropic-beta = "context-1m-2025-08-07"
             "/v1beta/models/gemini-2.5-flash:generateContent",
             ""
         ));
+        let mut loss = crate::LossReport::default();
+        super::record_unused_query(&mut loss, wiremux_auth::Wire::Gemini, "alt=sse");
+        assert!(loss.events.is_empty(), "alt=sse is used, got {loss:?}");
+        super::record_unused_query(
+            &mut loss,
+            wiremux_auth::Wire::Gemini,
+            "alt=sse&fields=candidates(content)",
+        );
+        assert!(
+            loss.events.iter().any(|event| {
+                event.path == "query.fields" && event.action == crate::LossAction::Drop
+            }),
+            "unused query must Drop, got {loss:?}"
+        );
+        super::record_unused_query(
+            &mut loss,
+            wiremux_auth::Wire::ChatCompletions,
+            "api-version=2024-10-21",
+        );
+        assert!(
+            loss.events
+                .iter()
+                .any(|event| event.path == "query.api-version"),
+            "chat query must Drop, got {loss:?}"
+        );
         assert!(super::dest_stream_from_request(
             wiremux_auth::Wire::Messages,
             "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4:streamRawPredict",

@@ -34,17 +34,27 @@ impl EventStreamReader {
         }
         self.buffer.extend_from_slice(bytes);
         let mut out = Vec::new();
+        let mut cursor = 0;
+        // One drain for the consumed prefix. A per-message drain copies the tail.
         loop {
-            match take_message(&self.buffer)? {
-                None => return Ok((out, None)),
-                Some(Take::Frame(msg, consumed)) => {
-                    self.buffer.drain(..consumed);
+            match take_message(&self.buffer[cursor..]) {
+                Ok(None) => {
+                    self.buffer.drain(..cursor);
+                    return Ok((out, None));
+                }
+                Ok(Some(Take::Frame(msg, consumed))) => {
+                    cursor += consumed;
                     out.push(msg.into_raw_sse());
                 }
-                Some(Take::Exception(err, consumed)) => {
-                    self.buffer.drain(..consumed);
+                Ok(Some(Take::Exception(err, consumed))) => {
+                    cursor += consumed;
+                    self.buffer.drain(..cursor);
                     self.buffer.clear();
                     return Ok((out, Some(err)));
+                }
+                Err(err) => {
+                    self.buffer.drain(..cursor);
+                    return Err(err);
                 }
             }
         }
@@ -511,5 +521,49 @@ mod tests {
         assert!(err.is_none(), "{err:?}");
         assert_eq!(frames.len(), 1);
         assert!(reader.finish().expect("clean eof").is_none());
+    }
+
+    #[test]
+    fn many_messages_in_one_feed_stay_fast() {
+        let msg = encode_message("metadata", b"{}");
+        let n = 120_000;
+        assert!(
+            msg.len().saturating_mul(n) <= MAX_EVENTSTREAM_PENDING,
+            "count must fit in one feed"
+        );
+        let body = msg.repeat(n);
+        let mut reader = EventStreamReader::new();
+        let started = std::time::Instant::now();
+        let (frames, err) = reader.feed(&body).expect("feed");
+        let elapsed = started.elapsed();
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(frames.len(), n);
+        assert!(
+            elapsed < std::time::Duration::from_secs(8),
+            "one-chunk feed took {} ms",
+            elapsed.as_millis()
+        );
+    }
+
+    #[test]
+    fn crc_error_after_good_message_does_not_replay() {
+        let good = encode_message("metadata", b"{}");
+        let mut bad = good.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 0xff;
+        let mut body = good;
+        body.extend_from_slice(&bad);
+        let mut reader = EventStreamReader::new();
+        let err = reader.feed(&body).expect_err("crc after a good message");
+        assert!(err.contains("CRC"), "{err}");
+        assert!(
+            reader.buffer.starts_with(&bad),
+            "bad message must stay buffered"
+        );
+        let again = encode_message("metadata", b"{}");
+        let err = reader
+            .feed(&again)
+            .expect_err("leftover bad message must not yield a frame");
+        assert!(err.contains("CRC"), "{err}");
     }
 }

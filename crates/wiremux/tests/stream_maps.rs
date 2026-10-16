@@ -9698,6 +9698,49 @@ fn chat_id_then_name_assembles_one_start() {
 }
 
 #[test]
+fn chat_arguments_between_id_and_name_stay_one_call() {
+    let frames = [
+        r#"{"id":"chatcmpl-1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":""}}]}}]}"#,
+        r#"{"id":"chatcmpl-1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":1}"}}]}}]}"#,
+        r#"{"id":"chatcmpl-1","choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"lookup"}}]}}]}"#,
+    ];
+    let mut asm = ToolCallAssembler::new();
+    let mut out = Vec::new();
+    for data in frames {
+        let raw = RawSse {
+            event: None,
+            data: data.into(),
+        };
+        for ev in decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("dec") {
+            out.extend(asm.push(ev));
+        }
+    }
+    out.extend(asm.flush());
+    let starts: Vec<(&str, &str, u32)> = out
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart {
+                id, name, index, ..
+            } => Some((id.as_str(), name.as_str(), *index)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        vec![("call_1", "lookup", 0)],
+        "arguments must not split id and name, got {out:?}"
+    );
+    let args: Vec<(&str, u32)> = out
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { delta, index } => Some((delta.as_str(), *index)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(args, vec![(r#"{"q":1}"#, 0)], "got {out:?}");
+}
+
+#[test]
 fn chat_stream_system_fingerprint_round_trips() {
     let raw = RawSse {
         event: None,

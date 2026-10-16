@@ -3508,6 +3508,53 @@ fn cache_retention_none_skips_cache_control() {
     assert_eq!(count_cache_control(&body), 0, "retention=none, got {body}");
 }
 
+#[test]
+fn cache_without_system_does_not_preserve_before_a_marker() {
+    let none = IrRequest::new(
+        "claude-opus-4-6",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache::enabled().with_retention("none");
+    }));
+    let (bytes, report) = encode(Wire::Messages, &none, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(count_cache_control(&body), 0, "{body}");
+    assert!(
+        !report.events.iter().any(|event| {
+            event.path == "sampling.cache" && event.action == LossAction::Preserve
+        }),
+        "retention none must not say Preserve, got {report:?}"
+    );
+
+    let kept = IrRequest::new(
+        "claude-opus-4-6",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.cache = IrCache::enabled();
+    }));
+    let (bytes, report) = encode(Wire::Messages, &kept, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        count_cache_control(&body) > 0,
+        "a user turn must still be tagged, got {body}"
+    );
+    assert_eq!(
+        report
+            .events
+            .iter()
+            .filter(|event| event.path == "sampling.cache" && event.action == LossAction::Preserve)
+            .count(),
+        1,
+        "one Preserve after the marker, got {report:?}"
+    );
+}
+
 const ANTHROPIC_MAX_CACHE_CONTROL: usize = 4;
 const ANTHROPIC_PREFERRED_CACHE_CONTROL: usize = 2;
 
@@ -8364,6 +8411,44 @@ fn chat_unknown_modality_is_not_a_silent_preserve() {
     let (bytes, report) = encode(Wire::ChatCompletions, &mixed, &chat_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(body["modalities"], serde_json::json!(["text"]));
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.output_modalities" && event.action == LossAction::Degrade
+        }),
+        "a dropped sibling must Degrade, got {report:?}"
+    );
+    assert!(
+        !loss_dropped(&report, "sampling.output_modalities"),
+        "kept text must not share a Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_unknown_modality_is_not_a_silent_preserve() {
+    let dropped = user_ir(IrSampling::patch(|s| {
+        s.output_modalities = vec!["video".into()];
+    }));
+    let (bytes, report) = encode(Wire::Gemini, &dropped, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.pointer("/generationConfig/responseModalities")
+            .is_none(),
+        "{body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.output_modalities"),
+        "unrecognized modality must Drop, got {report:?}"
+    );
+
+    let mixed = user_ir(IrSampling::patch(|s| {
+        s.output_modalities = vec!["text".into(), "video".into()];
+    }));
+    let (bytes, report) = encode(Wire::Gemini, &mixed, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/generationConfig/responseModalities"),
+        Some(&serde_json::json!(["TEXT"]))
+    );
     assert!(
         report.events.iter().any(|event| {
             event.path == "sampling.output_modalities" && event.action == LossAction::Degrade

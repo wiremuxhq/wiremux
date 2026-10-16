@@ -500,9 +500,19 @@ impl WireClient {
     }
 
     async fn access_token(&self) -> Result<Option<String>, ClientError> {
+        if matches!(
+            self.profile.http.auth_scheme,
+            Some(wiremux_auth::AuthScheme::None)
+        ) && self.profile.oauth.is_none()
+        {
+            return Ok(None);
+        }
         let token = self.provider.get_token().await.map_err(auth_err)?;
         if token.trim().is_empty() {
-            Ok(None)
+            Err(ClientError::Auth {
+                status: None,
+                message: "empty token is not auth_scheme none".into(),
+            })
         } else {
             Ok(Some(token))
         }
@@ -885,7 +895,7 @@ fn profile_err(err: ProfileError) -> ClientError {
             status: None,
             message: not_found_message(&id, &known),
         },
-        other => ClientError::Transport(other.to_string()),
+        other => ClientError::Transport(clip_client_message(&other.to_string())),
     }
 }
 
@@ -1022,7 +1032,8 @@ fn json_prefix(bytes: &[u8]) -> bool {
         .is_some_and(|byte| matches!(byte, b'{' | b'['))
 }
 
-/// Converse HTTP 200 JSON uses `__type` and `message`, not `error`.
+/// Converse HTTP 200 JSON uses `__type` and `message`, or an `error`
+/// envelope when `output` and `stopReason` are absent.
 ///
 /// `classify_http` misses that shape, so `send` would report `Map` and
 /// `stream` would report a prelude CRC error.
@@ -1061,11 +1072,11 @@ fn classify_aws_exception_type(
         return ClientError::RateLimit {
             status: Some(status),
             retry_after: None,
-            message: full.to_string(),
+            message: clip_client_message(full),
         };
     }
     if ty.contains("internal") || ty.contains("serviceunavailable") || ty.contains("timeout") {
-        return transient(Some(status), full.to_string(), TransientKind::Http);
+        return transient(Some(status), clip_client_message(full), TransientKind::Http);
     }
     classify_error_payload(Some(status), None, None, message, full, None)
 }
@@ -1154,6 +1165,7 @@ fn classify_responses_failed(data: &str, status: u16) -> Option<ClientError> {
     } else {
         message.to_string()
     };
+    let shown = clip_client_message(&shown);
     Some(classify_error_payload(
         Some(status),
         code,
@@ -1182,7 +1194,7 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
         {
             return Some(ClientError::Vendor {
                 status: Some(status),
-                message: message.to_string(),
+                message: clip_client_message(message),
             });
         }
         if error_obj.is_some() && !success_body_has_completion(parsed.as_ref()) {
@@ -1264,16 +1276,17 @@ fn classify_error_payload(
     body: &str,
     retry_after: Option<u64>,
 ) -> ClientError {
+    let stored = clip_client_message(message);
     if looks_like_bad_key(body) || looks_like_bad_key(message) {
         return ClientError::Auth {
             status,
-            message: message.to_string(),
+            message: stored,
         };
     }
     if looks_like_model_not_found(body) || looks_like_model_not_found(message) {
         return ClientError::NotFound {
             status,
-            message: message.to_string(),
+            message: stored,
         };
     }
     if code == Some(429)
@@ -1284,7 +1297,7 @@ fn classify_error_payload(
         return ClientError::RateLimit {
             status,
             retry_after,
-            message: message.to_string(),
+            message: stored,
         };
     }
     if code.is_some_and(is_transient_code)
@@ -1292,11 +1305,11 @@ fn classify_error_payload(
         || looks_like_overload(body)
         || looks_like_overload(message)
     {
-        return transient(status, message.to_string(), TransientKind::Http);
+        return transient(status, stored, TransientKind::Http);
     }
     ClientError::Vendor {
         status,
-        message: message.to_string(),
+        message: stored,
     }
 }
 
@@ -1379,6 +1392,13 @@ fn looks_like_overload(text: &str) -> bool {
     t.contains("upstream overload") || t.contains("overloaded")
 }
 
+fn clip_client_message(text: &str) -> String {
+    // Redact the URL before the 200-character cut. Otherwise a password
+    // whose @ sits past the cut is kept as the host.
+    let urls_first = redact_embedded_url(text);
+    redact_client_text(&sanitize_oauth_error_text(&urls_first))
+}
+
 fn error_message(body: &str) -> String {
     let extracted = if let Ok(value) = serde_json::from_str::<Value>(body) {
         if let Some(msg) = value
@@ -1399,7 +1419,7 @@ fn error_message(body: &str) -> String {
     } else {
         fallback_error_text(body)
     };
-    redact_embedded_url(&sanitize_oauth_error_text(&extracted))
+    clip_client_message(&extracted)
 }
 
 fn redact_embedded_url(s: &str) -> String {
@@ -1474,7 +1494,10 @@ fn parse_listed_models(bytes: &[u8]) -> Result<Vec<ListedModel>, ClientError> {
     if let Some(models) = value.get("models").and_then(Value::as_array) {
         return Ok(parse_gemini_listed_models(models));
     }
-    Ok(Vec::new())
+    Err(ClientError::Vendor {
+        status: Some(200),
+        message: "model list has no data or models array".into(),
+    })
 }
 
 fn parse_openai_listed_models(data: &[Value]) -> Vec<ListedModel> {
@@ -2061,6 +2084,45 @@ wire = "messages"
     }
 
     #[tokio::test]
+    async fn empty_client_token_is_auth_error() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "bearer"
+wire = "chat-completions"
+auth_scheme = "bearer"
+base_url = "http://127.0.0.1:9"
+"#,
+        )
+        .expect("parse");
+        let client = WireClient::from_resolved(
+            profile,
+            AnyTokenProvider::from(wiremux_auth::StaticToken::new("   ")),
+        )
+        .expect("client");
+        let err = client.access_token().await.expect_err("empty bearer");
+        assert!(err.to_string().contains("empty token"), "{err}");
+
+        let none = parse_profile_str(
+            r#"
+schema_version = 1
+id = "none-auth"
+wire = "chat-completions"
+auth_scheme = "none"
+base_url = "http://127.0.0.1:9"
+"#,
+        )
+        .expect("parse");
+        let client = WireClient::from_resolved(
+            none,
+            AnyTokenProvider::from(wiremux_auth::StaticToken::new("")),
+        )
+        .expect("client");
+        let token = client.access_token().await.expect("none");
+        assert!(token.is_none(), "{token:?}");
+    }
+
+    #[tokio::test]
     async fn list_models_missing_base_url_names_top_level_field() {
         let profile = parse_profile_str(
             r#"
@@ -2110,6 +2172,104 @@ wire = "messages"
             }
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn model_list_without_an_array_is_not_an_empty_catalog() {
+        let err = super::parse_listed_models(br#"{"object":"list"}"#)
+            .expect_err("object without data or models");
+        match err {
+            super::ClientError::Vendor { status, message } => {
+                assert_eq!(status, Some(200));
+                assert!(message.contains("data or models"), "{message}");
+            }
+            other => panic!("expected Vendor, got {other:?}"),
+        }
+        assert!(
+            super::parse_listed_models(br#"{"data":[]}"#)
+                .expect("empty data")
+                .is_empty()
+        );
+        assert!(
+            super::parse_listed_models(br#"{"models":[]}"#)
+                .expect("empty models")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn http_200_string_error_is_clipped() {
+        let long = "x".repeat(500);
+        let body =
+            format!(r#"{{"error":"callback https://user:s3cret@evil.test/x failed {long}"}}"#);
+        let err = classify_http(200, &body, None).expect("string error");
+        let ClientError::Vendor { message, .. } = err else {
+            panic!("expected Vendor, got {err:?}");
+        };
+        assert!(!message.contains("user:s3cret"), "{message}");
+        assert!(
+            message.chars().filter(|c| *c == 'x').count() <= 200,
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn stored_message_redacts_gsk_and_bearer() {
+        let body = r#"{"error":{"message":"bad key gsk_LIVE0123456789abcdef and Bearer ya29.a0AfH6SM_token"}}"#;
+        let message = error_message(body);
+        assert!(!message.contains("gsk_LIVE"), "{message}");
+        assert!(!message.contains("ya29."), "{message}");
+    }
+
+    #[test]
+    fn url_userinfo_past_the_cap_is_still_redacted() {
+        let prefix = "w".repeat(160);
+        let password = "S".repeat(40);
+        let text = format!("vendor rejected {prefix} https://user:{password}@evil.test/object");
+        let message = clip_client_message(&text);
+        assert!(!message.contains(&password), "{message}");
+        assert!(!message.contains("user:"), "{message}");
+    }
+
+    #[test]
+    fn profile_parse_error_is_clipped() {
+        let secret = format!("api_key = \"sk-{}\"", "a".repeat(300));
+        let err = profile_err(ProfileError::Parse(secret));
+        let ClientError::Transport(message) = err else {
+            panic!("expected Transport, got {err:?}");
+        };
+        assert!(!message.contains("sk-aaaa"), "{message}");
+        assert!(message.chars().count() <= 250, "{message}");
+    }
+
+    #[test]
+    fn validation_exception_message_is_clipped() {
+        let long = "x".repeat(400);
+        let err = classify_aws_exception_type(
+            400,
+            "ValidationException",
+            &format!("bad key gsk_LIVE0123456789abcdef {long}"),
+            "eventstream exception ValidationException: ignored",
+        );
+        let ClientError::Vendor { message, .. } = err else {
+            panic!("expected Vendor, got {err:?}");
+        };
+        assert!(!message.contains("gsk_LIVE"), "{message}");
+        assert!(
+            message.chars().filter(|c| *c == 'x').count() <= 200,
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn response_failed_message_is_capped() {
+        let long = "x".repeat(500);
+        let data = format!(
+            r#"{{"type":"response.failed","response":{{"error":{{"code":"server_error","message":"{long}"}}}}}}"#
+        );
+        let err = classify_responses_failed(&data, 200).expect("failed frame");
+        let xs = err.to_string().chars().filter(|c| *c == 'x').count();
+        assert!(xs <= 200, "message must be capped, got {xs} in {err}");
     }
 
     #[test]

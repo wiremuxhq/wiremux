@@ -23,6 +23,11 @@ pub fn upstream_url_for_model(
         .or_else(|| profile.dialect.wire.map(Wire::default_chat_path))
         .unwrap_or("/");
     let mut path = if let Some(model) = model.filter(|m| !m.is_empty()) {
+        // `.` and `..` are one segment. URL parsers remove them, so
+        // `/model/../converse` becomes `/converse` on the profile host.
+        if model == "." || model == ".." {
+            return Err("model is a dot segment and would change the upstream path".to_string());
+        }
         path.replace("{model}", &encode_model_segment(model))
     } else {
         path.to_string()

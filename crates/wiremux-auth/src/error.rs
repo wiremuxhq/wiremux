@@ -103,7 +103,9 @@ impl From<ProfileError> for AuthError {
         match err {
             ProfileError::MissingField(s) => Self::MissingField(s.to_string()),
             ProfileError::Io { path, source } => Self::io(Some(path), source),
-            other => Self::TokenProvider(other.to_string()),
+            other => Self::TokenProvider(crate::helpers::sanitize_oauth_error_text(
+                &other.to_string(),
+            )),
         }
     }
 }
@@ -116,6 +118,26 @@ mod tests {
 
     fn leak_path() -> PathBuf {
         PathBuf::from(format!("/tmp/creds-{LEAK}.json"))
+    }
+
+    #[test]
+    fn profile_parse_error_drops_url_userinfo() {
+        let err = AuthError::from(crate::profile::ProfileError::Parse(
+            "callback https://user:s3cret@evil.test/cb".into(),
+        ));
+        let text = err.to_string();
+        assert!(!text.contains("s3cret"), "{text}");
+        assert!(!text.contains("user:"), "{text}");
+        assert!(text.contains("evil.test"), "{text}");
+    }
+
+    #[test]
+    fn profile_parse_error_is_capped_on_auth_error() {
+        let secret = format!("api_key = \"sk-{}\"", "a".repeat(300));
+        let err = AuthError::from(crate::profile::ProfileError::Parse(secret));
+        let text = err.to_string();
+        assert!(!text.contains("sk-aaaa"), "{text}");
+        assert!(text.chars().count() <= 280, "{text}");
     }
 
     #[test]
