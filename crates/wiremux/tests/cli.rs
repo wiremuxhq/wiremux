@@ -7158,6 +7158,12 @@ fn proxy_vertex_reuses_provider_and_mints_once() {
             match token_srv.accept() {
                 Ok((mut stream, _)) => {
                     token_hits.fetch_add(1, Ordering::Relaxed);
+                    // A nonblocking listener can hand back a nonblocking
+                    // socket on Windows. A write that returns early would
+                    // leave the proxy waiting on this token response.
+                    stream.set_nonblocking(false).ok();
+                    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                    stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
                     let mut buf = [0u8; 8192];
                     let _ = stream.read(&mut buf);
                     let body =
@@ -7178,20 +7184,33 @@ fn proxy_vertex_reuses_provider_and_mints_once() {
 
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
+    upstream
+        .set_nonblocking(true)
+        .expect("upstream nonblocking");
     let upstream_thread = std::thread::spawn(move || {
         let mut seen = Vec::new();
-        for _ in 0..2 {
-            let (mut stream, _) = upstream.accept().expect("accept");
-            let mut buf = [0u8; 8192];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            seen.push(String::from_utf8_lossy(&buf[..n]).into_owned());
-            let body =
-                r#"{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"#;
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(resp.as_bytes());
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while seen.len() < 2 && Instant::now() < deadline {
+            match upstream.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).ok();
+                    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                    stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+                    let mut buf = [0u8; 8192];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    seen.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+                    let body = r#"{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => break,
+            }
         }
         seen
     });
