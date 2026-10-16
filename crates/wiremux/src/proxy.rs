@@ -3860,6 +3860,11 @@ anthropic-beta = "context-1m-2025-08-07"
             super::messages_complete_vendor_failure(messages, named_tool).is_none(),
             "a named tool_use stays a completion"
         );
+        let file_doc = br#"{"content":[{"type":"document","source":{"type":"file","file_id":"file_abc"}}],"error":{"message":"overloaded"}}"#;
+        assert!(
+            super::messages_complete_vendor_failure(messages, file_doc).is_none(),
+            "a file document stays a completion"
+        );
         let converse_shell = br#"{"output":{"message":{"content":[{"toolUse":{}}]}},"error":{"message":"backend failed","type":"server_error"}}"#;
         assert_eq!(
             super::converse_complete_vendor_failure(wiremux_auth::Wire::Converse, converse_shell)

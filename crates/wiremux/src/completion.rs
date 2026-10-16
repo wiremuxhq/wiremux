@@ -138,7 +138,12 @@ pub(crate) fn messages_block_has_payload(block: &Value) -> bool {
         || nonempty_str(block, "tool_use_id")
         || tool_call_visible(block)
         || media_payload_visible(block)
+        || block.get("source").is_some_and(source_file_visible)
         || messages_content_field_visible(block.get("content"))
+}
+
+fn source_file_visible(source: &Value) -> bool {
+    nonempty_str(source, "file_id") || nonempty_str(source, "id")
 }
 
 fn messages_content_field_visible(value: Option<&Value>) -> bool {

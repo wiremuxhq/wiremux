@@ -2662,6 +2662,34 @@ base_url = "http://127.0.0.1"
 
         let image = r#"{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}}],"error":{"message":"overloaded"}}"#;
         decode_response(Wire::Messages, image.as_bytes(), &profile).expect("image bytes stay");
+
+        let file_doc = r#"{"content":[{"type":"document","source":{"type":"file","file_id":"file_abc"}}],"error":{"message":"overloaded"}}"#;
+        let kept_doc = decode_response(Wire::Messages, file_doc.as_bytes(), &profile)
+            .expect("file document stays");
+        assert!(
+            kept_doc.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::Protocol { item_type, payload }
+                    if item_type == "document"
+                        && payload.pointer("/source/file_id").and_then(Value::as_str)
+                            == Some("file_abc")
+            )),
+            "{kept_doc:?}"
+        );
+        let file_image =
+            r#"{"content":[{"type":"image","source":{"type":"file","file_id":"file_img"}}]}"#;
+        let kept_image = decode_response(Wire::Messages, file_image.as_bytes(), &profile)
+            .expect("file image stays");
+        assert!(
+            kept_image.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::Protocol { item_type, payload }
+                    if item_type == "image"
+                        && payload.pointer("/source/file_id").and_then(Value::as_str)
+                            == Some("file_img")
+            )),
+            "{kept_image:?}"
+        );
     }
 
     #[cfg(any(feature = "client", feature = "proxy"))]
