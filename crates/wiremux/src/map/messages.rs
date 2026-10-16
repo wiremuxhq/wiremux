@@ -196,7 +196,7 @@ fn decode_content_part(block: &Value) -> Option<IrPart> {
             .get("text")
             .and_then(Value::as_str)
             .map(|t| IrPart::Text(t.to_string())),
-        "image" => decode_image(block),
+        "image" => decode_image(block).or_else(|| messages_file_image(block)),
         "document" => decode_document(block).or_else(|| {
             Some(IrPart::Raw {
                 type_name: "document".into(),
@@ -214,6 +214,23 @@ fn decode_content_part(block: &Value) -> Option<IrPart> {
                 })
             }),
     }
+}
+
+/// A Messages Files API image. `ImageUrl.file_id` is a Responses id and
+/// still has no Messages slot, so this block stays raw.
+fn messages_file_image(block: &Value) -> Option<IrPart> {
+    let source = block.get("source")?;
+    if source.get("type").and_then(Value::as_str) != Some("file") {
+        return None;
+    }
+    let id = str_field(source, "file_id")?;
+    if id.is_empty() {
+        return None;
+    }
+    Some(IrPart::Raw {
+        type_name: "image".into(),
+        raw: block.clone(),
+    })
 }
 
 fn decode_image(block: &Value) -> Option<IrPart> {
