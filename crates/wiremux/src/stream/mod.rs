@@ -924,11 +924,16 @@ fn expand_responses_function_call(
 /// Merge Chat tool-call starts that arrive as id-only then name-only.
 ///
 /// Pending starts are keyed by `index` so interleaved parallel calls
-/// do not overwrite each other. Argument deltas for a held start stay
-/// with it until the id and the name have both arrived.
+/// do not overwrite each other. Argument deltas stay on that index
+/// until the id and the name have both arrived, including deltas that
+/// arrive before any start. After the start is emitted, later deltas
+/// for that index pass through.
 #[derive(Debug, Default)]
 pub struct ToolCallAssembler {
     pending: std::collections::BTreeMap<u32, PendingToolStart>,
+    /// Indexes whose start was already emitted. Later argument deltas
+    /// for those indexes must not wait for another start.
+    started: std::collections::BTreeSet<u32>,
 }
 
 #[derive(Debug)]
@@ -964,7 +969,22 @@ impl ToolCallAssembler {
                     pending.args.push(delta);
                     return Vec::new();
                 }
-                vec![IrStreamEvent::ToolCallArgDelta { delta, index }]
+                if self.started.contains(&index) {
+                    return vec![IrStreamEvent::ToolCallArgDelta { delta, index }];
+                }
+                // No start yet. Hold the fragment so a later start can
+                // lead it. `flush` still releases it if the name never comes.
+                self.pending.insert(
+                    index,
+                    PendingToolStart {
+                        id: String::new(),
+                        name: String::new(),
+                        thought_signature: None,
+                        index,
+                        args: vec![delta],
+                    },
+                );
+                Vec::new()
             }
             other => {
                 // Every Chat chunk carries `id` before the tool fields.
@@ -990,6 +1010,9 @@ impl ToolCallAssembler {
         let pending = std::mem::take(&mut self.pending);
         let mut out = Vec::new();
         for (_, pending) in pending {
+            if !pending.id.is_empty() || !pending.name.is_empty() {
+                self.started.insert(pending.index);
+            }
             out.extend(pending.into_events());
         }
         out
@@ -1023,6 +1046,7 @@ impl ToolCallAssembler {
             self.pending.insert(index, pending);
             Vec::new()
         } else {
+            self.started.insert(index);
             pending.into_events()
         }
     }
@@ -1030,12 +1054,17 @@ impl ToolCallAssembler {
 
 impl PendingToolStart {
     fn into_events(self) -> Vec<IrStreamEvent> {
-        let mut out = vec![IrStreamEvent::ToolCallStart {
-            id: self.id,
-            name: self.name,
-            thought_signature: self.thought_signature,
-            index: self.index,
-        }];
+        let mut out = Vec::new();
+        // Arguments that never received an id or a name are still the
+        // call's fragments. An empty start would look like a second call.
+        if !self.id.is_empty() || !self.name.is_empty() {
+            out.push(IrStreamEvent::ToolCallStart {
+                id: self.id,
+                name: self.name,
+                thought_signature: self.thought_signature,
+                index: self.index,
+            });
+        }
         for delta in self.args {
             out.push(IrStreamEvent::ToolCallArgDelta {
                 delta,
@@ -1439,8 +1468,9 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
 
 /// Chat-shaped SSE `data` that is only an `error` object.
 ///
-/// A nonempty `choices` array, or a `delta`, is a normal chunk even if
-/// `error` is also set. An empty `choices` array is not visible text.
+/// A choice with text, a refusal, audio bytes, or a real tool call stays
+/// a chunk even if `error` is also set. An empty `image_url`, an empty
+/// `input_audio`, and `tool_calls: [{}]` are not that payload.
 #[cfg(any(feature = "client", feature = "proxy"))]
 pub(crate) fn sse_wrapped_error_message(data: &str) -> Option<String> {
     let value: Value = serde_json::from_str(data).ok()?;
@@ -1814,6 +1844,48 @@ base_url = "http://127.0.0.1"
         )
         .expect("empty delta without an error is a no-op");
         assert!(quiet.is_empty(), "{quiet:?}");
+    }
+
+    #[test]
+    fn chat_empty_media_or_tool_shell_does_not_hide_the_error() {
+        let profile = profile();
+        let shells = [
+            r#"{"choices":[{"message":{"role":"assistant","content":[{"type":"image_url"}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"choices":[{"message":{"role":"assistant","content":[{"type":"input_audio"}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{}]}}],"error":{"message":"backend failed"}}"#,
+        ];
+        for body in shells {
+            let err = decode_stream_events(Wire::ChatCompletions, &frame(None, body), &profile)
+                .expect_err(body);
+            assert!(err.to_string().contains("backend failed"), "{body}: {err}");
+        }
+
+        let image = decode_stream_events(
+            Wire::ChatCompletions,
+            &frame(
+                None,
+                r#"{"choices":[{"delta":{"content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}}],"error":{"message":"backend failed"}}"#,
+            ),
+            &profile,
+        )
+        .expect("image url stays a completion");
+        assert!(
+            image.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::Protocol { item_type, .. } if item_type == "image_url"
+            )),
+            "{image:?}"
+        );
+
+        decode_stream_events(
+            Wire::ChatCompletions,
+            &frame(
+                None,
+                r#"{"choices":[{"delta":{"content":[{"type":"input_audio","input_audio":{"data":"AAA","format":"wav"}}]}}],"error":{"message":"backend failed"}}"#,
+            ),
+            &profile,
+        )
+        .expect("audio data stays a completion");
     }
 
     #[test]
@@ -2471,6 +2543,23 @@ base_url = "http://127.0.0.1"
             r#"{"choices":[{"delta":{}}],"error":{"message":"overloaded"}}"#,
         );
         assert_eq!(msg.as_deref(), Some("overloaded"));
+    }
+
+    #[cfg(any(feature = "client", feature = "proxy"))]
+    #[test]
+    fn sse_wrapped_error_message_reads_empty_media_and_tool_shells() {
+        for body in [
+            r#"{"choices":[{"message":{"content":[{"type":"image_url"}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"choices":[{"message":{"content":[{"type":"input_audio"}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{}]}}],"error":{"message":"backend failed"}}"#,
+        ] {
+            let msg = sse_wrapped_error_message(body);
+            assert_eq!(msg.as_deref(), Some("backend failed"), "{body}: {msg:?}");
+        }
+        let kept = sse_wrapped_error_message(
+            r#"{"choices":[{"delta":{"tool_calls":[{"id":"call_1","function":{"name":"lookup"}}]}}],"error":{"message":"backend failed"}}"#,
+        );
+        assert!(kept.is_none(), "{kept:?}");
     }
 
     #[cfg(feature = "proxy")]

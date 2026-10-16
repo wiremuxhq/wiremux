@@ -1,9 +1,12 @@
 //! Whether a JSON success body already has caller-visible output.
 //!
 //! Chat `choices` and Gemini `candidates` count when a slot has text,
-//! a refusal, or a tool call. An empty string does not. Responses
-//! `output` and Messages `content` stay non-empty arrays, including a
-//! message shell with no text field.
+//! a refusal, audio bytes or a transcript, or a tool call. An empty
+//! string does not. An `image_url` or `input_audio` part counts only
+//! when it has a URL, data, or transcript. A tool call counts when it
+//! has an id, a name, or arguments. Responses `output` and Messages
+//! `content` stay non-empty arrays, including a message shell with no
+//! text field.
 
 use serde_json::Value;
 
@@ -82,10 +85,51 @@ fn content_part_visible(item: &Value) -> bool {
     item.as_str().is_some_and(|text| !text.is_empty())
         || nonempty_str(item, "text")
         || nonempty_str(item, "refusal")
-        || item
-            .get("type")
-            .and_then(Value::as_str)
-            .is_some_and(|kind| matches!(kind, "image_url" | "image" | "input_audio" | "audio"))
+        || media_payload_visible(item)
+}
+
+/// URL, bytes, or transcript. The `type` name alone is an empty shell.
+fn media_payload_visible(value: &Value) -> bool {
+    nonempty_str(value, "url")
+        || nonempty_str(value, "data")
+        || nonempty_str(value, "transcript")
+        || value.get("image_url").is_some_and(media_leaf_visible)
+        || value.get("input_audio").is_some_and(media_leaf_visible)
+        || value.get("audio").is_some_and(media_leaf_visible)
+        || value.get("source").is_some_and(media_leaf_visible)
+}
+
+fn media_leaf_visible(value: &Value) -> bool {
+    match value {
+        Value::String(text) => !text.is_empty(),
+        Value::Object(_) => {
+            nonempty_str(value, "url")
+                || nonempty_str(value, "data")
+                || nonempty_str(value, "transcript")
+                || value.get("source").is_some_and(media_leaf_visible)
+        }
+        _ => false,
+    }
+}
+
+fn argument_visible(value: &Value) -> bool {
+    match value.get("arguments").or_else(|| value.get("input")) {
+        None | Some(Value::Null) => false,
+        Some(Value::String(text)) => !text.is_empty(),
+        Some(_) => true,
+    }
+}
+
+/// Id, name, or arguments. `{}` and an index-only delta are not a call.
+fn tool_call_visible(call: &Value) -> bool {
+    if nonempty_str(call, "id") || nonempty_str(call, "name") || argument_visible(call) {
+        return true;
+    }
+    ["function", "custom"].iter().any(|key| {
+        call.get(*key).is_some_and(|body| {
+            nonempty_str(body, "name") || nonempty_str(body, "id") || argument_visible(body)
+        })
+    })
 }
 
 pub(crate) fn choice_visible(choice: &Value) -> bool {
@@ -108,11 +152,11 @@ pub(crate) fn choice_visible(choice: &Value) -> bool {
     if body
         .get("tool_calls")
         .and_then(Value::as_array)
-        .is_some_and(|calls| !calls.is_empty())
+        .is_some_and(|calls| calls.iter().any(tool_call_visible))
     {
         return true;
     }
-    body.get("function_call").is_some_and(Value::is_object)
+    body.get("function_call").is_some_and(tool_call_visible)
 }
 
 fn audio_visible(body: &Value) -> bool {

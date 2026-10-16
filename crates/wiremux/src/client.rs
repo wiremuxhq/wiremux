@@ -1590,13 +1590,51 @@ fn gemini_listed_vision(item: &Value) -> Option<bool> {
 /// `{base}/api/v3/models`. Gemini
 /// `/v1beta/models/{model}:generateContent` becomes `{base}/v1beta/models`.
 /// A Vertex path keeps `publishers/.../models`, so the catalog is not
-/// `{base}/v1/models`. A path with no version segment stays `{base}/models`.
+/// `{base}/v1/models`. Azure deployments have no version segment. Their
+/// catalog is `{base}/openai/models` plus the chat path's `api-version`.
+/// Any other path with no version segment stays `{base}/models`.
 fn models_url(base: &str, chat_path: &str) -> String {
     let base = base.trim_end_matches('/');
+    if let Some(url) = azure_models_url(base, chat_path) {
+        return url;
+    }
     match chat_version_prefix(chat_path) {
         Some(prefix) if prefix.ends_with("/models") => format!("{base}/{prefix}"),
         Some(prefix) => format!("{base}/{prefix}/models"),
         None => format!("{base}/models"),
+    }
+}
+
+/// `{base}/openai/models?api-version=` for `/openai/deployments/{name}/chat/completions`.
+///
+/// `{base}/models` is not the Azure list. A 404 there looks like an empty catalog.
+fn azure_models_url(base: &str, chat_path: &str) -> Option<String> {
+    let trimmed = chat_path.trim();
+    let (path, query) = match trimmed.split_once('?') {
+        Some((path, query)) => (path, Some(query.split('#').next().unwrap_or(query))),
+        None => (trimmed.split('#').next().unwrap_or(trimmed), None),
+    };
+    let path = path.trim_start_matches('/');
+    let mut segments = path.split('/');
+    if segments.next() != Some("openai") || segments.next() != Some("deployments") {
+        return None;
+    }
+    segments.next().filter(|segment| !segment.is_empty())?;
+    if segments.next() != Some("chat") || segments.next() != Some("completions") {
+        return None;
+    }
+    if segments.next().is_some() {
+        return None;
+    }
+    let version = query.and_then(|query| {
+        query.split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == "api-version" && !value.is_empty()).then_some(value)
+        })
+    });
+    match version {
+        Some(version) => Some(format!("{base}/openai/models?api-version={version}")),
+        None => Some(format!("{base}/openai/models")),
     }
 }
 
@@ -1744,7 +1782,21 @@ mod tests {
                 "https://example.openai.azure.com",
                 "/openai/deployments/{model}/chat/completions?api-version=2024-10-21"
             ),
-            "https://example.openai.azure.com/models"
+            "https://example.openai.azure.com/openai/models?api-version=2024-10-21"
+        );
+        assert_eq!(
+            models_url(
+                "https://example.openai.azure.com/",
+                "/openai/deployments/gpt-4o/chat/completions?api-version=2024-06-01&foo=1"
+            ),
+            "https://example.openai.azure.com/openai/models?api-version=2024-06-01"
+        );
+        assert_eq!(
+            models_url(
+                "https://example.openai.azure.com",
+                "/openai/deployments/{model}/chat/completions"
+            ),
+            "https://example.openai.azure.com/openai/models"
         );
     }
 

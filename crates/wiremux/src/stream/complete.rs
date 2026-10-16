@@ -2300,6 +2300,31 @@ wire = "chat-completions"
         let err = decode_response(Wire::ChatCompletions, br#"{"error":{"code":503}}"#, &chat)
             .expect_err("numeric code");
         assert!(err.to_string().contains("503"), "{err}");
+        for body in [
+            br#"{"choices":[{"message":{"role":"assistant","content":[{"type":"image_url"}]}}],"error":{"message":"backend failed"}}"#.as_slice(),
+            br#"{"choices":[{"message":{"role":"assistant","content":[{"type":"input_audio"}]}}],"error":{"message":"backend failed"}}"#.as_slice(),
+            br#"{"choices":[{"delta":{"tool_calls":[{}]}}],"error":{"message":"backend failed"}}"#.as_slice(),
+        ] {
+            let err = decode_response(Wire::ChatCompletions, body, &chat).expect_err("empty shell");
+            assert!(
+                err.to_string().contains("backend failed"),
+                "{err} body {}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        let kept_tool = decode_response(
+            Wire::ChatCompletions,
+            br#"{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}}],"error":{"message":"backend failed"}}"#,
+            &chat,
+        )
+        .expect("named tool call stays");
+        assert!(
+            kept_tool.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::ToolCallStart { id, name, .. } if id == "call_1" && name == "lookup"
+            )),
+            "{kept_tool:?}"
+        );
 
         let messages = crate::parse_profile_str(
             r#"

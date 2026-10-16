@@ -140,6 +140,7 @@ jobs:
           (!startsWith(github.head_ref, 'release-please') || github.event.pull_request.user.login != 'github-actions[bot]')
         run: bash scripts/check-cargo-package.sh
       - run: python3 scripts/test_workflow_triggers.py
+      - run: python3 scripts/test_semver_baseline.py
       - run: python3 scripts/test_package_release_binary.py
       - run: python3 scripts/test_render_release_extras.py
       - run: python3 scripts/test_upload_release_binaries.py
@@ -195,6 +196,7 @@ jobs:
         with:
           tool: zizmor@1.16.0
       - run: python3 scripts/test_workflow_triggers.py
+      - run: python3 scripts/test_semver_baseline.py
       - run: python3 scripts/test_package_release_binary.py
       - run: python3 scripts/test_render_release_extras.py
       - run: python3 scripts/test_upload_release_binaries.py
@@ -226,6 +228,65 @@ jobs:
             success|skipped) echo "OK: ${JOB_RESULT}" ;;
             *)
               echo "FAIL: workflow lint ${JOB_RESULT}" >&2
+              exit 1
+              ;;
+          esac
+
+  # Check name `Semver` is required by main-branch-protection.
+  # Baseline is the latest v0.11 tag, not the pull request base.
+  semver:
+    name: Semver run
+    needs: changes
+    if: >-
+      always() &&
+      (needs.changes.result == 'skipped' ||
+       needs.changes.outputs.crates == 'true' ||
+       needs.changes.outputs.scripts == 'true' ||
+       needs.changes.outputs.ci == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-ci
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
+        with:
+          tool: cargo-semver-checks@0.51.0
+      - name: Public API against the latest v0.11 tag
+        run: bash scripts/check-semver.sh
+      - name: Enum field fails and IrSampling field passes
+        run: python3 scripts/test_semver_lints.py
+
+  semver-gate:
+    name: Semver
+    needs: [changes, semver]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2
+        with:
+          egress-policy: audit
+      - name: Require semver success or skip
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          JOB_RESULT: ${{ needs.semver.result }}
+        run: |
+          set -euo pipefail
+          case "$CHANGES_RESULT" in
+            failure|cancelled)
+              echo "FAIL: changes job ${CHANGES_RESULT}" >&2
+              exit 1
+              ;;
+          esac
+          case "$JOB_RESULT" in
+            success|skipped) echo "OK: ${JOB_RESULT}" ;;
+            *)
+              echo "FAIL: semver ${JOB_RESULT}" >&2
               exit 1
               ;;
           esac
