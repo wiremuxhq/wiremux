@@ -4359,7 +4359,6 @@ fn dest_responses_complete_failed_remaps_dest_chat_finish_reason_stop() {
         "object": "response",
         "created_at": 1700000000,
         "status": "failed",
-        "error": { "code": "server_error", "message": "upstream failed" },
         "model": "gpt-4o",
         "output": []
     }))
