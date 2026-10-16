@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.4](https://github.com/wiremuxhq/wiremux/compare/v0.11.3...v0.11.4) (2026-10-16)
+
+
+### Bug Fixes
+
+* empty shells no longer hide a vendor error ([#660](https://github.com/wiremuxhq/wiremux/issues/660)) ([54052c3](https://github.com/wiremuxhq/wiremux/commit/54052c3422344d573afb8c8b54e0bcbbe34473f3))
+* keep image detail, tool arguments, and Azure model lists ([#658](https://github.com/wiremuxhq/wiremux/issues/658)) ([8694bff](https://github.com/wiremuxhq/wiremux/commit/8694bffbd66f6ec07dda79172f887adfbd1d2096))
+* Messages image file ids survive a round trip ([#661](https://github.com/wiremuxhq/wiremux/issues/661)) ([2c94dca](https://github.com/wiremuxhq/wiremux/commit/2c94dcaeae9ddc78e71ad7efb25fac152b1b42a0))
+
 ## [0.11.3](https://github.com/wiremuxhq/wiremux/compare/v0.11.2...v0.11.3) (2026-10-16)
 
 
