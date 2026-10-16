@@ -1262,8 +1262,9 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
 /// A 200 body that already has completion text is not only a vendor error.
 ///
 /// Empty arrays and empty strings count as no text. A refusal or a tool
-/// call still counts. Responses `output` and Messages `content` stay
-/// non-empty arrays, matching the proxy.
+/// call still counts. A non-empty Responses `output` array still counts
+/// here, including a message shell. The proxy vendor-failure path uses
+/// the leaf check.
 fn success_body_has_completion(value: Option<&Value>) -> bool {
     value.is_some_and(crate::completion::json_has_completion)
 }

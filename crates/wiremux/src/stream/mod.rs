@@ -4,6 +4,8 @@ mod chat;
 mod complete;
 mod converse;
 
+#[cfg(feature = "proxy")]
+pub(crate) use complete::responses_has_visible_output;
 #[cfg(any(feature = "proxy", feature = "client"))]
 pub(crate) use converse::complete_exception_detail;
 mod encoder;

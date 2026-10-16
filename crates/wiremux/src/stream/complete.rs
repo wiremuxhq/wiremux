@@ -1792,7 +1792,7 @@ fn plain_error_detail(value: &Value) -> Option<String> {
 
 /// Text, refusal, audio, image bytes, or a named tool call.
 /// A message id or an empty `content` array is not a leaf.
-fn responses_has_visible_output(value: &Value) -> bool {
+pub(crate) fn responses_has_visible_output(value: &Value) -> bool {
     if str_field(value, "text").is_some_and(|text| !text.is_empty()) {
         return true;
     }
