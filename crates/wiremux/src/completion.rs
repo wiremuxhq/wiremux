@@ -123,6 +123,45 @@ fn argument_visible(value: &Value) -> bool {
 }
 
 /// Id, name, or arguments. `{}` and an index-only delta are not a call.
+pub(crate) fn messages_tool_block_visible(block: &Value) -> bool {
+    tool_call_visible(block)
+}
+
+/// A Messages block other than its `type` name. An empty `source` is not one.
+pub(crate) fn messages_block_has_payload(block: &Value) -> bool {
+    nonempty_str(block, "text")
+        || nonempty_str(block, "thinking")
+        || nonempty_str(block, "signature")
+        || nonempty_str(block, "data")
+        || nonempty_str(block, "id")
+        || nonempty_str(block, "name")
+        || nonempty_str(block, "tool_use_id")
+        || tool_call_visible(block)
+        || media_payload_visible(block)
+        || messages_content_field_visible(block.get("content"))
+}
+
+fn messages_content_field_visible(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::String(text)) => !text.is_empty(),
+        Some(Value::Array(items)) => items.iter().any(|item| {
+            item.as_str().is_some_and(|text| !text.is_empty())
+                || nonempty_str(item, "text")
+                || nonempty_str(item, "thinking")
+                || tool_call_visible(item)
+                || media_payload_visible(item)
+        }),
+        Some(object) if object.is_object() => {
+            nonempty_str(object, "text")
+                || tool_call_visible(object)
+                || media_payload_visible(object)
+        }
+        Some(_) => false,
+    }
+}
+
+/// Id, name, or arguments. `{}` and an index-only delta are not a call.
 fn tool_call_visible(call: &Value) -> bool {
     if nonempty_str(call, "id") || nonempty_str(call, "name") || argument_visible(call) {
         return true;

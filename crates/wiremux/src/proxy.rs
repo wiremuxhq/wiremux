@@ -1808,7 +1808,9 @@ fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
 /// or object when that output is absent. Chat uses an `error` object and no
 /// visible choice. An empty string is not a choice.
 /// Messages uses `type: error` and no content blocks, or a string
-/// `error` when those blocks are absent. Gemini uses an
+/// `error` when those blocks are absent. A `text` or `thinking` block
+/// still counts, including an empty string. An empty `tool_use` or
+/// `image` does not. Gemini uses an
 /// `error` object, or a `promptFeedback.blockReason`, when no candidate
 /// text, tool call, or inline data is present. A non-empty candidate
 /// list with no `error` object stays on the decode path. A non-stream
@@ -1898,13 +1900,24 @@ fn chat_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
     vendor_error_detail(err)
 }
 
+fn messages_content_keeps_completion(items: &[serde_json::Value]) -> bool {
+    items.iter().any(
+        |block| match block.get("type").and_then(serde_json::Value::as_str) {
+            Some("text") | Some("thinking") => true,
+            Some("tool_use") => crate::completion::messages_tool_block_visible(block),
+            None => false,
+            _ => crate::completion::messages_block_has_payload(block),
+        },
+    )
+}
+
 fn messages_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
     if target != Wire::Messages {
         return None;
     }
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     let content = value.get("content").and_then(serde_json::Value::as_array);
-    if content.is_some_and(|items| !items.is_empty()) {
+    if content.is_some_and(|items| messages_content_keeps_completion(items)) {
         return None;
     }
     if let Some(text) = crate::completion::json_string_error(&value) {
@@ -3828,7 +3841,37 @@ anthropic-beta = "context-1m-2025-08-07"
         let shell = br#"{"type":"error","content":[{"type":"text","text":""}],"error":{"type":"api_error","message":"nope"}}"#;
         assert!(
             super::messages_complete_vendor_failure(messages, shell).is_none(),
-            "a non-empty Messages content array stays a completion"
+            "a text block stays a completion"
+        );
+        let tool_shell = br#"{"content":[{"type":"tool_use"}],"error":{"message":"overloaded"}}"#;
+        assert_eq!(
+            super::messages_complete_vendor_failure(messages, tool_shell).as_deref(),
+            Some("overloaded"),
+            "an empty tool_use must not hide the error"
+        );
+        let image_shell = br#"{"content":[{"type":"image"}],"error":{"message":"overloaded"}}"#;
+        assert_eq!(
+            super::messages_complete_vendor_failure(messages, image_shell).as_deref(),
+            Some("overloaded"),
+            "an empty image must not hide the error"
+        );
+        let named_tool = br#"{"content":[{"type":"tool_use","id":"toolu_1","name":"ping","input":{}}],"error":{"message":"overloaded"}}"#;
+        assert!(
+            super::messages_complete_vendor_failure(messages, named_tool).is_none(),
+            "a named tool_use stays a completion"
+        );
+        let converse_shell = br#"{"output":{"message":{"content":[{"toolUse":{}}]}},"error":{"message":"backend failed","type":"server_error"}}"#;
+        assert_eq!(
+            super::converse_complete_vendor_failure(wiremux_auth::Wire::Converse, converse_shell)
+                .as_deref(),
+            Some("server_error: backend failed"),
+            "an empty toolUse must not hide the error"
+        );
+        let converse_text = br#"{"output":{"message":{"content":[{"text":"Hi"}]}},"stopReason":"end_turn","error":{"message":"backend failed"}}"#;
+        assert!(
+            super::converse_complete_vendor_failure(wiremux_auth::Wire::Converse, converse_text)
+                .is_none(),
+            "converse text stays a completion"
         );
         let output = br#"{"status":"failed","output":[{"type":"message"}],"error":{"message":"please wait"}}"#;
         assert!(

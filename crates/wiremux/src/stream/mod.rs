@@ -123,9 +123,11 @@ impl UpstreamFrames {
 /// or `503`). `{"type":"response.queued"}` stays a no-op.
 /// `response.output_text.done` and `response.completed` are
 /// [`MapError::Invalid`] when that error is the only payload. Text or
-/// a non-empty `output` stays `Ok`. A Converse body with no `output`
-/// or `stopReason` is [`MapError::Invalid`] for an OpenAI `error`.
-/// `__type` and `message` stay `Type: message`.
+/// a non-empty `output` stays `Ok`. A Converse body with no visible
+/// `output` block or `stopReason` is [`MapError::Invalid`] for an
+/// OpenAI `error`. Empty text, an empty `toolUse`, and an empty
+/// `image` are not blocks. A named tool, text, or media bytes still
+/// win. `__type` and `message` stay `Type: message`.
 ///
 /// Unknown names follow `profile.dialect.stream_unknown_policy`. A
 /// tool-bearing frame is never `Ok(None)`.
@@ -2577,6 +2579,89 @@ base_url = "http://127.0.0.1"
                 .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
             "{events:?}"
         );
+    }
+
+    #[test]
+    fn converse_empty_output_shell_does_not_hide_the_error() {
+        let profile = converse_profile();
+        let shells = [
+            r#"{"output":{"message":{"role":"assistant","content":[{"text":""}]}},"error":{"message":"backend failed","type":"server_error"}}"#,
+            r#"{"output":{"message":{"role":"assistant","content":[{"toolUse":{}}]}},"error":{"message":"backend failed","type":"server_error"}}"#,
+            r#"{"output":{"message":{"role":"assistant","content":[{"image":{}}]}},"error":{"message":"backend failed","type":"server_error"}}"#,
+            r#"{"output":{"message":{"role":"assistant","content":[{"document":{}}]}},"error":{"message":"backend failed","type":"server_error"}}"#,
+        ];
+        for body in shells {
+            assert_invalid(
+                decode_response(Wire::Converse, body.as_bytes(), &profile)
+                    .expect_err("empty output shell"),
+                "server_error: backend failed",
+            );
+            assert_stream_invalid(
+                Wire::Converse,
+                &frame(None, body),
+                &profile,
+                "server_error: backend failed",
+            );
+        }
+
+        let bare = r#"{"output":{"message":{"content":[{"toolUse":{}}]}}}"#;
+        let events = decode_response(Wire::Converse, bare.as_bytes(), &profile)
+            .expect("empty toolUse without an error");
+        assert!(
+            !events
+                .iter()
+                .any(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. })),
+            "{events:?}"
+        );
+
+        let named = r#"{"output":{"message":{"content":[{"toolUse":{"toolUseId":"t1","name":"ping","input":{}}}]}},"error":{"message":"backend failed","type":"server_error"}}"#;
+        let kept =
+            decode_response(Wire::Converse, named.as_bytes(), &profile).expect("named tool stays");
+        assert!(
+            kept.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::ToolCallStart { name, .. } if name == "ping"
+            )),
+            "{kept:?}"
+        );
+
+        let document = r#"{"output":{"message":{"content":[{"document":{"format":"pdf","name":"note","source":{"bytes":"JVBERi0x"}}}]}},"error":{"message":"backend failed"}}"#;
+        decode_response(Wire::Converse, document.as_bytes(), &profile)
+            .expect("document bytes stay");
+        let guard = r#"{"output":{"message":{"content":[{"guardContent":{"text":{"text":"keep me"}}}]}},"error":{"message":"backend failed"}}"#;
+        decode_response(Wire::Converse, guard.as_bytes(), &profile).expect("guard text stays");
+    }
+
+    #[test]
+    fn messages_empty_tool_or_image_shell_does_not_hide_the_error() {
+        let profile = wiremux_auth::parse_profile_str(
+            "schema_version = 1\nid = \"messages\"\nwire = \"messages\"\n",
+        )
+        .expect("messages profile");
+        let shells = [
+            r#"{"content":[{"type":"tool_use"}],"error":{"message":"overloaded"}}"#,
+            r#"{"content":[{"type":"image"}],"error":{"message":"overloaded"}}"#,
+            r#"{"content":[{}],"error":{"message":"overloaded"}}"#,
+        ];
+        for body in shells {
+            let err = decode_response(Wire::Messages, body.as_bytes(), &profile)
+                .expect_err("empty messages shell");
+            assert!(err.to_string().contains("overloaded"), "{body} -> {err}");
+        }
+
+        let named = r#"{"content":[{"type":"tool_use","id":"toolu_1","name":"ping","input":{}}],"error":{"message":"overloaded"}}"#;
+        let kept =
+            decode_response(Wire::Messages, named.as_bytes(), &profile).expect("named tool stays");
+        assert!(
+            kept.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::ToolCallStart { id, name, .. } if id == "toolu_1" && name == "ping"
+            )),
+            "{kept:?}"
+        );
+
+        let image = r#"{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}}],"error":{"message":"overloaded"}}"#;
+        decode_response(Wire::Messages, image.as_bytes(), &profile).expect("image bytes stay");
     }
 
     #[cfg(any(feature = "client", feature = "proxy"))]
