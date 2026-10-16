@@ -1804,8 +1804,10 @@ fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
 
 /// JSON success body that is only a vendor failure.
 ///
-/// Responses uses `status: failed` with no output, or an `error` string
-/// or object when that output is absent. Chat uses an `error` object and no
+/// Responses uses an `error` string or object when no output leaf is
+/// present. A message id or an empty `content` array is not a leaf.
+/// `last_error` counts when `status` is `failed` and `output` is an
+/// array, null, or absent. Chat uses an `error` object and no
 /// visible choice. An empty string is not a choice.
 /// Messages uses `type: error` and no content blocks, or a string
 /// `error` when those blocks are absent. A `text` or `thinking` block
@@ -1949,7 +1951,7 @@ fn responses_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String
     } else {
         &value
     };
-    if crate::completion::json_has_completion(response) {
+    if crate::stream::responses_has_visible_output(response) {
         return None;
     }
     if let Some(text) = crate::completion::json_string_error(response) {
@@ -1964,10 +1966,13 @@ fn responses_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String
     if status != Some("failed") {
         return None;
     }
-    match response.get("output") {
-        Some(serde_json::Value::Array(items)) if items.is_empty() => {}
-        Some(serde_json::Value::Null) | None => {}
-        _ => return None,
+    // A non-array `output` stays on the decode path. An array with no
+    // leaf already failed the check above, so `last_error` still applies.
+    if response
+        .get("output")
+        .is_some_and(|output| !output.is_array() && !output.is_null())
+    {
+        return None;
     }
     let err = ["error", "last_error"]
         .iter()
@@ -3878,12 +3883,6 @@ anthropic-beta = "context-1m-2025-08-07"
                 .is_none(),
             "converse text stays a completion"
         );
-        let output = br#"{"status":"failed","output":[{"type":"message"}],"error":{"message":"please wait"}}"#;
-        assert!(
-            super::responses_complete_vendor_failure(wiremux_auth::Wire::Responses, output)
-                .is_none(),
-            "a Responses message shell stays a completion"
-        );
         let same = super::cross_wire_vendor_failure(
             gemini,
             gemini,
@@ -3893,5 +3892,76 @@ anthropic-beta = "context-1m-2025-08-07"
         .expect("same-wire safety block is still a failure");
         let text = String::from_utf8(same.to_vec()).expect("utf8");
         assert!(text.contains("SAFETY"), "{text}");
+    }
+
+    /// An output array with no text, refusal, audio, or named tool call
+    /// is not a completion. The vendor message stays on the dest error.
+    #[test]
+    fn responses_output_shell_is_a_vendor_failure() {
+        let responses = wiremux_auth::Wire::Responses;
+        let chat = wiremux_auth::Wire::ChatCompletions;
+        let shells = [
+            (
+                "message shell",
+                &br#"{"status":"failed","output":[{"type":"message"}],"error":{"message":"please wait"}}"#[..],
+                "please wait",
+            ),
+            (
+                "empty content array",
+                &br#"{"id":"resp_1","object":"response","status":"failed","error":{"code":"server_error","message":"please wait"},"output":[{"id":"msg_1","type":"message","status":"incomplete","role":"assistant","content":[]}]}"#[..],
+                "server_error: please wait",
+            ),
+            (
+                "empty output_text",
+                &br#"{"status":"failed","output":[{"type":"message","content":[{"type":"output_text","text":""}]}],"error":{"message":"please wait"}}"#[..],
+                "please wait",
+            ),
+            (
+                "empty audio shell",
+                &br#"{"status":"failed","output":[{"type":"output_audio"}],"error":{"message":"please wait"}}"#[..],
+                "please wait",
+            ),
+            (
+                "last_error on a message shell",
+                &br#"{"status":"failed","output":[{"type":"message"}],"last_error":{"code":"server_error","message":"please wait"}}"#[..],
+                "server_error: please wait",
+            ),
+        ];
+        for (name, body, detail) in shells {
+            assert_eq!(
+                super::responses_complete_vendor_failure(responses, body).as_deref(),
+                Some(detail),
+                "{name}"
+            );
+            let text = String::from_utf8(
+                super::cross_wire_vendor_failure(chat, responses, false, body)
+                    .expect(name)
+                    .to_vec(),
+            )
+            .expect("utf8");
+            assert!(text.contains("please wait"), "{name}: {text}");
+            assert!(!text.contains("decode upstream"), "{name}: {text}");
+            let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+            assert_eq!(value["error"]["message"], "please wait", "{name}: {text}");
+        }
+
+        let shell =
+            br#"{"status":"failed","output":[{"type":"message"}],"error":{"message":"please wait"}}"#;
+        let streamed = String::from_utf8(
+            super::cross_wire_vendor_failure(chat, responses, true, shell)
+                .expect("stream shell is an error")
+                .to_vec(),
+        )
+        .expect("utf8");
+        assert!(streamed.starts_with("event: error\n"), "{streamed}");
+        assert!(streamed.contains("please wait"), "{streamed}");
+        assert!(!streamed.contains("[DONE]"), "{streamed}");
+
+        let same = super::same_wire_passthrough_bytes(responses, shell);
+        let text = String::from_utf8(same).expect("utf8");
+        assert!(text.contains("event: error\n"), "{text}");
+        assert!(text.contains("please wait"), "{text}");
+        assert!(!text.contains("\"type\":\"message\""), "{text}");
+        assert!(!text.contains(super::INCOMPLETE_STREAM_MESSAGE), "{text}");
     }
 }
