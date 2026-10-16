@@ -13473,3 +13473,51 @@ fn messages_image_file_id_round_trips() {
         "same-wire image file_id must not be recorded as dropped, got {report:?}"
     );
 }
+
+#[test]
+fn messages_image_file_id_does_not_leak_into_responses() {
+    let req = br#"{
+        "model": "claude-sonnet-4-5",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "file", "file_id": "file_img"}},
+                {"type": "text", "text": "What is this?"}
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, report) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let encoded = String::from_utf8_lossy(&bytes);
+    assert!(
+        !encoded.contains("file_img"),
+        "Responses must not receive a Messages file image, got {body}"
+    );
+    assert!(
+        body.pointer("/input")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .all(
+                |part| part.get("type").and_then(Value::as_str) != Some("image")
+                    && part
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .all(|item| item.get("type").and_then(Value::as_str) != Some("image"))
+            ),
+        "Responses content must not keep type image, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/input/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("What is this?"),
+        "text must stay after the image is dropped, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.raw"),
+        "cross-wire file image must be recorded as dropped, got {report:?}"
+    );
+}

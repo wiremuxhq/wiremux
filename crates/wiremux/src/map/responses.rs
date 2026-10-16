@@ -820,6 +820,13 @@ fn peel_signed_thinking(
     rest
 }
 
+/// A Messages Files API image. `responses_raw_passthrough` would copy
+/// `type: image` into a Responses body, which rejects that part.
+fn messages_file_image_raw(raw: &Value) -> bool {
+    raw.get("type").and_then(Value::as_str) == Some("image")
+        && raw.pointer("/source/type").and_then(Value::as_str) == Some("file")
+}
+
 fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value {
     let text_ty = if input { "input_text" } else { "output_text" };
     let visible: Vec<&IrPart> = parts
@@ -837,6 +844,13 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                 if super::plain_media_part(part).is_some() {
                     report.record("part.media_hint", LossAction::Drop, "no slot");
                     true
+                } else if messages_file_image_raw(raw) {
+                    report.record(
+                        "part.raw",
+                        LossAction::Drop,
+                        "Messages image file_id has no Responses slot",
+                    );
+                    false
                 } else if responses_raw_passthrough(raw) {
                     true
                 } else {
