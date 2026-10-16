@@ -1790,11 +1790,82 @@ fn plain_error_detail(value: &Value) -> Option<String> {
         .and_then(crate::completion::error_object_detail)
 }
 
+/// Text, refusal, audio, image bytes, or a named tool call.
+/// A message id or an empty `content` array is not a leaf.
+fn responses_has_visible_output(value: &Value) -> bool {
+    if str_field(value, "text").is_some_and(|text| !text.is_empty()) {
+        return true;
+    }
+    let Some(items) = value
+        .get("output")
+        .and_then(Value::as_array)
+        .or_else(|| value.pointer("/response/output").and_then(Value::as_array))
+    else {
+        return false;
+    };
+    items.iter().any(responses_item_visible)
+}
+
+fn responses_item_visible(item: &Value) -> bool {
+    match item.get("type").and_then(Value::as_str) {
+        Some("message") => item
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| parts.iter().any(responses_part_visible)),
+        Some("function_call") | Some("custom_tool_call") => responses_call_visible(item),
+        Some("reasoning") => item
+            .get("summary")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| parts.iter().any(responses_part_visible)),
+        Some("output_audio") | Some("audio") => responses_part_visible(item),
+        _ => false,
+    }
+}
+
+fn responses_part_visible(part: &Value) -> bool {
+    ["text", "refusal", "data", "transcript", "image_url"]
+        .iter()
+        .any(|key| str_field(part, key).is_some_and(|text| !text.is_empty()))
+}
+
+fn responses_call_visible(item: &Value) -> bool {
+    ["name", "call_id", "id"]
+        .iter()
+        .any(|key| str_field(item, key).is_some_and(|text| !text.is_empty()))
+        || responses_arg_present(item.get("arguments"))
+        || responses_arg_present(item.get("input"))
+}
+
+fn responses_arg_present(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::String(text)) => !text.is_empty(),
+        Some(_) => true,
+    }
+}
+
+fn responses_surface_error(value: &Value) -> Option<String> {
+    if let Some(detail) = plain_error_detail(value) {
+        return Some(detail);
+    }
+    value
+        .get("last_error")
+        .filter(|err| err.is_object())
+        .and_then(crate::completion::error_object_detail)
+}
+
 fn decode_responses_complete(
     value: &Value,
     profile: &ResolvedProfile,
 ) -> Result<Vec<IrStreamEvent>, MapError> {
     if let Some(detail) = responses_gateway_error(value) {
+        return Err(MapError::Invalid(detail));
+    }
+    // `status` hides the gateway check. An output shell still has no leaf,
+    // so the vendor message stays on the error instead of a finish reason.
+    if let Some(detail) = responses_surface_error(value)
+        && !responses_has_visible_output(value)
+    {
         return Err(MapError::Invalid(detail));
     }
     let name = value.get("type").and_then(Value::as_str).unwrap_or("");
@@ -1812,27 +1883,14 @@ fn decode_responses_complete(
             json!({ "type": event, "response": value }).to_string(),
         )
     };
-    let decoded = decode_stream_events(
+    let mut events = decode_stream_events(
         Wire::Responses,
         &RawSse {
-            event: Some(event.clone()),
+            event: Some(event),
             data,
         },
         profile,
-    );
-    // A failed JSON body carries response.error. Stream frames surface
-    // that as Invalid so a live client can retry. The complete body still
-    // maps to finish_reason stop.
-    let mut events = match decoded {
-        Ok(events) => events,
-        Err(MapError::Invalid(_)) if event == "response.failed" => {
-            vec![IrStreamEvent::FinishReason {
-                reason: "failed".into(),
-                vendor: None,
-            }]
-        }
-        Err(err) => return Err(err),
-    };
+    )?;
     let extra = complete_responses_output_events(value)?;
     if extra.is_empty() {
         return Ok(events);
@@ -2238,17 +2296,15 @@ wire = "responses"
             "{err}"
         );
 
-        let failed = decode_response(
+        let err = decode_response(
             Wire::Responses,
             br#"{"id":"resp_1","object":"response","status":"failed","error":{"code":"server_error","message":"upstream failed"},"output":[]}"#,
             &profile,
         )
-        .expect("status failed still decodes");
+        .expect_err("status failed with a message");
         assert!(
-            failed
-                .iter()
-                .any(|ev| matches!(ev, IrStreamEvent::FinishReason { .. })),
-            "{failed:?}"
+            matches!(err, MapError::Invalid(ref text) if text.contains("upstream failed")),
+            "{err}"
         );
 
         let done = decode_response(
@@ -2478,6 +2534,215 @@ wire = "converse"
                 .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi")),
             "{kept:?}"
         );
+    }
+
+    #[test]
+    fn decode_response_keeps_vendor_message_without_a_visible_leaf() {
+        fn profile(wire: &str) -> ResolvedProfile {
+            crate::parse_profile_str(&format!(
+                "schema_version = 1\nid = \"t\"\nwire = \"{wire}\"\n"
+            ))
+            .expect("profile")
+        }
+
+        struct Row {
+            label: &'static str,
+            wire: Wire,
+            wire_name: &'static str,
+            body: &'static str,
+            /// Set when `decode_response` must be an error containing this text.
+            error_has: Option<&'static str>,
+            /// Substring of the `Ok` debug text when `error_has` is unset.
+            keep: &'static str,
+        }
+        let rows = [
+            Row {
+                label: "responses status failed, no output",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"failed","error":{"code":"server_error","message":"please wait"}}"#,
+                error_has: Some("please wait"),
+                keep: "",
+            },
+            Row {
+                label: "responses empty message shell",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"failed","output":[{"type":"message"}],"error":{"message":"please wait"}}"#,
+                error_has: Some("please wait"),
+                keep: "",
+            },
+            Row {
+                label: "responses empty content array",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"id":"resp_1","object":"response","status":"failed","error":{"code":"server_error","message":"please wait"},"output":[{"id":"msg_1","type":"message","status":"incomplete","role":"assistant","content":[]}]}"#,
+                error_has: Some("please wait"),
+                keep: "",
+            },
+            Row {
+                label: "responses empty output_text",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"failed","output":[{"type":"message","content":[{"type":"output_text","text":""}]}],"error":{"message":"please wait"}}"#,
+                error_has: Some("please wait"),
+                keep: "",
+            },
+            Row {
+                label: "responses output_text beside error",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}],"error":{"message":"please wait"}}"#,
+                error_has: None,
+                keep: "Hi",
+            },
+            Row {
+                label: "responses refusal beside error",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"no"}]}],"error":{"message":"please wait"}}"#,
+                error_has: None,
+                keep: "no",
+            },
+            Row {
+                label: "responses named tool beside error",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"completed","output":[{"type":"function_call","name":"lookup","arguments":"{}"}],"error":{"message":"please wait"}}"#,
+                error_has: None,
+                keep: "lookup",
+            },
+            Row {
+                label: "responses audio beside error",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"completed","output":[{"type":"output_audio","data":"SUQz"}],"error":{"message":"please wait"}}"#,
+                error_has: None,
+                keep: "SUQz",
+            },
+            Row {
+                label: "responses empty audio shell",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"failed","output":[{"type":"output_audio"}],"error":{"message":"please wait"}}"#,
+                error_has: Some("please wait"),
+                keep: "",
+            },
+            Row {
+                label: "responses failed with no message",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"failed","output":[]}"#,
+                error_has: None,
+                keep: "failed",
+            },
+            Row {
+                label: "chat empty choice",
+                wire: Wire::ChatCompletions,
+                wire_name: "chat-completions",
+                body: r#"{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"error":{"message":"please wait"}}"#,
+                error_has: Some("please wait"),
+                keep: "",
+            },
+            Row {
+                label: "chat text beside error",
+                wire: Wire::ChatCompletions,
+                wire_name: "chat-completions",
+                body: r#"{"choices":[{"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"error":{"message":"please wait"}}"#,
+                error_has: None,
+                keep: "Hi",
+            },
+            Row {
+                label: "messages empty text block",
+                wire: Wire::Messages,
+                wire_name: "messages",
+                body: r#"{"content":[{"type":"text","text":""}],"error":{"type":"api_error","message":"please wait"}}"#,
+                error_has: Some("please wait"),
+                keep: "",
+            },
+            Row {
+                label: "messages text beside error",
+                wire: Wire::Messages,
+                wire_name: "messages",
+                body: r#"{"content":[{"type":"text","text":"Hi"}],"error":{"message":"please wait"}}"#,
+                error_has: None,
+                keep: "Hi",
+            },
+            Row {
+                label: "gemini empty candidate",
+                wire: Wire::Gemini,
+                wire_name: "gemini",
+                body: r#"{"candidates":[{}],"error":{"message":"please wait"}}"#,
+                error_has: Some("please wait"),
+                keep: "",
+            },
+            Row {
+                label: "gemini text beside error",
+                wire: Wire::Gemini,
+                wire_name: "gemini",
+                body: r#"{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}],"error":{"message":"please wait"}}"#,
+                error_has: None,
+                keep: "Hi",
+            },
+            Row {
+                label: "converse empty toolUse",
+                wire: Wire::Converse,
+                wire_name: "converse",
+                body: r#"{"output":{"message":{"content":[{"toolUse":{}}]}},"error":{"message":"please wait","type":"server_error"}}"#,
+                error_has: Some("please wait"),
+                keep: "",
+            },
+            Row {
+                label: "converse text beside error",
+                wire: Wire::Converse,
+                wire_name: "converse",
+                body: r#"{"output":{"message":{"content":[{"text":"Hi"}]}},"stopReason":"end_turn","error":{"message":"please wait"}}"#,
+                error_has: None,
+                keep: "Hi",
+            },
+        ];
+
+        for row in rows {
+            let profile = profile(row.wire_name);
+            let unary = decode_response(row.wire, row.body.as_bytes(), &profile);
+            match row.error_has {
+                Some(needle) => {
+                    let err = unary.expect_err(row.label);
+                    assert!(err.to_string().contains(needle), "{}: {err}", row.label);
+                    let stream = decode_stream_events(
+                        row.wire,
+                        &RawSse {
+                            event: None,
+                            data: row.body.to_string(),
+                        },
+                        &profile,
+                    );
+                    if let Err(MapError::Invalid(detail)) = stream {
+                        let MapError::Invalid(text) = err else {
+                            panic!(
+                                "{}: frameless stream is Invalid, decode_response is {err}",
+                                row.label
+                            );
+                        };
+                        assert!(
+                            text.contains(&detail),
+                            "{}: decode_response `{text}` must contain stream `{detail}`",
+                            row.label
+                        );
+                    }
+                }
+                None => {
+                    let events = unary.expect(row.label);
+                    let shown = format!("{events:?}");
+                    assert!(
+                        shown.contains(row.keep),
+                        "{}: expected `{}` in {shown}",
+                        row.label,
+                        row.keep
+                    );
+                }
+            }
+        }
     }
 
     #[test]
