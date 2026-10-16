@@ -3699,6 +3699,56 @@ anthropic-beta = "context-1m-2025-08-07"
                 None,
             ),
             (
+                "empty function call does not hide the error",
+                &br#"{"candidates":[{"content":{"parts":[{"functionCall":{}}]}}],"error":{"message":"backend failed"}}"#[..],
+                Some("backend failed"),
+            ),
+            (
+                "empty inline data does not hide the error",
+                &br#"{"candidates":[{"content":{"parts":[{"inlineData":{}}]}}],"error":{"message":"backend failed"}}"#[..],
+                Some("backend failed"),
+            ),
+            (
+                "mime-only inline data does not hide the error",
+                &br#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png"}}]}}],"error":{"message":"backend failed"}}"#[..],
+                Some("backend failed"),
+            ),
+            (
+                "empty file data does not hide the error",
+                &br#"{"candidates":[{"content":{"parts":[{"fileData":{}}]}}],"error":{"message":"backend failed"}}"#[..],
+                Some("backend failed"),
+            ),
+            (
+                "mime-only file data does not hide the error",
+                &br#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"text/plain"}}]}}],"error":{"message":"backend failed"}}"#[..],
+                Some("backend failed"),
+            ),
+            (
+                "empty executable code does not hide the error",
+                &br#"{"candidates":[{"content":{"parts":[{"executableCode":{}}]}}],"error":{"message":"backend failed"}}"#[..],
+                Some("backend failed"),
+            ),
+            (
+                "empty code result does not hide the error",
+                &br#"{"candidates":[{"content":{"parts":[{"codeExecutionResult":{}}]}}],"error":{"message":"backend failed"}}"#[..],
+                Some("backend failed"),
+            ),
+            (
+                "empty function response does not hide the error",
+                &br#"{"candidates":[{"content":{"parts":[{"functionResponse":{}}]}}],"error":{"message":"backend failed"}}"#[..],
+                Some("backend failed"),
+            ),
+            (
+                "empty tool call does not hide the error",
+                &br#"{"candidates":[{"content":{"parts":[{"toolCall":{}}]}}],"error":{"message":"backend failed"}}"#[..],
+                Some("backend failed"),
+            ),
+            (
+                "empty tool response does not hide the error",
+                &br#"{"candidates":[{"content":{"parts":[{"toolResponse":{}}]}}],"error":{"message":"backend failed"}}"#[..],
+                Some("backend failed"),
+            ),
+            (
                 "finish message wins",
                 &br#"{"candidates":[{"content":{"parts":[{"text":""}]},"finishMessage":"blocked by safety"}],"error":{"message":"blocked"}}"#[..],
                 None,

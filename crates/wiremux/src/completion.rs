@@ -4,9 +4,11 @@
 //! a refusal, audio bytes or a transcript, or a tool call. An empty
 //! string does not. An `image_url` or `input_audio` part counts only
 //! when it has a URL, data, or transcript. A tool call counts when it
-//! has an id, a name, or arguments. Responses `output` and Messages
-//! `content` stay non-empty arrays, including a message shell with no
-//! text field.
+//! has an id, a name, or arguments. A Gemini part counts only when the
+//! leaf has a name, an id, args, bytes, a file URI, code, an outcome,
+//! or a response. The key alone does not. Responses `output` and
+//! Messages `content` stay non-empty arrays, including a message shell
+//! with no text field.
 
 use serde_json::Value;
 
@@ -174,16 +176,50 @@ pub(crate) fn candidate_visible(candidate: &Value) -> bool {
             .is_some_and(|parts| parts.iter().any(gemini_part_visible))
 }
 
+pub(crate) fn gemini_function_call_visible(call: &Value) -> bool {
+    nonempty_str(call, "id") || nonempty_str(call, "name") || json_payload(call.get("args"))
+}
+
+fn json_payload(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::String(text)) => !text.is_empty(),
+        Some(_) => true,
+    }
+}
+
+fn gemini_response_visible(value: &Value) -> bool {
+    nonempty_str(value, "name") || nonempty_str(value, "id") || json_payload(value.get("response"))
+}
+
+/// File, code, or tool payload. An empty object is not a part.
+pub(crate) fn gemini_side_part_visible(part: &Value) -> bool {
+    part.get("fileData")
+        .is_some_and(|value| nonempty_str(value, "fileUri") || nonempty_str(value, "uri"))
+        || part
+            .get("executableCode")
+            .is_some_and(|value| nonempty_str(value, "language") || nonempty_str(value, "code"))
+        || part
+            .get("codeExecutionResult")
+            .is_some_and(|value| nonempty_str(value, "outcome") || nonempty_str(value, "output"))
+        || part
+            .get("functionResponse")
+            .is_some_and(gemini_response_visible)
+        || part
+            .get("toolCall")
+            .is_some_and(gemini_function_call_visible)
+        || part
+            .get("toolResponse")
+            .is_some_and(gemini_response_visible)
+}
+
 fn gemini_part_visible(part: &Value) -> bool {
-    const KEPT: &[&str] = &[
-        "functionCall",
-        "inlineData",
-        "fileData",
-        "executableCode",
-        "codeExecutionResult",
-        "functionResponse",
-        "toolCall",
-        "toolResponse",
-    ];
-    nonempty_str(part, "text") || KEPT.iter().any(|key| part.get(*key).is_some())
+    nonempty_str(part, "text")
+        || part
+            .get("functionCall")
+            .is_some_and(gemini_function_call_visible)
+        || part
+            .get("inlineData")
+            .is_some_and(|value| nonempty_str(value, "data"))
+        || gemini_side_part_visible(part)
 }

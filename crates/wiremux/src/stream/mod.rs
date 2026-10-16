@@ -425,7 +425,12 @@ fn gemini_value_has_function_call(value: &Value) -> bool {
     value
         .pointer("/candidates/0/content/parts")
         .and_then(Value::as_array)
-        .is_some_and(|parts| parts.iter().any(|p| p.get("functionCall").is_some()))
+        .is_some_and(|parts| {
+            parts.iter().any(|p| {
+                p.get("functionCall")
+                    .is_some_and(crate::completion::gemini_function_call_visible)
+            })
+        })
 }
 
 fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStreamEvent>> {
@@ -754,7 +759,10 @@ fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> 
             signature: sig.to_string(),
         });
     }
-    if let Some(fc) = part.get("functionCall") {
+    if let Some(fc) = part
+        .get("functionCall")
+        .filter(|call| crate::completion::gemini_function_call_visible(call))
+    {
         let name = str_field(fc, "name").unwrap_or_default();
         let thought_signature = part
             .get("thoughtSignature")
@@ -780,13 +788,7 @@ fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> 
                 index,
             });
         }
-    } else if part.get("executableCode").is_some()
-        || part.get("codeExecutionResult").is_some()
-        || part.get("functionResponse").is_some()
-        || part.get("toolCall").is_some()
-        || part.get("toolResponse").is_some()
-        || part.get("fileData").is_some()
-    {
+    } else if crate::completion::gemini_side_part_visible(part) {
         out.push(IrStreamEvent::Protocol {
             item_type: "gemini_code_part".into(),
             payload: part.clone(),
@@ -1886,6 +1888,76 @@ base_url = "http://127.0.0.1"
             &profile,
         )
         .expect("audio data stays a completion");
+    }
+
+    #[test]
+    fn gemini_empty_part_shell_does_not_hide_the_error() {
+        let profile = wiremux_auth::parse_profile_str(
+            r#"
+schema_version = 1
+id = "g"
+wire = "gemini"
+base_url = "http://127.0.0.1"
+"#,
+        )
+        .expect("gemini profile");
+        let shells = [
+            r#"{"candidates":[{"content":{"parts":[{"functionCall":{}}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"candidates":[{"content":{"parts":[{"inlineData":{}}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png"}}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"candidates":[{"content":{"parts":[{"fileData":{}}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"text/plain"}}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"candidates":[{"content":{"parts":[{"executableCode":{}}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"candidates":[{"content":{"parts":[{"codeExecutionResult":{}}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"candidates":[{"content":{"parts":[{"functionResponse":{}}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"candidates":[{"content":{"parts":[{"toolCall":{}}]}}],"error":{"message":"backend failed"}}"#,
+            r#"{"candidates":[{"content":{"parts":[{"toolResponse":{}}]}}],"error":{"message":"backend failed"}}"#,
+        ];
+        for body in shells {
+            let err =
+                decode_stream_events(Wire::Gemini, &frame(None, body), &profile).expect_err(body);
+            assert!(err.to_string().contains("backend failed"), "{body}: {err}");
+            let err = decode_response(Wire::Gemini, body.as_bytes(), &profile).expect_err(body);
+            assert!(err.to_string().contains("backend failed"), "{body}: {err}");
+            assert_eq!(
+                sse_wrapped_error_message(body).as_deref(),
+                Some("backend failed"),
+                "{body}"
+            );
+        }
+
+        let quiet = decode_stream_events(
+            Wire::Gemini,
+            &frame(
+                None,
+                r#"{"candidates":[{"content":{"parts":[{"functionCall":{}}]}}]}"#,
+            ),
+            &profile,
+        )
+        .expect("empty functionCall is a no-op");
+        assert!(
+            quiet
+                .iter()
+                .all(|ev| !matches!(ev, IrStreamEvent::ToolCallStart { .. })),
+            "{quiet:?}"
+        );
+
+        let kept = decode_stream_events(
+            Wire::Gemini,
+            &frame(
+                None,
+                r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"ping","args":{}}}]}}],"error":{"message":"backend failed"}}"#,
+            ),
+            &profile,
+        )
+        .expect("named function call stays");
+        assert!(
+            kept.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::ToolCallStart { name, .. } if name == "ping"
+            )),
+            "{kept:?}"
+        );
     }
 
     #[test]
