@@ -83,7 +83,10 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                     signature: sig.to_string(),
                 }));
             }
-            if let Some(fc) = part.get("functionCall") {
+            if let Some(fc) = part
+                .get("functionCall")
+                .filter(|call| crate::completion::gemini_function_call_visible(call))
+            {
                 let name = str_field(fc, "name").unwrap_or_default();
                 let thought_signature = part
                     .get("thoughtSignature")
@@ -214,7 +217,12 @@ fn candidate_has_function_call(candidate: &Value) -> bool {
     candidate
         .pointer("/content/parts")
         .and_then(Value::as_array)
-        .is_some_and(|parts| parts.iter().any(|p| p.get("functionCall").is_some()))
+        .is_some_and(|parts| {
+            parts.iter().any(|p| {
+                p.get("functionCall")
+                    .is_some_and(crate::completion::gemini_function_call_visible)
+            })
+        })
 }
 
 pub(super) fn inline_data_event(part: &Value) -> Option<IrStreamEvent> {

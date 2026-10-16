@@ -472,10 +472,86 @@ fn converse_has_completion(value: &Value) -> bool {
         return true;
     }
     match value.get("output") {
-        Some(Value::Object(map)) => !map.is_empty(),
-        Some(Value::Array(items)) => !items.is_empty(),
-        Some(Value::Null) | None => false,
-        Some(_) => true,
+        Some(Value::Object(_)) => converse_output_visible(value),
+        Some(Value::Array(items)) => items.iter().any(converse_block_visible),
+        _ => false,
+    }
+}
+
+fn converse_output_visible(value: &Value) -> bool {
+    value
+        .pointer("/output/message/content")
+        .and_then(Value::as_array)
+        .is_some_and(|blocks| blocks.iter().any(converse_block_visible))
+}
+
+fn converse_block_visible(block: &Value) -> bool {
+    nonempty_converse_str(block, "text")
+        || block
+            .pointer("/reasoningContent/reasoningText/text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty())
+        || block
+            .pointer("/reasoningContent/reasoningText/signature")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty())
+        || block
+            .pointer("/reasoningContent/redactedContent")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty())
+        || block.get("toolUse").is_some_and(converse_tool_visible)
+        || block.get("image").is_some_and(converse_media_visible)
+        || block.get("document").is_some_and(converse_media_visible)
+        || block.get("video").is_some_and(converse_media_visible)
+        || block.get("audio").is_some_and(|audio| {
+            audio
+                .pointer("/source/bytes")
+                .and_then(Value::as_str)
+                .is_some_and(|bytes| !bytes.is_empty())
+        })
+        || block
+            .get("guardContent")
+            .is_some_and(nested_nonempty_string)
+        || block
+            .pointer("/citationsContent/citations")
+            .is_some_and(nested_nonempty_string)
+}
+
+fn converse_tool_visible(tool: &Value) -> bool {
+    nonempty_converse_str(tool, "toolUseId")
+        || nonempty_converse_str(tool, "name")
+        || match tool.get("input") {
+            None | Some(Value::Null) => false,
+            Some(Value::String(text)) => !text.is_empty(),
+            Some(_) => true,
+        }
+}
+
+fn converse_media_visible(value: &Value) -> bool {
+    nonempty_converse_str(value, "name")
+        || value
+            .pointer("/source/bytes")
+            .and_then(Value::as_str)
+            .is_some_and(|bytes| !bytes.is_empty())
+        || value
+            .pointer("/source/s3Location/uri")
+            .and_then(Value::as_str)
+            .is_some_and(|uri| !uri.is_empty())
+}
+
+fn nonempty_converse_str(value: &Value, key: &str) -> bool {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty())
+}
+
+fn nested_nonempty_string(value: &Value) -> bool {
+    match value {
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => items.iter().any(nested_nonempty_string),
+        Value::Object(map) => map.values().any(nested_nonempty_string),
+        _ => false,
     }
 }
 
@@ -606,7 +682,10 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
                 }
             }
         }
-        if let Some(tool) = block.get("toolUse") {
+        if let Some(tool) = block
+            .get("toolUse")
+            .filter(|tool| converse_tool_visible(tool))
+        {
             let id = tool
                 .get("toolUseId")
                 .and_then(Value::as_str)

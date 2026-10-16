@@ -1647,14 +1647,14 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
                 Some("image") => {
                     if let Some(ev) = super::messages::image_delta_from_block(block) {
                         out.push(ev);
-                    } else {
+                    } else if crate::completion::messages_block_has_payload(block) {
                         out.push(IrStreamEvent::Protocol {
                             item_type: "image".into(),
                             payload: block.clone(),
                         });
                     }
                 }
-                Some("tool_use") => {
+                Some("tool_use") if crate::completion::messages_tool_block_visible(block) => {
                     let index = tool_index;
                     tool_index = tool_index.saturating_add(1);
                     out.push(IrStreamEvent::ToolCallStart {
@@ -1671,12 +1671,14 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
                     }
                     out.push(IrStreamEvent::ToolCallEnd);
                 }
-                Some(ty) => {
+                Some("tool_use") => {}
+                Some(ty) if crate::completion::messages_block_has_payload(block) => {
                     out.push(IrStreamEvent::Protocol {
                         item_type: ty.to_string(),
                         payload: block.clone(),
                     });
                 }
+                Some(_) => {}
                 None => {}
             }
         }
