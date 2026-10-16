@@ -13431,3 +13431,45 @@ fn converse_none_tool_choice_omits_tool_config() {
         "None with tools must record tool_choice no none slot, got {report:?}"
     );
 }
+
+#[test]
+fn messages_image_file_id_round_trips() {
+    let req = br#"{
+        "model": "claude-sonnet-4-5",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "file", "file_id": "file_img"}},
+                {"type": "text", "text": "What is this?"}
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/source/file_id")
+            .and_then(Value::as_str),
+        Some("file_img"),
+        "Messages image file_id must stay on the next request, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/source/type")
+            .and_then(Value::as_str),
+        Some("file"),
+        "image source type must stay file, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/1/text")
+            .and_then(Value::as_str),
+        Some("What is this?"),
+        "text after the image must stay, got {body}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .all(|event| event.path != "part.image.file_id"),
+        "same-wire image file_id must not be recorded as dropped, got {report:?}"
+    );
+}
