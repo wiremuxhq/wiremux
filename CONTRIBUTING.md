@@ -41,9 +41,16 @@ bot commits and merge commits.
 ## Pull requests
 
 Use the pull request template. Commits on `main` squash through the
-required checks (Lint, Test, DCO, Stealth, CodeQL). The Stealth
+required checks (Lint, Test, DCO, Stealth, Semver, CodeQL). The Stealth
 check runs `scripts/assert-public.sh` (product README and crate
 descriptions, not the old stub).
+
+The Semver check runs `cargo-semver-checks` 0.51.0 against the latest
+`v0.11.*` tag. Adding a field to a public enum variant such as
+`IrItem::System` fails that check. Adding a field to `IrSampling`
+does not: that struct is `#[non_exhaustive]`, derives `Default`, and
+`IrSampling::patch` leaves the new field unset. The rustdoc example
+on `IrItem` stays. It locks the literals inside this crate.
 
 PR titles must be a conventional type (`feat`, `fix`, `docs`, `ci`,
 `chore`, `test`, `refactor`, `perf`, `build`, `style`, `revert`).

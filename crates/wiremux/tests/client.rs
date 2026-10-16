@@ -1495,6 +1495,74 @@ chat_path = "/chat/completions"
 }
 
 #[tokio::test]
+async fn list_models_azure_uses_openai_models_and_api_version() {
+    let body =
+        r#"{"object":"list","data":[{"id":"gpt-4o","object":"model","status":"succeeded"}]}"#;
+    let (base, handle) = spawn_one(200, "OK", "", body);
+    let profile = parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "azure-openai"
+wire = "chat-completions"
+auth_scheme = "header:api-key"
+base_url = "{base}"
+chat_path = "/openai/deployments/{{model}}/chat/completions?api-version=2024-10-21"
+"#
+    ))
+    .expect("azure");
+    let client = WireClient::from_resolved(
+        profile,
+        AnyTokenProvider::from(StaticToken::new("azure-test-key")),
+    )
+    .expect("client");
+    let models = client.list_models().await.expect("azure list");
+    let req = handle.join().expect("join");
+    assert_eq!(models.len(), 1, "{models:?}");
+    assert_eq!(models[0].id, "gpt-4o");
+    assert!(
+        req.contains("GET /openai/models?api-version=2024-10-21 "),
+        "{req}"
+    );
+    assert!(
+        !req.contains("GET /models "),
+        "azure list must not use the generic catalog: {req}"
+    );
+    let lower = req.to_ascii_lowercase();
+    assert!(
+        lower.contains("api-key: azure-test-key"),
+        "azure list must send api-key: {req}"
+    );
+}
+
+#[tokio::test]
+async fn list_models_azure_404_is_empty() {
+    let (base, handle) = spawn_one(404, "Not Found", "", "missing");
+    let profile = parse_profile_str(&format!(
+        r#"
+schema_version = 1
+id = "azure-openai"
+wire = "chat-completions"
+auth_scheme = "header:api-key"
+base_url = "{base}"
+chat_path = "/openai/deployments/{{model}}/chat/completions?api-version=2024-10-21"
+"#
+    ))
+    .expect("azure");
+    let client = WireClient::from_resolved(
+        profile,
+        AnyTokenProvider::from(StaticToken::new("azure-test-key")),
+    )
+    .expect("client");
+    let models = client.list_models().await.expect("404 list");
+    let req = handle.join().expect("join");
+    assert!(models.is_empty(), "{models:?}");
+    assert!(
+        req.contains("GET /openai/models?api-version=2024-10-21 "),
+        "{req}"
+    );
+}
+
+#[tokio::test]
 async fn list_models_401_is_auth() {
     let (base, handle) = spawn_one(401, "Unauthorized", "", r#"{"error":"no"}"#);
     let err = client_for(&base, "sk-test")

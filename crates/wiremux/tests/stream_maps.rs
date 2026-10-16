@@ -9741,6 +9741,116 @@ fn chat_arguments_between_id_and_name_stay_one_call() {
 }
 
 #[test]
+fn chat_arguments_before_the_start_follow_it() {
+    let mut assembler = ToolCallAssembler::new();
+    let early = assembler.push(IrStreamEvent::ToolCallArgDelta {
+        delta: r#"{"a":"#.into(),
+        index: 0,
+    });
+    assert!(early.is_empty(), "early arguments must wait, got {early:?}");
+    let mut out = assembler.push(IrStreamEvent::ToolCallStart {
+        id: "call_1".into(),
+        name: "f".into(),
+        thought_signature: None,
+        index: 0,
+    });
+    out.extend(assembler.push(IrStreamEvent::ToolCallArgDelta {
+        delta: "1}".into(),
+        index: 0,
+    }));
+    assert!(
+        matches!(
+            &out[0],
+            IrStreamEvent::ToolCallStart { id, name, index, .. }
+                if id == "call_1" && name == "f" && *index == 0
+        ),
+        "start must lead, got {out:?}"
+    );
+    let args: Vec<(&str, u32)> = out
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallArgDelta { delta, index } => Some((delta.as_str(), *index)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(args, vec![(r#"{"a":"#, 0), ("1}", 0)], "{out:?}");
+}
+
+#[test]
+fn chat_arguments_without_a_start_flush_as_deltas() {
+    let mut assembler = ToolCallAssembler::new();
+    let held = assembler.push(IrStreamEvent::ToolCallArgDelta {
+        delta: r#"{"a":1}"#.into(),
+        index: 0,
+    });
+    assert!(held.is_empty(), "{held:?}");
+    let out = assembler.flush();
+    assert_eq!(out.len(), 1, "flush must not invent a start, got {out:?}");
+    assert!(
+        matches!(
+            &out[0],
+            IrStreamEvent::ToolCallArgDelta { delta, index }
+                if delta == r#"{"a":1}"# && *index == 0
+        ),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn chat_early_arguments_do_not_cross_indexes() {
+    let mut assembler = ToolCallAssembler::new();
+    assert!(
+        assembler
+            .push(IrStreamEvent::ToolCallArgDelta {
+                delta: "left".into(),
+                index: 0,
+            })
+            .is_empty()
+    );
+    assert!(
+        assembler
+            .push(IrStreamEvent::ToolCallArgDelta {
+                delta: "right".into(),
+                index: 1,
+            })
+            .is_empty()
+    );
+    let mut out = assembler.push(IrStreamEvent::ToolCallStart {
+        id: "call_1".into(),
+        name: "left_tool".into(),
+        thought_signature: None,
+        index: 0,
+    });
+    out.extend(assembler.push(IrStreamEvent::ToolCallStart {
+        id: "call_2".into(),
+        name: "right_tool".into(),
+        thought_signature: None,
+        index: 1,
+    }));
+    let paired: Vec<(&str, &str)> = out
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::ToolCallStart { name, index, .. } => {
+                let delta = out.iter().find_map(|other| match other {
+                    IrStreamEvent::ToolCallArgDelta {
+                        delta,
+                        index: arg_index,
+                    } if arg_index == index => Some(delta.as_str()),
+                    _ => None,
+                });
+                Some((name.as_str(), delta.expect("delta")))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        paired,
+        vec![("left_tool", "left"), ("right_tool", "right")],
+        "{out:?}"
+    );
+}
+
+#[test]
 fn chat_stream_system_fingerprint_round_trips() {
     let raw = RawSse {
         event: None,

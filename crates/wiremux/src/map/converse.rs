@@ -1140,6 +1140,10 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
                 return None;
             }
             super::note_dropped_image_detail(detail.as_deref(), "converse", report);
+            // Same as Messages: a data URL kept for `detail` is still bytes.
+            if let Some((media_type, data)) = super::split_data_url(url) {
+                return encode_image_bytes(media_type, data, report);
+            }
             encode_image_url(url, bucket_owner.as_deref(), report)
         }
         IrPart::ImageBase64 { media_type, data } => encode_image_bytes(media_type, data, report),

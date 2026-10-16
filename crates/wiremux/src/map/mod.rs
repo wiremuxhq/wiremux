@@ -1260,6 +1260,135 @@ mod tests {
     }
 
     #[test]
+    fn chat_data_url_detail_round_trips_and_other_wires_record_the_drop() {
+        let src = br#"{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"what is this"},{"type":"image_url","image_url":{"url":"data:image/png;base64,abc","detail":"high"}}]}]}"#;
+        let (ir, decode_loss) = decode(Wire::ChatCompletions, src).expect("decode");
+        assert!(
+            decode_loss
+                .events
+                .iter()
+                .all(|event| event.path != "part.image.detail"),
+            "same-wire decode must keep detail, got {decode_loss:?}"
+        );
+        assert!(
+            ir.items.iter().any(|item| matches!(
+                item,
+                crate::ir::IrItem::User { parts } if parts.iter().any(|part| matches!(
+                    part,
+                    crate::ir::IrPart::ImageUrl { url, detail, .. }
+                        if url == "data:image/png;base64,abc" && detail.as_deref() == Some("high")
+                ))
+            )),
+            "data URL detail must stay on ImageUrl, got {:?}",
+            ir.items
+        );
+        let chat = crate::parse_profile_str(
+            "schema_version = 1\nid = \"c\"\nwire = \"chat-completions\"\n",
+        )
+        .expect("profile");
+        let (kept, kept_loss) = encode(Wire::ChatCompletions, &ir, &chat).expect("chat");
+        let kept_text = String::from_utf8(kept).expect("utf8");
+        assert!(
+            kept_text.contains("data:image/png;base64,abc")
+                && kept_text.contains("\"detail\":\"high\""),
+            "{kept_text}"
+        );
+        assert!(
+            kept_loss
+                .events
+                .iter()
+                .all(|event| event.path != "part.image.detail"),
+            "{kept_loss:?}"
+        );
+
+        let auto = br#"{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,abc","detail":"auto"}}]}]}"#;
+        let (auto_ir, _) = decode(Wire::ChatCompletions, auto).expect("auto");
+        let (auto_body, _) = encode(Wire::ChatCompletions, &auto_ir, &chat).expect("auto encode");
+        let auto_text = String::from_utf8(auto_body).expect("utf8");
+        assert!(
+            !auto_text.contains("detail") && auto_text.contains("data:image/png;base64,abc"),
+            "{auto_text}"
+        );
+
+        let https = br#"{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/cat.png","detail":"high"}}]}]}"#;
+        let (https_ir, _) = decode(Wire::ChatCompletions, https).expect("https");
+        let (https_body, _) =
+            encode(Wire::ChatCompletions, &https_ir, &chat).expect("https encode");
+        let https_text = String::from_utf8(https_body).expect("utf8");
+        assert!(https_text.contains("\"detail\":\"high\""), "{https_text}");
+
+        let responses =
+            crate::parse_profile_str("schema_version = 1\nid = \"r\"\nwire = \"responses\"\n")
+                .expect("profile");
+        let responses_src = br#"{"model":"gpt-4o","input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,abc","detail":"high"}]}]}"#;
+        let (responses_ir, _) = decode(Wire::Responses, responses_src).expect("responses decode");
+        let (responses_body, responses_loss) =
+            encode(Wire::Responses, &responses_ir, &responses).expect("responses");
+        let responses_text = String::from_utf8(responses_body).expect("utf8");
+        assert!(
+            responses_text.contains("\"detail\":\"high\""),
+            "{responses_text}"
+        );
+        assert!(
+            responses_loss
+                .events
+                .iter()
+                .all(|event| event.path != "part.image.detail"),
+            "{responses_loss:?}"
+        );
+
+        let messages =
+            crate::parse_profile_str("schema_version = 1\nid = \"m\"\nwire = \"messages\"\n")
+                .expect("profile");
+        let (messages_body, messages_loss) =
+            encode(Wire::Messages, &ir, &messages).expect("messages");
+        let messages_text = String::from_utf8(messages_body).expect("utf8");
+        assert!(
+            messages_text.contains("\"data\":\"abc\"") && !messages_text.contains("high"),
+            "{messages_text}"
+        );
+        assert!(
+            messages_loss.events.iter().any(|event| {
+                event.path == "part.image.detail" && event.detail.contains("no messages slot")
+            }),
+            "{messages_loss:?}"
+        );
+
+        let gemini =
+            crate::parse_profile_str("schema_version = 1\nid = \"g\"\nwire = \"gemini\"\n")
+                .expect("profile");
+        let (gemini_body, gemini_loss) = encode(Wire::Gemini, &ir, &gemini).expect("gemini");
+        let gemini_text = String::from_utf8(gemini_body).expect("utf8");
+        assert!(
+            gemini_text.contains("\"data\":\"abc\"") && !gemini_text.contains("high"),
+            "{gemini_text}"
+        );
+        assert!(
+            gemini_loss.events.iter().any(|event| {
+                event.path == "part.image.detail" && event.detail.contains("no gemini slot")
+            }),
+            "{gemini_loss:?}"
+        );
+
+        let converse =
+            crate::parse_profile_str("schema_version = 1\nid = \"v\"\nwire = \"converse\"\n")
+                .expect("profile");
+        let (converse_body, converse_loss) =
+            encode(Wire::Converse, &ir, &converse).expect("converse");
+        let converse_text = String::from_utf8(converse_body).expect("utf8");
+        assert!(
+            converse_text.contains("\"bytes\":\"abc\"") && !converse_text.contains("high"),
+            "{converse_text}"
+        );
+        assert!(
+            converse_loss.events.iter().any(|event| {
+                event.path == "part.image.detail" && event.detail.contains("no converse slot")
+            }),
+            "{converse_loss:?}"
+        );
+    }
+
+    #[test]
     fn decode_invalid_json_names_the_wire() {
         let err = decode(Wire::ChatCompletions, b"").expect_err("empty");
         let text = err.to_string();

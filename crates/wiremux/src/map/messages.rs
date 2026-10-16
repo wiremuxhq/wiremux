@@ -1014,6 +1014,14 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
                 return None;
             }
             super::note_dropped_image_detail(detail.as_deref(), "messages", report);
+            // Chat keeps a data URL on ImageUrl so `detail` survives.
+            // Messages still wants the bytes, not a data: URL source.
+            if let Some((media_type, data)) = super::split_data_url(url) {
+                return Some(json!({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": data}
+                }));
+            }
             Some(json!({
                 "type": "image",
                 "source": {"type": "url", "url": url}

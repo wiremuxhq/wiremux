@@ -178,7 +178,11 @@ fn decode_part(part: &Value) -> Option<IrPart> {
                 .and_then(Value::as_str)
                 .filter(|detail| !detail.is_empty() && *detail != "auto")
                 .map(str::to_string);
-            if let Some((media_type, data)) = super::split_data_url(&url) {
+            // A data URL with no detail stays raw bytes. Detail has to
+            // stay on the image URL, because base64 parts have no detail.
+            if detail.is_none()
+                && let Some((media_type, data)) = super::split_data_url(&url)
+            {
                 Some(IrPart::ImageBase64 {
                     media_type: media_type.to_string(),
                     data: data.to_string(),

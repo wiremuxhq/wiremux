@@ -291,11 +291,15 @@ probe suite. Display text is unchanged from 0.7.0.
 
 `decode_response` treats an empty Chat choice or an empty Gemini
 candidate as a vendor error when an `error` field is set and that
-slot has no text, refusal, audio, or tool call. A numeric `code` or
-`status` is part of the error text. A choice or candidate that
-already has that payload stays a completion. Messages
-`{"error":{"message":"..."}}` with no `type` and no content blocks
-is the same kind of error. Content blocks still win.
+slot has no text, refusal, audio bytes or transcript, or tool call.
+An `image_url` or `input_audio` part with no URL, data, or transcript
+does not count. `tool_calls: [{}]` does not count. A call with an id,
+a name, or arguments still wins, on `decode_response` and on
+`decode_stream_events`. A numeric `code` or `status` is part of the
+error text. A choice or candidate that already has that payload stays
+a completion. Messages `{"error":{"message":"..."}}` with no `type`
+and no content blocks is the same kind of error. Content blocks still
+win.
 
 A Converse HTTP 200 JSON exception (`__type` and `message`) is
 `ClientError::Vendor` with status 200 on `send` and on `stream`,
@@ -322,6 +326,12 @@ including directories in front of it.
 `/v1/chat/completions` and `/v1/messages` become `{base}/v1/models`.
 `/openai/v1/chat/completions` becomes `{base}/openai/v1/models`.
 `/api/v3/chat/completions` becomes `{base}/api/v3/models`.
+Azure OpenAI's shipped chat path,
+`/openai/deployments/{model}/chat/completions?api-version=2024-10-21`,
+lists `{base}/openai/models?api-version=2024-10-21`. The `api-version`
+comes from that chat path. `{base}/models` is not the Azure list.
+The GET sends the profile `api-key` header. A 200 body with `data[].id`
+is the catalog. A 404 on the Azure URL is still an empty catalog.
 A Vertex path keeps `publishers/.../models`, so
 `/v1/projects/p/locations/us-central1/publishers/google/models/{model}:generateContent`
 becomes `{base}/v1/projects/p/locations/us-central1/publishers/google/models`,
@@ -422,6 +432,25 @@ Product README and architecture live at the repository root and in
 literal from `0.11.1` does not compile (`E0063`).
 `#[non_exhaustive]` does not let an outside crate omit them.
 Set a field you do not use to `None` or an empty vec.
+
+A pull request on the 0.11 line that adds another field to one of
+these variants fails the Semver check before publish. The baseline
+is the latest `v0.11.*` tag, not the pull request base, so the
+baseline does not already contain the new field. `IrSampling` is
+different: it is a `#[non_exhaustive]` struct, and hosts build it
+with `IrSampling::patch` from `Default`. A new field there, left
+unset by `patch`, still passes.
+
+Chat `image_url.detail` of `low` or `high` is kept when the URL is
+`data:`. Same-wire Chat writes `detail` back. `auto` stays omitted.
+Messages, Gemini, and Converse still receive the image bytes and
+record `part.image.detail`. An `https` URL with `detail` is unchanged.
+
+Chat tool-call argument deltas that arrive before the id and the
+name stay on that index. The host sees `ToolCallStart`, then the
+fragments in order. If the stream ends with arguments and never
+sends an id or a name, those fragments are still released. Parallel
+indexes do not take each other's arguments.
 
 ```rust
 IrItem::System {
