@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.5](https://github.com/wiremuxhq/wiremux/compare/v0.11.4...v0.11.5) (2026-10-17)
+
+
+### Bug Fixes
+
+* keep the vendor message when a Messages text block is empty ([#666](https://github.com/wiremuxhq/wiremux/issues/666)) ([7bb5038](https://github.com/wiremuxhq/wiremux/commit/7bb50387eb1320788006607084a51864a67bb86f))
+* keep the vendor message when a Responses body has no leaf ([#663](https://github.com/wiremuxhq/wiremux/issues/663)) ([9fbc8ce](https://github.com/wiremuxhq/wiremux/commit/9fbc8ce0774b1dadf71f21da5fdca07905100ee1)), closes [#662](https://github.com/wiremuxhq/wiremux/issues/662)
+* keep the vendor message when a Responses proxy shell has no leaf ([#665](https://github.com/wiremuxhq/wiremux/issues/665)) ([f20f285](https://github.com/wiremuxhq/wiremux/commit/f20f2851b65c556eb50f7236622cfb183003bb2e))
+
 ## [0.11.4](https://github.com/wiremuxhq/wiremux/compare/v0.11.3...v0.11.4) (2026-10-16)
 
 
