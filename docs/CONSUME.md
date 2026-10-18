@@ -252,6 +252,16 @@ stays `ClientError::Auth`, and a `model_not_found` message stays
 `ClientError::NotFound`. `response.failed` uses `last_error.code`
 and `last_error.message` the same way. A code or a message does not
 finish as `failed`. A failed frame with neither does.
+A 200 body with an error is a vendor error when that body has no leaf.
+An empty Responses message, an empty `output_text`, an empty audio
+item, and a type-only hosted item have no leaf. Non-empty
+`encrypted_content`, reasoning text, and a hosted item that carries
+an id or another payload do. An empty Messages text or thinking block
+has no leaf. Text, a typed citation, a thinking signature, and a named
+tool call do. Converse text, a named tool, and a non-empty
+`stopReason` do. `response.completed` and `response.failed` use that
+same leaf check, so an empty message shell keeps the vendor message
+and encrypted reasoning stays on the completion.
 `response.output_text.done`, `response.content_part.done`,
 `response.function_call_arguments.done`, `response.refusal.done`,
 `response.audio.done`, and `response.audio.transcript.done` are

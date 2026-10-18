@@ -1805,7 +1805,10 @@ fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
 /// JSON success body that is only a vendor failure.
 ///
 /// Responses uses an `error` string or object when no output leaf is
-/// present. A message id or an empty `content` array is not a leaf.
+/// present. A message id, an empty `content` array, empty
+/// `encrypted_content`, and a type-only hosted item are not leaves.
+/// Non-empty `encrypted_content`, reasoning text, and a hosted payload
+/// are.
 /// `last_error` counts when `status` is `failed` and `output` is an
 /// array, null, or absent. Chat uses an `error` object and no
 /// visible choice. An empty string is not a choice.
@@ -1903,55 +1906,12 @@ fn chat_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
     vendor_error_detail(err)
 }
 
-fn messages_content_keeps_completion(items: &[serde_json::Value]) -> bool {
-    items.iter().any(
-        |block| match block.get("type").and_then(serde_json::Value::as_str) {
-            Some("text") => messages_text_block_visible(block),
-            Some("thinking") => messages_thinking_block_visible(block),
-            Some("tool_use") => crate::completion::messages_tool_block_visible(block),
-            None => false,
-            _ => crate::completion::messages_block_has_payload(block),
-        },
-    )
-}
-
-fn messages_text_block_visible(block: &serde_json::Value) -> bool {
-    block
-        .get("text")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|text| !text.is_empty())
-        || block
-            .get("citations")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|items| items.iter().any(messages_citation_visible))
-}
-
-fn messages_citation_visible(citation: &serde_json::Value) -> bool {
-    citation.is_object()
-        && citation
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .is_some()
-}
-
-fn messages_thinking_block_visible(block: &serde_json::Value) -> bool {
-    block
-        .get("thinking")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|text| !text.is_empty())
-        || block
-            .get("signature")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|text| !text.is_empty())
-}
-
 fn messages_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String> {
     if target != Wire::Messages {
         return None;
     }
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    let content = value.get("content").and_then(serde_json::Value::as_array);
-    if content.is_some_and(|items| messages_content_keeps_completion(items)) {
+    if crate::completion::messages_content_visible(&value) {
         return None;
     }
     if let Some(text) = crate::completion::json_string_error(&value) {
@@ -4008,6 +3968,16 @@ anthropic-beta = "context-1m-2025-08-07"
                 &br#"{"status":"failed","output":[{"type":"message"}],"last_error":{"code":"server_error","message":"please wait"}}"#[..],
                 "server_error: please wait",
             ),
+            (
+                "empty encrypted reasoning",
+                &br#"{"status":"failed","output":[{"type":"reasoning","encrypted_content":""}],"error":{"message":"please wait"}}"#[..],
+                "please wait",
+            ),
+            (
+                "hosted type shell",
+                &br#"{"status":"failed","output":[{"type":"web_search_call"}],"error":{"message":"please wait"}}"#[..],
+                "please wait",
+            ),
         ];
         for (name, body, detail) in shells {
             assert_eq!(
@@ -4025,6 +3995,31 @@ anthropic-beta = "context-1m-2025-08-07"
             assert!(!text.contains("decode upstream"), "{name}: {text}");
             let value: serde_json::Value = serde_json::from_str(&text).expect("json");
             assert_eq!(value["error"]["message"], "please wait", "{name}: {text}");
+        }
+
+        let kept = [
+            (
+                "encrypted reasoning",
+                &br#"{"status":"failed","output":[{"type":"reasoning","id":"rs_1","encrypted_content":"enc-xyz"}],"error":{"message":"please wait"}}"#[..],
+            ),
+            (
+                "reasoning text",
+                &br#"{"status":"failed","output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"plan"}]}],"error":{"message":"please wait"}}"#[..],
+            ),
+            (
+                "hosted search",
+                &br#"{"status":"completed","output":[{"type":"web_search_call","id":"ws_1","action":{"query":"scores"}}],"error":{"message":"please wait"}}"#[..],
+            ),
+            (
+                "output text",
+                &br#"{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Hi"}]}],"error":{"message":"please wait"}}"#[..],
+            ),
+        ];
+        for (name, body) in kept {
+            assert!(
+                super::responses_complete_vendor_failure(responses, body).is_none(),
+                "{name} stays a completion"
+            );
         }
 
         let shell =

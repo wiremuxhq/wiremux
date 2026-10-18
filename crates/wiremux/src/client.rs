@@ -1259,12 +1259,14 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
     Some(transient(Some(status), message, TransientKind::Http))
 }
 
-/// A 200 body that already has completion text is not only a vendor error.
+/// A 200 body that already has a leaf is not only a vendor error.
 ///
-/// Empty arrays and empty strings count as no text. A refusal or a tool
-/// call still counts. A non-empty Responses `output` array still counts
-/// here, including a message shell. The proxy vendor-failure path uses
-/// the leaf check.
+/// Empty arrays and empty strings count as no text. A refusal, a tool
+/// call, non-empty `encrypted_content`, and a hosted item with a payload
+/// still count. Messages text, a citation, thinking, or a signature
+/// still count. Converse text, a named tool, or a non-empty `stopReason`
+/// still counts. The same leaf check is what `decode_response` and the
+/// proxy use.
 fn success_body_has_completion(value: Option<&Value>) -> bool {
     value.is_some_and(crate::completion::json_has_completion)
 }
@@ -1834,10 +1836,20 @@ mod tests {
             classify_http(200, with_content, None).is_none(),
             "message text must stay a completion"
         );
-        let with_output = r#"{"status":"failed","output":[{"type":"message"}],"error":{"message":"please wait"}}"#;
+        let with_output = r#"{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Hi"}]}],"error":{"message":"please wait"}}"#;
         assert!(
             classify_http(200, with_output, None).is_none(),
-            "response output must stay a completion"
+            "response text must stay a completion"
+        );
+        let with_encrypted = r#"{"status":"failed","output":[{"type":"reasoning","encrypted_content":"enc-xyz"}],"error":{"message":"please wait"}}"#;
+        assert!(
+            classify_http(200, with_encrypted, None).is_none(),
+            "encrypted reasoning must stay a completion"
+        );
+        let with_converse = r#"{"output":{"message":{"content":[{"text":"Hi"}]}},"stopReason":"end_turn","error":{"message":"please wait"}}"#;
+        assert!(
+            classify_http(200, with_converse, None).is_none(),
+            "converse text must stay a completion"
         );
         let with_candidates = r#"{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}],"error":{"message":"please wait","status":"RESOURCE_EXHAUSTED"}}"#;
         assert!(
@@ -1913,11 +1925,56 @@ mod tests {
             ),
             (
                 r#"{"status":"failed","output":[{"type":"message"}],"error":{"message":"please wait"}}"#,
+                true,
+                "please wait",
+            ),
+            (
+                r#"{"status":"failed","output":[{"type":"message","content":[{"type":"output_text","text":""}]}],"error":{"message":"please wait"}}"#,
+                true,
+                "please wait",
+            ),
+            (
+                r#"{"status":"failed","output":[{"type":"output_audio"}],"error":{"message":"please wait"}}"#,
+                true,
+                "please wait",
+            ),
+            (
+                r#"{"status":"failed","output":[{"type":"reasoning","encrypted_content":""}],"error":{"message":"please wait"}}"#,
+                true,
+                "please wait",
+            ),
+            (
+                r#"{"status":"failed","output":[{"type":"web_search_call"}],"error":{"message":"please wait"}}"#,
+                true,
+                "please wait",
+            ),
+            (
+                r#"{"status":"failed","output":[{"type":"reasoning","encrypted_content":"enc-xyz"}],"error":{"message":"please wait"}}"#,
                 false,
                 "",
             ),
             (
                 r#"{"type":"error","content":[{"type":"text","text":""}],"error":{"type":"api_error","message":"nope"}}"#,
+                true,
+                "nope",
+            ),
+            (
+                r#"{"content":[{"type":"thinking","thinking":""}],"error":{"message":"please wait"}}"#,
+                true,
+                "please wait",
+            ),
+            (
+                r#"{"content":[{"type":"thinking","signature":"sig"}],"error":{"message":"please wait"}}"#,
+                false,
+                "",
+            ),
+            (
+                r#"{"output":{"message":{"content":[{"toolUse":{}}]}},"error":{"message":"please wait","type":"server_error"}}"#,
+                true,
+                "please wait",
+            ),
+            (
+                r#"{"stopReason":"end_turn","error":"model catalog unavailable"}"#,
                 false,
                 "",
             ),

@@ -4,10 +4,10 @@ mod chat;
 mod complete;
 mod converse;
 
-#[cfg(feature = "proxy")]
 pub(crate) use complete::responses_has_visible_output;
 #[cfg(any(feature = "proxy", feature = "client"))]
 pub(crate) use converse::complete_exception_detail;
+pub(crate) use converse::converse_has_completion;
 mod encoder;
 mod eventstream;
 mod gemini;
@@ -123,9 +123,12 @@ impl UpstreamFrames {
 /// A Responses gateway `error` with no event name is the same
 /// [`MapError::Invalid`] (`server_error: model catalog unavailable`,
 /// or `503`). `{"type":"response.queued"}` stays a no-op.
-/// `response.output_text.done` and `response.completed` are
-/// [`MapError::Invalid`] when that error is the only payload. Text or
-/// a non-empty `output` stays `Ok`. A Converse body with no visible
+/// `response.output_text.done`, `response.completed`, and
+/// `response.failed` are [`MapError::Invalid`] when the error has no
+/// leaf. Text, a refusal, audio bytes, non-empty `encrypted_content`,
+/// reasoning text, or a hosted item with a payload besides `type`
+/// stays `Ok`. An empty message, empty `output_text`, empty audio
+/// item, or type-only hosted item does not. A Converse body with no visible
 /// `output` block or `stopReason` is [`MapError::Invalid`] for an
 /// OpenAI `error`. Empty text, an empty `toolUse`, and an empty
 /// `image` are not blocks. A named tool, text, or media bytes still
@@ -218,8 +221,9 @@ impl StreamDecoder {
 /// `response.output_text.done` or `response.completed` that is only
 /// that error, is [`MapError::Invalid`] rather than an empty vec.
 /// A Converse OpenAI `error` with no `output` or `stopReason` is too.
-/// A status frame, done text, completed output, and Converse
-/// `output` or `stopReason` stay `Ok`.
+/// A status frame stays `Ok`. Done text, a completed frame, and a
+/// failed frame stay `Ok` only when a leaf is present. Converse
+/// `output` or `stopReason` stays `Ok` when that leaf is present.
 ///
 /// Gemini function-call ids start at 0. Use [`StreamDecoder`] to keep
 /// the sequence across chunks of one stream.
@@ -2479,17 +2483,40 @@ base_url = "http://127.0.0.1"
             Some("response.completed"),
             r#"{"type":"response.completed","response":{"status":"completed","output":[{"type":"message"}]},"error":{"message":"overloaded","type":"server_error"}}"#,
         );
-        decode_stream_events(Wire::Responses, &output, &profile).expect("completed output stays");
-        decode_stream_event(Wire::Responses, &output, &profile).expect("completed output stays");
+        assert_stream_invalid(
+            Wire::Responses,
+            &output,
+            &profile,
+            "server_error: overloaded",
+        );
 
         let top_output = frame(
             Some("response.output_text.done"),
             r#"{"type":"response.output_text.done","output":[{"type":"message"}],"error":{"message":"overloaded","type":"server_error"}}"#,
         );
-        decode_stream_events(Wire::Responses, &top_output, &profile)
-            .expect("top-level output stays");
-        decode_stream_event(Wire::Responses, &top_output, &profile)
-            .expect("top-level output stays");
+        assert_stream_invalid(
+            Wire::Responses,
+            &top_output,
+            &profile,
+            "server_error: overloaded",
+        );
+
+        let encrypted = frame(
+            Some("response.failed"),
+            r#"{"type":"response.failed","response":{"status":"failed","output":[{"type":"reasoning","id":"rs_1","encrypted_content":"enc-xyz"}],"error":{"message":"please wait"}}}"#,
+        );
+        let events = decode_stream_events(Wire::Responses, &encrypted, &profile)
+            .expect("encrypted reasoning stays");
+        assert!(
+            events.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::Protocol { item_type, payload }
+                    if item_type == "reasoning"
+                        && payload.get("encrypted_content").and_then(Value::as_str)
+                            == Some("enc-xyz")
+            )),
+            "{events:?}"
+        );
 
         let usage = frame(
             Some("response.completed"),

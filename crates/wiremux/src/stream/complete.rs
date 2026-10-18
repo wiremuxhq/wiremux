@@ -1790,8 +1790,10 @@ fn plain_error_detail(value: &Value) -> Option<String> {
         .and_then(crate::completion::error_object_detail)
 }
 
-/// Text, refusal, audio, image bytes, or a named tool call.
-/// A message id or an empty `content` array is not a leaf.
+/// Text, refusal, audio, image bytes, a named tool call, non-empty
+/// `encrypted_content`, reasoning text, or a hosted item that carries
+/// a payload besides its type. A message id, an empty `content` array,
+/// and a type-only hosted item are not leaves.
 pub(crate) fn responses_has_visible_output(value: &Value) -> bool {
     if str_field(value, "text").is_some_and(|text| !text.is_empty()) {
         return true;
@@ -1813,12 +1815,41 @@ fn responses_item_visible(item: &Value) -> bool {
             .and_then(Value::as_array)
             .is_some_and(|parts| parts.iter().any(responses_part_visible)),
         Some("function_call") | Some("custom_tool_call") => responses_call_visible(item),
-        Some("reasoning") => item
+        Some("reasoning") => responses_reasoning_visible(item),
+        Some("output_audio") | Some("audio") => responses_part_visible(item),
+        Some(_) => responses_hosted_visible(item),
+        None => false,
+    }
+}
+
+fn responses_reasoning_visible(item: &Value) -> bool {
+    str_field(item, "encrypted_content").is_some_and(|text| !text.is_empty())
+        || item
             .get("summary")
             .and_then(Value::as_array)
-            .is_some_and(|parts| parts.iter().any(responses_part_visible)),
-        Some("output_audio") | Some("audio") => responses_part_visible(item),
-        _ => false,
+            .is_some_and(|parts| parts.iter().any(responses_part_visible))
+        || item
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| parts.iter().any(responses_part_visible))
+}
+
+/// Id, status, action, or any other payload. The `type` name alone is a shell.
+fn responses_hosted_visible(item: &Value) -> bool {
+    let Some(map) = item.as_object() else {
+        return false;
+    };
+    map.iter()
+        .any(|(key, value)| key != "type" && responses_hosted_field_present(value))
+}
+
+fn responses_hosted_field_present(value: &Value) -> bool {
+    match value {
+        Value::String(text) => !text.is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(map) => !map.is_empty(),
+        Value::Number(_) | Value::Bool(_) => true,
+        Value::Null => false,
     }
 }
 
@@ -2625,6 +2656,46 @@ wire = "converse"
                 wire: Wire::Responses,
                 wire_name: "responses",
                 body: r#"{"status":"failed","output":[{"type":"output_audio"}],"error":{"message":"please wait"}}"#,
+                error_has: Some("please wait"),
+                keep: "",
+            },
+            Row {
+                label: "responses encrypted reasoning beside error",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"failed","error":{"message":"please wait"},"output":[{"type":"reasoning","id":"rs_1","encrypted_content":"enc-xyz"}]}"#,
+                error_has: None,
+                keep: "enc-xyz",
+            },
+            Row {
+                label: "responses empty encrypted reasoning",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"failed","error":{"message":"please wait"},"output":[{"type":"reasoning","encrypted_content":""}]}"#,
+                error_has: Some("please wait"),
+                keep: "",
+            },
+            Row {
+                label: "responses reasoning text beside error",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"failed","output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"plan"}]}],"error":{"message":"please wait"}}"#,
+                error_has: None,
+                keep: "plan",
+            },
+            Row {
+                label: "responses hosted search beside error",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"completed","output":[{"type":"web_search_call","id":"ws_1","action":{"query":"scores"}}],"error":{"message":"please wait"}}"#,
+                error_has: None,
+                keep: "ws_1",
+            },
+            Row {
+                label: "responses hosted type shell",
+                wire: Wire::Responses,
+                wire_name: "responses",
+                body: r#"{"status":"failed","output":[{"type":"web_search_call"}],"error":{"message":"please wait"}}"#,
                 error_has: Some("please wait"),
                 keep: "",
             },

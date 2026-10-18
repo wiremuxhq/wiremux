@@ -6,17 +6,54 @@
 //! when it has a URL, data, or transcript. A tool call counts when it
 //! has an id, a name, or arguments. A Gemini part counts only when the
 //! leaf has a name, an id, args, bytes, a file URI, code, an outcome,
-//! or a response. The key alone does not. Responses `output` and
-//! Messages `content` stay non-empty arrays, including a message shell
-//! with no text field.
+//! or a response. The key alone does not. Responses `output`, Messages
+//! `content`, and Converse `output` count only when a leaf is present.
+//! A message id, an empty string, and a type-only item do not.
+//! Non-empty `encrypted_content` does.
 
 use serde_json::Value;
 
 pub(crate) fn json_has_completion(value: &Value) -> bool {
     array_any(value, "choices", choice_visible)
         || array_any(value, "candidates", candidate_visible)
-        || nonempty_array(value, "output")
-        || nonempty_array(value, "content")
+        || crate::stream::responses_has_visible_output(value)
+        || messages_content_visible(value)
+        || crate::stream::converse_has_completion(value)
+}
+
+/// A Messages `content` array with text, a citation, thinking, a
+/// signature, or any other block that carries a payload.
+pub(crate) fn messages_content_visible(value: &Value) -> bool {
+    value
+        .get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.iter().any(messages_block_keeps_completion))
+}
+
+fn messages_block_keeps_completion(block: &Value) -> bool {
+    match block.get("type").and_then(Value::as_str) {
+        Some("text") => messages_text_block_visible(block),
+        Some("thinking") => messages_thinking_block_visible(block),
+        Some("tool_use") => messages_tool_block_visible(block),
+        None => false,
+        _ => messages_block_has_payload(block),
+    }
+}
+
+fn messages_text_block_visible(block: &Value) -> bool {
+    nonempty_str(block, "text")
+        || block
+            .get("citations")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(messages_citation_visible))
+}
+
+fn messages_citation_visible(citation: &Value) -> bool {
+    citation.is_object() && citation.get("type").and_then(Value::as_str).is_some()
+}
+
+fn messages_thinking_block_visible(block: &Value) -> bool {
+    nonempty_str(block, "thinking") || nonempty_str(block, "signature")
 }
 
 /// Non-empty `error` string. Object errors stay on the object parsers.
@@ -52,13 +89,6 @@ pub(crate) fn error_object_detail(err: &Value) -> Option<String> {
         (Some(code), None) => Some(code),
         (None, None) => None,
     }
-}
-
-fn nonempty_array(value: &Value, key: &str) -> bool {
-    value
-        .get(key)
-        .and_then(Value::as_array)
-        .is_some_and(|items| !items.is_empty())
 }
 
 fn array_any(value: &Value, key: &str, pred: impl Fn(&Value) -> bool) -> bool {

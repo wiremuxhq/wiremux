@@ -463,7 +463,7 @@ pub(crate) fn complete_exception_detail(value: &Value) -> Option<String> {
     }
 }
 
-fn converse_has_completion(value: &Value) -> bool {
+pub(crate) fn converse_has_completion(value: &Value) -> bool {
     if value
         .get("stopReason")
         .and_then(Value::as_str)
