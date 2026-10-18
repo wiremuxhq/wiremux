@@ -47,6 +47,19 @@ Converse with `stream=true` uses AWS Event Stream
 (`/converse-stream`), not SSE. Bedrock auth is the AWS default
 credential chain on the profile, not a Bearer paste.
 
+## Credentials
+
+`auth status` and the proxy accept the same credential sources: an
+`[oauth]` table, `access_env`, a `[headers]` value (`Authorization`,
+`x-api-key`, or `auth_scheme = "header:..."`), `gcp_key_env`, or
+`auth_scheme = "none"`. A header key such as the shipped
+`openrouter-codex` profile does not need `[oauth]`.
+
+A credential file that is missing when the proxy starts is tried again
+on the next request, so `auth login` does not require a restart. A
+missing credential is HTTP 401. A token endpoint that cannot be reached
+is HTTP 502.
+
 ## Limits
 
 The listener refuses non-loopback binds. Do not put this binary on

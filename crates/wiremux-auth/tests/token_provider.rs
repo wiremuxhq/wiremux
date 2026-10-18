@@ -43,14 +43,12 @@ fn provider_from_profile_requires_oauth_table() {
     let err = wiremux_auth::provider_from_profile(&profile).unwrap_err();
     match err {
         AuthError::MissingField(ref field) => {
-            assert_eq!(
-                field,
-                "[oauth] table, access_env, or auth_scheme = \"none\" on profile `x`"
+            assert!(
+                field.contains("[headers] Authorization or x-api-key"),
+                "{field}"
             );
-            assert_eq!(
-                err.to_string(),
-                "missing [oauth] table, access_env, or auth_scheme = \"none\" on profile `x`"
-            );
+            assert!(field.contains("on profile `x`"), "{field}");
+            assert_eq!(err.to_string(), format!("missing {field}"));
         }
         other => panic!("expected MissingField, got {other}"),
     }

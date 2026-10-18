@@ -1694,6 +1694,285 @@ chat_path = "/v1/chat/completions"
 }
 
 #[test]
+fn proxy_sends_header_credential_without_oauth() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]).to_string();
+        let body = r#"{"id":"chatcmpl-header","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        req
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "header.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "header-key"
+wire = "chat-completions"
+auth_scheme = "bearer"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+[headers]
+Authorization = "Bearer header-secret"
+"#
+        ),
+    );
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let seen = upstream_thread.join().expect("upstream");
+    assert!(
+        seen.to_ascii_lowercase()
+            .contains("authorization: bearer header-secret"),
+        "upstream must see the header credential, got: {seen}"
+    );
+    assert!(
+        resp.starts_with("HTTP/1.1 200") && resp.contains("pong"),
+        "header credential must not be a 401, got: {resp}"
+    );
+}
+
+#[test]
+fn proxy_uses_oauth_file_written_after_startup() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]).to_string();
+        let body = r#"{"id":"chatcmpl-late","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        req
+    });
+
+    let (home, mut cmd) = isolated_home();
+    let creds_path = home.path().join("late-creds.json");
+    let creds_unix = creds_path.to_string_lossy().replace('\\', "/");
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "late.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "late-oauth"
+wire = "chat-completions"
+auth_scheme = "bearer"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+[oauth]
+token_url = "http://127.0.0.1:9/token"
+client_id = "late-client"
+creds_format = "json-pointer"
+creds_path = "{creds_unix}"
+access_token_ptr = "/access"
+refresh_token_ptr = "/refresh"
+expires_ptr = "/exp"
+expires_unit = "s"
+login = "none"
+"#
+        ),
+    );
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#;
+    let request = |listen: std::net::SocketAddr| {
+        let req = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let mut client = TcpStream::connect(listen).expect("connect proxy");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        client.write_all(req.as_bytes()).expect("write");
+        let mut resp = String::new();
+        let _ = client.read_to_string(&mut resp);
+        resp
+    };
+    let first = request(listen);
+    assert!(
+        first.starts_with("HTTP/1.1 401"),
+        "missing creds file is unauthorized, got: {first}"
+    );
+    std::fs::write(
+        &creds_path,
+        r#"{"access":"late-token","refresh":"rt","exp":4102444800}"#,
+    )
+    .expect("write creds");
+    let second = request(listen);
+    let _ = child.kill();
+    let _ = child.wait();
+    let seen = upstream_thread.join().expect("upstream");
+    assert!(
+        seen.contains("Bearer late-token"),
+        "second request must send the token written after startup, got: {seen}"
+    );
+    assert!(
+        second.starts_with("HTTP/1.1 200") && second.contains("pong"),
+        "late credential must succeed without a restart, got: {second}"
+    );
+}
+
+#[test]
+fn proxy_token_endpoint_outage_is_bad_gateway() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"error":{"message":"expired"}}"#;
+        let resp = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+    let token_srv = TcpListener::bind("127.0.0.1:0").expect("token bind");
+    let token_addr = token_srv.local_addr().expect("addr");
+    let token_thread = std::thread::spawn(move || {
+        if let Ok((stream, _)) = token_srv.accept() {
+            drop(stream);
+        }
+    });
+
+    let (home, mut cmd) = isolated_home();
+    let creds_path = home.path().join("refresh-creds.json");
+    std::fs::write(
+        &creds_path,
+        r#"{"access":"stale-token","refresh":"rt-stale","exp":4102444800}"#,
+    )
+    .expect("write creds");
+    let creds_unix = creds_path.to_string_lossy().replace('\\', "/");
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "refresh.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "refresh-oauth"
+wire = "chat-completions"
+auth_scheme = "bearer"
+base_url = "http://{upstream_addr}"
+chat_path = "/v1/chat/completions"
+[oauth]
+token_url = "http://{token_addr}/token"
+client_id = "refresh-client"
+token_request_format = "form"
+creds_format = "json-pointer"
+creds_path = "{creds_unix}"
+access_token_ptr = "/access"
+refresh_token_ptr = "/refresh"
+expires_ptr = "/exp"
+expires_unit = "s"
+login = "none"
+[oauth.token_response]
+access_token_ptr = "/access_token"
+expires_ptr = "/expires_in"
+expires_unit = "s"
+"#
+        ),
+    );
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(8)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = upstream_thread.join();
+    let _ = token_thread.join();
+    assert!(
+        resp.starts_with("HTTP/1.1 502"),
+        "token endpoint outage must be 502, got: {resp}"
+    );
+    assert!(
+        resp.contains("token refresh request failed"),
+        "502 must name the token request, got: {resp}"
+    );
+}
+
+#[test]
 fn proxy_401_oauth_retries_once() {
     let token_srv = TcpListener::bind("127.0.0.1:0").expect("token bind");
     let token_addr = token_srv.local_addr().expect("addr");

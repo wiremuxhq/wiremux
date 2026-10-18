@@ -36,6 +36,8 @@ pub use error::AuthError;
 pub use exchange::TokenExchangeResponse;
 #[cfg(feature = "net")]
 pub use helpers::format_oauth_transport_error;
+#[cfg(any(feature = "net", test))]
+pub use helpers::is_oauth_transport_error;
 pub use helpers::{redact_secret_looking, redact_url_origin, sanitize_oauth_error_text};
 pub use profile::{
     AuthScheme, Betas, CredsFormat, Dialect, ExpiresUnit, Fingerprint, ForbiddenFieldPolicy, Http,
@@ -55,7 +57,8 @@ pub use providers::azure::AzureTokenProvider;
 pub use providers::gcp::{GcpTokenProvider, default_adc_path};
 #[cfg(feature = "net")]
 pub use providers::oauth::{
-    ProfileTokenProvider, provider_from_oauth, provider_from_oauth_opts, provider_from_profile,
+    ProfileTokenProvider, credential_options, missing_credential_field, provider_from_oauth,
+    provider_from_oauth_opts, provider_from_profile,
 };
 #[cfg(feature = "net")]
 pub use providers::static_token::StaticToken;

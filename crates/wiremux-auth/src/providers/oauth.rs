@@ -150,11 +150,53 @@ impl std::fmt::Debug for ProfileTokenProvider {
     }
 }
 
+/// Ways a profile can authenticate, for error text shared by the proxy
+/// and `auth login`.
+pub fn credential_options(profile: &ResolvedProfile) -> String {
+    let mut options = vec![
+        "[oauth] table".to_string(),
+        "access_env".to_string(),
+        "[headers] Authorization or x-api-key".to_string(),
+    ];
+    if let Some(AuthScheme::Header(name)) = &profile.http.auth_scheme
+        && !name.eq_ignore_ascii_case("authorization")
+        && !name.eq_ignore_ascii_case("x-api-key")
+    {
+        options.push(format!("[headers] {name}"));
+    }
+    if let Some(env) = profile
+        .http
+        .gcp_key_env
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        options.push(format!("gcp_key_env ({env})"));
+    }
+    options.push("auth_scheme = \"none\"".to_string());
+    let last = options.pop().unwrap_or_default();
+    if options.is_empty() {
+        last
+    } else {
+        format!("{}, or {last}", options.join(", "))
+    }
+}
+
+/// Field text for [`AuthError::MissingField`]. Display adds `missing `.
+pub fn missing_credential_field(profile: &ResolvedProfile) -> String {
+    format!(
+        "{} on profile `{}`",
+        credential_options(profile),
+        profile.id
+    )
+}
+
 /// Build a provider from a resolved profile.
 ///
 /// `[oauth]` uses the refresh pack. Otherwise a non-empty top-level
-/// `access_env` list reads the first non-empty env. `auth_scheme = none`
-/// is an empty static token. Anything else is missing `[oauth]`.
+/// `access_env` list reads the first non-empty env. GCP uses
+/// `gcp_key_env` or application default credentials. `auth_scheme = none`
+/// is an empty static token. A `[headers]` credential is not a provider;
+/// the proxy reads that header itself.
 pub fn provider_from_profile(
     profile: &ResolvedProfile,
 ) -> Result<crate::AnyTokenProvider, AuthError> {
@@ -170,10 +212,7 @@ pub fn provider_from_profile(
     if matches!(profile.http.auth_scheme, Some(AuthScheme::None)) {
         return Ok(StaticToken::new("").into());
     }
-    Err(AuthError::MissingField(format!(
-        "[oauth] table, access_env, or auth_scheme = \"none\" on profile `{}`",
-        profile.id
-    )))
+    Err(AuthError::MissingField(missing_credential_field(profile)))
 }
 
 fn gcp_from_profile(
@@ -2787,17 +2826,38 @@ access_env = "WIREMUX_TEST_ACCESS"
         let err = provider_from_profile(&profile).unwrap_err();
         match err {
             AuthError::MissingField(ref field) => {
-                assert_eq!(
-                    field,
-                    "[oauth] table, access_env, or auth_scheme = \"none\" on profile `no-oauth`"
+                assert_eq!(field, &missing_credential_field(&profile));
+                assert!(
+                    field.contains("[headers] Authorization or x-api-key"),
+                    "{field}"
                 );
-                assert_eq!(
-                    err.to_string(),
-                    "missing [oauth] table, access_env, or auth_scheme = \"none\" on profile `no-oauth`"
-                );
+                assert!(field.contains("access_env"), "{field}");
+                assert!(field.contains("auth_scheme = \"none\""), "{field}");
+                assert_eq!(err.to_string(), format!("missing {field}"));
             }
             other => panic!("expected MissingField, got {other}"),
         }
+    }
+
+    #[test]
+    fn missing_credential_field_names_gcp_and_custom_header() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "vertex"
+wire = "gemini"
+auth_scheme = "header:x-goog-api-key"
+gcp_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
+"#,
+        )
+        .unwrap();
+        let field = missing_credential_field(&profile);
+        assert!(
+            field.contains("gcp_key_env (GOOGLE_APPLICATION_CREDENTIALS)"),
+            "{field}"
+        );
+        assert!(field.contains("[headers] x-goog-api-key"), "{field}");
+        assert!(field.contains("on profile `vertex`"), "{field}");
     }
 
     #[tokio::test]

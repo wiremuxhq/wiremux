@@ -16,6 +16,16 @@ pub(crate) fn is_profile_auth_header(profile: &ResolvedProfile, name: &str) -> b
     )
 }
 
+/// Non-empty Authorization, x-api-key, or `auth_scheme = "header:..."`.
+pub(crate) fn profile_header_credential(profile: &ResolvedProfile) -> Option<&str> {
+    profile
+        .http
+        .headers
+        .iter()
+        .find(|(name, value)| is_profile_auth_header(profile, name) && !value.trim().is_empty())
+        .map(|(_, value)| value.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
