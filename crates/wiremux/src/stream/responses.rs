@@ -54,7 +54,7 @@ pub(super) fn failure_detail(value: &Value) -> Option<String> {
     }
 }
 
-/// `error` on a frame that has no text and no output.
+/// `error` on a frame that has no visible leaf.
 ///
 /// The object may sit on the frame or under `response`. A nested
 /// `response.error` is the shape `response.failed` already reads.
@@ -79,18 +79,7 @@ fn reject_bare_responses_error(value: &Value) -> Result<(), MapError> {
 }
 
 fn responses_frame_has_visible_body(value: &Value) -> bool {
-    value
-        .get("text")
-        .and_then(Value::as_str)
-        .is_some_and(|text| !text.is_empty())
-        || nonempty_output(value.get("output"))
-        || nonempty_output(value.pointer("/response/output"))
-}
-
-fn nonempty_output(value: Option<&Value>) -> bool {
-    value
-        .and_then(Value::as_array)
-        .is_some_and(|items| !items.is_empty())
+    super::complete::responses_has_visible_output(value)
 }
 
 fn last_error_code(last: &Value) -> Option<String> {
@@ -806,13 +795,13 @@ pub(super) fn logprobs_array(value: &Value) -> Option<Value> {
         .map(|a| Value::Array(a.clone()))
 }
 
-/// Fan-out for `response.completed` / `response.incomplete`.
+/// Fan-out for `response.completed`, `response.incomplete`, and `response.failed`.
 ///
 /// 1:1 [`decode`] keeps Usage-or-Done / FinishReason. This walk emits
 /// Protocol (encrypted reasoning), FinishReason from `response.status`,
 /// Usage, then `created_at` / `service_tier` / `metadata` / nested `moderation`.
 pub(super) fn decode_terminal_events(name: &str, value: &Value) -> Option<Vec<IrStreamEvent>> {
-    if name != "response.completed" && name != "response.incomplete" {
+    if name != "response.completed" && name != "response.incomplete" && name != "response.failed" {
         return None;
     }
     let mut out = Vec::new();
