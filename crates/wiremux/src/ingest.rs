@@ -436,13 +436,46 @@ pub fn ingest_catalog(text: &str, req: &IngestRequest) -> Result<IngestReport, I
         }
         return Err(IngestError::Message(hard.join("\n")));
     }
-    for (path, toml) in pending {
-        fs::write(&path, toml).map_err(|source| IngestError::Io {
-            path: path.clone(),
-            source,
-        })?;
-    }
+    commit_pending_writes(pending)?;
     Ok(IngestReport { actions })
+}
+
+/// Write every body to a sibling temp, then rename. A failed temp write
+/// deletes the temps from this call and does not replace a live profile.
+fn commit_pending_writes(pending: Vec<(PathBuf, String)>) -> Result<(), IngestError> {
+    let mut temps = Vec::with_capacity(pending.len());
+    for (index, (path, body)) in pending.iter().enumerate() {
+        let tmp = ingest_temp_path(path, index);
+        if let Err(source) = fs::write(&tmp, body) {
+            for tmp in &temps {
+                let _ = fs::remove_file(tmp);
+            }
+            let _ = fs::remove_file(&tmp);
+            return Err(IngestError::Io {
+                path: path.clone(),
+                source,
+            });
+        }
+        temps.push(tmp);
+    }
+    for ((path, _), tmp) in pending.iter().zip(&temps) {
+        if let Err(source) = fs::rename(tmp, path) {
+            for tmp in &temps {
+                let _ = fs::remove_file(tmp);
+            }
+            return Err(IngestError::Io {
+                path: path.clone(),
+                source,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn ingest_temp_path(path: &Path, index: usize) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{index}.ingest-tmp"));
+    path.with_file_name(name)
 }
 
 /// models.dev/api.json is about 5.3 MiB. Stay above that, same ceiling as the proxy body cap.
@@ -1428,6 +1461,42 @@ mod tests {
         .to_string();
         assert!(err.contains("no-such-vendor"), "{err}");
         assert!(err.contains("not in catalog"), "{err}");
+    }
+
+    #[test]
+    fn later_temp_write_failure_removes_the_earlier_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("keep.toml");
+        fs::write(&live, "keep\n").unwrap();
+        let blocked = dir.path().join("blocked");
+        fs::write(&blocked, "not-a-dir").unwrap();
+        let err = commit_pending_writes(vec![
+            (dir.path().join("new.toml"), "new\n".into()),
+            (blocked.join("second.toml"), "second\n".into()),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("second.toml"),
+            "error must name the failed path"
+        );
+        assert!(!dir.path().join("new.toml").exists());
+        assert!(!dir.path().join("new.toml.0.ingest-tmp").exists());
+        assert_eq!(fs::read_to_string(&live).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn repeated_destination_keeps_the_last_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("same.toml");
+        commit_pending_writes(vec![
+            (path.clone(), "first\n".into()),
+            (path.clone(), "second\n".into()),
+        ])
+        .unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second\n");
+        assert!(!dir.path().join("same.toml.0.ingest-tmp").exists());
+        assert!(!dir.path().join("same.toml.1.ingest-tmp").exists());
     }
 
     #[test]
