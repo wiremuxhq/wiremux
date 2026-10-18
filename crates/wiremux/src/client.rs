@@ -377,6 +377,14 @@ impl WireClient {
         let events = match decode_response(wire, &body, &self.profile) {
             Ok(events) => events,
             Err(err) => {
+                // A 200 HTML page is not a JSON completion. Stream already
+                // reports that as a vendor error. Keep send on the same path.
+                if serde_json::from_slice::<Value>(&body).is_err() {
+                    return Err(ClientError::Vendor {
+                        status: Some(status),
+                        message: error_message(&text),
+                    });
+                }
                 if let Some(classified) = converse_json_client_error(wire, status, &text) {
                     return Err(classified);
                 }
@@ -1496,8 +1504,10 @@ fn fallback_error_text(body: &str) -> String {
 }
 
 fn parse_listed_models(bytes: &[u8]) -> Result<Vec<ListedModel>, ClientError> {
-    let value: Value =
-        serde_json::from_slice(bytes).map_err(|err| ClientError::Transport(err.to_string()))?;
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| ClientError::Vendor {
+        status: Some(200),
+        message: error_message(&String::from_utf8_lossy(bytes)),
+    })?;
     if let Some(data) = value.get("data").and_then(Value::as_array) {
         return Ok(parse_openai_listed_models(data));
     }
@@ -2288,6 +2298,17 @@ wire = "messages"
                 );
             }
             other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn model_list_html_is_vendor() {
+        let err = super::parse_listed_models(b"<html>oops</html>").expect_err("html");
+        match err {
+            super::ClientError::Vendor { message, .. } => {
+                assert!(message.contains("oops"), "{message}");
+            }
+            other => panic!("expected Vendor, got {other:?}"),
         }
     }
 

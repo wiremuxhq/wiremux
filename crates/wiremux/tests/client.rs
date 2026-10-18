@@ -627,6 +627,24 @@ async fn stream_http_200_string_rate_limit_code_is_rate_limit() {
 }
 
 #[tokio::test]
+async fn send_http_200_html_is_vendor() {
+    let (base, handle) = spawn_one(200, "OK", "", "<html>oops</html>");
+    let client = client_for(&base, "sk-test");
+    let err = client
+        .send(simple_ir("gpt-4"))
+        .await
+        .expect_err("html is not a completion");
+    let _ = handle.join();
+    match err {
+        ClientError::Vendor { status, message } => {
+            assert_eq!(status, Some(200));
+            assert!(message.contains("oops"), "{message}");
+        }
+        other => panic!("expected Vendor, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn stream_http_200_garbage_body_is_vendor() {
     let (base, handle) = spawn_one(200, "OK", "", "<html>oops</html>");
     let client = client_for(&base, "sk-test");

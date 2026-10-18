@@ -230,6 +230,11 @@ instead of copying catalog names by hand. The list is the same table
 without clap or the `proxy` stack enable feature `client` on crate
 `wiremux` only.
 
+A 200 body that is not JSON, including an HTML page, is a vendor error
+from `send` and `list_models`. A stream that never becomes a frame uses
+that same vendor error. The message is the page text, not a JSON parse
+error.
+
 Maps-only hosts that read SSE themselves call `stream_has_terminal`
 (or `frame_is_terminal` per frame) after the HTTP body ends. EOF
 after content is a failure unless one frame was terminal. Chat is
