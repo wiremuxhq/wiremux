@@ -76,7 +76,9 @@ the host.
 ## Proxy and CLI
 
 `wiremux proxy` binds loopback only. It maps the incoming `--from`
-dialect onto the profile target and forwards. Converse streaming is
+dialect onto the profile target and forwards. A `[headers]` credential
+is sent even when the profile has no `[oauth]` table. A missing
+credential file is retried on the next request. Converse streaming is
 AWS Event Stream, not SSE.
 
 The CLI also lists, validates, and ingests profiles, and runs

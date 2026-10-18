@@ -499,9 +499,13 @@ pub fn format_oauth_transport_error(context: &str, err: &reqwest::Error, url: &s
 }
 
 #[cfg(any(feature = "net", test))]
-pub(crate) fn is_oauth_transport_error(err: &AuthError) -> bool {
+pub fn is_oauth_transport_error(err: &AuthError) -> bool {
     match err {
-        AuthError::TokenProvider(msg) => msg.starts_with("token refresh request failed ("),
+        AuthError::TokenProvider(msg) => {
+            msg.starts_with("token refresh request failed (")
+                || msg.starts_with("token request failed (")
+                || msg.starts_with("failed to read OAuth response body (")
+        }
         _ => false,
     }
 }
@@ -1207,8 +1211,18 @@ mod tests {
         assert!(is_oauth_transport_error(&AuthError::TokenProvider(
             "token refresh request failed (connect) via https://auth.example.invalid".into(),
         )));
+        assert!(is_oauth_transport_error(&AuthError::TokenProvider(
+            "token request failed (connect) via https://oauth2.googleapis.com".into(),
+        )));
+        assert!(is_oauth_transport_error(&AuthError::TokenProvider(
+            "failed to read OAuth response body (transport) via https://auth.example.invalid"
+                .into(),
+        )));
         assert!(!is_oauth_transport_error(&AuthError::TokenProvider(
             "token refresh: invalid JSON: expected value".into(),
+        )));
+        assert!(!is_oauth_transport_error(&AuthError::TokenProvider(
+            "OAuth response body too large (Content-Length: 9 bytes, max 8)".into(),
         )));
         assert!(!is_oauth_transport_error(&AuthError::EmptyWriteRefused));
     }

@@ -120,7 +120,11 @@ pub enum LoginPlan {
 pub fn login_plan(profile: &ResolvedProfile) -> LoginPlan {
     let Some(oauth) = profile.oauth.as_ref() else {
         return LoginPlan::NotReady {
-            reason: "profile has no [oauth] table".into(),
+            reason: format!(
+                "auth login needs an [oauth] table on profile `{}` ({})",
+                profile.id,
+                wiremux_auth::credential_options(profile)
+            ),
         };
     };
     let client_id = oauth.client_id.as_deref().unwrap_or("");
@@ -523,7 +527,10 @@ pub async fn token_status(profile: &ResolvedProfile) -> TokenStatus {
     TokenStatus {
         id: profile.id.clone(),
         available: false,
-        detail: "no credentials (set [headers] Authorization or x-api-key, [oauth], or auth_scheme = \"none\")".into(),
+        detail: format!(
+            "no credentials (set {})",
+            wiremux_auth::credential_options(profile)
+        ),
     }
 }
 
@@ -648,22 +655,44 @@ pub fn wire_name(wire: Wire) -> &'static str {
     }
 }
 
+/// A proxy token failure. Transport to the token endpoint is a gateway
+/// error. A missing or rejected credential is unauthorized.
+#[derive(Debug)]
+pub enum ProxyTokenError {
+    /// The profile has no usable credential, or the vendor rejected refresh.
+    Unauthorized(String),
+    /// The token endpoint could not be reached.
+    Gateway(String),
+}
+
+impl std::fmt::Display for ProxyTokenError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unauthorized(detail) | Self::Gateway(detail) => formatter.write_str(detail),
+        }
+    }
+}
+
+fn proxy_token_error_from_auth(err: wiremux_auth::AuthError) -> ProxyTokenError {
+    let detail = err.to_string();
+    if wiremux_auth::is_oauth_transport_error(&err) {
+        ProxyTokenError::Gateway(detail)
+    } else {
+        ProxyTokenError::Unauthorized(detail)
+    }
+}
+
 /// Resolve an API token for the proxy.
 ///
 /// `Ok(None)` is only `auth_scheme = "none"`. An empty bearer is an error.
 pub async fn proxy_token(
     profile: &ResolvedProfile,
     provider: &AnyTokenProvider,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, ProxyTokenError> {
     if matches!(profile.http.auth_scheme, Some(AuthScheme::None)) && profile.oauth.is_none() {
         return Ok(None);
     }
-    if let Some((_, value)) = profile
-        .http
-        .headers
-        .iter()
-        .find(|(k, v)| is_profile_auth_header(profile, k) && !v.trim().is_empty())
-    {
+    if let Some(value) = crate::profile_auth::profile_header_credential(profile) {
         let token = value
             .strip_prefix("Bearer ")
             .or_else(|| value.strip_prefix("bearer "))
@@ -671,18 +700,28 @@ pub async fn proxy_token(
             .trim()
             .to_string();
         if token.is_empty() {
-            return Err("empty token is not auth_scheme none".into());
+            return Err(ProxyTokenError::Unauthorized(
+                "empty token is not auth_scheme none".into(),
+            ));
         }
         return Ok(Some(token));
     }
     if profile.oauth.is_some() || !profile.access_env.is_empty() || provider_has_token(provider) {
-        let token = provider.get_token().await.map_err(|e| e.to_string())?;
+        let token = provider
+            .get_token()
+            .await
+            .map_err(proxy_token_error_from_auth)?;
         if token.trim().is_empty() {
-            return Err("empty token is not auth_scheme none".into());
+            return Err(ProxyTokenError::Unauthorized(
+                "empty token is not auth_scheme none".into(),
+            ));
         }
         return Ok(Some(token));
     }
-    Err("no credentials (set [headers] Authorization or x-api-key, [oauth], or auth_scheme = \"none\")".into())
+    Err(ProxyTokenError::Unauthorized(format!(
+        "no credentials (set {})",
+        wiremux_auth::credential_options(profile)
+    )))
 }
 
 fn provider_has_token(provider: &AnyTokenProvider) -> bool {
@@ -1492,7 +1531,8 @@ base_url = "http://127.0.0.1"
         let provider = AnyTokenProvider::from(StaticToken::new("   "));
         let err = proxy_token(&profile, &provider)
             .await
-            .expect_err("empty bearer");
+            .expect_err("empty bearer")
+            .to_string();
         assert!(err.contains("empty token"), "{err}");
 
         let bare = parse_profile_str(
@@ -1506,8 +1546,10 @@ base_url = "http://127.0.0.1"
         .expect("parse");
         let err = proxy_token(&bare, &provider)
             .await
-            .expect_err("no credentials");
+            .expect_err("no credentials")
+            .to_string();
         assert!(err.contains("auth_scheme"), "{err}");
+        assert!(err.contains("[headers]"), "{err}");
 
         let header = parse_profile_str(
             r#"
@@ -1523,8 +1565,44 @@ Authorization = "Bearer "
         .expect("parse");
         let err = proxy_token(&header, &provider)
             .await
-            .expect_err("blank bearer header");
+            .expect_err("blank bearer header")
+            .to_string();
         assert!(err.contains("empty token"), "{err}");
+    }
+
+    #[test]
+    fn login_plan_without_oauth_names_header_credentials() {
+        let profile = parse_profile_str(
+            r#"
+schema_version = 1
+id = "header-only"
+wire = "responses"
+auth_scheme = "bearer"
+"#,
+        )
+        .expect("parse");
+        match login_plan(&profile) {
+            LoginPlan::NotReady { reason } => {
+                assert!(
+                    reason.contains("auth login needs an [oauth] table"),
+                    "login plan must say it needs oauth"
+                );
+                assert!(reason.contains("[headers]"), "login plan must name headers");
+                assert!(
+                    reason.contains("access_env"),
+                    "login plan must name access_env"
+                );
+                assert!(
+                    reason.contains("auth_scheme"),
+                    "login plan must name auth_scheme"
+                );
+                assert!(
+                    reason.contains("header-only"),
+                    "login plan must name the profile"
+                );
+            }
+            other => panic!("expected not-ready, got {other:?}"),
+        }
     }
 
     #[cfg(any(feature = "proxy", feature = "client"))]

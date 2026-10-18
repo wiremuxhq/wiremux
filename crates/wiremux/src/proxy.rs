@@ -4,6 +4,8 @@ use std::convert::Infallible;
 use std::io::Write;
 use std::sync::Arc;
 
+use tokio::sync::Mutex;
+
 use bytes::Bytes;
 use futures_util::StreamExt;
 use http_body_util::combinators::UnsyncBoxBody;
@@ -19,7 +21,7 @@ use wiremux_auth::{
 };
 
 use crate::aws_sign::{apply_aws_sigv4, bearer_token_applied};
-use crate::cli::{parse_listen, proxy_token};
+use crate::cli::{ProxyTokenError, parse_listen, proxy_token};
 use crate::headers::{apply_profile_headers, apply_provider_headers};
 use crate::ir::{LossAction, LossReport};
 use crate::map::{decode, encode};
@@ -69,25 +71,10 @@ pub async fn run(
     println!("listening on {bound}");
     let _ = std::io::stdout().flush();
 
-    let provider = match provider_from_profile(&profile) {
-        Ok(p) => Ok(p),
-        Err(err) => {
-            if profile
-                .http
-                .aws_service
-                .as_deref()
-                .is_some_and(|s| !s.is_empty())
-                || matches!(
-                    profile.http.auth_scheme,
-                    Some(wiremux_auth::AuthScheme::None)
-                )
-            {
-                Ok(AnyTokenProvider::from(StaticToken::new("")))
-            } else {
-                Err(err.to_string())
-            }
-        }
-    };
+    // A failed build is not cached. The next request tries again, so a
+    // creds file written by `auth login` after startup is picked up.
+    // Header keys and SigV4 do not need a TokenProvider.
+    let provider = Mutex::new(provider_from_profile(&profile).ok());
     let client = crate::headers::default_http_client(&profile)?;
     let state = Arc::new(ProxyState {
         from,
@@ -121,7 +108,7 @@ struct ProxyState {
     from: Wire,
     profile: ResolvedProfile,
     dump_loss: bool,
-    provider: Result<AnyTokenProvider, String>,
+    provider: Mutex<Option<AnyTokenProvider>>,
     client: reqwest::Client,
     model_override: Option<String>,
 }
@@ -133,23 +120,38 @@ async fn handle(
     Ok(handle_inner(state, req).await)
 }
 
-async fn resolve_proxy_token(state: &ProxyState) -> Result<Option<String>, String> {
-    match &state.provider {
-        Ok(provider) => proxy_token(&state.profile, provider).await,
-        Err(err) => {
-            if state
-                .profile
-                .http
-                .aws_service
-                .as_deref()
-                .is_some_and(|s| !s.is_empty())
-            {
-                Ok(None)
-            } else {
-                Err(err.clone())
+fn profile_auths_without_provider(profile: &ResolvedProfile) -> bool {
+    crate::profile_auth::profile_header_credential(profile).is_some()
+        || profile
+            .http
+            .aws_service
+            .as_deref()
+            .is_some_and(|service| !service.is_empty())
+        || (matches!(
+            profile.http.auth_scheme,
+            Some(wiremux_auth::AuthScheme::None)
+        ) && profile.oauth.is_none())
+}
+
+async fn resolve_proxy_token(state: &ProxyState) -> Result<Option<String>, ProxyTokenError> {
+    let mut slot = state.provider.lock().await;
+    if slot.is_none() {
+        match provider_from_profile(&state.profile) {
+            Ok(provider) => *slot = Some(provider),
+            Err(err) => {
+                if profile_auths_without_provider(&state.profile) {
+                    let fallback = AnyTokenProvider::from(StaticToken::new(""));
+                    return proxy_token(&state.profile, &fallback).await;
+                }
+                return Err(match wiremux_auth::is_oauth_transport_error(&err) {
+                    true => ProxyTokenError::Gateway(err.to_string()),
+                    false => ProxyTokenError::Unauthorized(err.to_string()),
+                });
             }
         }
     }
+    let provider = slot.as_ref().expect("provider was just stored");
+    proxy_token(&state.profile, provider).await
 }
 
 struct UpstreamSendError {
@@ -178,8 +180,13 @@ async fn send_upstream(
     let mut retried = false;
     loop {
         let token = match resolve_proxy_token(state).await {
-            Ok(t) => t,
-            Err(err) => return Err(upstream_send_error(StatusCode::UNAUTHORIZED, err)),
+            Ok(token) => token,
+            Err(ProxyTokenError::Unauthorized(detail)) => {
+                return Err(upstream_send_error(StatusCode::UNAUTHORIZED, detail));
+            }
+            Err(ProxyTokenError::Gateway(detail)) => {
+                return Err(upstream_send_error(StatusCode::BAD_GATEWAY, detail));
+            }
         };
         let mut upstream = state
             .client
@@ -193,7 +200,7 @@ async fn send_upstream(
         if let Some(version) = anthropic_version.filter(|value| !value.is_empty()) {
             upstream = upstream.header("anthropic-version", version);
         }
-        if let Ok(provider) = &state.provider {
+        if let Some(provider) = state.provider.lock().await.as_ref() {
             upstream = apply_provider_headers(upstream, &state.profile, provider);
         }
         let built = match apply_aws_sigv4(
@@ -223,14 +230,14 @@ async fn send_upstream(
                 ));
             }
         };
-        if resp.status().as_u16() == 401
-            && !retried
-            && state
-                .provider
-                .as_ref()
-                .is_ok_and(AnyTokenProvider::can_refresh)
-        {
-            if let Ok(provider) = &state.provider {
+        let can_refresh = state
+            .provider
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(AnyTokenProvider::can_refresh);
+        if resp.status().as_u16() == 401 && !retried && can_refresh {
+            if let Some(provider) = state.provider.lock().await.as_ref() {
                 provider.mark_stale();
             }
             retried = true;
