@@ -627,6 +627,24 @@ async fn stream_http_200_string_rate_limit_code_is_rate_limit() {
 }
 
 #[tokio::test]
+async fn send_http_200_html_is_vendor() {
+    let (base, handle) = spawn_one(200, "OK", "", "<html>oops</html>");
+    let client = client_for(&base, "sk-test");
+    let err = client
+        .send(simple_ir("gpt-4"))
+        .await
+        .expect_err("html is not a completion");
+    let _ = handle.join();
+    match err {
+        ClientError::Vendor { status, message } => {
+            assert_eq!(status, Some(200));
+            assert!(message.contains("oops"), "{message}");
+        }
+        other => panic!("expected Vendor, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn stream_http_200_garbage_body_is_vendor() {
     let (base, handle) = spawn_one(200, "OK", "", "<html>oops</html>");
     let client = client_for(&base, "sk-test");
@@ -848,6 +866,14 @@ async fn stream_responses_error_event_keeps_vendor_message() {
 }
 
 async fn drive_responses_sse(sse: &str) -> (bool, Option<ClientError>) {
+    let (events, err) = drive_responses_sse_all(sse).await;
+    let saw_text = events
+        .iter()
+        .any(|ev| matches!(ev, IrStreamEvent::TextDelta { text } if text == "Hi"));
+    (saw_text, err)
+}
+
+async fn drive_responses_sse_all(sse: &str) -> (Vec<IrStreamEvent>, Option<ClientError>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let body = sse.to_string();
@@ -862,12 +888,11 @@ async fn drive_responses_sse(sse: &str) -> (bool, Option<ClientError>) {
     });
     let client = responses_client_for(&format!("http://{addr}"), "sk-test");
     let mut stream = std::pin::pin!(client.stream(simple_ir("gpt-4o")));
-    let mut saw_text = false;
+    let mut events = Vec::new();
     let mut first_err = None;
     while let Some(item) = stream.next().await {
         match item {
-            Ok(IrStreamEvent::TextDelta { text }) if text == "Hi" => saw_text = true,
-            Ok(_) => {}
+            Ok(ev) => events.push(ev),
             Err(err) => {
                 first_err = Some(err);
                 break;
@@ -875,7 +900,71 @@ async fn drive_responses_sse(sse: &str) -> (bool, Option<ClientError>) {
         }
     }
     let _ = handle.join();
-    (saw_text, first_err)
+    (events, first_err)
+}
+
+#[tokio::test]
+async fn stream_responses_failed_frame_keeps_encrypted_reasoning() {
+    let sse = concat!(
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"enc-xyz\"}],\"error\":{\"code\":\"server_error\",\"message\":\"please wait\"}}}\n\n",
+    );
+    let (events, err) = drive_responses_sse_all(sse).await;
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "reasoning"
+                    && payload
+                        .get("encrypted_content")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("enc-xyz")
+        )),
+        "encrypted reasoning on response.failed must be delivered, events={events:?} err={err:?}"
+    );
+    assert!(
+        err.is_none(),
+        "a leaf on response.failed is not a client error: {err:?}"
+    );
+
+    let empty = concat!(
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[{\"type\":\"reasoning\",\"encrypted_content\":\"\"}],\"error\":{\"code\":\"server_error\",\"message\":\"please wait\"}}}\n\n",
+    );
+    let (empty_events, empty_err) = drive_responses_sse_all(empty).await;
+    assert!(
+        empty_err.is_some(),
+        "empty encrypted_content on response.failed stays an error, events={empty_events:?}"
+    );
+
+    let text_only = concat!(
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi\"}]}],\"error\":{\"code\":\"server_error\",\"message\":\"please wait\"}}}\n\n",
+    );
+    let (text_events, text_err) = drive_responses_sse_all(text_only).await;
+    assert!(
+        text_err.is_some(),
+        "message text on response.failed still reports the vendor error, events={text_events:?}"
+    );
+
+    let hosted = concat!(
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[{\"type\":\"web_search_call\",\"id\":\"ws_1\"}],\"error\":{\"code\":\"server_error\",\"message\":\"please wait\"}}}\n\n",
+    );
+    let (hosted_events, hosted_err) = drive_responses_sse_all(hosted).await;
+    assert!(
+        hosted_events.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::Protocol { item_type, payload }
+                if item_type == "web_search_call"
+                    && payload.get("id").and_then(serde_json::Value::as_str) == Some("ws_1")
+        )),
+        "hosted payload on response.failed must be delivered, events={hosted_events:?} err={hosted_err:?}"
+    );
+    assert!(
+        hosted_err.is_none(),
+        "a hosted payload on response.failed is not a client error: {hosted_err:?}"
+    );
 }
 
 #[tokio::test]

@@ -230,6 +230,11 @@ instead of copying catalog names by hand. The list is the same table
 without clap or the `proxy` stack enable feature `client` on crate
 `wiremux` only.
 
+A 200 body that is not JSON, including an HTML page, is a vendor error
+from `send` and `list_models`. A stream that never becomes a frame uses
+that same vendor error. The message is the page text, not a JSON parse
+error.
+
 Maps-only hosts that read SSE themselves call `stream_has_terminal`
 (or `frame_is_terminal` per frame) after the HTTP body ends. EOF
 after content is a failure unless one frame was terminal. Chat is
@@ -251,7 +256,12 @@ A Messages `api_error` is that same transient error.
 stays `ClientError::Auth`, and a `model_not_found` message stays
 `ClientError::NotFound`. `response.failed` uses `last_error.code`
 and `last_error.message` the same way. A code or a message does not
-finish as `failed`. A failed frame with neither does.
+finish as `failed` when that frame has no payload the stream decoder
+emits. Non-empty `encrypted_content` and a hosted item with a payload
+are delivered and are not a client error. Assistant text, a tool call,
+or audio that shows up only on that failed frame still returns the
+vendor error. A failed frame with neither a code nor a message still
+finishes as `failed`.
 A 200 body with an error is a vendor error when that body has no leaf.
 An empty Responses message, an empty `output_text`, an empty audio
 item, and a type-only hosted item have no leaf. Non-empty
