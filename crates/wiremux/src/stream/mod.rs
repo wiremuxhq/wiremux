@@ -8,6 +8,8 @@ pub(crate) use complete::responses_has_visible_output;
 #[cfg(any(feature = "proxy", feature = "client"))]
 pub(crate) use converse::complete_exception_detail;
 pub(crate) use converse::converse_has_completion;
+#[cfg(feature = "client")]
+pub(crate) use responses::responses_terminal_keeps_output;
 mod encoder;
 mod eventstream;
 mod gemini;

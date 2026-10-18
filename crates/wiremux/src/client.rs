@@ -1142,10 +1142,17 @@ fn classify_sse_wrapped_error(data: &str, status: u16) -> Option<ClientError> {
 
 /// `response.failed` is not an `{error:{...}}` envelope. Official
 /// failures put the object on `response.error`. `last_error` is kept
-/// for the older shape. Neither field means the frame can finish as
-/// `failed`.
+/// for the older shape. A code or a message stays a client error
+/// unless this frame already emits a kept payload (non-empty
+/// `encrypted_content`, a hosted item, or reasoning text). Message
+/// text, tool calls, and audio on this frame still surface the error.
 fn classify_responses_failed(data: &str, status: u16) -> Option<ClientError> {
     let value: Value = serde_json::from_str(data).ok()?;
+    if crate::stream::responses_has_visible_output(&value)
+        && crate::stream::responses_terminal_keeps_output(&value)
+    {
+        return None;
+    }
     let last = crate::stream::responses_failure_object(&value)?;
     let code = json_error_code(last);
     let code_name = json_error_code_name(last);

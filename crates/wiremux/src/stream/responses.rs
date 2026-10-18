@@ -449,6 +449,30 @@ pub(super) fn replay_output_item(item: &Value) -> Vec<IrStreamEvent> {
     out
 }
 
+/// True when a terminal frame will emit a payload `replay_output_item`
+/// or reasoning-text identity keeps. Message text, tool calls, audio,
+/// and a summary-only reasoning item are not on this path.
+#[cfg(feature = "client")]
+pub(crate) fn responses_terminal_keeps_output(value: &Value) -> bool {
+    let Some(items) = value
+        .get("output")
+        .and_then(Value::as_array)
+        .or_else(|| value.pointer("/response/output").and_then(Value::as_array))
+    else {
+        return false;
+    };
+    items.iter().any(|item| {
+        !replay_output_item(item).is_empty()
+            || reasoning_item_identity_events(item).iter().any(|ev| {
+                matches!(
+                    ev,
+                    IrStreamEvent::Protocol { item_type, .. }
+                        if item_type == "responses_reasoning_content"
+                )
+            })
+    })
+}
+
 fn content_part_events(value: &Value) -> Vec<IrStreamEvent> {
     let part = value.get("part").unwrap_or(value);
     part_events(part)
