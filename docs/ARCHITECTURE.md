@@ -82,7 +82,9 @@ credential file is retried on the next request. Converse streaming is
 AWS Event Stream, not SSE.
 
 The CLI also lists, validates, and ingests profiles, and runs
-`auth login` / `auth status`.
+`auth login` / `auth status`. Ingest writes each new profile to a
+temp file first. If a later file cannot be written, those temps are
+removed and a profile already on disk is left as it was.
 
 ## Stays in the host
 
