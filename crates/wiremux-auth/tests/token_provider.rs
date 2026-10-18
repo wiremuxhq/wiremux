@@ -45,9 +45,12 @@ fn provider_from_profile_requires_oauth_table() {
         AuthError::MissingField(ref field) => {
             assert!(
                 field.contains("[headers] Authorization or x-api-key"),
-                "{field}"
+                "headers missing from credential text"
             );
-            assert!(field.contains("on profile `x`"), "{field}");
+            assert!(
+                field.contains("on profile `x`"),
+                "profile id missing from credential text"
+            );
             assert_eq!(err.to_string(), format!("missing {field}"));
         }
         other => panic!("expected MissingField, got {other}"),

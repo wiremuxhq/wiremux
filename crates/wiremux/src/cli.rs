@@ -1585,12 +1585,21 @@ auth_scheme = "bearer"
             LoginPlan::NotReady { reason } => {
                 assert!(
                     reason.contains("auth login needs an [oauth] table"),
-                    "{reason}"
+                    "login plan must say it needs oauth"
                 );
-                assert!(reason.contains("[headers]"), "{reason}");
-                assert!(reason.contains("access_env"), "{reason}");
-                assert!(reason.contains("auth_scheme"), "{reason}");
-                assert!(reason.contains("header-only"), "{reason}");
+                assert!(reason.contains("[headers]"), "login plan must name headers");
+                assert!(
+                    reason.contains("access_env"),
+                    "login plan must name access_env"
+                );
+                assert!(
+                    reason.contains("auth_scheme"),
+                    "login plan must name auth_scheme"
+                );
+                assert!(
+                    reason.contains("header-only"),
+                    "login plan must name the profile"
+                );
             }
             other => panic!("expected not-ready, got {other:?}"),
         }

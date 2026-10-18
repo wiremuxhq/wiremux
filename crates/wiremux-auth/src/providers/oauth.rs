@@ -2829,10 +2829,16 @@ access_env = "WIREMUX_TEST_ACCESS"
                 assert_eq!(field, &missing_credential_field(&profile));
                 assert!(
                     field.contains("[headers] Authorization or x-api-key"),
-                    "{field}"
+                    "headers missing from credential text"
                 );
-                assert!(field.contains("access_env"), "{field}");
-                assert!(field.contains("auth_scheme = \"none\""), "{field}");
+                assert!(
+                    field.contains("access_env"),
+                    "access_env missing from credential text"
+                );
+                assert!(
+                    field.contains("auth_scheme = \"none\""),
+                    "auth_scheme missing from credential text"
+                );
                 assert_eq!(err.to_string(), format!("missing {field}"));
             }
             other => panic!("expected MissingField, got {other}"),
@@ -2854,10 +2860,16 @@ gcp_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
         let field = missing_credential_field(&profile);
         assert!(
             field.contains("gcp_key_env (GOOGLE_APPLICATION_CREDENTIALS)"),
-            "{field}"
+            "gcp key env missing from credential text"
         );
-        assert!(field.contains("[headers] x-goog-api-key"), "{field}");
-        assert!(field.contains("on profile `vertex`"), "{field}");
+        assert!(
+            field.contains("[headers] x-goog-api-key"),
+            "custom header missing from credential text"
+        );
+        assert!(
+            field.contains("on profile `vertex`"),
+            "profile id missing from credential text"
+        );
     }
 
     #[tokio::test]

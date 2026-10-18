@@ -1762,11 +1762,11 @@ Authorization = "Bearer header-secret"
     assert!(
         seen.to_ascii_lowercase()
             .contains("authorization: bearer header-secret"),
-        "upstream must see the header credential, got: {seen}"
+        "upstream must see the header credential"
     );
     assert!(
         resp.starts_with("HTTP/1.1 200") && resp.contains("pong"),
-        "header credential must not be a 401, got: {resp}"
+        "header credential must not be a 401"
     );
 }
 
@@ -1849,7 +1849,7 @@ login = "none"
     let first = request(listen);
     assert!(
         first.starts_with("HTTP/1.1 401"),
-        "missing creds file is unauthorized, got: {first}"
+        "missing creds file is unauthorized"
     );
     std::fs::write(
         &creds_path,
@@ -1862,11 +1862,11 @@ login = "none"
     let seen = upstream_thread.join().expect("upstream");
     assert!(
         seen.contains("Bearer late-token"),
-        "second request must send the token written after startup, got: {seen}"
+        "second request must send the token written after startup"
     );
     assert!(
         second.starts_with("HTTP/1.1 200") && second.contains("pong"),
-        "late credential must succeed without a restart, got: {second}"
+        "late credential must succeed without a restart"
     );
 }
 
@@ -1964,11 +1964,11 @@ expires_unit = "s"
     let _ = token_thread.join();
     assert!(
         resp.starts_with("HTTP/1.1 502"),
-        "token endpoint outage must be 502, got: {resp}"
+        "token endpoint outage must be 502"
     );
     assert!(
         resp.contains("token refresh request failed"),
-        "502 must name the token request, got: {resp}"
+        "502 must name the token request"
     );
 }
 
