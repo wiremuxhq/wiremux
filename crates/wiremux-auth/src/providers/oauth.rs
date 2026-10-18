@@ -171,7 +171,7 @@ pub fn provider_from_profile(
         return Ok(StaticToken::new("").into());
     }
     Err(AuthError::MissingField(format!(
-        "profile `{}` has no [oauth] table",
+        "[oauth] table, access_env, or auth_scheme = \"none\" on profile `{}`",
         profile.id
     )))
 }
@@ -2787,7 +2787,14 @@ access_env = "WIREMUX_TEST_ACCESS"
         let err = provider_from_profile(&profile).unwrap_err();
         match err {
             AuthError::MissingField(ref field) => {
-                assert_eq!(field, "profile `no-oauth` has no [oauth] table");
+                assert_eq!(
+                    field,
+                    "[oauth] table, access_env, or auth_scheme = \"none\" on profile `no-oauth`"
+                );
+                assert_eq!(
+                    err.to_string(),
+                    "missing [oauth] table, access_env, or auth_scheme = \"none\" on profile `no-oauth`"
+                );
             }
             other => panic!("expected MissingField, got {other}"),
         }
