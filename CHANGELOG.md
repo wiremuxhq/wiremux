@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.11.6](https://github.com/wiremuxhq/wiremux/compare/v0.11.5...v0.11.6) (2026-10-18)
+
+
+### Bug Fixes
+
+* keep a Responses leaf when an error object is present ([#669](https://github.com/wiremuxhq/wiremux/issues/669)) ([05545cc](https://github.com/wiremuxhq/wiremux/commit/05545ccaa6a54fca1ffbf1223fb37c80cfc1da4e))
+* keep a Responses stream leaf on response.failed ([#672](https://github.com/wiremuxhq/wiremux/issues/672)) ([310153c](https://github.com/wiremuxhq/wiremux/commit/310153cfd3650b534103d2cc404904b50830a476))
+* name the missing credential on a profile ([#673](https://github.com/wiremuxhq/wiremux/issues/673)) ([4fe0a71](https://github.com/wiremuxhq/wiremux/commit/4fe0a7138b03cce1d980dda9a0051f54d44ca705))
+* send a header credential from the proxy ([#674](https://github.com/wiremuxhq/wiremux/issues/674)) ([aabcaf5](https://github.com/wiremuxhq/wiremux/commit/aabcaf59f63cee8350ae0fde65285b99e60565f7))
+* stage ingest profiles before replacing them ([#675](https://github.com/wiremuxhq/wiremux/issues/675)) ([a4e635f](https://github.com/wiremuxhq/wiremux/commit/a4e635f61725d7c7d65a024ac7a4751b2337ed9e))
+
 ## [0.11.5](https://github.com/wiremuxhq/wiremux/compare/v0.11.4...v0.11.5) (2026-10-17)
 
 
