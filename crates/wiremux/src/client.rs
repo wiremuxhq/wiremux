@@ -1516,9 +1516,15 @@ fn parse_listed_models(bytes: &[u8]) -> Result<Vec<ListedModel>, ClientError> {
     if let Some(models) = value.get("models").and_then(Value::as_array) {
         return Ok(parse_gemini_listed_models(models));
     }
+    let text = String::from_utf8_lossy(bytes);
+    let message = if value.get("error").is_some() {
+        error_message(&text)
+    } else {
+        "model list has no data or models array".into()
+    };
     Err(ClientError::Vendor {
         status: Some(200),
-        message: "model list has no data or models array".into(),
+        message,
     })
 }
 
@@ -2335,6 +2341,33 @@ wire = "messages"
                 .expect("empty models")
                 .is_empty()
         );
+        let null_data = super::parse_listed_models(br#"{"data":null}"#)
+            .expect_err("null data is not an empty catalog");
+        match null_data {
+            super::ClientError::Vendor { message, .. } => {
+                assert!(
+                    message.contains("data or models"),
+                    "null data must not be an empty catalog"
+                );
+            }
+            other => panic!("expected Vendor, got {other:?}"),
+        }
+        let vendor =
+            super::parse_listed_models(br#"{"data":null,"error":{"message":"please wait"}}"#)
+                .expect_err("error object beside null data");
+        match vendor {
+            super::ClientError::Vendor { message, .. } => {
+                assert!(
+                    message.contains("please wait"),
+                    "vendor message must be kept"
+                );
+                assert!(
+                    !message.contains("data or models"),
+                    "generic catalog text must not replace the vendor message"
+                );
+            }
+            other => panic!("expected Vendor, got {other:?}"),
+        }
     }
 
     #[test]
