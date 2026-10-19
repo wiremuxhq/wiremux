@@ -63,6 +63,27 @@ impl SseFrameReader {
         Ok(out)
     }
 
+    /// A frame has started and has not closed with a blank line.
+    #[cfg(feature = "proxy")]
+    pub fn has_open_frame(&self) -> bool {
+        self.has_fields || !self.buffer.is_empty()
+    }
+
+    /// Bytes of the frame still open, so a later chunk can be joined
+    /// without forwarding the partial payload early.
+    #[cfg(feature = "proxy")]
+    pub fn pending_wire_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        if let Some(event) = &self.event {
+            out.extend(format!("event: {event}\n").into_bytes());
+        }
+        for line in &self.data {
+            out.extend(format!("data: {line}\n").into_bytes());
+        }
+        out.extend_from_slice(&self.buffer);
+        out
+    }
+
     /// Emit a last frame if fields are pending (EOF without a blank line).
     pub fn drain(&mut self) -> Option<RawSse> {
         self.finish().ok().flatten()

@@ -947,6 +947,17 @@ async fn stream_responses_failed_frame_keeps_encrypted_reasoning() {
         "message text on response.failed still reports the vendor error, events={text_events:?}"
     );
 
+    let data_only = "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi\"}]}],\"error\":{\"code\":\"server_error\",\"message\":\"please wait\"}}}\n\n";
+    let (data_events, data_err) = drive_responses_sse_all(data_only).await;
+    assert!(
+        data_err.is_some(),
+        "a data-only response.failed frame still reports the vendor error"
+    );
+    assert!(
+        data_events.is_empty(),
+        "data-only message text must not be delivered"
+    );
+
     let hosted = concat!(
         "event: response.failed\n",
         "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[{\"type\":\"web_search_call\",\"id\":\"ws_1\"}],\"error\":{\"code\":\"server_error\",\"message\":\"please wait\"}}}\n\n",

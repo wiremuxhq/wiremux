@@ -263,6 +263,15 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
         }
         "response.failed" => {
             reject_bare_responses_error(value)?;
+            // Message text, a tool call, and audio count as leaves, but
+            // the terminal walk does not emit them. A lone FinishReason
+            // would drop both the leaf and the vendor message.
+            if responses_frame_has_visible_body(value)
+                && !responses_terminal_keeps_output(value)
+                && let Some(detail) = failure_detail(value)
+            {
+                return Err(MapError::Invalid(detail));
+            }
             Ok(Some(IrStreamEvent::FinishReason {
                 reason: "failed".into(),
                 vendor: None,
@@ -452,7 +461,6 @@ pub(super) fn replay_output_item(item: &Value) -> Vec<IrStreamEvent> {
 /// True when a terminal frame will emit a payload `replay_output_item`
 /// or reasoning-text identity keeps. Message text, tool calls, audio,
 /// and a summary-only reasoning item are not on this path.
-#[cfg(feature = "client")]
 pub(crate) fn responses_terminal_keeps_output(value: &Value) -> bool {
     let Some(items) = value
         .get("output")
