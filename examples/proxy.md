@@ -73,6 +73,12 @@ The listener refuses non-loopback binds. Do not put this binary on
 a public interface. Host CSRF checks apply to `Host` / `Origin` on
 that loopback listener.
 
+On a same-wire Chat Completions proxy, a generation HTTP 200 whose
+body is only a vendor error is HTTP 400 with that JSON. When the
+request set `stream` to true, the status stays 200 and the body is
+one `event: error` frame. The `data` line is that same JSON, so
+`error.type` and `error.code` both stay.
+
 A POST larger than 8388608 bytes is refused with 413
 `request body too large` before the proxy forwards it. When the
 request included `Content-Length`, that 413 names the declared
