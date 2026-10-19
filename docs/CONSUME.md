@@ -233,7 +233,9 @@ without clap or the `proxy` stack enable feature `client` on crate
 A 200 body that is not JSON, including an HTML page, is a vendor error
 from `send` and `list_models`. A stream that never becomes a frame uses
 that same vendor error. The message is the page text, not a JSON parse
-error.
+error. A 200 JSON body with an `error` object and no `data` or `models`
+array uses that vendor message. `data: null` without an error object
+is still a vendor error, not an empty catalog.
 
 Maps-only hosts that read SSE themselves call `stream_has_terminal`
 (or `frame_is_terminal` per frame) after the HTTP body ends. EOF
