@@ -260,7 +260,10 @@ finish as `failed` when that frame has no payload the stream decoder
 emits. Non-empty `encrypted_content` and a hosted item with a payload
 are delivered and are not a client error. Assistant text, a tool call,
 or audio that shows up only on that failed frame still returns the
-vendor error. A failed frame with neither a code nor a message still
+vendor error. `decode_stream_events` returns that same error, including
+when the frame has no SSE `event:` line and the name is only `type`.
+The proxy sends the vendor error and does not finish that stream as
+`failed`. A failed frame with neither a code nor a message still
 finishes as `failed`.
 A 200 body with an error is a vendor error when that body has no leaf.
 An empty Responses message, an empty `output_text`, an empty audio

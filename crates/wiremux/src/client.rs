@@ -20,7 +20,7 @@ use crate::ir::{IrRequest, IrStreamEvent, LossReport};
 use crate::map::{MapError, encode};
 use crate::stream::{
     INCOMPLETE_STREAM_MESSAGE, StreamDecoder, ToolCallAssembler, UpstreamFrames, decode_response,
-    frame_is_terminal, sse_wrapped_error_message,
+    frame_event_name, frame_is_terminal, sse_wrapped_error_message,
 };
 use crate::upstream::upstream_url_for_model;
 
@@ -715,7 +715,9 @@ impl LiveStream {
             if let Some(err) = classify_sse_wrapped_error(&raw.data, self.http_status) {
                 return Err(err);
             }
-            if raw.event.as_deref() == Some("response.failed")
+            // A data-only frame has no `event:` line. `type` is still
+            // `response.failed`, and that must use the same classifier.
+            if frame_event_name(self.wire, &raw) == "response.failed"
                 && let Some(err) = classify_responses_failed(&raw.data, self.http_status)
             {
                 return Err(err);

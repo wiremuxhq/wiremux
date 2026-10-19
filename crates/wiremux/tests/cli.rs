@@ -1578,6 +1578,29 @@ fn proxy_same_wire_chat_choices_stay_http_200() {
 }
 
 #[test]
+fn proxy_responses_failed_message_is_vendor_error() {
+    let (resp, _, _) = proxy_http_exchange(ProxyExchange {
+        profile_id: "responses-failed-text",
+        wire: "responses",
+        chat_path: Some("/v1/responses"),
+        from: "responses",
+        extra_args: &[],
+        request_path: "/v1/responses",
+        request_body: r#"{"model":"gpt-4o","stream":true,"input":"hi"}"#,
+        upstream_body: "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi\"}]}],\"error\":{\"code\":\"server_error\",\"message\":\"please wait\"}}}\n\n",
+        upstream_content_type: "text/event-stream",
+    });
+    assert!(
+        resp.contains("please wait"),
+        "proxy must return the vendor message"
+    );
+    assert!(
+        !resp.contains("Hi"),
+        "proxy must not forward the dropped message text"
+    );
+}
+
+#[test]
 fn proxy_same_wire_stream_error_stays_http_200() {
     let (resp, _, _) = proxy_http_exchange(ProxyExchange {
         profile_id: "chat-stream-err",

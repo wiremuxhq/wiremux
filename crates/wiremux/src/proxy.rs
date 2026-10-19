@@ -1032,6 +1032,9 @@ struct SameWireGate {
     saw_frame: bool,
     saw_terminal: bool,
     saw_vendor_error: bool,
+    /// A dropped-leaf `response.failed` already became the vendor error.
+    /// Later bytes in this stream are not frames.
+    drop_rest: bool,
     held: Vec<u8>,
 }
 
@@ -1066,11 +1069,15 @@ impl SameWireGate {
             saw_frame: false,
             saw_terminal: false,
             saw_vendor_error: false,
+            drop_rest: false,
             held: Vec::new(),
         }
     }
 
     fn push(&mut self, bytes: &[u8]) -> Result<SameWirePush, String> {
+        if self.drop_rest {
+            return Ok(SameWirePush::Hold);
+        }
         if !self.saw_frame && self.held.len().saturating_add(bytes.len()) > MAX_UPSTREAM_BODY {
             return Err(INCOMPLETE_STREAM_MESSAGE.to_string());
         }
@@ -1092,6 +1099,49 @@ impl SameWireGate {
                 return Ok(SameWirePush::Hold);
             }
         };
+        if let Some((index, msg)) = frames.iter().enumerate().find_map(|(index, raw)| {
+            responses_failed_vendor_error(self.from, raw, &self.profile).map(|msg| (index, msg))
+        }) {
+            // Earlier frames in this read stay. The failed frame and
+            // anything after it, including [DONE], do not.
+            let mut out = Vec::new();
+            for raw in frames.iter().take(index) {
+                if sse_done_frame(raw) {
+                    continue;
+                }
+                self.note_terminal(raw);
+                out.extend(format_sse(raw).into_bytes());
+            }
+            out.extend(dest_error_bytes(self.from, msg));
+            self.saw_frame = true;
+            self.saw_terminal = true;
+            self.saw_vendor_error = true;
+            self.drop_rest = true;
+            let _ = std::mem::take(&mut self.held);
+            // The open tail is part of this chunk, after the failed frame.
+            let _ = self.reader.finish();
+            return Ok(SameWirePush::Forward(out));
+        }
+        if self.from == Wire::Responses
+            && !self.saw_vendor_error
+            && self.reader.has_open_frame()
+            && !frames.is_empty()
+            && !frames
+                .iter()
+                .any(|raw| sse_wrapped_error_message(&raw.data).is_some())
+        {
+            let mut out = Vec::new();
+            for raw in &frames {
+                if sse_done_frame(raw) {
+                    continue;
+                }
+                self.note_terminal(raw);
+                out.extend(format_sse(raw).into_bytes());
+            }
+            self.saw_frame = true;
+            self.held = self.reader.pending_wire_bytes();
+            return Ok(SameWirePush::Forward(out));
+        }
         if terminal.is_some() {
             self.saw_frame = true;
             self.saw_terminal = true;
@@ -1105,6 +1155,10 @@ impl SameWireGate {
             // After a vendor error, complete frames are rewritten below.
             // Forwarding this partial chunk would leak a split `[DONE]`.
             if self.saw_vendor_error {
+                return Ok(SameWirePush::Hold);
+            }
+            if self.from == Wire::Responses && self.reader.has_open_frame() {
+                self.held.extend_from_slice(bytes);
                 return Ok(SameWirePush::Hold);
             }
             return Ok(SameWirePush::Forward(bytes.to_vec()));
@@ -1136,6 +1190,9 @@ impl SameWireGate {
     }
 
     fn finish(mut self) -> SameWireEnd {
+        if self.drop_rest {
+            return SameWireEnd::Done { tail: Vec::new() };
+        }
         match self.reader.finish() {
             Err(_) if !self.saw_frame => {
                 let body = std::mem::take(&mut self.held);
@@ -1149,6 +1206,11 @@ impl SameWireGate {
                 let mut synthesized = Vec::new();
                 if let Some(raw) = frame {
                     self.saw_frame = true;
+                    if let Some(msg) = responses_failed_vendor_error(self.from, &raw, &self.profile)
+                    {
+                        let _ = std::mem::take(&mut self.held);
+                        return SameWireEnd::Replace { message: msg };
+                    }
                     if self.saw_vendor_error && !done_frame_prefix(&raw) {
                         synthesized.extend(format_sse(&raw).into_bytes());
                     }
@@ -1977,6 +2039,23 @@ fn responses_complete_vendor_failure(target: Wire, body: &[u8]) -> Option<String
         .iter()
         .find_map(|key| response.get(*key).filter(|item| item.is_object()))?;
     vendor_error_detail(err)
+}
+
+/// Same-wire passthrough would forward `response.failed` unchanged.
+/// A leaf the terminal walk does not emit must become the vendor error
+/// instead of that original frame.
+fn responses_failed_vendor_error(
+    from: Wire,
+    raw: &RawSse,
+    profile: &ResolvedProfile,
+) -> Option<String> {
+    if from != Wire::Responses || frame_event_name(from, raw) != "response.failed" {
+        return None;
+    }
+    match crate::stream::decode_stream_events(from, raw, profile) {
+        Err(err) => Some(err.to_string()),
+        Ok(_) => None,
+    }
 }
 
 fn sse_done_frame(raw: &RawSse) -> bool {
@@ -4040,6 +4119,189 @@ anthropic-beta = "context-1m-2025-08-07"
         assert!(streamed.starts_with("event: error\n"), "{streamed}");
         assert!(streamed.contains("please wait"), "{streamed}");
         assert!(!streamed.contains("[DONE]"), "{streamed}");
+
+        let failed_text = b"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi\"}]}],\"error\":{\"code\":\"server_error\",\"message\":\"please wait\"}}}\n\n";
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"resp\"\nwire = \"responses\"\n")
+                .expect("profile");
+        let mapped = super::map_sse_bytes(responses, responses, &profile, "gpt-4o", failed_text);
+        let mapped_text = String::from_utf8(mapped).expect("utf8");
+        assert!(
+            mapped_text.contains("please wait"),
+            "stream map must return the vendor message"
+        );
+        assert!(
+            !mapped_text.contains("Hi"),
+            "stream map must not forward the dropped message text"
+        );
+
+        let delta_then_failed = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"kept\"}\n\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi\"}]}],\"error\":{\"code\":\"server_error\",\"message\":\"please wait\"}}}\n\n",
+        );
+        let passed = String::from_utf8(super::same_wire_passthrough_bytes(
+            responses,
+            delta_then_failed.as_bytes(),
+        ))
+        .expect("utf8");
+        assert!(
+            passed.contains("kept"),
+            "same-wire must keep an earlier delta in the read"
+        );
+        assert!(
+            passed.contains("please wait"),
+            "same-wire must return the vendor message"
+        );
+        assert!(
+            !passed.contains("Hi"),
+            "same-wire must not forward the dropped message text"
+        );
+
+        let eof = "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[{\"type\":\"function_call\",\"name\":\"lookup\",\"arguments\":\"{}\"}],\"error\":{\"code\":\"server_error\",\"message\":\"please wait\"}}}";
+        let flushed = String::from_utf8(super::same_wire_passthrough_bytes(
+            responses,
+            eof.as_bytes(),
+        ))
+        .expect("utf8");
+        assert!(
+            flushed.contains("please wait"),
+            "eof flush must return the vendor message"
+        );
+        assert!(
+            !flushed.contains("lookup"),
+            "eof flush must not forward the dropped tool call"
+        );
+
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"resp\"\nwire = \"responses\"\n")
+                .expect("profile");
+        let mut gate = super::SameWireGate::new(responses, profile);
+        let mut split = Vec::new();
+        let push_gate = |gate: &mut super::SameWireGate, chunk: &str, out: &mut Vec<u8>| match gate
+            .push(chunk.as_bytes())
+        {
+            Ok(super::SameWirePush::Hold) => {}
+            Ok(super::SameWirePush::Forward(bytes)) => out.extend(bytes),
+            Err(msg) => out.extend(super::dest_error_bytes(responses, msg)),
+        };
+        push_gate(
+            &mut gate,
+            concat!(
+                "event: response.output_text.delta\n",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"kept\"}\n\n",
+                "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[{\"type\":\"output_audio\",\"data\":\"SUQz\"}]"
+            ),
+            &mut split,
+        );
+        let midway = String::from_utf8(split.clone()).expect("utf8");
+        assert!(
+            midway.contains("kept"),
+            "a closed delta before a split failed frame must be sent"
+        );
+        assert!(
+            !midway.contains("SUQz"),
+            "an open failed frame must not be forwarded"
+        );
+        push_gate(
+            &mut gate,
+            ",\"error\":{\"code\":\"server_error\",\"message\":\"please wait\"}}}\n\n",
+            &mut split,
+        );
+        match gate.finish() {
+            super::SameWireEnd::Done { tail } => split.extend(tail),
+            super::SameWireEnd::Replace { message } => {
+                split.extend(super::dest_error_bytes(responses, message));
+            }
+            super::SameWireEnd::Append { tail, message } => {
+                split.extend(tail);
+                split.extend(super::dest_error_bytes(responses, message));
+            }
+            super::SameWireEnd::Promote { bytes } => split.extend(bytes),
+        }
+        let split_text = String::from_utf8(split).expect("utf8");
+        assert!(
+            split_text.contains("please wait"),
+            "the closed failed frame must become the vendor message"
+        );
+        assert!(
+            !split_text.contains("SUQz"),
+            "the split failed frame must not forward audio"
+        );
+
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"resp\"\nwire = \"responses\"\n")
+                .expect("profile");
+        let mut gate = super::SameWireGate::new(responses, profile);
+        let mut done_bytes = Vec::new();
+        let push_gate = |gate: &mut super::SameWireGate, chunk: &str, out: &mut Vec<u8>| match gate
+            .push(chunk.as_bytes())
+        {
+            Ok(super::SameWirePush::Hold) => {}
+            Ok(super::SameWirePush::Forward(bytes)) => out.extend(bytes),
+            Err(msg) => out.extend(super::dest_error_bytes(responses, msg)),
+        };
+        push_gate(
+            &mut gate,
+            "event: error\ndata: {\"type\":\"error\",\"message\":\"please wait\"}\n\ndata: [DO",
+            &mut done_bytes,
+        );
+        push_gate(&mut gate, "NE]\n\n", &mut done_bytes);
+        match gate.finish() {
+            super::SameWireEnd::Done { tail } => done_bytes.extend(tail),
+            super::SameWireEnd::Replace { message } => {
+                done_bytes.extend(super::dest_error_bytes(responses, message));
+            }
+            super::SameWireEnd::Append { tail, message } => {
+                done_bytes.extend(tail);
+                done_bytes.extend(super::dest_error_bytes(responses, message));
+            }
+            super::SameWireEnd::Promote { bytes } => done_bytes.extend(bytes),
+        }
+        let done_text = String::from_utf8(done_bytes).expect("utf8");
+        assert!(
+            done_text.contains("please wait"),
+            "a responses error frame must stay"
+        );
+        assert!(
+            !done_text.contains("[DONE]"),
+            "a split DONE after a responses error must not be forwarded"
+        );
+
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"resp\"\nwire = \"responses\"\n")
+                .expect("profile");
+        let mut gate = super::SameWireGate::new(responses, profile);
+        let mut tail_bytes = Vec::new();
+        push_gate(
+            &mut gate,
+            "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi\"}]}],\"error\":{\"message\":\"please wait\"}}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"later\"}",
+            &mut tail_bytes,
+        );
+        match gate.finish() {
+            super::SameWireEnd::Done { tail } => tail_bytes.extend(tail),
+            super::SameWireEnd::Replace { message } => {
+                tail_bytes.extend(super::dest_error_bytes(responses, message));
+            }
+            super::SameWireEnd::Append { tail, message } => {
+                tail_bytes.extend(tail);
+                tail_bytes.extend(super::dest_error_bytes(responses, message));
+            }
+            super::SameWireEnd::Promote { bytes } => tail_bytes.extend(bytes),
+        }
+        let tail_text = String::from_utf8(tail_bytes).expect("utf8");
+        assert!(
+            tail_text.contains("please wait"),
+            "the failed frame must become the vendor message"
+        );
+        assert!(
+            !tail_text.contains("later"),
+            "bytes after response.failed must not be forwarded"
+        );
+        assert!(
+            !tail_text.contains("Hi"),
+            "the dropped message text must not be forwarded"
+        );
 
         let same = super::same_wire_passthrough_bytes(responses, shell);
         let text = String::from_utf8(same).expect("utf8");

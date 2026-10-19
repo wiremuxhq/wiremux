@@ -95,6 +95,24 @@ impl UpstreamFrames {
         }
     }
 
+    /// SSE has an unfinished frame. Event Stream does not use this hold.
+    #[cfg(feature = "proxy")]
+    pub fn has_open_frame(&self) -> bool {
+        match self {
+            Self::Sse(reader) => reader.has_open_frame(),
+            Self::Event(_) => false,
+        }
+    }
+
+    /// Unfinished SSE bytes. Empty for Event Stream.
+    #[cfg(feature = "proxy")]
+    pub fn pending_wire_bytes(&self) -> Vec<u8> {
+        match self {
+            Self::Sse(reader) => reader.pending_wire_bytes(),
+            Self::Event(_) => Vec::new(),
+        }
+    }
+
     /// Trailing SSE frame, if any.
     pub fn drain(&mut self) -> Option<RawSse> {
         match self {
@@ -2502,6 +2520,26 @@ base_url = "http://127.0.0.1"
             &profile,
             "server_error: overloaded",
         );
+
+        let dropped = [
+            r#"{"type":"response.failed","response":{"status":"failed","output":[{"type":"message","content":[{"type":"output_text","text":"Hi"}]}],"error":{"code":"server_error","message":"please wait"}}}"#,
+            r#"{"type":"response.failed","response":{"status":"failed","output":[{"type":"function_call","name":"lookup","arguments":"{}"}],"error":{"code":"server_error","message":"please wait"}}}"#,
+            r#"{"type":"response.failed","response":{"status":"failed","output":[{"type":"output_audio","data":"SUQz"}],"error":{"code":"server_error","message":"please wait"}}}"#,
+        ];
+        for body in dropped {
+            assert_stream_invalid(
+                Wire::Responses,
+                &frame(Some("response.failed"), body),
+                &profile,
+                "server_error: please wait",
+            );
+            assert_stream_invalid(
+                Wire::Responses,
+                &frame(None, body),
+                &profile,
+                "server_error: please wait",
+            );
+        }
 
         let encrypted = frame(
             Some("response.failed"),
