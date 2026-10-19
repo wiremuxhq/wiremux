@@ -1577,6 +1577,101 @@ fn proxy_same_wire_chat_choices_stay_http_200() {
     assert!(resp.contains("finish_reason"), "{resp}");
 }
 
+fn upstream_json(req: &str) -> serde_json::Value {
+    let body = req.split("\r\n\r\n").nth(1).unwrap_or("");
+    serde_json::from_str(body).unwrap_or_else(|err| panic!("{err} in {req}"))
+}
+
+const MESSAGES_PONG: &str = r#"{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#;
+
+#[test]
+fn proxy_same_wire_messages_keeps_forced_tool_on_opus_55() {
+    let (resp, upstream, err) = proxy_http_exchange(ProxyExchange {
+        profile_id: "opus-same",
+        wire: "messages",
+        chat_path: Some("/v1/messages"),
+        from: "messages",
+        extra_args: &["--dump-loss"],
+        request_path: "/v1/messages",
+        request_body: r#"{"model":"claude-opus-5-5","max_tokens":16,"tool_choice":{"type":"tool","name":"get_weather","disable_parallel_tool_use":true},"messages":[{"role":"user","content":"hi"}]}"#,
+        upstream_body: MESSAGES_PONG,
+        upstream_content_type: "application/json",
+    });
+    let body = upstream_json(&upstream);
+    assert_eq!(
+        body["tool_choice"]["type"], "tool",
+        "same-wire must leave type tool, got {upstream}"
+    );
+    assert_eq!(body["tool_choice"]["name"], "get_weather", "{upstream}");
+    assert_eq!(
+        body["tool_choice"]["disable_parallel_tool_use"], true,
+        "{upstream}"
+    );
+    assert!(
+        !upstream.contains("model forces tool_choice auto"),
+        "{upstream}"
+    );
+    assert!(
+        !err.contains("model forces tool_choice auto"),
+        "dump-loss must not claim a same-wire rewrite, got {err}"
+    );
+    assert!(resp.contains("pong"), "{resp}");
+}
+
+#[test]
+fn proxy_chat_forced_tool_on_opus_55_is_sent_as_auto() {
+    let (resp, upstream, err) = proxy_http_exchange(ProxyExchange {
+        profile_id: "opus-cross",
+        wire: "messages",
+        chat_path: Some("/v1/messages"),
+        from: "chat",
+        extra_args: &["--dump-loss"],
+        request_path: "/v1/chat/completions",
+        request_body: r#"{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"function","function":{"name":"get_weather"}},"parallel_tool_calls":false}"#,
+        upstream_body: MESSAGES_PONG,
+        upstream_content_type: "application/json",
+    });
+    let body = upstream_json(&upstream);
+    assert_eq!(body["tool_choice"]["type"], "auto", "{upstream}");
+    assert!(body["tool_choice"].get("name").is_none(), "{upstream}");
+    assert_eq!(
+        body["tool_choice"]["disable_parallel_tool_use"], true,
+        "{upstream}"
+    );
+    assert!(
+        !upstream.contains("model forces tool_choice auto"),
+        "the loss line stays off the upstream body, got {upstream}"
+    );
+    assert!(
+        err.contains("degrade sampling.tool_choice: model forces tool_choice auto"),
+        "dump-loss must name the degrade, got {err}"
+    );
+    assert!(!resp.contains("model forces tool_choice auto"), "{resp}");
+    assert!(resp.contains("pong"), "{resp}");
+}
+
+#[test]
+fn proxy_chat_forced_tool_on_haiku_stays_named() {
+    let (_resp, upstream, err) = proxy_http_exchange(ProxyExchange {
+        profile_id: "haiku-cross",
+        wire: "messages",
+        chat_path: Some("/v1/messages"),
+        from: "chat",
+        extra_args: &["--dump-loss"],
+        request_path: "/v1/chat/completions",
+        request_body: r#"{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"function","function":{"name":"get_weather"}}}"#,
+        upstream_body: MESSAGES_PONG,
+        upstream_content_type: "application/json",
+    });
+    let body = upstream_json(&upstream);
+    assert_eq!(body["tool_choice"]["type"], "tool", "{upstream}");
+    assert_eq!(body["tool_choice"]["name"], "get_weather", "{upstream}");
+    assert!(
+        !err.contains("model forces tool_choice auto"),
+        "Haiku must keep the forced tool, got {err}"
+    );
+}
+
 #[test]
 fn proxy_responses_failed_message_is_vendor_error() {
     let (resp, _, _) = proxy_http_exchange(ProxyExchange {
@@ -7870,6 +7965,58 @@ fn map_chat_stdin_to_messages_prints_body() {
     assert!(parsed["messages"].is_array(), "{stdout}");
     assert!(parsed.get("max_tokens").is_some(), "{stdout}");
     assert!(stdout.contains("ping"), "{stdout}");
+}
+
+#[test]
+fn map_same_wire_messages_keeps_forced_tool_on_opus_55() {
+    let out = run_map(
+        &["map", "--from", "messages", "--to", "messages", "-"],
+        Some(
+            br#"{"model":"claude-opus-5-5","max_tokens":16,"tool_choice":{"type":"tool","name":"get_weather","disable_parallel_tool_use":true},"messages":[{"role":"user","content":"hi"}]}"#,
+        ),
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    let body: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert_eq!(body["tool_choice"]["type"], "tool", "{stdout}");
+    assert_eq!(body["tool_choice"]["name"], "get_weather", "{stdout}");
+    assert_eq!(
+        body["tool_choice"]["disable_parallel_tool_use"], true,
+        "{stdout}"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains("model forces tool_choice auto"),
+        "same-wire map must leave the forced tool, got {err}"
+    );
+}
+
+#[test]
+fn map_chat_forced_tool_on_opus_55_prints_auto() {
+    let out = run_map(
+        &["map", "--from", "chat", "--to", "messages", "-"],
+        Some(
+            br#"{"model":"claude-opus-5-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"function","function":{"name":"get_weather"}},"parallel_tool_calls":false}"#,
+        ),
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    let body: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert_eq!(body["tool_choice"]["type"], "auto", "{stdout}");
+    assert!(body["tool_choice"].get("name").is_none(), "{stdout}");
+    assert_eq!(
+        body["tool_choice"]["disable_parallel_tool_use"], true,
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("model forces tool_choice auto"),
+        "{stdout}"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("degrade sampling.tool_choice: model forces tool_choice auto"),
+        "{err}"
+    );
 }
 
 #[test]

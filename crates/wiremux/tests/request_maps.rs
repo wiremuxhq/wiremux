@@ -7,6 +7,7 @@ use serde_json::Value;
 use wiremux::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrTool, IrToolChoice,
     LossAction, LossReport, MapError, ResolvedProfile, Wire, decode, encode, parse_profile_str,
+    restore_same_wire_messages_tool_choice,
 };
 
 fn golden(name: &str) -> Vec<u8> {
@@ -7012,6 +7013,335 @@ fn dest_chat_parallel_tool_calls_false_reaches_messages() {
         !loss_dropped(&report, "sampling.parallel_tool_calls"),
         "Messages has disable_parallel_tool_use and must not Drop, got {report:?}"
     );
+}
+
+fn messages_tool_choice(model: &str, choice: IrToolChoice) -> (Value, LossReport) {
+    let ir = IrRequest::new(
+        model,
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.max_tokens = Some(16);
+        s.tool_choice = choice;
+    }));
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    (body, report)
+}
+
+fn model_forces_tool_auto(report: &LossReport) -> bool {
+    report.events.iter().any(|event| {
+        event.path == "sampling.tool_choice"
+            && event.action == LossAction::Degrade
+            && event.detail == "model forces tool_choice auto"
+    })
+}
+
+#[test]
+fn messages_forced_tool_choice_follows_claude_family() {
+    let cases = [
+        ("claude-opus-5-5", true),
+        ("CLAUDE-OPUS-5-5", true),
+        ("claude-opus-5-5-20260101", true),
+        ("claude-opus-5-5@20260101", true),
+        ("anthropic.claude-opus-5-5", true),
+        ("us.anthropic.claude-sonnet-5-5-v1:0", true),
+        (
+            "publishers/anthropic/models/claude-fable-5-1@20260101",
+            true,
+        ),
+        ("claude-mythos-5-1-20260101", true),
+        ("claude-haiku-4-5", false),
+        ("claude-haiku-5-5", false),
+        ("claude-opus-5", false),
+        ("claude-opus-5-50", false),
+        ("claude-opus-4-6", false),
+        ("claude-sonnet-4-5", false),
+        ("claude-sonnet-5", false),
+        ("claude-fable-5", false),
+        ("claude-mythos-5", false),
+        ("gpt-4o", false),
+    ];
+    for (model, relax) in cases {
+        let (body, report) = messages_tool_choice(model, IrToolChoice::Named("get_weather".into()));
+        let encoded = serde_json::to_string(&body).expect("json");
+        assert!(
+            !encoded.contains("model forces tool_choice auto"),
+            "loss stays off the HTTP body for {model}, got {encoded}"
+        );
+        if relax {
+            assert_eq!(
+                body.pointer("/tool_choice/type").and_then(Value::as_str),
+                Some("auto"),
+                "{model} must send auto, got {body}"
+            );
+            assert!(
+                body.pointer("/tool_choice/name").is_none(),
+                "{model} must drop the forced name, got {body}"
+            );
+            assert!(
+                model_forces_tool_auto(&report),
+                "{model} must degrade tool_choice, got {report:?}"
+            );
+        } else {
+            assert_eq!(
+                body.pointer("/tool_choice/type").and_then(Value::as_str),
+                Some("tool"),
+                "{model} must keep type tool, got {body}"
+            );
+            assert_eq!(
+                body.pointer("/tool_choice/name").and_then(Value::as_str),
+                Some("get_weather"),
+                "{model} must keep the tool name, got {body}"
+            );
+            assert!(
+                !model_forces_tool_auto(&report),
+                "{model} must keep the forced tool, got {report:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn messages_required_tool_on_opus_55_becomes_auto() {
+    let (body, report) = messages_tool_choice("claude-opus-5-5", IrToolChoice::Required);
+    assert_eq!(
+        body.get("tool_choice"),
+        Some(&serde_json::json!({"type": "auto"})),
+        "required must become auto with no name, got {body}"
+    );
+    assert!(model_forces_tool_auto(&report), "{report:?}");
+}
+
+#[test]
+fn messages_auto_and_none_stay_on_opus_55() {
+    let (auto_body, auto_report) = messages_tool_choice("claude-opus-5-5", IrToolChoice::Auto);
+    assert!(
+        auto_body.get("tool_choice").is_none(),
+        "auto stays omitted, got {auto_body}"
+    );
+    assert!(!model_forces_tool_auto(&auto_report), "{auto_report:?}");
+
+    let (none_body, none_report) = messages_tool_choice("claude-opus-5-5", IrToolChoice::None);
+    assert_eq!(
+        none_body
+            .pointer("/tool_choice/type")
+            .and_then(Value::as_str),
+        Some("none"),
+        "none stays none, got {none_body}"
+    );
+    assert!(!model_forces_tool_auto(&none_report), "{none_report:?}");
+}
+
+#[test]
+fn messages_opus_55_keeps_disable_parallel_on_auto() {
+    let ir = IrRequest::new(
+        "claude-opus-5-5",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.max_tokens = Some(16);
+        s.tool_choice = IrToolChoice::Named("get_weather".into());
+        s.parallel_tool_calls = Some(false);
+    }));
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("tool_choice"),
+        Some(&serde_json::json!({
+            "disable_parallel_tool_use": true,
+            "type": "auto"
+        })),
+        "parallel flag stays and the name is removed, got {body}"
+    );
+    assert!(model_forces_tool_auto(&report), "{report:?}");
+}
+
+#[test]
+fn messages_thinking_on_opus_55_records_one_tool_choice_degrade() {
+    let ir = IrRequest::new(
+        "claude-opus-5-5",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.max_tokens = Some(20_000);
+        s.include_thoughts = Some(true);
+        s.max_reasoning_tokens = Some(1024);
+        s.tool_choice = IrToolChoice::Named("get_weather".into());
+    }));
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/tool_choice/type").and_then(Value::as_str),
+        Some("auto"),
+        "{body}"
+    );
+    assert!(body.pointer("/tool_choice/name").is_none(), "{body}");
+    let details: Vec<_> = report
+        .events
+        .iter()
+        .filter(|event| event.path == "sampling.tool_choice")
+        .map(|event| event.detail.as_str())
+        .collect();
+    assert_eq!(
+        details,
+        vec!["thinking forces tool_choice auto"],
+        "thinking already rewrote the choice, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_adaptive_thinking_on_opus_55_still_relaxes_forced_tool() {
+    let ir = IrRequest::new(
+        "claude-opus-5-5",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_sampling(IrSampling::patch(|s| {
+        s.max_tokens = Some(16);
+        s.messages_thinking = Some(serde_json::json!({"type": "adaptive"}));
+        s.tool_choice = IrToolChoice::Named("get_weather".into());
+    }));
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/thinking/type").and_then(Value::as_str),
+        Some("adaptive"),
+        "{body}"
+    );
+    assert_eq!(
+        body.pointer("/tool_choice/type").and_then(Value::as_str),
+        Some("auto"),
+        "{body}"
+    );
+    assert!(model_forces_tool_auto(&report), "{report:?}");
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| event.detail == "thinking forces tool_choice auto"),
+        "adaptive thinking must not take the enabled-thinking rewrite, got {report:?}"
+    );
+}
+
+#[test]
+fn every_source_wire_relaxes_a_forced_tool_for_a_listed_family() {
+    let cases: &[(&str, Wire, &str)] = &[
+        (
+            r#"{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"function","function":{"name":"get_weather"}}}"#,
+            Wire::ChatCompletions,
+            "tool",
+        ),
+        (
+            r#"{"model":"claude-sonnet-5-5","input":"hi","tool_choice":"required"}"#,
+            Wire::Responses,
+            "any",
+        ),
+        (
+            r#"{"model":"claude-fable-5-1","contents":[{"role":"user","parts":[{"text":"hi"}]}],"toolConfig":{"functionCallingConfig":{"mode":"ANY"}}}"#,
+            Wire::Gemini,
+            "any",
+        ),
+        (
+            r#"{"modelId":"claude-mythos-5-1","messages":[{"role":"user","content":[{"text":"hi"}]}],"toolConfig":{"toolChoice":{"tool":{"name":"get_weather"}}}}"#,
+            Wire::Converse,
+            "tool",
+        ),
+    ];
+    for (raw, wire, forced) in cases {
+        let (ir, _) = decode(*wire, raw.as_bytes()).expect(raw);
+        let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect(raw);
+        let body: Value = serde_json::from_slice(&bytes).expect(raw);
+        assert_eq!(
+            body.pointer("/tool_choice/type").and_then(Value::as_str),
+            Some("auto"),
+            "{wire:?} forced {forced} must encode as auto, got {body}"
+        );
+        assert!(
+            body.pointer("/tool_choice/name").is_none(),
+            "{wire:?} must drop the name, got {body}"
+        );
+        assert!(model_forces_tool_auto(&report), "{wire:?} {report:?}");
+    }
+}
+
+#[test]
+fn same_wire_messages_keeps_a_forced_tool_on_opus_55() {
+    let raw = br#"{"model":"claude-opus-5-5","max_tokens":16,"tool_choice":{"type":"tool","name":"get_weather","disable_parallel_tool_use":true},"messages":[{"role":"user","content":"hi"}]}"#;
+    let (ir, _) = decode(Wire::Messages, raw).expect("decode");
+    let (mut bytes, mut report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let encoded: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        encoded.pointer("/tool_choice/type").and_then(Value::as_str),
+        Some("auto"),
+        "encode alone relaxes the family, got {encoded}"
+    );
+    assert!(model_forces_tool_auto(&report), "{report:?}");
+
+    restore_same_wire_messages_tool_choice(
+        Wire::ChatCompletions,
+        Wire::Messages,
+        &ir,
+        &mut bytes,
+        &mut report,
+    );
+    let still: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        still.pointer("/tool_choice/type").and_then(Value::as_str),
+        Some("auto"),
+        "a Chat source must keep the relax, got {still}"
+    );
+    assert!(model_forces_tool_auto(&report), "{report:?}");
+
+    restore_same_wire_messages_tool_choice(
+        Wire::Messages,
+        Wire::Messages,
+        &ir,
+        &mut bytes,
+        &mut report,
+    );
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("tool_choice"),
+        Some(&serde_json::json!({
+            "disable_parallel_tool_use": true,
+            "name": "get_weather",
+            "type": "tool"
+        })),
+        "same-wire Messages must send the forced tool again, got {body}"
+    );
+    assert!(
+        !model_forces_tool_auto(&report),
+        "same-wire must drop the model degrade, got {report:?}"
+    );
+}
+
+#[test]
+fn same_wire_messages_required_stays_any_on_opus_55() {
+    let raw = br#"{"model":"claude-opus-5-5","max_tokens":16,"tool_choice":{"type":"any"},"messages":[{"role":"user","content":"hi"}]}"#;
+    let (ir, _) = decode(Wire::Messages, raw).expect("decode");
+    let (mut bytes, mut report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    restore_same_wire_messages_tool_choice(
+        Wire::Messages,
+        Wire::Messages,
+        &ir,
+        &mut bytes,
+        &mut report,
+    );
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("tool_choice"),
+        Some(&serde_json::json!({"type": "any"})),
+        "{body}"
+    );
+    assert!(!model_forces_tool_auto(&report), "{report:?}");
 }
 
 #[test]

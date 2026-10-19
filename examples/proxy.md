@@ -50,6 +50,22 @@ wiremux proxy --listen 127.0.0.1:8787 --from messages --model llama3.2 --profile
 The dest stream echoes `llama3.2` because that is the model the
 proxy asked the upstream to run.
 
+Claude Opus 5.5, Sonnet 5.5, Fable 5.1, and Mythos 5.1 reject a
+forced Messages tool choice. A Chat `function` choice or a
+`required` choice for `claude-opus-5-5`, `claude-sonnet-5-5`,
+`claude-fable-5-1`, or `claude-mythos-5-1` is sent as
+`{"type":"auto"}`. The tool list stays. `disable_parallel_tool_use`
+stays when the request set it. `auto` and `none` stay as encoded.
+A dated id, a Vertex `@` date, and one `anthropic.` or `/` provider
+prefix count as that family. Haiku, and `claude-opus-5`, still
+receive the forced choice. `--dump-loss` prints
+`degrade sampling.tool_choice: model forces tool_choice auto`
+on stderr. The HTTP body stays the Messages JSON.
+
+When `--from` and the profile wire are both Messages, the proxy
+and `wiremux map` leave `type` `tool` and `type` `any` as sent.
+The vendor then returns its own status.
+
 Converse with `stream=true` uses AWS Event Stream
 (`/converse-stream`), not SSE. Bedrock auth is the AWS default
 credential chain on the profile, not a Bearer paste.

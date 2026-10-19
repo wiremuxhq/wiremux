@@ -45,7 +45,7 @@ pub use ir::{
     IrCache, IrDocumentSource, IrItem, IrPart, IrRequest, IrSampling, IrStreamEvent, IrTool,
     IrToolChoice, LossAction, LossEvent, LossReport, estimate_prompt_tokens,
 };
-pub use map::{MapError, decode, encode};
+pub use map::{MapError, decode, encode, restore_same_wire_messages_tool_choice};
 pub use stream::{
     EventStreamReader, MAX_CONTENT_BLOCK_INDEX, MAX_EVENTSTREAM_PENDING, MAX_SSE_PENDING,
     MAX_TOOL_CALL_INDEX, RawSse, SseFrameReader, StreamDecoder, StreamEncoder, ToolCallAssembler,
