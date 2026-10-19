@@ -84,6 +84,48 @@ print(tomllib.loads(path.read_text(encoding="utf-8"))["package"]["version"])
 PY
 }
 
+clear_cargo_index_cache() {
+  local home="${CARGO_HOME:-${HOME}/.cargo}"
+  rm -rf "${home}/registry/index"
+}
+
+# 0 = published, 10 = already on crates.io, else cargo's status.
+# Retries only the sparse-index lag seen on wiremux 0.11.6. Cargo's
+# local index cache can omit a version index.crates.io already lists.
+publish_with_select_retry() {
+  local crate="$1"
+  local attempt=1
+  local max="${PUBLISH_SELECT_ATTEMPTS:-6}"
+  local pause="${PUBLISH_SELECT_RETRY_SECS:-10}"
+  local st=1
+  while [ "${attempt}" -le "${max}" ]; do
+    echo "DO: ${CARGO} publish --locked -p ${crate} (attempt ${attempt}/${max})"
+    set +e
+    "${CARGO}" publish --locked -p "${crate}" >"${tmp}" 2>&1
+    st=$?
+    set -e
+    cat "${tmp}"
+    if [ "${st}" -eq 0 ]; then
+      return 0
+    fi
+    if grep -qiE 'already uploaded|already exists' "${tmp}"; then
+      return 10
+    fi
+    if grep -F 'failed to select a version for the requirement' "${tmp}" >/dev/null \
+      && [ "${attempt}" -lt "${max}" ]; then
+      echo "WAIT: cargo could not select a version (attempt ${attempt}/${max}); clearing ${CARGO_HOME:-$HOME/.cargo}/registry/index"
+      clear_cargo_index_cache
+      sleep "${pause}"
+      attempt=$((attempt + 1))
+      continue
+    fi
+    echo "FAIL: cargo publish -p ${crate} exited ${st}" >&2
+    return "${st}"
+  done
+  echo "FAIL: cargo publish -p ${crate} exited ${st}" >&2
+  return "${st}"
+}
+
 pending_crate=""
 pending_version=""
 for crate in "${CRATES[@]}"; do
@@ -138,13 +180,10 @@ for crate in "${CRATES[@]}"; do
     wait_for_index "${pending_crate}" "${pending_version}"
   fi
 
-  echo "DO: ${CARGO} publish --locked -p ${crate}"
-  set +e
-  "${CARGO}" publish --locked -p "${crate}" >"${tmp}" 2>&1
-  st=$?
-  set -e
-  cat "${tmp}"
-
+  # The helper turns errexit back on, so a non-zero return must
+  # sit in an || list or the shell exits before we can branch.
+  st=0
+  publish_with_select_retry "${crate}" || st=$?
   if [ "${st}" -eq 0 ]; then
     echo "DONE: published ${crate} ${version}"
     pending_crate="${crate}"
@@ -152,14 +191,11 @@ for crate in "${CRATES[@]}"; do
     rm -f "${tmp}"
     continue
   fi
-
-  if grep -qiE 'already uploaded|already exists' "${tmp}"; then
+  if [ "${st}" -eq 10 ]; then
     echo "OK: cargo reported already uploaded for ${crate}"
     rm -f "${tmp}"
     continue
   fi
-
-  echo "FAIL: cargo publish -p ${crate} exited ${st}" >&2
   rm -f "${tmp}"
   exit "${st}"
 done
