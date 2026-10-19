@@ -1857,6 +1857,18 @@ fn dest_error_json(from: Wire, msg: &str) -> serde_json::Value {
     }
 }
 
+/// `event: error` whose `data` is the vendor JSON, compacted to one line.
+fn same_wire_stream_error_event(body: &[u8]) -> Bytes {
+    let data = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned());
+    Bytes::from(format_sse(&RawSse {
+        event: Some("error".into()),
+        data,
+    }))
+}
+
 fn dest_error_bytes(from: Wire, msg: String) -> Bytes {
     if matches!(from, Wire::Converse) {
         let payload = dest_error_json(from, &msg).to_string();
@@ -1898,6 +1910,12 @@ fn cross_wire_vendor_failure(from: Wire, target: Wire, stream: bool, body: &[u8]
         .or_else(|| gemini_complete_vendor_failure(target, body))
         .or_else(|| converse_complete_vendor_failure(target, body))?;
     if stream {
+        // Chat's vendor object already has `type` and `code`. Rebuilding
+        // the event from `code: message` stores `code` in `type`. Responses
+        // keeps the flat `event: error` object its reader expects.
+        if target == from && matches!(from, Wire::ChatCompletions) {
+            return Some(same_wire_stream_error_event(body));
+        }
         Some(dest_error_bytes(from, detail))
     } else if target == from {
         Some(Bytes::copy_from_slice(body))
@@ -3494,6 +3512,19 @@ anthropic-beta = "context-1m-2025-08-07"
         assert!(text.starts_with("event: error\n"), "{text}");
         assert!(text.contains("rate_limit_exceeded"), "{text}");
         assert!(!text.contains("[DONE]"), "{text}");
+        let same_stream = String::from_utf8(
+            super::cross_wire_vendor_failure(responses, responses, true, body)
+                .expect("same-wire responses stream")
+                .to_vec(),
+        )
+        .expect("utf8");
+        let data = same_stream
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("responses data");
+        let value: serde_json::Value = serde_json::from_str(data).expect("responses json");
+        assert_eq!(value["message"], "please wait", "{same_stream}");
+        assert_eq!(value["code"], "rate_limit_exceeded", "{same_stream}");
 
         let wrapped = br#"{"type":"response.failed","response":{"status":"failed","error":{"code":"rate_limit_exceeded","message":"please wait"},"output":[]}}"#;
         let value: serde_json::Value = serde_json::from_slice(
@@ -3559,6 +3590,16 @@ anthropic-beta = "context-1m-2025-08-07"
         .expect("utf8");
         assert!(same_stream.starts_with("event: error\n"), "{same_stream}");
         assert!(same_stream.contains("please wait"), "{same_stream}");
+        let stream_value: serde_json::Value = serde_json::from_str(
+            same_stream
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data line"),
+        )
+        .expect("stream data json");
+        assert_eq!(stream_value["error"]["type"], "rate_limit_error");
+        assert_eq!(stream_value["error"]["code"], "rate_limit_exceeded");
+        assert_eq!(stream_value["error"]["message"], "please wait");
 
         let messages_error =
             br#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
