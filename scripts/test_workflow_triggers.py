@@ -828,6 +828,160 @@ class PublishIndexWaitTests(unittest.TestCase):
                 done.stderr,
             )
 
+    def _publish_workspace(self, directory: Path) -> None:
+        (directory / "Cargo.toml").write_text("", encoding="utf-8")
+        for name in ("wiremux-auth", "wiremux"):
+            crate = directory / "crates" / name
+            crate.mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(
+                f'[package]\nname = "{name}"\nversion = "0.11.6"\n',
+                encoding="utf-8",
+            )
+        cargo_home = directory / "cargo-home"
+        (cargo_home / "registry" / "index").mkdir(parents=True)
+        (cargo_home / "registry" / "index" / "stale").write_text(
+            "stale",
+            encoding="utf-8",
+        )
+        (cargo_home / "registry" / "cache").mkdir(parents=True)
+        (cargo_home / "registry" / "cache" / "keep").write_text(
+            "keep",
+            encoding="utf-8",
+        )
+
+    def _fake_publish_curl(self, directory: Path) -> Path:
+        path = directory / "curl"
+        path.write_text(
+            "#!/bin/bash\n"
+            "url=\"${@: -1}\"\n"
+            "for arg in \"$@\"; do\n"
+            "  if [ \"$arg\" = \"-w\" ]; then\n"
+            "    printf '404'\n"
+            "    exit 0\n"
+            "  fi\n"
+            "done\n"
+            "case \"$url\" in\n"
+            "  *index.crates.io*)\n"
+            "    printf '%s\\n' '{\"vers\":\"0.11.6\"}'\n"
+            "    exit 0\n"
+            "    ;;\n"
+            "esac\n"
+            "printf '404'\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        return path
+
+    def _fake_publish_cargo(self, directory: Path, mode: str) -> Path:
+        path = directory / "cargo"
+        path.write_text(
+            "#!/bin/bash\n"
+            "crate=\"\"\n"
+            "prev=\"\"\n"
+            "for arg in \"$@\"; do\n"
+            "  if [ \"$prev\" = \"-p\" ]; then crate=\"$arg\"; fi\n"
+            "  prev=\"$arg\"\n"
+            "done\n"
+            "printf '%s\\n' \"$crate\" >> \"$CARGO_LOG\"\n"
+            f"mode={mode}\n"
+            "if [ \"$mode\" = \"select\" ]; then\n"
+            "  if [ \"$crate\" = \"wiremux-auth\" ]; then exit 0; fi\n"
+            "  n=0\n"
+            "  if [ -f \"$CARGO_COUNT\" ]; then n=$(cat \"$CARGO_COUNT\"); fi\n"
+            "  n=$((n + 1))\n"
+            "  printf '%s\\n' \"$n\" > \"$CARGO_COUNT\"\n"
+            "  if [ \"$n\" -eq 1 ]; then\n"
+            "    if [ ! -e \"$CARGO_HOME/registry/index/stale\" ]; then exit 2; fi\n"
+            "    printf '%s\\n' 'error: failed to select a version for the requirement wiremux-auth = \"^0.11.6\"'\n"
+            "    exit 101\n"
+            "  fi\n"
+            "  if [ -e \"$CARGO_HOME/registry/index/stale\" ]; then exit 3; fi\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$mode\" = \"token\" ]; then\n"
+            "  printf '%s\\n' 'error: token rejected'\n"
+            "  exit 101\n"
+            "fi\n"
+            "printf '%s\\n' 'crate version already uploaded'\n"
+            "exit 101\n",
+            encoding="utf-8",
+        )
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        return path
+
+    def _run_publish(self, directory: Path, mode: str) -> subprocess.CompletedProcess[str]:
+        self._publish_workspace(directory)
+        cargo_home = directory / "cargo-home"
+        env = os.environ.copy()
+        env.update(
+            {
+                "CARGO": str(self._fake_publish_cargo(directory, mode)),
+                "CURL": str(self._fake_publish_curl(directory)),
+                "CARGO_HOME": str(cargo_home),
+                "CARGO_LOG": str(directory / "cargo-log"),
+                "CARGO_COUNT": str(directory / "cargo-count"),
+                "CARGO_REGISTRY_TOKEN": "test",
+                "PUBLISH_SELECT_RETRY_SECS": "0",
+                "INDEX_WAIT_SECS": "5",
+                "INDEX_POLL_SECS": "0",
+            }
+        )
+        env.pop("TAG", None)
+        env.pop("DRY_RUN", None)
+        env.pop("PUBLISH_CRATES_CMD", None)
+        return subprocess.run(
+            ["bash", str(ROOT / "scripts" / "publish-crates.sh")],
+            cwd=directory,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_select_version_failure_clears_index_cache_and_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            done = self._run_publish(directory, "select")
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            self.assertIn("OK: index lists wiremux-auth 0.11.6", done.stdout)
+            self.assertIn("WAIT:", done.stdout)
+            self.assertIn("registry/index", done.stdout)
+            self.assertIn("DONE: published wiremux 0.11.6", done.stdout)
+            log = (directory / "cargo-log").read_text(encoding="utf-8")
+            self.assertEqual(log.count("wiremux-auth\n"), 1)
+            self.assertEqual(log.count("wiremux\n"), 2)
+            cargo_home = directory / "cargo-home"
+            self.assertFalse((cargo_home / "registry" / "index" / "stale").exists())
+            self.assertTrue((cargo_home / "registry" / "cache" / "keep").exists())
+
+    def test_other_publish_errors_do_not_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            done = self._run_publish(directory, "token")
+            self.assertNotEqual(done.returncode, 0)
+            log = (directory / "cargo-log").read_text(encoding="utf-8")
+            self.assertEqual(log.strip().splitlines(), ["wiremux-auth"])
+            self.assertTrue(
+                (directory / "cargo-home" / "registry" / "index" / "stale").exists()
+            )
+            self.assertIn("FAIL: cargo publish", done.stderr)
+
+    def test_already_uploaded_does_not_retry_or_clear_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            done = self._run_publish(directory, "uploaded")
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            log = (directory / "cargo-log").read_text(encoding="utf-8")
+            self.assertEqual(
+                log.strip().splitlines(),
+                ["wiremux-auth", "wiremux"],
+            )
+            self.assertIn("already uploaded", done.stdout)
+            self.assertTrue(
+                (directory / "cargo-home" / "registry" / "index" / "stale").exists()
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
