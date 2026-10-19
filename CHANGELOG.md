@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.11.7](https://github.com/wiremuxhq/wiremux/compare/v0.11.6...v0.11.7) (2026-10-19)
+
+
+### Bug Fixes
+
+* keep chat error type and code on a stream ([#683](https://github.com/wiremuxhq/wiremux/issues/683)) ([3e0d86e](https://github.com/wiremuxhq/wiremux/commit/3e0d86ed6dc205d333626a6ba90e070288d78512))
+* keep the vendor message on a model list error object ([#681](https://github.com/wiremuxhq/wiremux/issues/681)) ([b5d5889](https://github.com/wiremuxhq/wiremux/commit/b5d588954fca64f522125f9e1be4e09a8443caac))
+* retry cargo publish when its index cache is stale ([#677](https://github.com/wiremuxhq/wiremux/issues/677)) ([bc2a74b](https://github.com/wiremuxhq/wiremux/commit/bc2a74ba2329989f6156ce17f925492e99fa2364))
+* return the vendor error when response.failed drops a leaf ([#679](https://github.com/wiremuxhq/wiremux/issues/679)) ([da88482](https://github.com/wiremuxhq/wiremux/commit/da8848299da7349a57c48c246eedf6c86d6901fc)), closes [#676](https://github.com/wiremuxhq/wiremux/issues/676)
+
 ## [0.11.6](https://github.com/wiremuxhq/wiremux/compare/v0.11.5...v0.11.6) (2026-10-18)
 
 
