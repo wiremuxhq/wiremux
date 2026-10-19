@@ -2,8 +2,15 @@
 
 `wiremux proxy` listens on `127.0.0.1` only. `localhost` in `--listen`
 is that same address. Incoming harness dialect is `--from`. Upstream
-URL, auth, and target wire come from `--profile`. The request path is
-ignored. The `model` field is forwarded unless `--model` is set.
+URL, auth, and target wire come from `--profile`. A generation
+POST ignores the request path. The `model` field is forwarded
+unless `--model` is set. A path ending in `/count_tokens` or
+`:countTokens` is a token count. The proxy forwards that count
+only when `--from` and the profile wire are both Messages, or
+both Gemini. A count across dialects is HTTP 501
+`token count is not mapped across dialects`. A count URL for
+the other of those two wires is HTTP 501
+`this count URL does not match the profile wire`.
 
 ## Run against a local Chat Completions server
 
