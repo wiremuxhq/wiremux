@@ -12,7 +12,10 @@ use wiremux::cli::{
 use wiremux::ingest::{
     CatalogKind, IngestAction, IngestRequest, fetch_catalog_url, ingest_catalog,
 };
-use wiremux::{LossAction, LossReport, Wire, decode, encode, parse_profile_str};
+use wiremux::{
+    LossAction, LossReport, Wire, decode, encode, parse_profile_str,
+    restore_same_wire_messages_tool_choice,
+};
 
 #[derive(Parser)]
 #[command(
@@ -412,13 +415,14 @@ fn cmd_map(from: &str, to: &str, file: Option<&Path>) -> i32 {
             return EXIT_ERROR;
         }
     };
-    let (body, encode_loss) = match encode(to, &ir, &profile) {
+    let (mut body, mut encode_loss) = match encode(to, &ir, &profile) {
         Ok(pair) => pair,
         Err(err) => {
             eprintln!("{err}");
             return EXIT_ERROR;
         }
     };
+    restore_same_wire_messages_tool_choice(from, to, &ir, &mut body, &mut encode_loss);
     print_loss(&encode_loss);
     let mut stdout = std::io::stdout().lock();
     if stdout.write_all(&body).is_err() || stdout.write_all(b"\n").is_err() {

@@ -1907,6 +1907,7 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     encode_thinking(s, body, report);
     omit_sampling_rejected_by_thinking(s, body, report);
+    omit_forced_tool_choice_rejected_by_model(&ir.model, body, report);
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
     }
@@ -2195,6 +2196,134 @@ fn omit_sampling_rejected_by_thinking(s: &IrSampling, body: &mut Value, report: 
             );
         }
         IrToolChoice::Auto | IrToolChoice::None => {}
+    }
+}
+
+/// Loss detail when a listed Claude family cannot take Messages `tool` or `any`.
+const MODEL_FORCES_TOOL_CHOICE_AUTO: &str = "model forces tool_choice auto";
+
+/// Families that reject Messages `tool_choice` type `tool` and `any`.
+/// A dated suffix (`claude-opus-5-5-20260101`) is the same family.
+const FORCED_TOOL_REJECTING_FAMILIES: &[&str] = &[
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-fable-5-1",
+    "claude-mythos-5-1",
+];
+
+fn messages_model_stem(model: &str) -> String {
+    let segment = model.rsplit('/').next().unwrap_or(model).trim();
+    let mut id = segment.to_ascii_lowercase();
+    if let Some(rest) = anthropic_provider_rest(&id) {
+        id = rest.to_string();
+    }
+    if let Some((stem, _)) = id.split_once('@') {
+        id = stem.trim().to_string();
+    }
+    id
+}
+
+/// One `anthropic.` provider marker, or one region label in front of it.
+fn anthropic_provider_rest(id: &str) -> Option<&str> {
+    let (prefix, rest) = id.split_once("anthropic.")?;
+    if prefix.is_empty() {
+        return Some(rest);
+    }
+    let region = prefix.strip_suffix('.')?;
+    if region.is_empty() || region.contains('.') {
+        return None;
+    }
+    Some(rest)
+}
+
+fn rejects_forced_tool_choice(model: &str) -> bool {
+    let stem = messages_model_stem(model);
+    FORCED_TOOL_REJECTING_FAMILIES.iter().any(|family| {
+        stem == *family
+            || stem
+                .strip_prefix(family)
+                .is_some_and(|rest| rest.starts_with('-'))
+    })
+}
+
+fn omit_forced_tool_choice_rejected_by_model(
+    model: &str,
+    body: &mut Value,
+    report: &mut LossReport,
+) {
+    if !rejects_forced_tool_choice(model) {
+        return;
+    }
+    let kind = body.pointer("/tool_choice/type").and_then(Value::as_str);
+    if kind != Some("tool") && kind != Some("any") {
+        return;
+    }
+    if let Some(Value::Object(choice)) = body.get_mut("tool_choice") {
+        choice.insert("type".into(), json!("auto"));
+        choice.remove("name");
+    }
+    report.record(
+        "sampling.tool_choice",
+        LossAction::Degrade,
+        MODEL_FORCES_TOOL_CHOICE_AUTO,
+    );
+}
+
+/// Put a same-wire Messages forced `tool_choice` back after [`crate::encode`].
+///
+/// Encode sends `tool` and `any` as `auto` for Claude families that reject
+/// a forced tool. A Messages client that already sent that type keeps it,
+/// and this drops the `model forces tool_choice auto` loss event.
+/// `disable_parallel_tool_use` stays. Other source wires are unchanged.
+pub fn restore_same_wire_messages_tool_choice(
+    from: crate::Wire,
+    to: crate::Wire,
+    ir: &IrRequest,
+    body: &mut Vec<u8>,
+    report: &mut LossReport,
+) {
+    if from != crate::Wire::Messages || to != crate::Wire::Messages {
+        return;
+    }
+    let Some(pos) = report.events.iter().position(|event| {
+        event.path == "sampling.tool_choice"
+            && event.action == LossAction::Degrade
+            && event.detail == MODEL_FORCES_TOOL_CHOICE_AUTO
+    }) else {
+        return;
+    };
+    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
+        return;
+    };
+    if !put_back_forced_tool_choice(&ir.sampling.tool_choice, &mut value) {
+        return;
+    }
+    let Ok(bytes) = serde_json::to_vec(&value) else {
+        return;
+    };
+    *body = bytes;
+    report.events.remove(pos);
+}
+
+fn put_back_forced_tool_choice(choice: &IrToolChoice, value: &mut Value) -> bool {
+    let Some(obj) = value.get_mut("tool_choice").and_then(Value::as_object_mut) else {
+        return true;
+    };
+    if obj.get("type").and_then(Value::as_str) != Some("auto") {
+        return true;
+    }
+    match choice {
+        IrToolChoice::Named(name) => {
+            obj.insert("type".into(), json!("tool"));
+            obj.insert("name".into(), json!(name));
+            true
+        }
+        IrToolChoice::Required => {
+            obj.insert("type".into(), json!("any"));
+            obj.remove("name");
+            true
+        }
+        IrToolChoice::Auto | IrToolChoice::None => false,
     }
 }
 

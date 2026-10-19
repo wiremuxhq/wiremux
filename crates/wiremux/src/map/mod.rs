@@ -10,6 +10,7 @@ mod tools;
 pub(crate) use converse::converse_service_tier;
 pub(crate) use gemini::{gemini_decode_service_tier, gemini_service_tier};
 pub(crate) use messages::cache_floor_tokens as messages_cache_floor_tokens;
+pub use messages::restore_same_wire_messages_tool_choice;
 
 use std::collections::BTreeMap;
 

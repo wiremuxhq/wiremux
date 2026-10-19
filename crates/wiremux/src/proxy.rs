@@ -434,10 +434,17 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
     let mut header_profile = state.profile.clone();
     let anthropic_version =
         forward_inbound_headers(&mut header_profile, &mut dec_loss, target, &inbound_headers);
-    let (encoded, enc_loss) = match encode(target, &ir, &state.profile) {
+    let (mut encoded, mut enc_loss) = match encode(target, &ir, &state.profile) {
         Ok(v) => v,
         Err(err) => return text(StatusCode::BAD_REQUEST, format!("{err}\n")),
     };
+    crate::map::restore_same_wire_messages_tool_choice(
+        state.from,
+        target,
+        &ir,
+        &mut encoded,
+        &mut enc_loss,
+    );
     if state.dump_loss {
         for event in dec_loss.lossy() {
             eprintln!("loss.decode: {event}");
