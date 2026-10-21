@@ -1062,6 +1062,14 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             bucket_owner: _,
             file_id,
         } => {
+            if url.trim().is_empty() {
+                if file_id.as_deref().is_some_and(|id| !id.trim().is_empty()) {
+                    report.record("part.image.file_id", LossAction::Drop, "no slot");
+                } else {
+                    report.record("part.image", LossAction::Drop, "image url is empty");
+                }
+                return None;
+            }
             if super::drop_image_file_id_without_url(url, file_id.as_deref(), report) {
                 return None;
             }
