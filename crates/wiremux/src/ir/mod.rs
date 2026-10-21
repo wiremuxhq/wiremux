@@ -74,7 +74,11 @@ pub struct IrSampling {
     ///
     /// Chat Completions encode may write `max_completion_tokens` and omit
     /// temperature (`LossReport`) for o1/o3/o4/gpt-5; decode accepts either key.
+    /// Chat omits logprobs for gpt-5, gpt-5-mini, and gpt-5-nano, and for
+    /// gpt-5.1 and gpt-5.2 unless reasoning effort is none. Responses does
+    /// the same for temperature, top_p, and top_logprobs.
     pub max_tokens: Option<u32>,
+    /// Chat omits stop for o3 and o4-mini.
     pub stop: Vec<String>,
     pub tool_choice: IrToolChoice,
     pub parallel_tool_calls: Option<bool>,

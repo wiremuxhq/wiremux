@@ -982,6 +982,45 @@ fn decode_input_audio_part(part: &Value) -> Option<IrPart> {
     Some(IrPart::Audio { data, format })
 }
 
+pub(crate) fn openai_model_leaf(model: &str) -> &str {
+    model.rsplit('/').next().unwrap_or(model)
+}
+
+/// Chat Completions reference: stop is not supported on o3 and o4-mini.
+pub(crate) fn chat_stop_unsupported(model: &str) -> bool {
+    let id = openai_model_leaf(model).to_ascii_lowercase();
+    let o3 = id == "o3" || (id.starts_with("o3-") && !id.starts_with("o3-mini"));
+    let o4_mini = id == "o4-mini" || id.starts_with("o4-mini-");
+    o3 || o4_mini
+}
+
+/// Older gpt-5, gpt-5-mini, and gpt-5-nano always reject temperature,
+/// top_p, and logprobs. gpt-5.1 and gpt-5.2 reject them only when
+/// reasoning effort is set to something other than none.
+pub(crate) fn gpt5_sampling_params_rejected(model: &str, effort: Option<&str>) -> bool {
+    let id = openai_model_leaf(model).to_ascii_lowercase();
+    let older = id == "gpt-5"
+        || id.starts_with("gpt-5-20")
+        || id == "gpt-5-mini"
+        || id.starts_with("gpt-5-mini-")
+        || id == "gpt-5-nano"
+        || id.starts_with("gpt-5-nano-");
+    if older {
+        return true;
+    }
+    let later = id == "gpt-5.1"
+        || id.starts_with("gpt-5.1-")
+        || id == "gpt-5.2"
+        || id.starts_with("gpt-5.2-");
+    if !later {
+        return false;
+    }
+    match effort.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => !text.eq_ignore_ascii_case("none"),
+        None => false,
+    }
+}
+
 fn json_f32(value: f32) -> Value {
     let parsed = value.to_string().parse::<f64>().unwrap_or(f64::from(value));
     serde_json::json!(parsed)
