@@ -701,7 +701,8 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 if !content_parts.is_empty() {
                     super::note_role_breakpoint(Some("explicit"), report);
                 }
-                if text.is_empty() {
+                let role_text = super::system_role_text(text, content_parts, report);
+                if role_text.is_empty() {
                     continue;
                 }
                 if !messages.is_empty() {
@@ -711,7 +712,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                         "system message moved out of the turn list",
                     );
                 }
-                system.push(json!({ "text": text }));
+                system.push(json!({ "text": role_text }));
             }
             IrItem::SystemCache { raw } => {
                 if !messages.is_empty() {

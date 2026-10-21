@@ -9535,6 +9535,342 @@ fn chat_encode_gpt_4o_keeps_top_p() {
     );
 }
 
+fn model_sampling_ir(model: &str, sampling: IrSampling) -> IrRequest {
+    IrRequest::new(
+        model,
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hi".into())],
+        }],
+    )
+    .with_sampling(sampling)
+}
+
+fn encode_chat_sampling(model: &str, sampling: IrSampling) -> (Value, LossReport) {
+    let (bytes, report) = encode(
+        Wire::ChatCompletions,
+        &model_sampling_ir(model, sampling),
+        &chat_profile(),
+    )
+    .expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    (body, report)
+}
+
+fn encode_responses_sampling(model: &str, sampling: IrSampling) -> (Value, LossReport) {
+    let (bytes, report) = encode(
+        Wire::Responses,
+        &model_sampling_ir(model, sampling),
+        &flatten_profile(),
+    )
+    .expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    (body, report)
+}
+
+fn assert_sampling_not_dropped(report: &LossReport, path: &str) {
+    assert!(
+        !loss_dropped(report, path),
+        "{path} must not Drop, got {report:?}"
+    );
+}
+
+fn assert_approx_number(body: &Value, key: &str, expect: f64) {
+    let got = body.get(key).and_then(Value::as_f64);
+    assert!(
+        got.is_some_and(|value| (value - expect).abs() < 1e-6),
+        "{key} must be {expect}, got {body}"
+    );
+}
+
+#[test]
+fn chat_o3_omits_stop() {
+    let (body, report) = encode_chat_sampling(
+        "o3",
+        IrSampling::patch(|s| {
+            s.stop = vec!["END".into()];
+        }),
+    );
+    assert!(body.get("stop").is_none(), "o3 must omit stop, got {body}");
+    assert!(
+        loss_dropped(&report, "sampling.stop"),
+        "o3 must Drop sampling.stop, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_o3_omits_stop_o4_mini() {
+    let (body, report) = encode_chat_sampling(
+        "o4-mini",
+        IrSampling::patch(|s| {
+            s.stop = vec!["END".into()];
+        }),
+    );
+    assert!(
+        body.get("stop").is_none(),
+        "o4-mini must omit stop, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.stop"),
+        "o4-mini must Drop sampling.stop, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_o3_omits_stop_provider_dated() {
+    let (body, report) = encode_chat_sampling(
+        "openai/o3-2025-04-16",
+        IrSampling::patch(|s| {
+            s.stop = vec!["END".into()];
+        }),
+    );
+    assert!(
+        body.get("stop").is_none(),
+        "dated o3 must omit stop, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.stop"),
+        "dated o3 must Drop sampling.stop, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_encode_o3_mini_keeps_stop() {
+    let (body, report) = encode_chat_sampling(
+        "o3-mini",
+        IrSampling::patch(|s| {
+            s.stop = vec!["END".into()];
+        }),
+    );
+    assert_eq!(body["stop"], serde_json::json!(["END"]));
+    assert_sampling_not_dropped(&report, "sampling.stop");
+}
+
+#[test]
+fn chat_encode_omits_stop_not_for_gpt_4o() {
+    let (body, report) = encode_chat_sampling(
+        "gpt-4o",
+        IrSampling::patch(|s| {
+            s.stop = vec!["END".into()];
+        }),
+    );
+    assert_eq!(body["stop"], serde_json::json!(["END"]));
+    assert_sampling_not_dropped(&report, "sampling.stop");
+}
+
+#[test]
+fn chat_gpt5_omits_logprobs() {
+    let (body, report) = encode_chat_sampling(
+        "gpt-5",
+        IrSampling::patch(|s| {
+            s.logprobs = Some(true);
+            s.top_logprobs = Some(2);
+        }),
+    );
+    assert!(
+        body.get("logprobs").is_none(),
+        "gpt-5 must omit logprobs, got {body}"
+    );
+    assert!(
+        body.get("top_logprobs").is_none(),
+        "gpt-5 must omit top_logprobs, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.logprobs"),
+        "gpt-5 must Drop sampling.logprobs, got {report:?}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.top_logprobs"),
+        "gpt-5 must Drop sampling.top_logprobs, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_gpt5_omits_logprobs_mini_top_only() {
+    let (body, report) = encode_chat_sampling(
+        "gpt-5-mini",
+        IrSampling::patch(|s| {
+            s.top_logprobs = Some(1);
+        }),
+    );
+    assert!(
+        body.get("logprobs").is_none(),
+        "gpt-5-mini must omit logprobs, got {body}"
+    );
+    assert!(
+        body.get("top_logprobs").is_none(),
+        "gpt-5-mini must omit top_logprobs, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.logprobs"),
+        "gpt-5-mini must Drop sampling.logprobs, got {report:?}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.top_logprobs"),
+        "gpt-5-mini must Drop sampling.top_logprobs, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_gpt5_omits_logprobs_52_high() {
+    let (body, report) = encode_chat_sampling(
+        "gpt-5.2",
+        IrSampling::patch(|s| {
+            s.reasoning_effort = Some("high".into());
+            s.logprobs = Some(true);
+        }),
+    );
+    assert!(
+        body.get("logprobs").is_none(),
+        "gpt-5.2 high effort must omit logprobs, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.logprobs"),
+        "gpt-5.2 high effort must Drop sampling.logprobs, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_gpt5_2_none_keeps_logprobs() {
+    let (body, report) = encode_chat_sampling(
+        "gpt-5.2",
+        IrSampling::patch(|s| {
+            s.reasoning_effort = Some("none".into());
+            s.logprobs = Some(true);
+            s.top_logprobs = Some(2);
+        }),
+    );
+    assert_eq!(body.get("logprobs").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        body.get("top_logprobs").and_then(Value::as_u64),
+        Some(2),
+        "gpt-5.2 effort none must keep top_logprobs, got {body}"
+    );
+    assert_sampling_not_dropped(&report, "sampling.logprobs");
+    assert_sampling_not_dropped(&report, "sampling.top_logprobs");
+}
+
+#[test]
+fn chat_gpt5_2_unset_keeps_logprobs() {
+    let (body, report) = encode_chat_sampling(
+        "gpt-5.2",
+        IrSampling::patch(|s| {
+            s.logprobs = Some(true);
+        }),
+    );
+    assert_eq!(body.get("logprobs").and_then(Value::as_bool), Some(true));
+    assert_sampling_not_dropped(&report, "sampling.logprobs");
+}
+
+#[test]
+fn chat_gpt5_4o_keeps_logprobs() {
+    let (body, report) = encode_chat_sampling(
+        "gpt-4o",
+        IrSampling::patch(|s| {
+            s.logprobs = Some(true);
+        }),
+    );
+    assert_eq!(body.get("logprobs").and_then(Value::as_bool), Some(true));
+    assert_sampling_not_dropped(&report, "sampling.logprobs");
+}
+
+#[test]
+fn responses_gpt5_omits_temperature() {
+    let (body, report) = encode_responses_sampling(
+        "gpt-5",
+        IrSampling::patch(|s| {
+            s.temperature = Some(0.2);
+        }),
+    );
+    assert!(
+        body.get("temperature").is_none(),
+        "gpt-5 Responses must omit temperature, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.temperature"),
+        "gpt-5 Responses must Drop sampling.temperature, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_gpt5_omits_temperature_nano_top_p() {
+    let (body, report) = encode_responses_sampling(
+        "gpt-5-nano",
+        IrSampling::patch(|s| {
+            s.top_p = Some(0.5);
+        }),
+    );
+    assert!(
+        body.get("top_p").is_none(),
+        "gpt-5-nano Responses must omit top_p, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.top_p"),
+        "gpt-5-nano Responses must Drop sampling.top_p, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_gpt5_omits_temperature_51_low() {
+    let (body, report) = encode_responses_sampling(
+        "gpt-5.1",
+        IrSampling::patch(|s| {
+            s.reasoning_effort = Some("low".into());
+            s.temperature = Some(0.2);
+        }),
+    );
+    assert!(
+        body.get("temperature").is_none(),
+        "gpt-5.1 low effort must omit temperature, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.temperature"),
+        "gpt-5.1 low effort must Drop sampling.temperature, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_gpt5_2_none_keeps_temperature() {
+    let (body, report) = encode_responses_sampling(
+        "gpt-5.2",
+        IrSampling::patch(|s| {
+            s.reasoning_effort = Some("none".into());
+            s.temperature = Some(0.2);
+        }),
+    );
+    assert_approx_number(&body, "temperature", 0.2);
+    assert_sampling_not_dropped(&report, "sampling.temperature");
+}
+
+#[test]
+fn responses_gpt5_omits_top_logprobs() {
+    let (body, report) = encode_responses_sampling(
+        "gpt-5",
+        IrSampling::patch(|s| {
+            s.top_logprobs = Some(3);
+        }),
+    );
+    assert!(
+        body.get("top_logprobs").is_none(),
+        "gpt-5 Responses must omit top_logprobs, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "sampling.top_logprobs"),
+        "gpt-5 Responses must Drop sampling.top_logprobs, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_gpt5_4o_keeps_temperature() {
+    let (body, report) = encode_responses_sampling(
+        "gpt-4o",
+        IrSampling::patch(|s| {
+            s.temperature = Some(0.2);
+        }),
+    );
+    assert_approx_number(&body, "temperature", 0.2);
+    assert_sampling_not_dropped(&report, "sampling.temperature");
+}
+
 #[test]
 fn messages_pdf_document_round_trips() {
     let req = br#"{
@@ -13886,5 +14222,128 @@ fn messages_image_file_id_does_not_leak_into_responses() {
     assert!(
         loss_dropped(&report, "part.raw"),
         "cross-wire file image must be recorded as dropped, got {report:?}"
+    );
+}
+
+fn system_content_parts_ir() -> IrRequest {
+    IrRequest::new(
+        "test-model",
+        vec![
+            IrItem::System {
+                text: "from-text".into(),
+                prompt_cache_breakpoint: None,
+                content_parts: vec![
+                    IrPart::ImageUrl {
+                        url: "https://example.com/a.png".into(),
+                        detail: None,
+                        bucket_owner: None,
+                        file_id: None,
+                    },
+                    IrPart::Text("from-parts".into()),
+                ],
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("go".into())],
+            },
+        ],
+    )
+}
+
+#[test]
+fn system_content_parts_messages_sends_part_text_and_drops_image() {
+    let (bytes, report) = encode(
+        Wire::Messages,
+        &system_content_parts_ir(),
+        &messages_profile(),
+    )
+    .expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let encoded = String::from_utf8(bytes).expect("utf8");
+    assert!(
+        encoded.contains("from-parts"),
+        "Messages must send the system part text, got {body}"
+    );
+    assert!(
+        !encoded.contains("from-text"),
+        "Messages must not send the separate system text copy, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.image"),
+        "Messages must Drop part.image, got {report:?}"
+    );
+}
+
+#[test]
+fn system_content_parts_gemini_sends_part_text_and_drops_image() {
+    let (bytes, report) =
+        encode(Wire::Gemini, &system_content_parts_ir(), &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/systemInstruction/parts/0/text")
+            .and_then(Value::as_str),
+        Some("from-parts"),
+        "Gemini system instruction must be the part text, got {body}"
+    );
+    let encoded = String::from_utf8(bytes).expect("utf8");
+    assert!(
+        !encoded.contains("from-text"),
+        "Gemini must not send the separate system text copy, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.image"),
+        "Gemini must Drop part.image, got {report:?}"
+    );
+}
+
+#[test]
+fn system_content_parts_converse_sends_part_text_and_drops_image() {
+    let (bytes, report) = encode(
+        Wire::Converse,
+        &system_content_parts_ir(),
+        &converse_profile(),
+    )
+    .expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/system/0/text").and_then(Value::as_str),
+        Some("from-parts"),
+        "Converse system text must be the part text, got {body}"
+    );
+    let encoded = String::from_utf8(bytes).expect("utf8");
+    assert!(
+        !encoded.contains("from-text"),
+        "Converse must not send the separate system text copy, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.image"),
+        "Converse must Drop part.image, got {report:?}"
+    );
+}
+
+#[test]
+fn system_content_parts_messages_empty_parts_keeps_text() {
+    let ir = IrRequest::new(
+        "test-model",
+        vec![
+            IrItem::System {
+                text: "from-text".into(),
+                prompt_cache_breakpoint: None,
+                content_parts: vec![],
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("go".into())],
+            },
+        ],
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("system").and_then(Value::as_str),
+        Some("from-text"),
+        "empty content_parts must still send text, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "part.image"),
+        "empty content_parts must not Drop part.image, got {report:?}"
     );
 }

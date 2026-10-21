@@ -1177,11 +1177,29 @@ fn encode_responses_request_fields(s: &IrSampling, body: &mut Value, report: &mu
 
 fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     let s = &ir.sampling;
+    let reject_gpt5_sampling =
+        super::gpt5_sampling_params_rejected(&ir.model, s.reasoning_effort.as_deref());
     if let Some(t) = s.temperature {
-        body["temperature"] = super::json_f32(t);
+        if reject_gpt5_sampling {
+            report.record(
+                "sampling.temperature",
+                LossAction::Drop,
+                "gpt-5 family Responses reject temperature unless gpt-5.1 or gpt-5.2 reasoning effort is none",
+            );
+        } else {
+            body["temperature"] = super::json_f32(t);
+        }
     }
     if let Some(p) = s.top_p {
-        body["top_p"] = super::json_f32(p);
+        if reject_gpt5_sampling {
+            report.record(
+                "sampling.top_p",
+                LossAction::Drop,
+                "gpt-5 family Responses reject top_p unless gpt-5.1 or gpt-5.2 reasoning effort is none",
+            );
+        } else {
+            body["top_p"] = super::json_f32(p);
+        }
     }
     if s.top_k.is_some() {
         report.record("sampling.top_k", LossAction::Drop, "no slot");
@@ -1277,12 +1295,20 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     }
     encode_prompt_cache_options(s, body, report);
     if let Some(n) = s.top_logprobs {
-        body["top_logprobs"] = json!(n);
-        report.record(
-            "sampling.top_logprobs",
-            LossAction::Preserve,
-            "responses top_logprobs",
-        );
+        if reject_gpt5_sampling {
+            report.record(
+                "sampling.top_logprobs",
+                LossAction::Drop,
+                "gpt-5 family Responses reject top_logprobs unless gpt-5.1 or gpt-5.2 reasoning effort is none",
+            );
+        } else {
+            body["top_logprobs"] = json!(n);
+            report.record(
+                "sampling.top_logprobs",
+                LossAction::Preserve,
+                "responses top_logprobs",
+            );
+        }
     }
     encode_moderation(s, body, report);
     if let Some(user) = s.user.as_deref().filter(|s| !s.trim().is_empty()) {

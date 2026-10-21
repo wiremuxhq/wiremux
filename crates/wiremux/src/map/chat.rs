@@ -1114,7 +1114,15 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         }
     }
     if !s.stop.is_empty() {
-        body["stop"] = json!(s.stop);
+        if super::chat_stop_unsupported(&ir.model) {
+            report.record(
+                "sampling.stop",
+                LossAction::Drop,
+                "o3 and o4-mini Chat Completions reject stop",
+            );
+        } else {
+            body["stop"] = json!(s.stop);
+        }
     }
     if let Some(fp) = s.frequency_penalty {
         body["frequency_penalty"] = super::json_f32(fp);
@@ -1176,19 +1184,36 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
         );
     }
     encode_prompt_cache_options(s, body, report);
-    if s.logprobs == Some(true) || s.top_logprobs.is_some() {
-        body["logprobs"] = json!(true);
-    }
-    if s.logprobs == Some(true) {
-        report.record("sampling.logprobs", LossAction::Preserve, "chat logprobs");
-    }
-    if let Some(n) = s.top_logprobs {
-        body["top_logprobs"] = json!(n);
+    let reject_gpt5_sampling =
+        super::gpt5_sampling_params_rejected(&ir.model, s.reasoning_effort.as_deref());
+    if reject_gpt5_sampling && (s.logprobs == Some(true) || s.top_logprobs.is_some()) {
         report.record(
-            "sampling.top_logprobs",
-            LossAction::Preserve,
-            "chat top_logprobs",
+            "sampling.logprobs",
+            LossAction::Drop,
+            "gpt-5 family Chat Completions reject logprobs unless gpt-5.1 or gpt-5.2 reasoning effort is none",
         );
+        if s.top_logprobs.is_some() {
+            report.record(
+                "sampling.top_logprobs",
+                LossAction::Drop,
+                "gpt-5 family Chat Completions reject logprobs unless gpt-5.1 or gpt-5.2 reasoning effort is none",
+            );
+        }
+    } else {
+        if s.logprobs == Some(true) || s.top_logprobs.is_some() {
+            body["logprobs"] = json!(true);
+        }
+        if s.logprobs == Some(true) {
+            report.record("sampling.logprobs", LossAction::Preserve, "chat logprobs");
+        }
+        if let Some(n) = s.top_logprobs {
+            body["top_logprobs"] = json!(n);
+            report.record(
+                "sampling.top_logprobs",
+                LossAction::Preserve,
+                "chat top_logprobs",
+            );
+        }
     }
     encode_moderation(s, body, report);
     if let Some(user) = s.user.as_deref().filter(|s| !s.trim().is_empty()) {
