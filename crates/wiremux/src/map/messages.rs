@@ -1084,6 +1084,13 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             "source": {"type": "base64", "media_type": media_type, "data": data}
         })),
         IrPart::Document {
+            source: IrDocumentSource::FileId(id),
+            ..
+        } if id.trim().is_empty() => {
+            report.record("part.document", LossAction::Drop, "file id is empty");
+            None
+        }
+        IrPart::Document {
             source: IrDocumentSource::S3 { .. },
             ..
         } => {
