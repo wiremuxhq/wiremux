@@ -585,6 +585,18 @@ pub(super) fn encode(
             "max_tokens must be at least 1",
         ));
     }
+    super::reject_sampling_number(
+        ir.sampling.temperature,
+        1.0,
+        "sampling.temperature",
+        "temperature must be between 0 and 1",
+    )?;
+    super::reject_sampling_number(
+        ir.sampling.top_p,
+        1.0,
+        "sampling.top_p",
+        "top_p must be between 0 and 1",
+    )?;
     let mut body = json!({
         "model": ir.model,
         "messages": messages,

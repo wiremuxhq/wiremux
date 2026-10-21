@@ -1132,6 +1132,20 @@ pub(super) fn kept_stop<'a>(stop: &'a [String], report: &mut LossReport) -> Vec<
     kept
 }
 
+pub(super) fn reject_sampling_number(
+    value: Option<f32>,
+    max: f32,
+    path: &str,
+    detail: &str,
+) -> Result<(), MapError> {
+    if let Some(value) = value
+        && (!value.is_finite() || !(0.0..=max).contains(&value))
+    {
+        return Err(MapError::hard(path, detail));
+    }
+    Ok(())
+}
+
 fn stop_values(value: &Value, keys: &[&str]) -> Vec<String> {
     for key in keys {
         let Some(raw) = value.get(*key) else {
