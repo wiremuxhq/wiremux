@@ -4138,6 +4138,39 @@ fn large_image_base64_at_min_cacheable_tokens_still_tags() {
 }
 
 #[test]
+fn gemini_empty_file_id_is_not_sent() {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::User {
+            parts: vec![
+                IrPart::Text("hello".into()),
+                IrPart::Document {
+                    source: IrDocumentSource::FileId("  ".into()),
+                    media_type: String::new(),
+                    name: None,
+                    citations_enabled: None,
+                    context: None,
+                },
+            ],
+        }],
+    );
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("hello") && !body.contains("fileUri"),
+        "Gemini must keep the text and omit the blank file id, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "part.document"
+                && event.action == LossAction::Drop
+                && event.detail.contains("file id is empty")
+        }),
+        "Gemini must record the empty file id, got {report:?}"
+    );
+}
+
+#[test]
 fn empty_file_id_is_not_sent() {
     let item = IrItem::User {
         parts: vec![IrPart::Document {
