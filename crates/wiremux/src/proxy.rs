@@ -545,11 +545,28 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         );
     }
     if target == state.from || !status.is_success() {
-        if target == state.from
-            && status.is_success()
-            && let Some(message) = same_wire_success_rejection(&content_type, &body)
+        if target == state.from {
+            if status.is_success()
+                && let Some(message) = same_wire_success_rejection(&content_type, &body)
+            {
+                return text(StatusCode::BAD_GATEWAY, message);
+            }
+            return bytes_response(status_from_reqwest(status), &content_type, body);
+        }
+        // A known vendor body is rewritten into the caller dialect.
+        // The upstream status stays, including 5xx. HTTP 200 vendor
+        // failures are turned into 400 above.
+        if let Some(mapped) =
+            cross_wire_vendor_failure(state.from, target, ir.sampling.stream == Some(true), &body)
         {
-            return text(StatusCode::BAD_GATEWAY, message);
+            if ir.sampling.stream == Some(true) {
+                return bytes_response(
+                    status_from_reqwest(status),
+                    dest_stream_content_type(state.from),
+                    mapped,
+                );
+            }
+            return bytes_response(status_from_reqwest(status), "application/json", mapped);
         }
         return bytes_response(status_from_reqwest(status), &content_type, body);
     }
