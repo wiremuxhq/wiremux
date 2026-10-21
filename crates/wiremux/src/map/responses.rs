@@ -818,6 +818,12 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
     let visible: Vec<&IrPart> = parts
         .iter()
         .filter(|part| match part {
+            IrPart::ImageUrl { url, file_id, .. }
+                if url.trim().is_empty() && file_id.as_deref().unwrap_or("").trim().is_empty() =>
+            {
+                report.record("part.image", LossAction::Drop, "image url is empty");
+                false
+            }
             IrPart::Thinking { .. } => {
                 report.record(
                     "part.thinking",
@@ -1019,12 +1025,16 @@ fn encode_function_output(
                 bucket_owner: _,
                 file_id,
             } => {
-                content.push(encode_input_image(
-                    url,
-                    detail.as_deref(),
-                    file_id.as_deref(),
-                ));
-                kept_structured = true;
+                if url.trim().is_empty() && file_id.as_deref().unwrap_or("").trim().is_empty() {
+                    report.record("part.image", LossAction::Drop, "image url is empty");
+                } else {
+                    content.push(encode_input_image(
+                        url,
+                        detail.as_deref(),
+                        file_id.as_deref(),
+                    ));
+                    kept_structured = true;
+                }
             }
             IrPart::ImageBase64 { media_type, data } => {
                 content.push(json!({

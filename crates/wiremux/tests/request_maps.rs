@@ -4138,6 +4138,44 @@ fn large_image_base64_at_min_cacheable_tokens_still_tags() {
 }
 
 #[test]
+fn blank_image_url_is_not_sent() {
+    let item = IrItem::User {
+        parts: vec![
+            IrPart::Text("hello".into()),
+            IrPart::ImageUrl {
+                url: "  ".into(),
+                detail: None,
+                bucket_owner: None,
+                file_id: None,
+            },
+        ],
+    };
+    for (wire, profile) in [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Responses, flatten_profile()),
+        (Wire::Messages, messages_profile()),
+    ] {
+        let ir = IrRequest::new("m", vec![item.clone()]);
+        let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("hello")
+                && !body.contains("image_url")
+                && !body.contains("\"url\":\"  \""),
+            "{wire:?} must keep the text and omit the blank image url, got {body}"
+        );
+        assert!(
+            report.events.iter().any(|event| {
+                event.path == "part.image"
+                    && event.action == LossAction::Drop
+                    && event.detail.contains("image url is empty")
+            }),
+            "{wire:?} must record the blank image url, got {report:?}"
+        );
+    }
+}
+
+#[test]
 fn gemini_empty_file_id_is_not_sent() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",
