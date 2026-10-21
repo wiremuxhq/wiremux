@@ -791,7 +791,16 @@ pub(super) fn encode(
                 }
                 let mut wire_parts = Vec::new();
                 for part in parts {
-                    if let Some(inline) = super::function_response_inline(part) {
+                    let (inner, mode) = super::peel_prompt_cache(part);
+                    if mode.is_some() {
+                        super::apply_prompt_cache(
+                            &mut serde_json::Value::Null,
+                            mode,
+                            false,
+                            report,
+                        );
+                    }
+                    if let Some(inline) = super::function_response_inline(inner) {
                         let mut blob = json!({
                             "mimeType": inline.mime,
                             "data": inline.data,
@@ -801,9 +810,9 @@ pub(super) fn encode(
                         }
                         wire_parts.push(json!({ "inlineData": blob }));
                     } else if matches!(
-                        part,
+                        inner,
                         IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. } | IrPart::Audio { .. }
-                    ) || matches!(part, IrPart::Raw { raw, .. } if raw.get("inlineData").is_some())
+                    ) || matches!(inner, IrPart::Raw { raw, .. } if raw.get("inlineData").is_some())
                     {
                         report.record(format!("items[{idx}].part"), LossAction::Drop, "no slot");
                     }
