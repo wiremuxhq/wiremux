@@ -4154,6 +4154,7 @@ fn blank_image_url_is_not_sent() {
         (Wire::ChatCompletions, chat_profile()),
         (Wire::Responses, flatten_profile()),
         (Wire::Messages, messages_profile()),
+        (Wire::Gemini, gemini_profile()),
     ] {
         let ir = IrRequest::new("m", vec![item.clone()]);
         let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
@@ -4161,7 +4162,8 @@ fn blank_image_url_is_not_sent() {
         assert!(
             body.contains("hello")
                 && !body.contains("image_url")
-                && !body.contains("\"url\":\"  \""),
+                && !body.contains("\"url\":\"  \"")
+                && !body.contains("[image:"),
             "{wire:?} must keep the text and omit the blank image url, got {body}"
         );
         assert!(
