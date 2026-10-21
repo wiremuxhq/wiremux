@@ -705,16 +705,13 @@ fn function_response_mime_allowed(mime: &str) -> bool {
 /// on Converse and become text here. When text parts are present they already
 /// carry the prose, in block order with the JSON.
 pub(super) fn function_output_text(output: &str, parts: &[IrPart]) -> String {
-    let has_text_part = parts.iter().any(|part| {
-        matches!(
-            peel_prompt_cache(part).0,
-            IrPart::Text(text) if !text.is_empty()
-        )
-    });
+    let has_text_part = parts
+        .iter()
+        .any(|part| matches!(part, IrPart::Text(text) if !text.is_empty()));
     if has_text_part {
         let mut text = String::new();
         for part in parts {
-            let piece = match peel_prompt_cache(part).0 {
+            let piece = match part {
                 IrPart::Text(piece) if !piece.is_empty() => piece.clone(),
                 IrPart::Raw { type_name, raw } if type_name == "json" => raw.to_string(),
                 _ => continue,
@@ -731,7 +728,7 @@ pub(super) fn function_output_text(output: &str, parts: &[IrPart]) -> String {
         text.push_str(output);
     }
     for part in parts {
-        if let IrPart::Raw { type_name, raw } = peel_prompt_cache(part).0
+        if let IrPart::Raw { type_name, raw } = part
             && type_name == "json"
         {
             if !text.is_empty() {

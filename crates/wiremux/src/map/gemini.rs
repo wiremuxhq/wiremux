@@ -822,8 +822,12 @@ pub(super) fn encode(
                     .rev()
                     .find_map(|(id, name)| (*id == call_id).then_some(*name))
                     .unwrap_or(call_id.as_str());
+                let peeled: Vec<IrPart> = parts
+                    .iter()
+                    .map(|part| super::peel_prompt_cache(part).0.clone())
+                    .collect();
                 let response = super::json_object_or_raw(
-                    &super::function_output_text(output, parts),
+                    &super::function_output_text(output, &peeled),
                     "functionResponse.response",
                     report,
                     "tool output is not a JSON object",
