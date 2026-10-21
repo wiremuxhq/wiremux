@@ -668,6 +668,22 @@ pub(super) fn encode(
             "max_tokens must be at least 1",
         ));
     }
+    if let Some(temperature) = ir.sampling.temperature
+        && (!temperature.is_finite() || !(0.0..=1.0).contains(&temperature))
+    {
+        return Err(MapError::hard(
+            "sampling.temperature",
+            "temperature must be between 0 and 1",
+        ));
+    }
+    if let Some(top_p) = ir.sampling.top_p
+        && (!top_p.is_finite() || !(0.0..=1.0).contains(&top_p))
+    {
+        return Err(MapError::hard(
+            "sampling.top_p",
+            "top_p must be between 0 and 1",
+        ));
+    }
     let mut body = json!({ "messages": messages });
     if let Some(system) = system {
         body["system"] = system;

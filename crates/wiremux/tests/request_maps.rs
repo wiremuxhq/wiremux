@@ -2493,6 +2493,46 @@ fn messages_empty_function_tool_name_is_a_hard_error() {
 }
 
 #[test]
+fn converse_sampling_outside_unit_interval_is_a_hard_error() {
+    let mut ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    );
+    ir.sampling.temperature = Some(1.5);
+    let err = encode(Wire::Converse, &ir, &converse_profile())
+        .expect_err("temperature above 1 must not be sent");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "sampling.temperature");
+            assert!(detail.contains("between 0 and 1"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+
+    ir.sampling.temperature = Some(1.0);
+    ir.sampling.top_p = Some(1.5);
+    let err = encode(Wire::Converse, &ir, &converse_profile())
+        .expect_err("top_p above 1 must not be sent");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "sampling.top_p");
+            assert!(detail.contains("between 0 and 1"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+
+    ir.sampling.top_p = Some(0.0);
+    let (bytes, _) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("\"temperature\":1") && body.contains("\"topP\":0"),
+        "the unit-interval bounds must still be sent, got {body}"
+    );
+}
+
+#[test]
 fn converse_zero_max_tokens_is_a_hard_error() {
     let mut ir = IrRequest::new(
         "amazon.nova-lite-v1:0",
