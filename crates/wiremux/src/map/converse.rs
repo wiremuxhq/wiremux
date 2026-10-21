@@ -1186,6 +1186,10 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
 }
 
 fn encode_image_bytes(media_type: &str, data: &str, report: &mut LossReport) -> Option<Value> {
+    if data.trim().is_empty() {
+        report.record("part.image", LossAction::Drop, "image data is empty");
+        return None;
+    }
     let Some(format) = super::converse_image_format(media_type) else {
         report.record(
             "part.image",
@@ -1229,6 +1233,10 @@ fn encode_image_url(
 }
 
 fn encode_audio(data: &str, format: &str, report: &mut LossReport) -> Option<Value> {
+    if data.trim().is_empty() {
+        report.record("part.audio", LossAction::Drop, "audio data is empty");
+        return None;
+    }
     let Some(format) = super::converse_audio_format(format) else {
         report.record(
             "part.audio",
@@ -1332,6 +1340,12 @@ fn encode_document(
             "plain text document becomes text",
         );
         return Some(json!({ "text": data }));
+    }
+    if let IrDocumentSource::Base64(data) = source
+        && data.trim().is_empty()
+    {
+        report.record("part.document", LossAction::Drop, "document data is empty");
+        return None;
     }
     let Some(format) = super::converse_document_format(media_type) else {
         report.record(

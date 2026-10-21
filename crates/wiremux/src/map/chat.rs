@@ -779,6 +779,21 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                     report.record("part.image.file_id", LossAction::Drop, "no slot");
                     false
                 }
+                IrPart::Audio { data, .. } if data.trim().is_empty() => {
+                    report.record("part.audio", LossAction::Drop, "audio data is empty");
+                    false
+                }
+                IrPart::ImageBase64 { data, .. } if data.trim().is_empty() => {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
+                    false
+                }
+                IrPart::ImageUrl { url, .. }
+                    if super::split_data_url(url)
+                        .is_some_and(|(_, data)| data.trim().is_empty()) =>
+                {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
+                    false
+                }
                 IrPart::Thinking { .. } => {
                     report.record(
                         "part.thinking",
@@ -799,6 +814,21 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                         );
                         false
                     }
+                    Some(IrPart::Audio { data, .. }) if data.trim().is_empty() => {
+                        report.record("part.audio", LossAction::Drop, "audio data is empty");
+                        false
+                    }
+                    Some(IrPart::ImageBase64 { data, .. }) if data.trim().is_empty() => {
+                        report.record("part.image", LossAction::Drop, "image data is empty");
+                        false
+                    }
+                    Some(IrPart::Document {
+                        source: IrDocumentSource::Base64(data),
+                        ..
+                    }) if data.trim().is_empty() => {
+                        report.record("part.document", LossAction::Drop, "document data is empty");
+                        false
+                    }
                     Some(_) => {
                         report.record("part.media_hint", LossAction::Drop, "no slot");
                         true
@@ -812,6 +842,13 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                         false
                     }
                 },
+                IrPart::Document {
+                    source: IrDocumentSource::Base64(data),
+                    ..
+                } if data.trim().is_empty() => {
+                    report.record("part.document", LossAction::Drop, "document data is empty");
+                    false
+                }
                 IrPart::Document {
                     source: IrDocumentSource::Url(_) | IrDocumentSource::S3 { .. },
                     ..
@@ -897,10 +934,20 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                                 name,
                                 ..
                             } => encode_document(&source, &media_type, name.as_deref(), report),
-                            IrPart::Audio { data, format } => json!({
-                                "type": "input_audio",
-                                "input_audio": { "data": data, "format": format }
-                            }),
+                            IrPart::Audio { data, format } => {
+                                if data.trim().is_empty() {
+                                    report.record(
+                                        "part.audio",
+                                        LossAction::Drop,
+                                        "audio data is empty",
+                                    );
+                                    return json!({"type": "text", "text": ""});
+                                }
+                                json!({
+                                    "type": "input_audio",
+                                    "input_audio": { "data": data, "format": format }
+                                })
+                            }
                             IrPart::Text(text) => json!({"type": "text", "text": text}),
                             _ => unreachable!("plain media"),
                         }

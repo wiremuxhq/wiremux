@@ -4178,6 +4178,164 @@ fn blank_image_url_is_not_sent() {
 }
 
 #[test]
+fn blank_audio_data_is_not_sent() {
+    let item = IrItem::User {
+        parts: vec![
+            IrPart::Text("hello".into()),
+            IrPart::Audio {
+                data: "  ".into(),
+                format: "mp3".into(),
+            },
+        ],
+    };
+    let wrapped = IrItem::User {
+        parts: vec![
+            IrPart::Text("hello".into()),
+            IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::Audio {
+                    data: "  ".into(),
+                    format: "mp3".into(),
+                }),
+            },
+        ],
+    };
+    let hinted = IrItem::User {
+        parts: vec![
+            IrPart::Text("hello".into()),
+            IrPart::Raw {
+                type_name: "inline".into(),
+                raw: serde_json::json!({
+                    "inlineData": {"mimeType": "audio/mp3", "data": "  "},
+                    "thoughtSignature": "sig"
+                }),
+            },
+        ],
+    };
+    for (wire, profile) in [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Responses, flatten_profile()),
+        (Wire::Gemini, gemini_profile()),
+        (Wire::Converse, converse_profile()),
+    ] {
+        for item in [&item, &wrapped, &hinted] {
+            let ir = IrRequest::new("m", vec![item.clone()]);
+            let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
+            let body = String::from_utf8_lossy(&bytes);
+            assert!(
+                body.contains("hello")
+                    && !body.contains("input_audio")
+                    && !body.contains("\"data\":\"  \"")
+                    && !body.contains("\"bytes\":\"  \""),
+                "{wire:?} must keep the text and omit the blank audio, got {body}"
+            );
+            assert!(
+                report.events.iter().any(|event| {
+                    event.path == "part.audio"
+                        && event.action == LossAction::Drop
+                        && event.detail.contains("audio data is empty")
+                }),
+                "{wire:?} must record the blank audio, got {report:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn blank_image_data_is_not_sent() {
+    let item = IrItem::User {
+        parts: vec![
+            IrPart::Text("hello".into()),
+            IrPart::ImageBase64 {
+                media_type: "image/png".into(),
+                data: "  ".into(),
+            },
+        ],
+    };
+    let data_url = IrItem::User {
+        parts: vec![
+            IrPart::Text("hello".into()),
+            IrPart::ImageUrl {
+                url: "data:image/png;base64,  ".into(),
+                detail: None,
+                bucket_owner: None,
+                file_id: None,
+            },
+        ],
+    };
+    for (wire, profile) in [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Responses, flatten_profile()),
+        (Wire::Messages, messages_profile()),
+        (Wire::Gemini, gemini_profile()),
+        (Wire::Converse, converse_profile()),
+    ] {
+        for item in [&item, &data_url] {
+            let ir = IrRequest::new("m", vec![item.clone()]);
+            let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
+            let body = String::from_utf8_lossy(&bytes);
+            assert!(
+                body.contains("hello")
+                    && !body.contains("base64,  ")
+                    && !body.contains("\"data\":\"  \"")
+                    && !body.contains("\"bytes\":\"  \""),
+                "{wire:?} must keep the text and omit the blank image data, got {body}"
+            );
+            assert!(
+                report.events.iter().any(|event| {
+                    event.path == "part.image"
+                        && event.action == LossAction::Drop
+                        && event.detail.contains("image data is empty")
+                }),
+                "{wire:?} must record the blank image data, got {report:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn blank_document_data_is_not_sent() {
+    let item = IrItem::User {
+        parts: vec![
+            IrPart::Text("hello".into()),
+            IrPart::Document {
+                source: IrDocumentSource::Base64("  ".into()),
+                media_type: "application/pdf".into(),
+                name: None,
+                citations_enabled: None,
+                context: None,
+            },
+        ],
+    };
+    for (wire, profile) in [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Responses, flatten_profile()),
+        (Wire::Messages, messages_profile()),
+        (Wire::Gemini, gemini_profile()),
+        (Wire::Converse, converse_profile()),
+    ] {
+        let ir = IrRequest::new("m", vec![item.clone()]);
+        let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("hello")
+                && !body.contains("base64,  ")
+                && !body.contains("\"data\":\"  \"")
+                && !body.contains("\"bytes\":\"  \""),
+            "{wire:?} must keep the text and omit the blank document, got {body}"
+        );
+        assert!(
+            report.events.iter().any(|event| {
+                event.path == "part.document"
+                    && event.action == LossAction::Drop
+                    && event.detail.contains("document data is empty")
+            }),
+            "{wire:?} must record the blank document, got {report:?}"
+        );
+    }
+}
+
+#[test]
 fn gemini_empty_file_id_is_not_sent() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",

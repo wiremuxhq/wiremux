@@ -1222,6 +1222,10 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 out.push(obj);
             }
             IrPart::ImageBase64 { media_type, data } => {
+                if data.trim().is_empty() {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
+                    continue;
+                }
                 out.push(json!({
                     "inlineData": { "mimeType": media_type, "data": data }
                 }));
@@ -1236,6 +1240,12 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                     "plain text document becomes text",
                 );
                 out.push(json!({ "text": data }));
+            }
+            IrPart::Document {
+                source: IrDocumentSource::Base64(data),
+                ..
+            } if data.trim().is_empty() => {
+                report.record("part.document", LossAction::Drop, "document data is empty");
             }
             IrPart::Document {
                 source: IrDocumentSource::FileId(id),
@@ -1257,6 +1267,10 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 source, media_type, ..
             } => out.push(encode_document(source, media_type)),
             IrPart::Audio { data, format } => {
+                if data.trim().is_empty() {
+                    report.record("part.audio", LossAction::Drop, "audio data is empty");
+                    continue;
+                }
                 out.push(json!({
                     "inlineData": {
                         "mimeType": audio_mime_from_format(format),
@@ -1265,6 +1279,30 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 }));
             }
             IrPart::Raw { raw, .. } => {
+                if raw
+                    .pointer("/inlineData/mimeType")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|mime| mime.to_ascii_lowercase().starts_with("audio/"))
+                    && raw
+                        .pointer("/inlineData/data")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|data| data.trim().is_empty())
+                {
+                    report.record("part.audio", LossAction::Drop, "audio data is empty");
+                    continue;
+                }
+                if raw
+                    .pointer("/inlineData/mimeType")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|mime| mime.to_ascii_lowercase().starts_with("image/"))
+                    && raw
+                        .pointer("/inlineData/data")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|data| data.trim().is_empty())
+                {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
+                    continue;
+                }
                 if raw.get("fileData").is_some()
                     || raw.get("fileUri").is_some()
                     || raw.get("inlineData").is_some()
@@ -1304,6 +1342,10 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 if let Some(rest) = url.strip_prefix("data:")
                     && let Some((mime, b64)) = rest.split_once(";base64,")
                 {
+                    if b64.trim().is_empty() {
+                        report.record("part.image", LossAction::Drop, "image data is empty");
+                        continue;
+                    }
                     out.push(json!({
                         "inlineData": { "mimeType": mime, "data": b64 }
                     }));
