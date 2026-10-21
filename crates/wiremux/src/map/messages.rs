@@ -1,5 +1,7 @@
 //! Anthropic Messages request map.
 
+use std::collections::HashMap;
+
 use serde_json::{Value, json};
 
 use super::tools::{PreparedTool, decode_tool};
@@ -567,7 +569,8 @@ pub(super) fn encode(
     tools: &[PreparedTool],
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
-    let (system, messages) = encode_items(ir, report);
+    let mut tool_ids = HashMap::new();
+    let (system, messages) = encode_items(ir, &mut tool_ids, report);
     // A system prompt with no turn is not a request Anthropic will accept.
     // A truly empty item list stays an empty messages array so Continue is
     // not invented onto a request that had no turns.
@@ -591,7 +594,11 @@ pub(super) fn encode(
     Ok(body)
 }
 
-fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Value) {
+fn encode_items(
+    ir: &IrRequest,
+    tool_ids: &mut HashMap<String, String>,
+    report: &mut LossReport,
+) -> (Option<Value>, Value) {
     let mut system_blocks = Vec::new();
     let mut messages = Vec::new();
     let mut idx = 0;
@@ -658,13 +665,13 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 idx += 1;
             }
             IrItem::User { parts } => {
-                let (msg, consumed) = encode_user(ir, idx, parts, report);
+                let (msg, consumed) = encode_user(ir, idx, parts, tool_ids, report);
                 push_alternating_message(&mut messages, msg, idx, report);
                 idx += consumed;
             }
             IrItem::Assistant { parts, phase } => {
                 super::drop_assistant_phase(phase, &format!("items[{idx}].phase"), report);
-                let (msg, consumed) = encode_assistant(ir, idx, parts, report);
+                let (msg, consumed) = encode_assistant(ir, idx, parts, tool_ids, report);
                 messages.push(msg);
                 idx += consumed;
             }
@@ -683,7 +690,14 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 }
                 messages.push(json!({
                     "role": "assistant",
-                    "content": [tool_use_block(call_id, name, arguments, format!("items[{idx}]"), report)],
+                    "content": [tool_use_block(
+                        call_id,
+                        name,
+                        arguments,
+                        format!("items[{idx}]"),
+                        tool_ids,
+                        report,
+                    )],
                 }));
                 idx += 1;
             }
@@ -695,7 +709,14 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
             } => {
                 messages.push(json!({
                     "role": "assistant",
-                    "content": [tool_use_block(call_id, name, input, format!("items[{idx}]"), report)],
+                    "content": [tool_use_block(
+                        call_id,
+                        name,
+                        input,
+                        format!("items[{idx}]"),
+                        tool_ids,
+                        report,
+                    )],
                 }));
                 idx += 1;
             }
@@ -713,6 +734,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                         parts,
                         *is_error,
                         format!("items[{idx}]"),
+                        tool_ids,
                         report,
                     )],
                 }));
@@ -819,6 +841,7 @@ fn encode_user(
     ir: &IrRequest,
     start: usize,
     parts: &[IrPart],
+    tool_ids: &mut HashMap<String, String>,
     report: &mut LossReport,
 ) -> (Value, usize) {
     let mut consumed = 1;
@@ -836,6 +859,7 @@ fn encode_user(
             parts,
             *is_error,
             format!("items[{}]", start + consumed),
+            tool_ids,
             report,
         ));
         consumed += 1;
@@ -853,6 +877,7 @@ fn encode_assistant(
     ir: &IrRequest,
     start: usize,
     parts: &[IrPart],
+    tool_ids: &mut HashMap<String, String>,
     report: &mut LossReport,
 ) -> (Value, usize) {
     let mut consumed = 1;
@@ -877,6 +902,7 @@ fn encode_assistant(
                     name,
                     arguments,
                     format!("items[{}]", start + consumed),
+                    tool_ids,
                     report,
                 ));
                 consumed += 1;
@@ -892,6 +918,7 @@ fn encode_assistant(
                     name,
                     input,
                     format!("items[{}]", start + consumed),
+                    tool_ids,
                     report,
                 ));
                 consumed += 1;
@@ -1536,15 +1563,14 @@ fn cacheable_user_block(part: &Value) -> bool {
 }
 
 /// Anthropic `tool_use.id` must match `^[a-zA-Z0-9_-]+$`.
+/// Consecutive underscores stay. A collision with another id in the
+/// same request gets a numeric suffix.
 fn sanitize_messages_tool_use_id(call_id: &str) -> String {
     let mut out = String::with_capacity(call_id.len().max(1));
     let mut last_underscore = false;
     for c in call_id.chars() {
         let legal = c.is_ascii_alphanumeric() || c == '_' || c == '-';
         if legal {
-            if c == '_' && last_underscore {
-                continue;
-            }
             last_underscore = c == '_';
             out.push(c);
         } else if !last_underscore {
@@ -1558,20 +1584,38 @@ fn sanitize_messages_tool_use_id(call_id: &str) -> String {
     out
 }
 
+/// First sight of `call_id` claims its sanitized form. A form already
+/// claimed by a different id gets `_2`, then `_3`, and so on.
+fn assign_messages_tool_use_id(call_id: &str, tool_ids: &mut HashMap<String, String>) -> String {
+    if let Some(existing) = tool_ids.get(call_id) {
+        return existing.clone();
+    }
+    let base = sanitize_messages_tool_use_id(call_id);
+    let mut candidate = base.clone();
+    let mut suffix = 2u64;
+    while tool_ids.values().any(|used| used == &candidate) {
+        candidate = format!("{base}_{suffix}");
+        suffix += 1;
+    }
+    tool_ids.insert(call_id.to_string(), candidate.clone());
+    candidate
+}
+
 fn rewrite_messages_tool_use_id(
     call_id: &str,
     path: impl Into<String>,
+    tool_ids: &mut HashMap<String, String>,
     report: &mut LossReport,
 ) -> String {
-    let sanitized = sanitize_messages_tool_use_id(call_id);
-    if sanitized != call_id {
+    let id = assign_messages_tool_use_id(call_id, tool_ids);
+    if id != call_id {
         report.record(
             path,
             LossAction::Degrade,
             "sanitized to Anthropic tool_use.id charset",
         );
     }
-    sanitized
+    id
 }
 
 fn tool_use_block(
@@ -1579,10 +1623,11 @@ fn tool_use_block(
     name: &str,
     arguments: &str,
     path: impl Into<String>,
+    tool_ids: &mut HashMap<String, String>,
     report: &mut LossReport,
 ) -> Value {
     let path = path.into();
-    let id = rewrite_messages_tool_use_id(call_id, path.as_str(), report);
+    let id = rewrite_messages_tool_use_id(call_id, path.as_str(), tool_ids, report);
     let input = super::json_object_or_raw(
         arguments,
         &path,
@@ -1604,9 +1649,10 @@ fn tool_result_block(
     parts: &[IrPart],
     is_error: bool,
     path: impl Into<String>,
+    tool_ids: &mut HashMap<String, String>,
     report: &mut LossReport,
 ) -> Value {
-    let id = rewrite_messages_tool_use_id(call_id, path, report);
+    let id = rewrite_messages_tool_use_id(call_id, path, tool_ids, report);
     let mut block = json!({
         "type": "tool_result",
         "tool_use_id": id,
