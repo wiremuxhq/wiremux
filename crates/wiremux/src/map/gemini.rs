@@ -1222,6 +1222,10 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 out.push(obj);
             }
             IrPart::ImageBase64 { media_type, data } => {
+                if data.trim().is_empty() {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
+                    continue;
+                }
                 out.push(json!({
                     "inlineData": { "mimeType": media_type, "data": data }
                 }));
@@ -1281,6 +1285,18 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                     report.record("part.audio", LossAction::Drop, "audio data is empty");
                     continue;
                 }
+                if raw
+                    .pointer("/inlineData/mimeType")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|mime| mime.to_ascii_lowercase().starts_with("image/"))
+                    && raw
+                        .pointer("/inlineData/data")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|data| data.trim().is_empty())
+                {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
+                    continue;
+                }
                 if raw.get("fileData").is_some()
                     || raw.get("fileUri").is_some()
                     || raw.get("inlineData").is_some()
@@ -1320,6 +1336,10 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 if let Some(rest) = url.strip_prefix("data:")
                     && let Some((mime, b64)) = rest.split_once(";base64,")
                 {
+                    if b64.trim().is_empty() {
+                        report.record("part.image", LossAction::Drop, "image data is empty");
+                        continue;
+                    }
                     out.push(json!({
                         "inlineData": { "mimeType": mime, "data": b64 }
                     }));

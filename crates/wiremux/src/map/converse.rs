@@ -1186,6 +1186,10 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
 }
 
 fn encode_image_bytes(media_type: &str, data: &str, report: &mut LossReport) -> Option<Value> {
+    if data.trim().is_empty() {
+        report.record("part.image", LossAction::Drop, "image data is empty");
+        return None;
+    }
     let Some(format) = super::converse_image_format(media_type) else {
         report.record(
             "part.image",

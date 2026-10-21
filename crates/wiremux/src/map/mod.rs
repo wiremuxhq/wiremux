@@ -895,7 +895,7 @@ pub(super) fn function_response_inline(part: &IrPart) -> Option<FunctionResponse
         }
         _ => return None,
     };
-    if data.is_empty() || !function_response_mime_allowed(&mime) {
+    if data.trim().is_empty() || !function_response_mime_allowed(&mime) {
         return None;
     }
     Some(FunctionResponseInline {

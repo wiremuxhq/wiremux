@@ -828,6 +828,16 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                 report.record("part.audio", LossAction::Drop, "audio data is empty");
                 false
             }
+            IrPart::ImageBase64 { data, .. } if data.trim().is_empty() => {
+                report.record("part.image", LossAction::Drop, "image data is empty");
+                false
+            }
+            IrPart::ImageUrl { url, .. }
+                if super::split_data_url(url).is_some_and(|(_, data)| data.trim().is_empty()) =>
+            {
+                report.record("part.image", LossAction::Drop, "image data is empty");
+                false
+            }
             IrPart::Thinking { .. } => {
                 report.record(
                     "part.thinking",
@@ -841,6 +851,11 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                     && data.trim().is_empty()
                 {
                     report.record("part.audio", LossAction::Drop, "audio data is empty");
+                    false
+                } else if let Some(IrPart::ImageBase64 { data, .. }) = super::plain_media_part(part)
+                    && data.trim().is_empty()
+                {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
                     false
                 } else if super::plain_media_part(part).is_some() {
                     report.record("part.media_hint", LossAction::Drop, "no slot");
@@ -884,11 +899,25 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                         detail,
                         bucket_owner: _,
                         file_id,
-                    } => encode_input_image(url, detail.as_deref(), file_id.as_deref()),
-                    IrPart::ImageBase64 { media_type, data } => json!({
-                        "type": "input_image",
-                        "image_url": format!("data:{media_type};base64,{data}")
-                    }),
+                    } => {
+                        if super::split_data_url(url)
+                            .is_some_and(|(_, data)| data.trim().is_empty())
+                        {
+                            report.record("part.image", LossAction::Drop, "image data is empty");
+                            return None;
+                        }
+                        encode_input_image(url, detail.as_deref(), file_id.as_deref())
+                    }
+                    IrPart::ImageBase64 { media_type, data } => {
+                        if data.trim().is_empty() {
+                            report.record("part.image", LossAction::Drop, "image data is empty");
+                            return None;
+                        }
+                        json!({
+                            "type": "input_image",
+                            "image_url": format!("data:{media_type};base64,{data}")
+                        })
+                    }
                     IrPart::Document {
                         source,
                         media_type,
@@ -908,10 +937,20 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                     IrPart::Raw { raw, .. } => {
                         if let Some(plain) = super::plain_media_part(part) {
                             match plain {
-                                IrPart::ImageBase64 { media_type, data } => json!({
-                                    "type": "input_image",
-                                    "image_url": format!("data:{media_type};base64,{data}")
-                                }),
+                                IrPart::ImageBase64 { media_type, data } => {
+                                    if data.trim().is_empty() {
+                                        report.record(
+                                            "part.image",
+                                            LossAction::Drop,
+                                            "image data is empty",
+                                        );
+                                        return None;
+                                    }
+                                    json!({
+                                        "type": "input_image",
+                                        "image_url": format!("data:{media_type};base64,{data}")
+                                    })
+                                }
                                 IrPart::Document {
                                     source,
                                     media_type,
@@ -1052,6 +1091,9 @@ fn encode_function_output(
             } => {
                 if url.trim().is_empty() && file_id.as_deref().unwrap_or("").trim().is_empty() {
                     report.record("part.image", LossAction::Drop, "image url is empty");
+                } else if super::split_data_url(url).is_some_and(|(_, data)| data.trim().is_empty())
+                {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
                 } else {
                     content.push(encode_input_image(
                         url,
@@ -1062,11 +1104,15 @@ fn encode_function_output(
                 }
             }
             IrPart::ImageBase64 { media_type, data } => {
-                content.push(json!({
-                    "type": "input_image",
-                    "image_url": format!("data:{media_type};base64,{data}")
-                }));
-                kept_structured = true;
+                if data.trim().is_empty() {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
+                } else {
+                    content.push(json!({
+                        "type": "input_image",
+                        "image_url": format!("data:{media_type};base64,{data}")
+                    }));
+                    kept_structured = true;
+                }
             }
             IrPart::Document {
                 source,

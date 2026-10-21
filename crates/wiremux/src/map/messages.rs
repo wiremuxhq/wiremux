@@ -1077,6 +1077,10 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             // Chat keeps a data URL on ImageUrl so `detail` survives.
             // Messages still wants the bytes, not a data: URL source.
             if let Some((media_type, data)) = super::split_data_url(url) {
+                if data.trim().is_empty() {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
+                    return None;
+                }
                 return Some(json!({
                     "type": "image",
                     "source": {"type": "base64", "media_type": media_type, "data": data}
@@ -1087,10 +1091,17 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
                 "source": {"type": "url", "url": url}
             }))
         }
-        IrPart::ImageBase64 { media_type, data } => Some(json!({
-            "type": "image",
-            "source": {"type": "base64", "media_type": media_type, "data": data}
-        })),
+        IrPart::ImageBase64 { media_type, data } => {
+            if data.trim().is_empty() {
+                report.record("part.image", LossAction::Drop, "image data is empty");
+                None
+            } else {
+                Some(json!({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": data}
+                }))
+            }
+        }
         IrPart::Document {
             source: IrDocumentSource::FileId(id),
             ..

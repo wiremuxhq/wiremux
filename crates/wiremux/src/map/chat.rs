@@ -783,6 +783,17 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                     report.record("part.audio", LossAction::Drop, "audio data is empty");
                     false
                 }
+                IrPart::ImageBase64 { data, .. } if data.trim().is_empty() => {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
+                    false
+                }
+                IrPart::ImageUrl { url, .. }
+                    if super::split_data_url(url)
+                        .is_some_and(|(_, data)| data.trim().is_empty()) =>
+                {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
+                    false
+                }
                 IrPart::Thinking { .. } => {
                     report.record(
                         "part.thinking",
@@ -805,6 +816,10 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                     }
                     Some(IrPart::Audio { data, .. }) if data.trim().is_empty() => {
                         report.record("part.audio", LossAction::Drop, "audio data is empty");
+                        false
+                    }
+                    Some(IrPart::ImageBase64 { data, .. }) if data.trim().is_empty() => {
+                        report.record("part.image", LossAction::Drop, "image data is empty");
                         false
                     }
                     Some(_) => {
