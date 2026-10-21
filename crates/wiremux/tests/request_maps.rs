@@ -14224,3 +14224,126 @@ fn messages_image_file_id_does_not_leak_into_responses() {
         "cross-wire file image must be recorded as dropped, got {report:?}"
     );
 }
+
+fn system_content_parts_ir() -> IrRequest {
+    IrRequest::new(
+        "test-model",
+        vec![
+            IrItem::System {
+                text: "from-text".into(),
+                prompt_cache_breakpoint: None,
+                content_parts: vec![
+                    IrPart::ImageUrl {
+                        url: "https://example.com/a.png".into(),
+                        detail: None,
+                        bucket_owner: None,
+                        file_id: None,
+                    },
+                    IrPart::Text("from-parts".into()),
+                ],
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("go".into())],
+            },
+        ],
+    )
+}
+
+#[test]
+fn system_content_parts_messages_sends_part_text_and_drops_image() {
+    let (bytes, report) = encode(
+        Wire::Messages,
+        &system_content_parts_ir(),
+        &messages_profile(),
+    )
+    .expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let encoded = String::from_utf8(bytes).expect("utf8");
+    assert!(
+        encoded.contains("from-parts"),
+        "Messages must send the system part text, got {body}"
+    );
+    assert!(
+        !encoded.contains("from-text"),
+        "Messages must not send the separate system text copy, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.image"),
+        "Messages must Drop part.image, got {report:?}"
+    );
+}
+
+#[test]
+fn system_content_parts_gemini_sends_part_text_and_drops_image() {
+    let (bytes, report) =
+        encode(Wire::Gemini, &system_content_parts_ir(), &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/systemInstruction/parts/0/text")
+            .and_then(Value::as_str),
+        Some("from-parts"),
+        "Gemini system instruction must be the part text, got {body}"
+    );
+    let encoded = String::from_utf8(bytes).expect("utf8");
+    assert!(
+        !encoded.contains("from-text"),
+        "Gemini must not send the separate system text copy, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.image"),
+        "Gemini must Drop part.image, got {report:?}"
+    );
+}
+
+#[test]
+fn system_content_parts_converse_sends_part_text_and_drops_image() {
+    let (bytes, report) = encode(
+        Wire::Converse,
+        &system_content_parts_ir(),
+        &converse_profile(),
+    )
+    .expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/system/0/text").and_then(Value::as_str),
+        Some("from-parts"),
+        "Converse system text must be the part text, got {body}"
+    );
+    let encoded = String::from_utf8(bytes).expect("utf8");
+    assert!(
+        !encoded.contains("from-text"),
+        "Converse must not send the separate system text copy, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.image"),
+        "Converse must Drop part.image, got {report:?}"
+    );
+}
+
+#[test]
+fn system_content_parts_messages_empty_parts_keeps_text() {
+    let ir = IrRequest::new(
+        "test-model",
+        vec![
+            IrItem::System {
+                text: "from-text".into(),
+                prompt_cache_breakpoint: None,
+                content_parts: vec![],
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("go".into())],
+            },
+        ],
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("system").and_then(Value::as_str),
+        Some("from-text"),
+        "empty content_parts must still send text, got {body}"
+    );
+    assert!(
+        !loss_dropped(&report, "part.image"),
+        "empty content_parts must not Drop part.image, got {report:?}"
+    );
+}

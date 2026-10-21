@@ -404,6 +404,8 @@ pub enum IrItem {
         prompt_cache_breakpoint: Option<String>,
         /// Ordered parts when a multi-part role must keep a breakpoint.
         /// Empty means `text` and `prompt_cache_breakpoint` are the whole role.
+        /// Messages, Gemini, and Converse send the text parts from this
+        /// list and drop image, document, audio, and raw parts.
         content_parts: Vec<IrPart>,
     },
     /// Converse system `cachePoint`. Other wires drop it.
@@ -425,6 +427,8 @@ pub enum IrItem {
         prompt_cache_breakpoint: Option<String>,
         /// Ordered parts when a multi-part role must keep a breakpoint.
         /// Empty means `text` and `prompt_cache_breakpoint` are the whole role.
+        /// Messages, Gemini, and Converse send the text parts from this
+        /// list and drop image, document, audio, and raw parts.
         content_parts: Vec<IrPart>,
     },
     User {

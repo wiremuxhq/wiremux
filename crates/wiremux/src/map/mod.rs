@@ -230,6 +230,52 @@ pub(super) fn note_role_breakpoint(mode: Option<&str>, report: &mut LossReport) 
     }
 }
 
+/// Text to send when a system or developer role has ordered parts.
+/// Non-text parts have no slot on Messages, Gemini, and Converse.
+pub(super) fn system_role_text(
+    text: &str,
+    content_parts: &[IrPart],
+    report: &mut LossReport,
+) -> String {
+    if content_parts.is_empty() {
+        return text.to_string();
+    }
+    let mut texts = Vec::new();
+    for part in content_parts {
+        let (inner, _) = peel_prompt_cache(part);
+        match inner {
+            IrPart::Text(value) => texts.push(value.as_str()),
+            IrPart::Thinking { text, .. } => texts.push(text.as_str()),
+            IrPart::PromptCacheBreakpoint { .. } => {}
+            IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. } => {
+                report.record(
+                    "part.image",
+                    LossAction::Drop,
+                    "system role has no image slot",
+                );
+            }
+            IrPart::Document { .. } => {
+                report.record(
+                    "part.document",
+                    LossAction::Drop,
+                    "system role has no document slot",
+                );
+            }
+            IrPart::Audio { .. } => {
+                report.record(
+                    "part.audio",
+                    LossAction::Drop,
+                    "system role has no audio slot",
+                );
+            }
+            IrPart::Raw { .. } => {
+                report.record("part.raw", LossAction::Drop, "system role has no slot");
+            }
+        }
+    }
+    texts.join("")
+}
+
 /// Responses `input_image.file_id` with no URL.
 /// Chat, Messages, Converse, and Gemini have no slot for that image.
 pub(super) fn image_file_id_without_url(url: &str, file_id: Option<&str>) -> bool {

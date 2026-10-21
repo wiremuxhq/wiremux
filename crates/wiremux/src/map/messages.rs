@@ -613,7 +613,11 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                         "system message moved out of the turn list",
                     );
                 }
-                system_blocks.push(text_block(text, false, None));
+                system_blocks.push(text_block(
+                    &super::system_role_text(text, content_parts, report),
+                    false,
+                    None,
+                ));
                 idx += 1;
             }
             IrItem::SystemCache { .. } => {
@@ -646,7 +650,11 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                     LossAction::Degrade,
                     "developer to system",
                 );
-                system_blocks.push(text_block(text, false, None));
+                system_blocks.push(text_block(
+                    &super::system_role_text(text, content_parts, report),
+                    false,
+                    None,
+                ));
                 idx += 1;
             }
             IrItem::User { parts } => {

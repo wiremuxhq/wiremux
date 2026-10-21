@@ -720,7 +720,10 @@ pub(super) fn encode(
                         "developer to systemInstruction",
                     );
                 }
-                system_parts.push(json!({ "text": text }));
+                let role_text = super::system_role_text(text, content_parts, report);
+                if !role_text.is_empty() {
+                    system_parts.push(json!({ "text": role_text }));
+                }
             }
             IrItem::User { parts } => {
                 push_encoded_turn(&mut contents, "user", parts, idx, report);
