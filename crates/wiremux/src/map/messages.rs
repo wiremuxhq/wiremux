@@ -1949,8 +1949,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if let Some(max) = s.max_tokens {
         body["max_tokens"] = json!(max);
     }
-    if !s.stop.is_empty() {
-        body["stop_sequences"] = json!(s.stop);
+    let stop = super::kept_stop(&s.stop, report);
+    if !stop.is_empty() {
+        body["stop_sequences"] = json!(stop);
     }
     encode_tool_choice(&s.tool_choice, body);
     encode_disable_parallel_tool_use(s.parallel_tool_calls, body, report);

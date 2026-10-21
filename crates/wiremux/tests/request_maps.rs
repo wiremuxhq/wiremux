@@ -4294,6 +4294,54 @@ fn blank_image_data_is_not_sent() {
 }
 
 #[test]
+fn empty_stop_sequence_is_not_sent() {
+    for (wire, profile, model) in [
+        (Wire::ChatCompletions, chat_profile(), "gpt-4o"),
+        (Wire::Messages, messages_profile(), "claude"),
+        (Wire::Gemini, gemini_profile(), "gemini-2.5-flash"),
+        (Wire::Converse, converse_profile(), "amazon.nova-lite-v1:0"),
+    ] {
+        let mut mixed = IrRequest::new(
+            model,
+            vec![IrItem::User {
+                parts: vec![IrPart::Text("hello".into())],
+            }],
+        );
+        mixed.sampling.stop = vec!["".into(), "END".into()];
+        let (bytes, report) = encode(wire, &mixed, &profile).expect("encode");
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("END") && !body.contains("\"\""),
+            "{wire:?} must keep END and omit the empty stop, got {body}"
+        );
+        assert!(
+            report.events.iter().any(|event| {
+                event.path == "sampling.stop"
+                    && event.action == LossAction::Drop
+                    && event.detail.contains("stop sequence is empty")
+            }),
+            "{wire:?} must record the empty stop, got {report:?}"
+        );
+
+        let mut only_empty = IrRequest::new(
+            model,
+            vec![IrItem::User {
+                parts: vec![IrPart::Text("hello".into())],
+            }],
+        );
+        only_empty.sampling.stop = vec!["".into()];
+        let (bytes, _) = encode(wire, &only_empty, &profile).expect("encode");
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            !body.contains("stop_sequences")
+                && !body.contains("stopSequences")
+                && !body.contains("\"stop\":"),
+            "{wire:?} must omit a stop list that is only empty, got {body}"
+        );
+    }
+}
+
+#[test]
 fn blank_document_data_is_not_sent() {
     let item = IrItem::User {
         parts: vec![

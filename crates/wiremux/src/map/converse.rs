@@ -1504,8 +1504,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if s.json_schema_strict.is_some() {
         report.record("sampling.json_schema_strict", LossAction::Drop, "no slot");
     }
-    if !s.stop.is_empty() {
-        cfg.insert("stopSequences".into(), json!(s.stop));
+    let stop = super::kept_stop(&s.stop, report);
+    if !stop.is_empty() {
+        cfg.insert("stopSequences".into(), json!(stop));
     }
     if !cfg.is_empty() {
         body["inferenceConfig"] = Value::Object(cfg);
