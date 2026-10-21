@@ -1122,6 +1122,36 @@ wire = "gemini"
 }
 
 #[test]
+fn gemini_function_output_keeps_text_inside_cache_breakpoint() {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: String::new(),
+            is_error: false,
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::Text("from-parts".into())),
+            }],
+        }],
+    );
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/functionResponse/response/result")
+            .and_then(Value::as_str),
+        Some("from-parts"),
+        "wrapped tool text must be the response, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "part.prompt_cache_breakpoint" && event.action == LossAction::Drop
+        }),
+        "breakpoint has no Gemini function-response slot, got {report:?}"
+    );
+}
+
+#[test]
 fn gemini_function_output_keeps_image_inside_cache_breakpoint() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",
