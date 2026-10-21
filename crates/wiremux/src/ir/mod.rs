@@ -124,7 +124,9 @@ pub struct IrSampling {
     /// Responses `text.format.type=json_object`, Gemini `responseMimeType=
     /// application/json` without a schema). `json_schema` wins when both are set.
     pub json_object: Option<bool>,
-    /// Responses `include` extras (file_search results, etc.). Empty default.
+    /// Responses `include`. Empty by default. Encode writes this list and
+    /// omits the field when it is empty. It does not add
+    /// `reasoning.encrypted_content`. Other dests drop a non-empty list.
     pub include: Vec<String>,
     /// OpenAI / Codex `prompt_cache_key`. Chat Completions and Responses
     /// emit it. Messages and Gemini drop.

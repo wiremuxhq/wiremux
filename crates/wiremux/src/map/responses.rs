@@ -456,20 +456,6 @@ fn decode_include(value: &Value) -> Vec<String> {
         .collect()
 }
 
-fn encode_include(extras: &[String]) -> Vec<String> {
-    const ENCRYPTED: &str = "reasoning.encrypted_content";
-    let mut include = Vec::with_capacity(extras.len() + 1);
-    if !extras.iter().any(|item| item == ENCRYPTED) {
-        include.push(ENCRYPTED.to_string());
-    }
-    for extra in extras {
-        if !include.iter().any(|item| item == extra) {
-            include.push(extra.clone());
-        }
-    }
-    include
-}
-
 fn responses_json_object(value: &Value) -> Option<bool> {
     let format = value.get("text").and_then(|t| t.get("format"))?;
     (format.get("type").and_then(Value::as_str) == Some("json_object")).then_some(true)
@@ -1355,19 +1341,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
             "responses stream_options.include_obfuscation",
         );
     }
-    let include = encode_include(&s.include);
-    if !s
-        .include
-        .iter()
-        .any(|item| item == "reasoning.encrypted_content")
-    {
-        report.record(
-            "sampling.include",
-            LossAction::Degrade,
-            "responses include adds reasoning.encrypted_content",
-        );
+    if !s.include.is_empty() {
+        body["include"] = json!(s.include);
     }
-    body["include"] = json!(include);
     if let Some(effort) = s
         .reasoning_effort
         .as_deref()

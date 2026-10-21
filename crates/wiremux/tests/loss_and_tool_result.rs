@@ -200,15 +200,18 @@ fn messages_default_max_tokens_is_degrade() {
 }
 
 #[test]
-fn responses_injected_reasoning_include_is_degrade() {
+fn responses_decoded_empty_include_stays_off_the_wire() {
     let raw = br#"{"model":"gpt-4.1","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}"#;
     let (ir, _) = decode(Wire::Responses, raw).expect("decode");
+    assert!(ir.sampling.include.is_empty(), "{ir:?}");
     let (body, report) = encode_value(Wire::Responses, &ir);
-    let include = body["include"].to_string();
-    assert!(include.contains("reasoning.encrypted_content"), "{body}");
     assert!(
-        has_action(&report, LossAction::Degrade, "include"),
-        "injected include is Degrade, got {report:?}"
+        body.get("include").is_none(),
+        "decoded empty include must omit the field, got {body}"
+    );
+    assert!(
+        !has_action(&report, LossAction::Degrade, "include"),
+        "omitted include is not a degrade, got {report:?}"
     );
 }
 
