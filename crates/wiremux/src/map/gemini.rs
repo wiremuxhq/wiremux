@@ -1238,6 +1238,12 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 out.push(json!({ "text": data }));
             }
             IrPart::Document {
+                source: IrDocumentSource::FileId(id),
+                ..
+            } if id.trim().is_empty() => {
+                report.record("part.document", LossAction::Drop, "file id is empty");
+            }
+            IrPart::Document {
                 source: IrDocumentSource::S3 { .. },
                 ..
             } => {
