@@ -544,12 +544,14 @@ pub(super) fn encode(
     if !super::gpt5_sampling_params_rejected(&ir.model, ir.sampling.reasoning_effort.as_deref()) {
         super::reject_sampling_number(
             ir.sampling.temperature,
+            0.0,
             2.0,
             "sampling.temperature",
             "temperature must be between 0 and 2",
         )?;
         super::reject_sampling_number(
             ir.sampling.top_p,
+            0.0,
             1.0,
             "sampling.top_p",
             "top_p must be between 0 and 1",

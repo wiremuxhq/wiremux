@@ -2493,6 +2493,42 @@ fn messages_empty_function_tool_name_is_a_hard_error() {
 }
 
 #[test]
+fn chat_penalty_outside_vendor_range_is_a_hard_error() {
+    let mut ir = IrRequest::new(
+        "gpt-4o",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    );
+    ir.sampling.frequency_penalty = Some(2.5);
+    let err = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect_err("frequency");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "sampling.frequency_penalty");
+            assert!(detail.contains("between -2 and 2"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+    ir.sampling.frequency_penalty = Some(-2.0);
+    ir.sampling.presence_penalty = Some(-2.5);
+    let err = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect_err("presence");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "sampling.presence_penalty");
+            assert!(detail.contains("between -2 and 2"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+    ir.sampling.presence_penalty = Some(2.0);
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("\"frequency_penalty\":-2") && body.contains("\"presence_penalty\":2"),
+        "the penalty bounds must still be sent, got {body}"
+    );
+}
+
+#[test]
 fn sampling_outside_vendor_range_is_a_hard_error() {
     let mut messages = IrRequest::new(
         "claude",
