@@ -938,6 +938,10 @@ fn encode_document(
             })
         }
         IrDocumentSource::FileId(id) => {
+            if id.trim().is_empty() {
+                report.record("part.document", LossAction::Drop, "file id is empty");
+                return json!({"type": "text", "text": ""});
+            }
             let mut file = json!({ "file_id": id });
             if let Some(name) = name.map(str::trim).filter(|s| !s.is_empty()) {
                 file["filename"] = json!(name);

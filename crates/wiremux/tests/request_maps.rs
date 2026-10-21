@@ -4138,6 +4138,40 @@ fn large_image_base64_at_min_cacheable_tokens_still_tags() {
 }
 
 #[test]
+fn empty_file_id_is_not_sent() {
+    let item = IrItem::User {
+        parts: vec![IrPart::Document {
+            source: IrDocumentSource::FileId("  ".into()),
+            media_type: String::new(),
+            name: None,
+            citations_enabled: None,
+            context: None,
+        }],
+    };
+    for (wire, profile) in [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Responses, flatten_profile()),
+        (Wire::Messages, messages_profile()),
+    ] {
+        let ir = IrRequest::new("m", vec![item.clone()]);
+        let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            !body.contains("\"file_id\":\"  \"") && !body.contains("\"file_id\":\"\""),
+            "{wire:?} must not send an empty file id, got {body}"
+        );
+        assert!(
+            report.events.iter().any(|event| {
+                event.path == "part.document"
+                    && event.action == LossAction::Drop
+                    && event.detail.contains("file id is empty")
+            }),
+            "{wire:?} must record the empty file id, got {report:?}"
+        );
+    }
+}
+
+#[test]
 fn large_document_text_at_min_cacheable_tokens_still_tags() {
     let data = "x".repeat(5000);
     let (bytes, report) = encode_floor(vec![IrItem::User {

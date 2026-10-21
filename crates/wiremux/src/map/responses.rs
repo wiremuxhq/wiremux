@@ -968,6 +968,10 @@ fn encode_document(
             obj["file_url"] = json!(url);
         }
         IrDocumentSource::FileId(id) => {
+            if id.trim().is_empty() {
+                report.record("part.document", LossAction::Drop, "file id is empty");
+                return None;
+            }
             obj["file_id"] = json!(id);
         }
     }
