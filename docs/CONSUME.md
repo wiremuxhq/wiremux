@@ -157,6 +157,15 @@ Host thinking slots and `LossReport`:
 | `include_thoughts` | `thinking.type` | `includeThoughts` | `reasoning.summary=auto` | Drop |
 | `reasoning_effort` | `output_config.effort` when the trimmed string is non-empty and `include_thoughts` is not false | `thinkingLevel` | `reasoning.effort` | `reasoning_effort` |
 
+Responses `sampling.include` is the Responses `include` array. Encode
+writes that list and omits the field when it is empty. It does not add
+`reasoning.encrypted_content`, and it does not record `sampling.include`
+for that addition. Chat Completions, Messages, Gemini, and Converse
+drop a non-empty list. Locked by
+`responses_encode_omits_unset_include`,
+`responses_encode_writes_caller_encrypted_include`, and
+`responses_encode_writes_only_caller_include`.
+
 Chat Completions and Responses emit `store`. OpenRouter Responses
 `openrouter-codex` refuses `store` (`forbidden_field_policy =
 hard-error`). Chat Completions `openrouter` does not refuse

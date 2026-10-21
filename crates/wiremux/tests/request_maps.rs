@@ -2087,7 +2087,7 @@ fn chat_skips_thinking_and_protocol_parts() {
 }
 
 #[test]
-fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
+fn responses_drops_unsigned_thinking_without_adding_include() {
     let ir = IrRequest::new(
         "gpt-5",
         vec![IrItem::Assistant {
@@ -2107,10 +2107,9 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
     );
     let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
-    assert_eq!(
-        body.get("include"),
-        Some(&serde_json::json!(["reasoning.encrypted_content"])),
-        "Responses must request encrypted reasoning, got {body}"
+    assert!(
+        body.get("include").is_none(),
+        "unset include must stay off the wire, got {body}"
     );
     let dumped = body.to_string();
     assert!(
@@ -2130,12 +2129,11 @@ fn responses_asks_for_encrypted_reasoning_and_drops_unsigned_thinking() {
         "Raw must not be dropped, got {report:?}"
     );
     assert!(
-        report.events.iter().any(|event| {
-            event.path == "sampling.include"
-                && event.action == LossAction::Degrade
-                && event.detail.contains("reasoning.encrypted_content")
-        }),
-        "injected include must be in the loss report, got {report:?}"
+        report
+            .events
+            .iter()
+            .all(|event| event.path != "sampling.include"),
+        "unset include must not record sampling.include, got {report:?}"
     );
 }
 
@@ -4559,10 +4557,9 @@ fn responses_encode_folds_effort_into_reasoning() {
         Some("high"),
         "Responses must fold effort into reasoning, got {body}"
     );
-    assert_eq!(
-        body.get("include"),
-        Some(&serde_json::json!(["reasoning.encrypted_content"])),
-        "include must stay, got {body}"
+    assert!(
+        body.get("include").is_none(),
+        "effort alone must not add include, got {body}"
     );
 }
 
@@ -11268,8 +11265,18 @@ fn responses_include_extras_survive_remap() {
     );
 }
 
+fn assert_no_include_loss(report: &LossReport) {
+    assert!(
+        report
+            .events
+            .iter()
+            .all(|event| event.path != "sampling.include"),
+        "caller include must not record sampling.include, got {report:?}"
+    );
+}
+
 #[test]
-fn responses_include_default_still_writes_encrypted_reasoning() {
+fn responses_encode_omits_unset_include() {
     let ir = IrRequest::new(
         "gpt-5",
         vec![IrItem::User {
@@ -11280,13 +11287,43 @@ fn responses_include_default_still_writes_encrypted_reasoning() {
         ir.sampling.include.is_empty(),
         "default include must be empty"
     );
-    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.get("include").is_none(),
+        "empty include must omit the field, got {body}"
+    );
+    assert_no_include_loss(&report);
+}
+
+#[test]
+fn responses_encode_writes_caller_encrypted_include() {
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include = vec!["reasoning.encrypted_content".into()];
+    }));
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
     let body: Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
         body.get("include"),
         Some(&serde_json::json!(["reasoning.encrypted_content"])),
-        "empty include must still write encrypted reasoning, got {body}"
+        "asked include must be that one entry, got {body}"
     );
+    assert_no_include_loss(&report);
+}
+
+#[test]
+fn responses_encode_writes_only_caller_include() {
+    let ir = user_ir(IrSampling::patch(|s| {
+        s.include = vec!["file_search_call.results".into()];
+    }));
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.get("include"),
+        Some(&serde_json::json!(["file_search_call.results"])),
+        "other include entries must not gain encrypted reasoning, got {body}"
+    );
+    assert_no_include_loss(&report);
 }
 
 #[test]
