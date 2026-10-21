@@ -1365,6 +1365,159 @@ chat_path = "/v1/messages"
 }
 
 #[test]
+fn proxy_maps_converse_400_into_chat_error() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"__type":"ValidationException","message":"The provided model identifier is invalid."}"#;
+        let resp = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "bedrock-proxy.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "bedrock-proxy"
+wire = "converse"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/model/{{model}}/converse"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "chat",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"model":"amazon.nova-lite-v1:0","messages":[{"role":"user","content":"hi"}]}"#;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(resp.contains("400"), "expected 400, got: {resp}");
+    assert!(
+        resp.contains("The provided model identifier is invalid."),
+        "expected the vendor message, got: {resp}"
+    );
+    assert!(
+        resp.contains("\"error\""),
+        "expected a Chat error, got: {resp}"
+    );
+    assert!(
+        !resp.contains("__type"),
+        "Converse __type must not reach a Chat host, got: {resp}"
+    );
+}
+
+#[test]
+fn proxy_keeps_same_wire_converse_400_raw() {
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("addr");
+    let upstream_thread = std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().expect("accept");
+        let mut buf = [0u8; 8192];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"__type":"ValidationException","message":"The provided model identifier is invalid."}"#;
+        let resp = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+
+    let dir = unique_scratch();
+    let profile = write_profile(
+        &dir,
+        "bedrock-proxy.toml",
+        &format!(
+            r#"
+schema_version = 1
+id = "bedrock-proxy"
+wire = "converse"
+auth_scheme = "none"
+base_url = "http://{upstream_addr}"
+chat_path = "/model/{{model}}/converse"
+"#
+        ),
+    );
+
+    let (_home, mut cmd) = isolated_home();
+    let mut child = cmd
+        .args([
+            "proxy",
+            "--listen",
+            "127.0.0.1:0",
+            "--from",
+            "converse",
+            "--profile",
+            profile.to_str().expect("utf8"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn proxy");
+
+    let listen = read_listen_addr(child.stdout.as_mut().expect("stdout"));
+    let body = r#"{"messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
+    let req = format!(
+        "POST /model/amazon.nova-lite-v1:0/converse HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut client = TcpStream::connect(listen).expect("connect proxy");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    client.write_all(req.as_bytes()).expect("write");
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream_thread.join().expect("upstream");
+    assert!(
+        resp.contains("__type"),
+        "same-wire Converse 400 must stay raw, got: {resp}"
+    );
+    assert!(
+        resp.contains("The provided model identifier is invalid."),
+        "same-wire Converse 400 must keep the vendor message, got: {resp}"
+    );
+}
+
+#[test]
 fn proxy_cross_wire_responses_failed_is_chat_error() {
     let upstream = TcpListener::bind("127.0.0.1:0").expect("upstream bind");
     let upstream_addr = upstream.local_addr().expect("addr");
