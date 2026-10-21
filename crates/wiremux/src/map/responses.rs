@@ -824,6 +824,10 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                 report.record("part.image", LossAction::Drop, "image url is empty");
                 false
             }
+            IrPart::Audio { data, .. } if data.trim().is_empty() => {
+                report.record("part.audio", LossAction::Drop, "audio data is empty");
+                false
+            }
             IrPart::Thinking { .. } => {
                 report.record(
                     "part.thinking",
@@ -833,7 +837,12 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                 false
             }
             IrPart::Raw { raw, .. } => {
-                if super::plain_media_part(part).is_some() {
+                if let Some(IrPart::Audio { data, .. }) = super::plain_media_part(part)
+                    && data.trim().is_empty()
+                {
+                    report.record("part.audio", LossAction::Drop, "audio data is empty");
+                    false
+                } else if super::plain_media_part(part).is_some() {
                     report.record("part.media_hint", LossAction::Drop, "no slot");
                     true
                 } else if messages_file_image_raw(raw) {
@@ -886,10 +895,16 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                         name,
                         ..
                     } => encode_document(source, media_type, name.as_deref(), text_ty, report)?,
-                    IrPart::Audio { data, format } => json!({
-                        "type": "input_audio",
-                        "input_audio": { "data": data, "format": format }
-                    }),
+                    IrPart::Audio { data, format } => {
+                        if data.trim().is_empty() {
+                            report.record("part.audio", LossAction::Drop, "audio data is empty");
+                            return None;
+                        }
+                        json!({
+                            "type": "input_audio",
+                            "input_audio": { "data": data, "format": format }
+                        })
+                    }
                     IrPart::Raw { raw, .. } => {
                         if let Some(plain) = super::plain_media_part(part) {
                             match plain {
@@ -909,10 +924,20 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                                     text_ty,
                                     report,
                                 )?,
-                                IrPart::Audio { data, format } => json!({
-                                    "type": "input_audio",
-                                    "input_audio": { "data": data, "format": format }
-                                }),
+                                IrPart::Audio { data, format } => {
+                                    if data.trim().is_empty() {
+                                        report.record(
+                                            "part.audio",
+                                            LossAction::Drop,
+                                            "audio data is empty",
+                                        );
+                                        return None;
+                                    }
+                                    json!({
+                                        "type": "input_audio",
+                                        "input_audio": { "data": data, "format": format }
+                                    })
+                                }
                                 IrPart::Text(text) => json!({"type": text_ty, "text": text}),
                                 _ => raw.clone(),
                             }

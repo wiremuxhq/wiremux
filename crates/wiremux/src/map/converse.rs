@@ -1229,6 +1229,10 @@ fn encode_image_url(
 }
 
 fn encode_audio(data: &str, format: &str, report: &mut LossReport) -> Option<Value> {
+    if data.trim().is_empty() {
+        report.record("part.audio", LossAction::Drop, "audio data is empty");
+        return None;
+    }
     let Some(format) = super::converse_audio_format(format) else {
         report.record(
             "part.audio",

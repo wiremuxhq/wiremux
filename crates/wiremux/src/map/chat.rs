@@ -779,6 +779,10 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                     report.record("part.image.file_id", LossAction::Drop, "no slot");
                     false
                 }
+                IrPart::Audio { data, .. } if data.trim().is_empty() => {
+                    report.record("part.audio", LossAction::Drop, "audio data is empty");
+                    false
+                }
                 IrPart::Thinking { .. } => {
                     report.record(
                         "part.thinking",
@@ -797,6 +801,10 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                             LossAction::Drop,
                             "document url has no Chat Completions slot",
                         );
+                        false
+                    }
+                    Some(IrPart::Audio { data, .. }) if data.trim().is_empty() => {
+                        report.record("part.audio", LossAction::Drop, "audio data is empty");
                         false
                     }
                     Some(_) => {
@@ -897,10 +905,20 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                                 name,
                                 ..
                             } => encode_document(&source, &media_type, name.as_deref(), report),
-                            IrPart::Audio { data, format } => json!({
-                                "type": "input_audio",
-                                "input_audio": { "data": data, "format": format }
-                            }),
+                            IrPart::Audio { data, format } => {
+                                if data.trim().is_empty() {
+                                    report.record(
+                                        "part.audio",
+                                        LossAction::Drop,
+                                        "audio data is empty",
+                                    );
+                                    return json!({"type": "text", "text": ""});
+                                }
+                                json!({
+                                    "type": "input_audio",
+                                    "input_audio": { "data": data, "format": format }
+                                })
+                            }
                             IrPart::Text(text) => json!({"type": "text", "text": text}),
                             _ => unreachable!("plain media"),
                         }

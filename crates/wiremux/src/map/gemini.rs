@@ -1257,6 +1257,10 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 source, media_type, ..
             } => out.push(encode_document(source, media_type)),
             IrPart::Audio { data, format } => {
+                if data.trim().is_empty() {
+                    report.record("part.audio", LossAction::Drop, "audio data is empty");
+                    continue;
+                }
                 out.push(json!({
                     "inlineData": {
                         "mimeType": audio_mime_from_format(format),
@@ -1265,6 +1269,18 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 }));
             }
             IrPart::Raw { raw, .. } => {
+                if raw
+                    .pointer("/inlineData/mimeType")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|mime| mime.to_ascii_lowercase().starts_with("audio/"))
+                    && raw
+                        .pointer("/inlineData/data")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|data| data.trim().is_empty())
+                {
+                    report.record("part.audio", LossAction::Drop, "audio data is empty");
+                    continue;
+                }
                 if raw.get("fileData").is_some()
                     || raw.get("fileUri").is_some()
                     || raw.get("inlineData").is_some()
