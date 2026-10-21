@@ -5691,6 +5691,195 @@ fn messages_sanitizes_gemini_shaped_tool_use_id() {
 }
 
 #[test]
+fn messages_keeps_consecutive_underscores_in_tool_use_id() {
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![
+            IrItem::FunctionCall {
+                call_id: "a__b".into(),
+                name: "lookup".into(),
+                arguments: "{}".into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionOutput {
+                call_id: "a__b".into(),
+                output: "ok".into(),
+                parts: Vec::new(),
+                is_error: false,
+            },
+        ],
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/id")
+            .and_then(Value::as_str),
+        Some("a__b"),
+        "tool_use.id must keep consecutive underscores, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/1/content/0/tool_use_id")
+            .and_then(Value::as_str),
+        Some("a__b"),
+        "tool_result.tool_use_id must keep the same id, got {body}"
+    );
+    assert!(
+        !loss_degraded(&report, "items[0]"),
+        "a legal id must not record Degrade, got {report:?}"
+    );
+    assert!(
+        !loss_degraded(&report, "items[1]"),
+        "a legal tool result id must not record Degrade, got {report:?}"
+    );
+}
+
+#[test]
+fn messages_keeps_distinct_tool_ids_that_share_a_sanitized_form() {
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![
+            IrItem::FunctionCall {
+                call_id: "a__b".into(),
+                name: "lookup".into(),
+                arguments: "{}".into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionOutput {
+                call_id: "a__b".into(),
+                output: "ok".into(),
+                parts: Vec::new(),
+                is_error: false,
+            },
+            IrItem::FunctionCall {
+                call_id: "a_b".into(),
+                name: "lookup".into(),
+                arguments: "{}".into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionOutput {
+                call_id: "a_b".into(),
+                output: "ok".into(),
+                parts: Vec::new(),
+                is_error: false,
+            },
+        ],
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let first = body
+        .pointer("/messages/0/content/0/id")
+        .and_then(Value::as_str);
+    let second = body
+        .pointer("/messages/2/content/0/id")
+        .and_then(Value::as_str);
+    assert_eq!(first, Some("a__b"), "first call id, got {body}");
+    assert_eq!(second, Some("a_b"), "second call id, got {body}");
+    assert_ne!(
+        first, second,
+        "distinct legal ids must stay distinct, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/1/content/0/tool_use_id")
+            .and_then(Value::as_str),
+        Some("a__b"),
+        "first tool result, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/3/content/0/tool_use_id")
+            .and_then(Value::as_str),
+        Some("a_b"),
+        "second tool result, got {body}"
+    );
+}
+
+#[test]
+fn messages_disambiguates_tool_ids_that_sanitize_to_the_same_string() {
+    let ir = IrRequest::new(
+        "claude-opus-4-6",
+        vec![
+            IrItem::FunctionCall {
+                call_id: "run_1".into(),
+                name: "lookup".into(),
+                arguments: "{}".into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionOutput {
+                call_id: "run_1".into(),
+                output: "ok".into(),
+                parts: Vec::new(),
+                is_error: false,
+            },
+            IrItem::FunctionCall {
+                call_id: "run#1".into(),
+                name: "lookup".into(),
+                arguments: "{}".into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionOutput {
+                call_id: "run#1".into(),
+                output: "ok".into(),
+                parts: Vec::new(),
+                is_error: false,
+            },
+        ],
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let text = std::str::from_utf8(&bytes).expect("utf8");
+    assert!(
+        text.contains("\"run_1\""),
+        "body must contain run_1, got {text}"
+    );
+    assert!(
+        text.contains("\"run_1_2\""),
+        "body must contain run_1_2, got {text}"
+    );
+    let rewritten_call = body
+        .pointer("/messages/2/content/0/id")
+        .and_then(Value::as_str);
+    let rewritten_result = body
+        .pointer("/messages/3/content/0/tool_use_id")
+        .and_then(Value::as_str);
+    assert_eq!(
+        body.pointer("/messages/0/content/0/id")
+            .and_then(Value::as_str),
+        Some("run_1"),
+        "legal call id stays run_1, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/1/content/0/tool_use_id")
+            .and_then(Value::as_str),
+        Some("run_1"),
+        "legal tool result stays run_1, got {body}"
+    );
+    assert_eq!(
+        rewritten_call,
+        Some("run_1_2"),
+        "run#1 must take the free suffix, got {body}"
+    );
+    assert_eq!(
+        rewritten_result, rewritten_call,
+        "tool result for run#1 must reuse the id assigned to its call, got {body}"
+    );
+    assert!(
+        !loss_degraded(&report, "items[0]"),
+        "run_1 must not record Degrade, got {report:?}"
+    );
+    assert!(
+        !loss_degraded(&report, "items[1]"),
+        "run_1 tool result must not record Degrade, got {report:?}"
+    );
+    assert!(
+        loss_degraded(&report, "items[2]"),
+        "rewritten run#1 call must record Degrade, got {report:?}"
+    );
+    assert!(
+        loss_degraded(&report, "items[3]"),
+        "rewritten run#1 tool result must record Degrade, got {report:?}"
+    );
+}
+
+#[test]
 fn chat_json_schema_round_trips() {
     let req = br#"{
         "model": "gpt-4",
