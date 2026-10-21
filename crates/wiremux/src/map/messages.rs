@@ -579,6 +579,12 @@ pub(super) fn encode(
             "messages must not be empty: system text needs a message turn".into(),
         ));
     }
+    if ir.sampling.max_tokens == Some(0) {
+        return Err(MapError::hard(
+            "sampling.max_tokens",
+            "max_tokens must be at least 1",
+        ));
+    }
     let mut body = json!({
         "model": ir.model,
         "messages": messages,

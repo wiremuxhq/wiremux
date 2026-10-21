@@ -2493,6 +2493,34 @@ fn messages_empty_function_tool_name_is_a_hard_error() {
 }
 
 #[test]
+fn messages_zero_max_tokens_is_a_hard_error() {
+    let mut ir = IrRequest::new(
+        "claude",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    );
+    ir.sampling.max_tokens = Some(0);
+    let err = encode(Wire::Messages, &ir, &messages_profile())
+        .expect_err("zero max_tokens must not be sent");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "sampling.max_tokens");
+            assert!(detail.contains("at least 1"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+
+    ir.sampling.max_tokens = Some(1);
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("\"max_tokens\":1"),
+        "a max_tokens of 1 must still be sent, got {body}"
+    );
+}
+
+#[test]
 fn messages_whitespace_only_assistant_becomes_dot() {
     let ir = IrRequest::new(
         "claude-opus-4-6",
