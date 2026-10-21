@@ -490,17 +490,33 @@ pub(super) fn encode(
     if !uses_max_completion_tokens(&ir.model) {
         super::reject_sampling_number(
             ir.sampling.temperature,
+            0.0,
             2.0,
             "sampling.temperature",
             "temperature must be between 0 and 2",
         )?;
         super::reject_sampling_number(
             ir.sampling.top_p,
+            0.0,
             1.0,
             "sampling.top_p",
             "top_p must be between 0 and 1",
         )?;
     }
+    super::reject_sampling_number(
+        ir.sampling.frequency_penalty,
+        -2.0,
+        2.0,
+        "sampling.frequency_penalty",
+        "frequency_penalty must be between -2 and 2",
+    )?;
+    super::reject_sampling_number(
+        ir.sampling.presence_penalty,
+        -2.0,
+        2.0,
+        "sampling.presence_penalty",
+        "presence_penalty must be between -2 and 2",
+    )?;
     encode_sampling(ir, &mut body, report);
     Ok(body)
 }
