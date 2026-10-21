@@ -2493,6 +2493,32 @@ fn messages_empty_function_tool_name_is_a_hard_error() {
 }
 
 #[test]
+fn chat_zero_n_is_a_hard_error() {
+    let mut ir = IrRequest::new(
+        "gpt-4o",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    );
+    ir.sampling.n = Some(0);
+    let err = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect_err("n");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "sampling.n");
+            assert!(detail.contains("at least 1"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+    ir.sampling.n = Some(1);
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("\"n\":1"),
+        "an n of 1 must still be sent, got {body}"
+    );
+}
+
+#[test]
 fn chat_penalty_outside_vendor_range_is_a_hard_error() {
     let mut ir = IrRequest::new(
         "gpt-4o",

@@ -517,6 +517,9 @@ pub(super) fn encode(
         "sampling.presence_penalty",
         "presence_penalty must be between -2 and 2",
     )?;
+    if ir.sampling.n == Some(0) {
+        return Err(MapError::hard("sampling.n", "n must be at least 1"));
+    }
     encode_sampling(ir, &mut body, report);
     Ok(body)
 }
