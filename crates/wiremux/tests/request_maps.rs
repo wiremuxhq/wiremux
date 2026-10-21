@@ -1121,6 +1121,39 @@ wire = "gemini"
     assert!((temp - 0.2).abs() < 1e-6, "temperature={temp}");
 }
 
+#[test]
+fn gemini_function_output_keeps_image_inside_cache_breakpoint() {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: String::new(),
+            is_error: false,
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::ImageBase64 {
+                    media_type: "image/png".into(),
+                    data: "aGVsbG8".into(),
+                }),
+            }],
+        }],
+    );
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/functionResponse/parts/0/inlineData/data")
+            .and_then(Value::as_str),
+        Some("aGVsbG8"),
+        "wrapped tool image must be inline data, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "part.prompt_cache_breakpoint" && event.action == LossAction::Drop
+        }),
+        "breakpoint has no Gemini function-response slot, got {report:?}"
+    );
+}
+
 fn gemini_profile() -> ResolvedProfile {
     profile(
         r#"
