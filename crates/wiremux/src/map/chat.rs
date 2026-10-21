@@ -1180,7 +1180,10 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
                 "o3 and o4-mini Chat Completions reject stop",
             );
         } else {
-            body["stop"] = json!(s.stop);
+            let stop = super::kept_stop(&s.stop, report);
+            if !stop.is_empty() {
+                body["stop"] = json!(stop);
+            }
         }
     }
     if let Some(fp) = s.frequency_penalty {

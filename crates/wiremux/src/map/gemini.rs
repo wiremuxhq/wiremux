@@ -1474,8 +1474,9 @@ fn encode_sampling(ir: &IrRequest, body: &mut Value, report: &mut LossReport) {
     if let Some(max) = s.max_tokens {
         cfg["maxOutputTokens"] = json!(max);
     }
-    if !s.stop.is_empty() {
-        cfg["stopSequences"] = json!(s.stop);
+    let stop = super::kept_stop(&s.stop, report);
+    if !stop.is_empty() {
+        cfg["stopSequences"] = json!(stop);
     }
     if let Some(fp) = s.frequency_penalty {
         cfg["frequencyPenalty"] = super::json_f32(fp);

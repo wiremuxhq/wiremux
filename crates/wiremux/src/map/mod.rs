@@ -1118,6 +1118,20 @@ fn off_dialect_raw_path(raw: &Value) -> &'static str {
     }
 }
 
+/// Stop sequences with a real value. An empty string matches every position, and
+/// Chat, Messages, Gemini, and Converse reject it.
+pub(super) fn kept_stop<'a>(stop: &'a [String], report: &mut LossReport) -> Vec<&'a str> {
+    let mut kept = Vec::new();
+    for seq in stop {
+        if seq.is_empty() {
+            report.record("sampling.stop", LossAction::Drop, "stop sequence is empty");
+        } else {
+            kept.push(seq.as_str());
+        }
+    }
+    kept
+}
+
 fn stop_values(value: &Value, keys: &[&str]) -> Vec<String> {
     for key in keys {
         let Some(raw) = value.get(*key) else {
