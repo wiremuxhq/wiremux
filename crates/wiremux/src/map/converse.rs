@@ -662,6 +662,12 @@ pub(super) fn encode(
         };
         return Err(MapError::Invalid(message));
     }
+    if ir.sampling.max_tokens == Some(0) {
+        return Err(MapError::hard(
+            "sampling.max_tokens",
+            "max_tokens must be at least 1",
+        ));
+    }
     let mut body = json!({ "messages": messages });
     if let Some(system) = system {
         body["system"] = system;
