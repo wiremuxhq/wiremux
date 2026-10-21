@@ -1103,6 +1103,13 @@ fn encode_part(part: &IrPart, report: &mut LossReport) -> Option<Value> {
             }
         }
         IrPart::Document {
+            source: IrDocumentSource::Base64(data),
+            ..
+        } if data.trim().is_empty() => {
+            report.record("part.document", LossAction::Drop, "document data is empty");
+            None
+        }
+        IrPart::Document {
             source: IrDocumentSource::FileId(id),
             ..
         } if id.trim().is_empty() => {

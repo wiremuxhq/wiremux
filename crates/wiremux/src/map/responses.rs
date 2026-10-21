@@ -1024,6 +1024,10 @@ fn encode_document(
     match source {
         IrDocumentSource::Text(_) | IrDocumentSource::S3 { .. } => unreachable!("returned above"),
         IrDocumentSource::Base64(data) => {
+            if data.trim().is_empty() {
+                report.record("part.document", LossAction::Drop, "document data is empty");
+                return None;
+            }
             let media_type = if media_type.is_empty() {
                 "application/pdf"
             } else {

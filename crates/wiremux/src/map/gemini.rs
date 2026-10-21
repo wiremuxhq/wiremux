@@ -1242,6 +1242,12 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 out.push(json!({ "text": data }));
             }
             IrPart::Document {
+                source: IrDocumentSource::Base64(data),
+                ..
+            } if data.trim().is_empty() => {
+                report.record("part.document", LossAction::Drop, "document data is empty");
+            }
+            IrPart::Document {
                 source: IrDocumentSource::FileId(id),
                 ..
             } if id.trim().is_empty() => {

@@ -4294,6 +4294,48 @@ fn blank_image_data_is_not_sent() {
 }
 
 #[test]
+fn blank_document_data_is_not_sent() {
+    let item = IrItem::User {
+        parts: vec![
+            IrPart::Text("hello".into()),
+            IrPart::Document {
+                source: IrDocumentSource::Base64("  ".into()),
+                media_type: "application/pdf".into(),
+                name: None,
+                citations_enabled: None,
+                context: None,
+            },
+        ],
+    };
+    for (wire, profile) in [
+        (Wire::ChatCompletions, chat_profile()),
+        (Wire::Responses, flatten_profile()),
+        (Wire::Messages, messages_profile()),
+        (Wire::Gemini, gemini_profile()),
+        (Wire::Converse, converse_profile()),
+    ] {
+        let ir = IrRequest::new("m", vec![item.clone()]);
+        let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("hello")
+                && !body.contains("base64,  ")
+                && !body.contains("\"data\":\"  \"")
+                && !body.contains("\"bytes\":\"  \""),
+            "{wire:?} must keep the text and omit the blank document, got {body}"
+        );
+        assert!(
+            report.events.iter().any(|event| {
+                event.path == "part.document"
+                    && event.action == LossAction::Drop
+                    && event.detail.contains("document data is empty")
+            }),
+            "{wire:?} must record the blank document, got {report:?}"
+        );
+    }
+}
+
+#[test]
 fn gemini_empty_file_id_is_not_sent() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",

@@ -1341,6 +1341,12 @@ fn encode_document(
         );
         return Some(json!({ "text": data }));
     }
+    if let IrDocumentSource::Base64(data) = source
+        && data.trim().is_empty()
+    {
+        report.record("part.document", LossAction::Drop, "document data is empty");
+        return None;
+    }
     let Some(format) = super::converse_document_format(media_type) else {
         report.record(
             "part.document",

@@ -822,6 +822,13 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                         report.record("part.image", LossAction::Drop, "image data is empty");
                         false
                     }
+                    Some(IrPart::Document {
+                        source: IrDocumentSource::Base64(data),
+                        ..
+                    }) if data.trim().is_empty() => {
+                        report.record("part.document", LossAction::Drop, "document data is empty");
+                        false
+                    }
                     Some(_) => {
                         report.record("part.media_hint", LossAction::Drop, "no slot");
                         true
@@ -835,6 +842,13 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                         false
                     }
                 },
+                IrPart::Document {
+                    source: IrDocumentSource::Base64(data),
+                    ..
+                } if data.trim().is_empty() => {
+                    report.record("part.document", LossAction::Drop, "document data is empty");
+                    false
+                }
                 IrPart::Document {
                     source: IrDocumentSource::Url(_) | IrDocumentSource::S3 { .. },
                     ..
