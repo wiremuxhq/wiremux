@@ -487,6 +487,20 @@ pub(super) fn encode(
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools.iter().map(encode_tool).collect());
     }
+    if !uses_max_completion_tokens(&ir.model) {
+        super::reject_sampling_number(
+            ir.sampling.temperature,
+            2.0,
+            "sampling.temperature",
+            "temperature must be between 0 and 2",
+        )?;
+        super::reject_sampling_number(
+            ir.sampling.top_p,
+            1.0,
+            "sampling.top_p",
+            "top_p must be between 0 and 1",
+        )?;
+    }
     encode_sampling(ir, &mut body, report);
     Ok(body)
 }

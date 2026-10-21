@@ -2493,6 +2493,98 @@ fn messages_empty_function_tool_name_is_a_hard_error() {
 }
 
 #[test]
+fn sampling_outside_vendor_range_is_a_hard_error() {
+    let mut messages = IrRequest::new(
+        "claude",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    );
+    messages.sampling.temperature = Some(1.5);
+    let err = encode(Wire::Messages, &messages, &messages_profile()).expect_err("messages");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "sampling.temperature");
+            assert!(detail.contains("between 0 and 1"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+    messages.sampling.temperature = Some(1.0);
+    let (bytes, _) = encode(Wire::Messages, &messages, &messages_profile()).expect("encode");
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("\"temperature\":1"),
+        "messages temperature 1 must be sent"
+    );
+
+    let mut chat = IrRequest::new(
+        "gpt-4o",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    );
+    chat.sampling.temperature = Some(2.5);
+    let err = encode(Wire::ChatCompletions, &chat, &chat_profile()).expect_err("chat");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "sampling.temperature");
+            assert!(detail.contains("between 0 and 2"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+    chat.sampling.temperature = Some(2.0);
+    chat.sampling.top_p = Some(1.5);
+    let err = encode(Wire::ChatCompletions, &chat, &chat_profile()).expect_err("chat top_p");
+    match err {
+        MapError::HardError { path, .. } => assert_eq!(path, "sampling.top_p"),
+        other => panic!("expected HardError, got {other}"),
+    }
+    chat.sampling.top_p = Some(1.0);
+    let (bytes, _) = encode(Wire::ChatCompletions, &chat, &chat_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("\"temperature\":2") && body.contains("\"top_p\":1"),
+        "chat bounds must be sent, got {body}"
+    );
+
+    let mut gpt5 = IrRequest::new(
+        "gpt-5",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    );
+    gpt5.sampling.temperature = Some(2.5);
+    let (bytes, report) = encode(Wire::ChatCompletions, &gpt5, &chat_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        !body.contains("temperature"),
+        "gpt-5 still drops temperature instead of failing the request, got {body}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.path == "sampling.temperature"),
+        "gpt-5 must still record the temperature drop"
+    );
+
+    let mut responses = IrRequest::new(
+        "gpt-4o",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    );
+    responses.sampling.temperature = Some(2.5);
+    let err = encode(Wire::Responses, &responses, &flatten_profile()).expect_err("responses");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "sampling.temperature");
+            assert!(detail.contains("between 0 and 2"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+}
+
+#[test]
 fn converse_sampling_outside_unit_interval_is_a_hard_error() {
     let mut ir = IrRequest::new(
         "amazon.nova-lite-v1:0",

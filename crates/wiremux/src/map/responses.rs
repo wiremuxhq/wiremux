@@ -541,6 +541,20 @@ pub(super) fn encode(
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools.iter().map(encode_tool).collect());
     }
+    if !super::gpt5_sampling_params_rejected(&ir.model, ir.sampling.reasoning_effort.as_deref()) {
+        super::reject_sampling_number(
+            ir.sampling.temperature,
+            2.0,
+            "sampling.temperature",
+            "temperature must be between 0 and 2",
+        )?;
+        super::reject_sampling_number(
+            ir.sampling.top_p,
+            1.0,
+            "sampling.top_p",
+            "top_p must be between 0 and 1",
+        )?;
+    }
     encode_sampling(ir, &mut body, report);
     Ok(body)
 }
