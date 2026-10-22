@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.11.8](https://github.com/wiremuxhq/wiremux/compare/v0.11.7...v0.11.8) (2026-10-21)
+
+
+### Bug Fixes
+
+* drop a blank Gemini document file id ([#694](https://github.com/wiremuxhq/wiremux/issues/694)) ([daa2dec](https://github.com/wiremuxhq/wiremux/commit/daa2decdb882b48d439447dfb64e5a32269bc8eb))
+* drop a blank image url ([#695](https://github.com/wiremuxhq/wiremux/issues/695)) ([471f554](https://github.com/wiremuxhq/wiremux/commit/471f5545e962faca3906e52b98802b028a86d1b2))
+* drop an empty document file id ([#693](https://github.com/wiremuxhq/wiremux/issues/693)) ([f918573](https://github.com/wiremuxhq/wiremux/commit/f9185736127f9c30b5f21d58d41214df9548f94a))
+* drop an empty stop sequence ([#697](https://github.com/wiremuxhq/wiremux/issues/697)) ([953025d](https://github.com/wiremuxhq/wiremux/commit/953025daed4794c7465223585bd23dae671e891c))
+* drop blank media bytes ([#696](https://github.com/wiremuxhq/wiremux/issues/696)) ([a4ad967](https://github.com/wiremuxhq/wiremux/commit/a4ad9671df3a0cdfa794a66ca4a67c6ce47a2cb5))
+* keep a Gemini tool image wrapped in a cache breakpoint ([#691](https://github.com/wiremuxhq/wiremux/issues/691)) ([5044d1d](https://github.com/wiremuxhq/wiremux/commit/5044d1d91416c5481ec542528b43088c71027291))
+* keep distinct Messages tool ids ([#690](https://github.com/wiremuxhq/wiremux/issues/690)) ([a328b03](https://github.com/wiremuxhq/wiremux/commit/a328b0347db7d3ece22991f3d79ad5d0df1b1afa))
+* keep Gemini tool text wrapped in a cache breakpoint ([#692](https://github.com/wiremuxhq/wiremux/issues/692)) ([d564cee](https://github.com/wiremuxhq/wiremux/commit/d564cee18a7744756b2c940f7b94283f74a8e222))
+* map cross-wire upstream errors into the caller dialect ([#689](https://github.com/wiremuxhq/wiremux/issues/689)) ([8635fba](https://github.com/wiremuxhq/wiremux/commit/8635fba3da02eb2df0e27839c42d6999b04b3558))
+* omit rejected OpenAI fields and keep system part text ([#688](https://github.com/wiremuxhq/wiremux/issues/688)) ([ea90260](https://github.com/wiremuxhq/wiremux/commit/ea90260de8c304862642975aa09e5192c854bb36))
+* omit Responses include unless the caller set it ([#687](https://github.com/wiremuxhq/wiremux/issues/687)) ([5f729ef](https://github.com/wiremuxhq/wiremux/commit/5f729ef31304f18e1690abd02c5f9520ea76df14))
+* reject Chat n of zero ([#703](https://github.com/wiremuxhq/wiremux/issues/703)) ([c1ff511](https://github.com/wiremuxhq/wiremux/commit/c1ff511fd33c883ff4559085e50f14ecf74a7582))
+* reject Chat penalties outside -2 to 2 ([#702](https://github.com/wiremuxhq/wiremux/issues/702)) ([6d2cb7f](https://github.com/wiremuxhq/wiremux/commit/6d2cb7f95b75871c5e36e2d22e2dae6b9f96ebd1))
+* reject Converse max_tokens of zero ([#699](https://github.com/wiremuxhq/wiremux/issues/699)) ([e185c87](https://github.com/wiremuxhq/wiremux/commit/e185c8771adf114d1e88e69c599ffedb9f8965fc))
+* reject Converse temperature and top_p outside 0 to 1 ([#700](https://github.com/wiremuxhq/wiremux/issues/700)) ([c062369](https://github.com/wiremuxhq/wiremux/commit/c0623692fede678dab7b6e09dea45c8607be673c))
+* reject Messages max_tokens of zero ([#698](https://github.com/wiremuxhq/wiremux/issues/698)) ([c98516b](https://github.com/wiremuxhq/wiremux/commit/c98516bd79f13ca2f6eb206ff36379ec05e6e138))
+* reject sampling numbers outside the vendor range ([#701](https://github.com/wiremuxhq/wiremux/issues/701)) ([7d1cbe2](https://github.com/wiremuxhq/wiremux/commit/7d1cbe2c1f0bfea381c600cf114c6ca9ddd1c90f))
+* send forced Claude tool choice as auto ([#684](https://github.com/wiremuxhq/wiremux/issues/684)) ([f21bbc4](https://github.com/wiremuxhq/wiremux/commit/f21bbc4be870a7a3b019ec7433a96175f019f1f3))
+
 ## [0.11.7](https://github.com/wiremuxhq/wiremux/compare/v0.11.6...v0.11.7) (2026-10-19)
 
 
