@@ -520,6 +520,12 @@ pub(super) fn encode(
     if ir.sampling.n == Some(0) {
         return Err(MapError::hard("sampling.n", "n must be at least 1"));
     }
+    if ir.sampling.max_tokens == Some(0) {
+        return Err(MapError::hard(
+            "sampling.max_tokens",
+            "max_tokens must be at least 1",
+        ));
+    }
     encode_sampling(ir, &mut body, report);
     Ok(body)
 }

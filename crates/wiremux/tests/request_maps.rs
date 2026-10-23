@@ -2742,6 +2742,117 @@ fn messages_zero_max_tokens_is_a_hard_error() {
     );
 }
 
+fn text_turn(model: &str) -> IrRequest {
+    IrRequest::new(
+        model,
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    )
+}
+
+fn assert_zero_max_tokens_rejected(wire: Wire, ir: &IrRequest, profile: &ResolvedProfile) {
+    let err = encode(wire, ir, profile).expect_err("zero max_tokens must not be sent");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "sampling.max_tokens");
+            assert!(detail.contains("at least 1"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+}
+
+fn encoded_body(wire: Wire, ir: &IrRequest, profile: &ResolvedProfile) -> Value {
+    let (bytes, _) = encode(wire, ir, profile).expect("encode");
+    serde_json::from_slice(&bytes).expect("json")
+}
+
+#[test]
+fn chat_zero_max_tokens_is_a_hard_error() {
+    for (model, field, other) in [
+        ("gpt-4o", "max_tokens", "max_completion_tokens"),
+        ("o3-mini", "max_completion_tokens", "max_tokens"),
+    ] {
+        let mut ir = text_turn(model);
+        ir.sampling.max_tokens = Some(0);
+        assert_zero_max_tokens_rejected(Wire::ChatCompletions, &ir, &chat_profile());
+
+        ir.sampling.max_tokens = None;
+        let omitted = encoded_body(Wire::ChatCompletions, &ir, &chat_profile());
+        assert!(
+            omitted.get("max_tokens").is_none(),
+            "{model} must omit max_tokens when the cap is unset, got {omitted}"
+        );
+        assert!(
+            omitted.get("max_completion_tokens").is_none(),
+            "{model} must omit max_completion_tokens when the cap is unset, got {omitted}"
+        );
+
+        ir.sampling.max_tokens = Some(1);
+        let body = encoded_body(Wire::ChatCompletions, &ir, &chat_profile());
+        assert_eq!(
+            body.get(field).and_then(Value::as_u64),
+            Some(1),
+            "{model} must send {field}=1, got {body}"
+        );
+        assert!(
+            body.get(other).is_none(),
+            "{model} must omit {other}, got {body}"
+        );
+    }
+}
+
+#[test]
+fn responses_zero_max_tokens_is_a_hard_error() {
+    let mut ir = text_turn("gpt-4o");
+    ir.sampling.max_tokens = Some(0);
+    assert_zero_max_tokens_rejected(Wire::Responses, &ir, &flatten_profile());
+
+    ir.sampling.max_tokens = None;
+    let omitted = encoded_body(Wire::Responses, &ir, &flatten_profile());
+    assert!(
+        omitted.get("max_output_tokens").is_none(),
+        "an omitted cap must stay omitted, got {omitted}"
+    );
+    assert!(
+        omitted.get("max_tokens").is_none(),
+        "Responses must not invent max_tokens, got {omitted}"
+    );
+
+    ir.sampling.max_tokens = Some(1);
+    let body = encoded_body(Wire::Responses, &ir, &flatten_profile());
+    assert_eq!(
+        body.get("max_output_tokens").and_then(Value::as_u64),
+        Some(1),
+        "a max_tokens of 1 must still be sent, got {body}"
+    );
+}
+
+#[test]
+fn gemini_zero_max_tokens_is_a_hard_error() {
+    let mut ir = text_turn("gemini-2.5-flash");
+    ir.sampling.max_tokens = Some(0);
+    assert_zero_max_tokens_rejected(Wire::Gemini, &ir, &gemini_profile());
+
+    ir.sampling.max_tokens = None;
+    let omitted = encoded_body(Wire::Gemini, &ir, &gemini_profile());
+    assert!(
+        omitted
+            .pointer("/generationConfig/maxOutputTokens")
+            .is_none(),
+        "an omitted cap must stay omitted, got {omitted}"
+    );
+
+    ir.sampling.max_tokens = Some(1);
+    let body = encoded_body(Wire::Gemini, &ir, &gemini_profile());
+    assert_eq!(
+        body.pointer("/generationConfig/maxOutputTokens")
+            .and_then(Value::as_u64),
+        Some(1),
+        "a max_tokens of 1 must still be sent, got {body}"
+    );
+}
+
 #[test]
 fn messages_whitespace_only_assistant_becomes_dot() {
     let ir = IrRequest::new(

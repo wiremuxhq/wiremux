@@ -924,6 +924,12 @@ pub(super) fn encode(
     if !tools.is_empty() {
         body["tools"] = json!(tools);
     }
+    if ir.sampling.max_tokens == Some(0) {
+        return Err(MapError::hard(
+            "sampling.max_tokens",
+            "max_tokens must be at least 1",
+        ));
+    }
     encode_sampling(ir, &mut body, report);
     keep_mixed_builtin_tool_flag(&mut body, report);
     Ok(body)
