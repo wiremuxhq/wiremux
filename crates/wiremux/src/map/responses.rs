@@ -557,6 +557,12 @@ pub(super) fn encode(
             "top_p must be between 0 and 1",
         )?;
     }
+    if ir.sampling.max_tokens == Some(0) {
+        return Err(MapError::hard(
+            "sampling.max_tokens",
+            "max_tokens must be at least 1",
+        ));
+    }
     encode_sampling(ir, &mut body, report);
     Ok(body)
 }
