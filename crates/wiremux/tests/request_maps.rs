@@ -3138,9 +3138,12 @@ fn responses_nested_cache_thinking_inside_breakpoint_drops_secret() {
                 IrPart::Text("hello".into()),
                 IrPart::PromptCacheBreakpoint {
                     mode: "explicit".into(),
-                    inner: Box::new(IrPart::Thinking {
-                        text: "secret".into(),
-                        signature: None,
+                    inner: Box::new(IrPart::PromptCacheBreakpoint {
+                        mode: "explicit".into(),
+                        inner: Box::new(IrPart::Thinking {
+                            text: "secret".into(),
+                            signature: None,
+                        }),
                     }),
                 },
             ],
