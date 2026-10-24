@@ -802,7 +802,7 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
     let visible: Vec<&IrPart> = parts
         .iter()
         .filter(|part| {
-            let (part, mode) = super::peel_prompt_cache(part);
+            let (part, mode) = super::peel_prompt_cache_all(part);
             let keep = match part {
                 IrPart::ImageUrl { url, file_id, .. } if url.trim().is_empty() => {
                     if file_id.as_deref().is_some_and(|id| !id.trim().is_empty()) {
@@ -910,7 +910,7 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
     if visible.is_empty() {
         return Value::String(String::new());
     }
-    let (only, only_mode) = super::peel_prompt_cache(visible[0]);
+    let (only, only_mode) = super::peel_prompt_cache_all(visible[0]);
     if visible.len() == 1
         && only_mode.is_none()
         && let IrPart::Text(text) = only
@@ -920,8 +920,8 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
     Value::Array(
         visible
             .iter()
-            .map(|part| {
-                let (part, mode) = super::peel_prompt_cache(part);
+            .filter_map(|part| {
+                let (part, mode) = super::peel_prompt_cache_all(part);
                 let mut value = match part {
                     IrPart::Text(text) => json!({"type": "text", "text": text}),
                     IrPart::ImageUrl {
@@ -980,7 +980,7 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                                         LossAction::Drop,
                                         "audio data is empty",
                                     );
-                                    return json!({"type": "text", "text": ""});
+                                    return Some(json!({"type": "text", "text": ""}));
                                 }
                                 json!({
                                     "type": "input_audio",
@@ -991,11 +991,18 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {
                             _ => unreachable!("plain media"),
                         }
                     }
-                    IrPart::Thinking { .. } => unreachable!("filtered"),
-                    IrPart::PromptCacheBreakpoint { .. } => unreachable!("peeled"),
+                    IrPart::Thinking { .. } => {
+                        report.record(
+                            "part.thinking",
+                            LossAction::Drop,
+                            "thinking has no Chat Completions slot",
+                        );
+                        return None;
+                    }
+                    IrPart::PromptCacheBreakpoint { .. } => return None,
                 };
                 super::apply_prompt_cache(&mut value, mode, true, report);
-                value
+                Some(value)
             })
             .collect(),
     )

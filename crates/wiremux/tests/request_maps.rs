@@ -3130,6 +3130,144 @@ fn chat_prompt_cache_breakpoint_round_trips_and_messages_keep_text() {
 }
 
 #[test]
+fn responses_nested_cache_thinking_inside_breakpoint_drops_secret() {
+    let ir = IrRequest::new(
+        "gpt-5",
+        vec![IrItem::User {
+            parts: vec![
+                IrPart::Text("hello".into()),
+                IrPart::PromptCacheBreakpoint {
+                    mode: "explicit".into(),
+                    inner: Box::new(IrPart::PromptCacheBreakpoint {
+                        mode: "explicit".into(),
+                        inner: Box::new(IrPart::Thinking {
+                            text: "secret".into(),
+                            signature: None,
+                        }),
+                    }),
+                },
+            ],
+        }],
+    );
+    let (bytes, report) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(body.contains("hello"), "visible text must stay, got {body}");
+    assert!(
+        !body.contains("secret"),
+        "wrapped thinking must not be sent, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "part.thinking"
+                && event.action == LossAction::Drop
+                && event.detail.contains("thinking has no Responses slot")
+        }),
+        "wrapped thinking must record part.thinking, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_nested_cache_breakpoint_keeps_hello() {
+    let ir = IrRequest::new(
+        "gpt-5",
+        vec![IrItem::User {
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::PromptCacheBreakpoint {
+                    mode: "nested".into(),
+                    inner: Box::new(IrPart::Text("hello".into())),
+                }),
+            }],
+        }],
+    );
+    let (bytes, _) = encode(Wire::Responses, &ir, &flatten_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/input/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("hello"),
+        "nested breakpoints must still send the text, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/input/0/content/0/prompt_cache_breakpoint/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "outermost cache breakpoint must stay, got {body}"
+    );
+    assert!(
+        !body.to_string().contains("nested"),
+        "inner breakpoint mode must not replace the outer mode, got {body}"
+    );
+}
+
+#[test]
+fn chat_nested_cache_thinking_inside_breakpoint_drops_secret() {
+    let ir = IrRequest::new(
+        "gpt-4o",
+        vec![IrItem::User {
+            parts: vec![
+                IrPart::Text("hello".into()),
+                IrPart::PromptCacheBreakpoint {
+                    mode: "explicit".into(),
+                    inner: Box::new(IrPart::PromptCacheBreakpoint {
+                        mode: "explicit".into(),
+                        inner: Box::new(IrPart::Thinking {
+                            text: "secret".into(),
+                            signature: None,
+                        }),
+                    }),
+                },
+            ],
+        }],
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(body.contains("hello"), "visible text must stay, got {body}");
+    assert!(
+        !body.contains("secret"),
+        "wrapped thinking must not be sent, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "part.thinking"),
+        "wrapped thinking must record part.thinking, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_nested_cache_breakpoint_keeps_hello() {
+    let ir = IrRequest::new(
+        "gpt-4o",
+        vec![IrItem::User {
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::PromptCacheBreakpoint {
+                    mode: "nested".into(),
+                    inner: Box::new(IrPart::Text("hello".into())),
+                }),
+            }],
+        }],
+    );
+    let (bytes, _) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("hello"),
+        "nested breakpoints must still send the text, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/prompt_cache_breakpoint/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "outermost cache breakpoint must stay, got {body}"
+    );
+    assert!(
+        !body.to_string().contains("nested"),
+        "inner breakpoint mode must not replace the outer mode, got {body}"
+    );
+}
+
+#[test]
 fn responses_system_prompt_cache_breakpoint_round_trips() {
     let req = br#"{
         "model": "gpt-5",

@@ -839,68 +839,74 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
     let text_ty = if input { "input_text" } else { "output_text" };
     let visible: Vec<&IrPart> = parts
         .iter()
-        .filter(|part| match part {
-            IrPart::ImageUrl { url, file_id, .. }
-                if url.trim().is_empty() && file_id.as_deref().unwrap_or("").trim().is_empty() =>
-            {
-                report.record("part.image", LossAction::Drop, "image url is empty");
-                false
-            }
-            IrPart::Audio { data, .. } if data.trim().is_empty() => {
-                report.record("part.audio", LossAction::Drop, "audio data is empty");
-                false
-            }
-            IrPart::ImageBase64 { data, .. } if data.trim().is_empty() => {
-                report.record("part.image", LossAction::Drop, "image data is empty");
-                false
-            }
-            IrPart::ImageUrl { url, .. }
-                if super::split_data_url(url).is_some_and(|(_, data)| data.trim().is_empty()) =>
-            {
-                report.record("part.image", LossAction::Drop, "image data is empty");
-                false
-            }
-            IrPart::Thinking { .. } => {
-                report.record(
-                    "part.thinking",
-                    LossAction::Drop,
-                    "thinking has no Responses slot",
-                );
-                false
-            }
-            IrPart::Raw { raw, .. } => {
-                if let Some(IrPart::Audio { data, .. }) = super::plain_media_part(part)
-                    && data.trim().is_empty()
+        .filter(|part| {
+            let (part, _) = super::peel_prompt_cache_all(part);
+            match part {
+                IrPart::ImageUrl { url, file_id, .. }
+                    if url.trim().is_empty()
+                        && file_id.as_deref().unwrap_or("").trim().is_empty() =>
                 {
+                    report.record("part.image", LossAction::Drop, "image url is empty");
+                    false
+                }
+                IrPart::Audio { data, .. } if data.trim().is_empty() => {
                     report.record("part.audio", LossAction::Drop, "audio data is empty");
                     false
-                } else if let Some(IrPart::ImageBase64 { data, .. }) = super::plain_media_part(part)
-                    && data.trim().is_empty()
+                }
+                IrPart::ImageBase64 { data, .. } if data.trim().is_empty() => {
+                    report.record("part.image", LossAction::Drop, "image data is empty");
+                    false
+                }
+                IrPart::ImageUrl { url, .. }
+                    if super::split_data_url(url)
+                        .is_some_and(|(_, data)| data.trim().is_empty()) =>
                 {
                     report.record("part.image", LossAction::Drop, "image data is empty");
                     false
-                } else if super::plain_media_part(part).is_some() {
-                    report.record("part.media_hint", LossAction::Drop, "no slot");
-                    true
-                } else if messages_file_image_raw(raw) {
+                }
+                IrPart::Thinking { .. } => {
                     report.record(
-                        "part.raw",
+                        "part.thinking",
                         LossAction::Drop,
-                        "Messages image file_id has no Responses slot",
-                    );
-                    false
-                } else if responses_raw_passthrough(raw) {
-                    true
-                } else {
-                    report.record(
-                        off_dialect_raw_path(raw),
-                        LossAction::Drop,
-                        "raw part is not Responses-shaped",
+                        "thinking has no Responses slot",
                     );
                     false
                 }
+                IrPart::Raw { raw, .. } => {
+                    if let Some(IrPart::Audio { data, .. }) = super::plain_media_part(part)
+                        && data.trim().is_empty()
+                    {
+                        report.record("part.audio", LossAction::Drop, "audio data is empty");
+                        false
+                    } else if let Some(IrPart::ImageBase64 { data, .. }) =
+                        super::plain_media_part(part)
+                        && data.trim().is_empty()
+                    {
+                        report.record("part.image", LossAction::Drop, "image data is empty");
+                        false
+                    } else if super::plain_media_part(part).is_some() {
+                        report.record("part.media_hint", LossAction::Drop, "no slot");
+                        true
+                    } else if messages_file_image_raw(raw) {
+                        report.record(
+                            "part.raw",
+                            LossAction::Drop,
+                            "Messages image file_id has no Responses slot",
+                        );
+                        false
+                    } else if responses_raw_passthrough(raw) {
+                        true
+                    } else {
+                        report.record(
+                            off_dialect_raw_path(raw),
+                            LossAction::Drop,
+                            "raw part is not Responses-shaped",
+                        );
+                        false
+                    }
+                }
+                _ => true,
             }
-            _ => true,
         })
         .collect();
     if visible.len() == 1
@@ -913,7 +919,7 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
         visible
             .iter()
             .filter_map(|part| {
-                let (part, mode) = super::peel_prompt_cache(part);
+                let (part, mode) = super::peel_prompt_cache_all(part);
                 let mut value = match part {
                     IrPart::Text(text) => json!({"type": text_ty, "text": text}),
                     IrPart::ImageUrl {
@@ -1006,8 +1012,15 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                             raw.clone()
                         }
                     }
-                    IrPart::Thinking { .. } => unreachable!("filtered"),
-                    IrPart::PromptCacheBreakpoint { .. } => unreachable!("peeled"),
+                    IrPart::Thinking { .. } => {
+                        report.record(
+                            "part.thinking",
+                            LossAction::Drop,
+                            "thinking has no Responses slot",
+                        );
+                        return None;
+                    }
+                    IrPart::PromptCacheBreakpoint { .. } => return None,
                 };
                 super::apply_prompt_cache(&mut value, mode, true, report);
                 Some(value)

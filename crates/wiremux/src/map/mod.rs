@@ -175,6 +175,19 @@ pub(super) fn peel_prompt_cache(part: &IrPart) -> (&IrPart, Option<&str>) {
     }
 }
 
+/// Payload plus the outermost cache breakpoint mode.
+/// Every nested breakpoint unwraps. The first layer's mode is kept.
+pub(super) fn peel_prompt_cache_all(part: &IrPart) -> (&IrPart, Option<&str>) {
+    let IrPart::PromptCacheBreakpoint { mode, inner } = part else {
+        return (part, None);
+    };
+    let mut current = inner.as_ref();
+    while let IrPart::PromptCacheBreakpoint { inner, .. } = current {
+        current = inner.as_ref();
+    }
+    (current, Some(mode.as_str()))
+}
+
 /// Write `prompt_cache_breakpoint` when this wire has the field.
 /// Other wires keep the part and record the drop.
 pub(super) fn apply_prompt_cache(
