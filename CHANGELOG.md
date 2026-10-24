@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.9](https://github.com/wiremuxhq/wiremux/compare/v0.11.8...v0.11.9) (2026-10-24)
+
+
+### Bug Fixes
+
+* bump tokio to 1.54.1 and ctutils to 0.4.4 ([#706](https://github.com/wiremuxhq/wiremux/issues/706)) ([0d42de7](https://github.com/wiremuxhq/wiremux/commit/0d42de7c2c0efdb62b7db7191e1d6ba7c22e5028))
+* drop wrapped thinking instead of panicking on Chat and Responses ([#709](https://github.com/wiremuxhq/wiremux/issues/709)) ([79d14e7](https://github.com/wiremuxhq/wiremux/commit/79d14e76c251545137a95e7e403c37f3c9614d50))
+* reject a zero token cap on Chat, Responses, and Gemini ([#708](https://github.com/wiremuxhq/wiremux/issues/708)) ([a03b2c2](https://github.com/wiremuxhq/wiremux/commit/a03b2c2707ab1a98bdad3ef71a7b4b1af4e72c58)), closes [#704](https://github.com/wiremuxhq/wiremux/issues/704)
+
 ## [0.11.8](https://github.com/wiremuxhq/wiremux/compare/v0.11.7...v0.11.8) (2026-10-21)
 
 
