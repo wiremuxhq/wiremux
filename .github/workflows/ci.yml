@@ -107,10 +107,10 @@ jobs:
       - name: Public surfaces
         run: bash scripts/assert-public.sh
       - uses: ./.github/actions/rust-ci
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2
         with:
           tool: cargo-deny@0.20.2
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' }}
       - run: cargo fmt --check
@@ -192,7 +192,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2
         with:
           tool: zizmor@1.16.0
       - run: python3 scripts/test_workflow_triggers.py
@@ -253,7 +253,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/rust-ci
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2
         with:
           tool: cargo-semver-checks@0.51.0
       - name: Public API against the latest v0.11 tag
@@ -350,13 +350,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/rust-ci
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2
         if: >-
           github.event_name != 'pull_request' ||
           (!startsWith(github.head_ref, 'release-please') || github.event.pull_request.user.login != 'github-actions[bot]')
         with:
           tool: cargo-nextest@0.9.140
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' }}
       - name: Unit and integration tests
