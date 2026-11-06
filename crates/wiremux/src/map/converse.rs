@@ -905,6 +905,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 is_error,
             } => {
                 let has_media = parts.iter().any(|part| {
+                    let part = super::peel_prompt_cache_all(part).0;
                     matches!(
                         part,
                         IrPart::ImageUrl { .. }
@@ -918,9 +919,12 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                                 || type_name == "json"
                     ) || super::function_response_image(part).is_some()
                 });
-                let ordered_text = parts
-                    .iter()
-                    .any(|part| matches!(part, IrPart::Text(text) if !text.is_empty()));
+                let ordered_text = parts.iter().any(|part| {
+                    matches!(
+                        super::peel_prompt_cache_all(part).0,
+                        IrPart::Text(text) if !text.is_empty()
+                    )
+                });
                 let text = if output.trim().is_empty() && !has_media && !ordered_text {
                     report.record(
                         format!("items[{idx}]"),

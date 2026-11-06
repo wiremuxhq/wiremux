@@ -528,6 +528,9 @@ Converse still send that text. Locked by
 and
 `gemini_function_output_keeps_image_inside_nested_cache_breakpoints`,
 and `system_content_parts_nested_breakpoint_keeps_text`.
+Converse tool text inside those breakpoints is that text alone.
+It does not gain a leading `.`. Locked by
+`converse_tool_nested_cache_breakpoint_keeps_text`.
 
 ## Pin
 
