@@ -1226,11 +1226,13 @@ impl StreamEncoder {
             "type": "message",
             "role": "assistant",
             "content": [],
-            "model": self.model,
             "stop_reason": null,
             "stop_sequence": null,
             "usage": usage
         });
+        if !self.model.is_empty() {
+            message["model"] = json!(self.model);
+        }
         if let Some(container) = &self.messages_container {
             message["container"] = container.clone();
         }
@@ -3082,6 +3084,23 @@ mod tests {
         assert!(
             !start.data.contains("\"model\":\"\""),
             "message_start must not emit empty model, got {}",
+            start.data
+        );
+    }
+
+    #[test]
+    fn messages_encoder_omits_an_empty_model() {
+        let mut enc = StreamEncoder::new(Wire::Messages);
+        let frames = enc
+            .push(IrStreamEvent::TextDelta { text: "hi".into() })
+            .expect("push");
+        let start = frames
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("message_start"))
+            .expect("message_start");
+        assert!(
+            !start.data.contains("\"model\""),
+            "an empty dest model must be omitted from message_start, got {}",
             start.data
         );
     }
