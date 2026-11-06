@@ -320,6 +320,15 @@ pub(super) fn drop_image_file_id_without_url(
     }
 }
 
+pub(super) fn dropped_details(report: &LossReport) -> Vec<&str> {
+    report
+        .events
+        .iter()
+        .filter(|event| event.action == LossAction::Drop)
+        .map(|event| event.detail.as_str())
+        .collect()
+}
+
 /// Encode IR into a dialect request body. Applies `tool_type_policy` and fingerprint.
 pub fn encode(
     wire: Wire,
@@ -1256,6 +1265,60 @@ mod tests {
             text.contains("wire `messages`") && text.contains("got array"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn cache_only_request_names_the_dropped_checkpoint() {
+        let ir = crate::ir::IrRequest::new(
+            "m",
+            vec![crate::ir::IrItem::SystemCache {
+                raw: serde_json::json!({"type": "default"}),
+            }],
+        );
+        let cases = [
+            (
+                Wire::ChatCompletions,
+                "chat-completions",
+                "chat messages must not be empty",
+                "system cache point has no slot",
+            ),
+            (
+                Wire::Messages,
+                "messages",
+                "messages must not be empty",
+                "system cache point has no slot",
+            ),
+            (
+                Wire::Responses,
+                "responses",
+                "responses input must not be empty",
+                "system cache point has no slot",
+            ),
+            (
+                Wire::Gemini,
+                "gemini",
+                "gemini contents must not be empty",
+                "system cache point has no slot",
+            ),
+            (
+                Wire::Converse,
+                "converse",
+                "converse messages must not be empty",
+                "system block needs a message turn",
+            ),
+        ];
+        for (wire, name, needle, reason) in cases {
+            let profile = crate::parse_profile_str(&format!(
+                "schema_version = 1\nid = \"t\"\nwire = \"{name}\"\n"
+            ))
+            .expect("profile");
+            let err = encode(wire, &ir, &profile).expect_err(name);
+            let text = err.to_string();
+            assert!(
+                text.contains(needle) && text.contains(reason),
+                "{name}: {text}"
+            );
+        }
     }
 
     #[test]

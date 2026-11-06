@@ -480,9 +480,19 @@ pub(super) fn encode(
     tools: &[PreparedTool],
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
+    let messages = encode_messages(ir, report);
+    if messages.as_array().is_none_or(|rows| rows.is_empty()) {
+        let dropped = super::dropped_details(report);
+        if !dropped.is_empty() {
+            return Err(MapError::Invalid(format!(
+                "chat messages must not be empty: {}",
+                dropped.join("; ")
+            )));
+        }
+    }
     let mut body = json!({
         "model": ir.model,
-        "messages": encode_messages(ir, report),
+        "messages": messages,
     });
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools.iter().map(encode_tool).collect());

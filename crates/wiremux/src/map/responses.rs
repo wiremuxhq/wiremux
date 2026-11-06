@@ -525,11 +525,16 @@ pub(super) fn encode(
     let (instructions, input) = encode_items(ir, restore_calls, report);
     if input.as_array().is_none_or(|rows| rows.is_empty()) {
         let message = if instructions.is_some() {
-            "responses input must not be empty: instructions need an input turn"
+            "responses input must not be empty: instructions need an input turn".to_string()
         } else {
-            "responses input must not be empty"
+            let dropped = super::dropped_details(report);
+            if dropped.is_empty() {
+                "responses input must not be empty".to_string()
+            } else {
+                format!("responses input must not be empty: {}", dropped.join("; "))
+            }
         };
-        return Err(MapError::Invalid(message.into()));
+        return Err(MapError::Invalid(message));
     }
     let mut body = json!({
         "model": ir.model,
