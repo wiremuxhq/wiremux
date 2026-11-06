@@ -15507,6 +15507,41 @@ fn system_content_parts_converse_sends_part_text_and_drops_image() {
 }
 
 #[test]
+fn system_content_parts_nested_breakpoint_keeps_text() {
+    let ir = IrRequest::new(
+        "test-model",
+        vec![
+            IrItem::System {
+                text: String::new(),
+                prompt_cache_breakpoint: None,
+                content_parts: vec![IrPart::PromptCacheBreakpoint {
+                    mode: "explicit".into(),
+                    inner: Box::new(IrPart::PromptCacheBreakpoint {
+                        mode: "nested".into(),
+                        inner: Box::new(IrPart::Text("kept-system-text".into())),
+                    }),
+                }],
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("go".into())],
+            },
+        ],
+    );
+    for (wire, profile) in [
+        (Wire::Messages, messages_profile()),
+        (Wire::Gemini, gemini_profile()),
+        (Wire::Converse, converse_profile()),
+    ] {
+        let (bytes, _) = encode(wire, &ir, &profile).expect("encode");
+        let encoded = String::from_utf8(bytes).expect("utf8");
+        assert!(
+            encoded.contains("kept-system-text"),
+            "{wire:?} must keep system text inside two breakpoints, got {encoded}"
+        );
+    }
+}
+
+#[test]
 fn system_content_parts_messages_empty_parts_keeps_text() {
     let ir = IrRequest::new(
         "test-model",
