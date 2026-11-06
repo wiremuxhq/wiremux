@@ -607,7 +607,12 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
             } => {
                 for part in parts {
                     let (visible, modes) = super::peel_prompt_cache_modes(part);
-                    if !matches!(visible, IrPart::Text(_)) {
+                    // Non-empty text keeps its breakpoint on the encoded
+                    // part. Empty text has nothing to attach, same as an
+                    // image, so the mode is a drop.
+                    let keep_breakpoint_on_text =
+                        matches!(visible, IrPart::Text(text) if !text.is_empty());
+                    if !keep_breakpoint_on_text {
                         for mode in &modes {
                             super::apply_prompt_cache(
                                 &mut serde_json::Value::Null,
@@ -651,12 +656,21 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                     let text_parts: Vec<IrPart> = parts
                         .iter()
                         .filter(|part| {
-                            matches!(super::peel_prompt_cache_all(part).0, IrPart::Text(_))
+                            matches!(
+                                super::peel_prompt_cache_all(part).0,
+                                IrPart::Text(text) if !text.is_empty()
+                            )
                         })
                         .cloned()
                         .collect();
-                    note_inner_breakpoint_modes(&text_parts, report);
-                    encode_parts(&text_parts, report)
+                    if text_parts.is_empty() {
+                        // A breakpoint around an image or document is not the
+                        // tool text. `output` is still the result.
+                        json!(super::function_output_text(output, parts))
+                    } else {
+                        note_inner_breakpoint_modes(&text_parts, report);
+                        encode_parts(&text_parts, report)
+                    }
                 } else {
                     json!(super::function_output_text(output, parts))
                 };

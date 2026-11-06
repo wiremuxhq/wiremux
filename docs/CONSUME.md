@@ -534,6 +534,15 @@ It does not gain a leading `.`. Locked by
 A Chat tool image inside a breakpoint still has no image slot.
 The loss log records that drop and the breakpoint mode. Locked by
 `chat_tool_image_inside_cache_breakpoint_records_the_drop`.
+That marker does not erase `FunctionOutput.output`. The tool text
+stays in `content`. A document inside the marker is the same.
+Empty text inside the marker is the same, and the unused mode stays
+a drop. Locked by
+`chat_tool_output_survives_breakpoint_around_image`,
+`chat_tool_output_survives_breakpoint_around_document`, and
+`chat_tool_output_survives_breakpoint_around_empty_text`.
+Messages, Gemini, Responses, and Converse already keep that text.
+Locked by `other_wires_keep_tool_output_around_breakpoint_image`.
 
 ## Pin
 
