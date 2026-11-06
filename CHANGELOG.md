@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.11.11](https://github.com/wiremuxhq/wiremux/compare/v0.11.10...v0.11.11) (2026-11-06)
+
+
+### Bug Fixes
+
+* keep Chat tool output when a breakpoint wraps no text ([#720](https://github.com/wiremuxhq/wiremux/issues/720)) ([64c71d2](https://github.com/wiremuxhq/wiremux/commit/64c71d277d8ffb6e4d1f932209c07358ce6eabca)), closes [#719](https://github.com/wiremuxhq/wiremux/issues/719)
+* keep parallel tool arguments on the call that owns them ([#724](https://github.com/wiremuxhq/wiremux/issues/724)) ([9e44fe4](https://github.com/wiremuxhq/wiremux/commit/9e44fe43df999ef0c19924acf0c2149c58e89aed))
+* keep Responses tool JSON and omit an empty Messages model ([#722](https://github.com/wiremuxhq/wiremux/issues/722)) ([e5029f7](https://github.com/wiremuxhq/wiremux/commit/e5029f72a439ee499240d356c3819a08c6612eae))
+* omit an empty model on a Messages stream start ([#723](https://github.com/wiremuxhq/wiremux/issues/723)) ([a7d956c](https://github.com/wiremuxhq/wiremux/commit/a7d956c52a9e2c64fa605d3bdabe564e2b82a70d))
+
 ## [0.11.10](https://github.com/wiremuxhq/wiremux/compare/v0.11.9...v0.11.10) (2026-11-06)
 
 
