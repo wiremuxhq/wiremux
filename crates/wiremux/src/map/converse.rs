@@ -646,12 +646,15 @@ pub(super) fn encode(
     }
     let (system, messages) = encode_items(ir, report);
     if messages.as_array().is_none_or(|a| a.is_empty()) {
-        let dropped: Vec<&str> = report
+        let mut dropped: Vec<&str> = report
             .events
             .iter()
             .filter(|event| event.action == LossAction::Drop && event.path != "model")
             .map(|event| event.detail.as_str())
             .collect();
+        if system.is_some() {
+            dropped.insert(0, "system block needs a message turn");
+        }
         let message = if dropped.is_empty() {
             "converse messages must not be empty".to_string()
         } else {

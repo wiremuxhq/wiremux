@@ -35,6 +35,74 @@ pub fn encode_response_with_model(
     }
 }
 
+struct IndexedTool {
+    id: String,
+    name: String,
+    args: String,
+    custom: bool,
+    signature: Option<String>,
+}
+
+fn blank_indexed_tool() -> IndexedTool {
+    IndexedTool {
+        id: String::new(),
+        name: String::new(),
+        args: String::new(),
+        custom: false,
+        signature: None,
+    }
+}
+
+/// Keep each tool call's argument text on its own index.
+///
+/// A later start must not commit the previous call before that call's
+/// deltas arrive. A repeated start with the same id keeps the buffer.
+/// A different id on the same index commits the earlier call.
+fn indexed_tool_start(
+    open: &mut BTreeMap<u32, IndexedTool>,
+    done: &mut Vec<(u32, IndexedTool)>,
+    index: u32,
+    id: String,
+    name: String,
+    custom: bool,
+    signature: Option<String>,
+) {
+    if let Some(existing) = open.get(&index)
+        && !id.is_empty()
+        && !existing.id.is_empty()
+        && existing.id != id
+        && let Some(prev) = open.remove(&index)
+    {
+        done.push((index, prev));
+    }
+    let slot = open.entry(index).or_insert_with(blank_indexed_tool);
+    if slot.id.is_empty() {
+        slot.id = id;
+    }
+    if slot.name.is_empty() {
+        slot.name = name;
+    }
+    if slot.signature.is_none() {
+        slot.signature = signature;
+    }
+    slot.custom = custom;
+}
+
+fn indexed_tool_delta(open: &mut BTreeMap<u32, IndexedTool>, index: u32, delta: &str) {
+    open.entry(index)
+        .or_insert_with(blank_indexed_tool)
+        .args
+        .push_str(delta);
+}
+
+fn indexed_tool_finish(
+    mut done: Vec<(u32, IndexedTool)>,
+    open: BTreeMap<u32, IndexedTool>,
+) -> Vec<(u32, IndexedTool)> {
+    done.extend(open);
+    done
+}
+
 fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut text = String::new();
     let mut refusal = String::new();
@@ -59,7 +127,8 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut chat_completion_id = None;
     let mut metadata = None;
     let mut moderation = None;
-    let mut current: Option<(String, String, String, bool)> = None;
+    let mut open_tools: BTreeMap<u32, IndexedTool> = BTreeMap::new();
+    let mut done_tools: Vec<(u32, IndexedTool)> = Vec::new();
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
@@ -134,34 +203,45 @@ fn encode_chat_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     *completion_audio_tokens,
                 ));
             }
-            IrStreamEvent::ToolCallStart { id, name, .. } => {
-                if let Some((id, name, args, custom)) = current.take() {
-                    tool_calls.push(chat_tool_call_value(&id, &name, &args, custom));
-                }
-                current = Some((id.clone(), name.clone(), String::new(), false));
+            IrStreamEvent::ToolCallStart {
+                id, name, index, ..
+            } => {
+                indexed_tool_start(
+                    &mut open_tools,
+                    &mut done_tools,
+                    *index,
+                    id.clone(),
+                    name.clone(),
+                    false,
+                    None,
+                );
             }
-            IrStreamEvent::CustomToolCallStart { id, name, .. } => {
-                if let Some((id, name, args, custom)) = current.take() {
-                    tool_calls.push(chat_tool_call_value(&id, &name, &args, custom));
-                }
-                current = Some((id.clone(), name.clone(), String::new(), true));
+            IrStreamEvent::CustomToolCallStart { id, name, index } => {
+                indexed_tool_start(
+                    &mut open_tools,
+                    &mut done_tools,
+                    *index,
+                    id.clone(),
+                    name.clone(),
+                    true,
+                    None,
+                );
             }
-            IrStreamEvent::ToolCallArgDelta { delta, .. }
-            | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
-                if let Some((_, _, args, _)) = current.as_mut() {
-                    args.push_str(delta);
-                }
+            IrStreamEvent::ToolCallArgDelta { delta, index }
+            | IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
+                indexed_tool_delta(&mut open_tools, *index, delta);
             }
-            IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args, custom)) = current.take() {
-                    tool_calls.push(chat_tool_call_value(&id, &name, &args, custom));
-                }
-            }
+            IrStreamEvent::ToolCallEnd => {}
             _ => {}
         }
     }
-    if let Some((id, name, args, custom)) = current.take() {
-        tool_calls.push(chat_tool_call_value(&id, &name, &args, custom));
+    for (_, tool) in indexed_tool_finish(done_tools, open_tools) {
+        tool_calls.push(chat_tool_call_value(
+            &tool.id,
+            &tool.name,
+            &tool.args,
+            tool.custom,
+        ));
     }
     let saw_tool = !tool_calls.is_empty();
     finish = match finish {
@@ -337,7 +417,8 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut tool_calls = Vec::new();
     let mut citations = Vec::new();
     let mut images = Vec::new();
-    let mut current: Option<(String, String, String, bool)> = None;
+    let mut open_tools: BTreeMap<u32, IndexedTool> = BTreeMap::new();
+    let mut done_tools: Vec<(u32, IndexedTool)> = Vec::new();
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta }
@@ -405,25 +486,35 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
                     inference_geo.clone(),
                 ));
             }
-            IrStreamEvent::ToolCallStart { id, name, .. }
-            | IrStreamEvent::CustomToolCallStart { id, name, .. } => {
-                let custom = matches!(ev, IrStreamEvent::CustomToolCallStart { .. });
-                if let Some((id, name, args, custom)) = current.take() {
-                    tool_calls.push(messages_tool_use_value(&id, &name, &args, custom));
-                }
-                current = Some((id.clone(), name.clone(), String::new(), custom));
+            IrStreamEvent::ToolCallStart {
+                id, name, index, ..
+            } => {
+                indexed_tool_start(
+                    &mut open_tools,
+                    &mut done_tools,
+                    *index,
+                    id.clone(),
+                    name.clone(),
+                    false,
+                    None,
+                );
             }
-            IrStreamEvent::ToolCallArgDelta { delta, .. }
-            | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
-                if let Some((_, _, args, _)) = current.as_mut() {
-                    args.push_str(delta);
-                }
+            IrStreamEvent::CustomToolCallStart { id, name, index } => {
+                indexed_tool_start(
+                    &mut open_tools,
+                    &mut done_tools,
+                    *index,
+                    id.clone(),
+                    name.clone(),
+                    true,
+                    None,
+                );
             }
-            IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args, custom)) = current.take() {
-                    tool_calls.push(messages_tool_use_value(&id, &name, &args, custom));
-                }
+            IrStreamEvent::ToolCallArgDelta { delta, index }
+            | IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
+                indexed_tool_delta(&mut open_tools, *index, delta);
             }
+            IrStreamEvent::ToolCallEnd => {}
             IrStreamEvent::Protocol { item_type, payload }
                 if messages_content_block(item_type, payload) =>
             {
@@ -457,8 +548,13 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             _ => {}
         }
     }
-    if let Some((id, name, args, custom)) = current.take() {
-        tool_calls.push(messages_tool_use_value(&id, &name, &args, custom));
+    for (_, tool) in indexed_tool_finish(done_tools, open_tools) {
+        tool_calls.push(messages_tool_use_value(
+            &tool.id,
+            &tool.name,
+            &tool.args,
+            tool.custom,
+        ));
     }
 
     let mut content = Vec::new();
@@ -601,7 +697,8 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut url_context = None;
     let mut citation_metadata = None;
     let mut gemini_code_parts = Vec::new();
-    let mut current: Option<(String, String, String, Option<String>, bool)> = None;
+    let mut open_tools: BTreeMap<u32, IndexedTool> = BTreeMap::new();
+    let mut done_tools: Vec<(u32, IndexedTool)> = Vec::new();
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta }
@@ -674,48 +771,37 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
                 id,
                 name,
                 thought_signature,
-                ..
+                index,
             } => {
-                if let Some((id, name, args, signature, custom)) = current.take()
-                    && let Some(part) =
-                        gemini_function_call_value(&id, &name, &args, signature.as_deref(), custom)
-                {
-                    tool_calls.push(part);
-                }
-                current = Some((
+                indexed_tool_start(
+                    &mut open_tools,
+                    &mut done_tools,
+                    *index,
                     id.clone(),
                     name.clone(),
-                    String::new(),
+                    false,
                     thought_signature
                         .as_deref()
                         .filter(|sig| !sig.is_empty())
                         .map(str::to_string),
-                    false,
-                ));
+                );
             }
-            IrStreamEvent::CustomToolCallStart { id, name, .. } => {
-                if let Some((id, name, args, signature, custom)) = current.take()
-                    && let Some(part) =
-                        gemini_function_call_value(&id, &name, &args, signature.as_deref(), custom)
-                {
-                    tool_calls.push(part);
-                }
-                current = Some((id.clone(), name.clone(), String::new(), None, true));
+            IrStreamEvent::CustomToolCallStart { id, name, index } => {
+                indexed_tool_start(
+                    &mut open_tools,
+                    &mut done_tools,
+                    *index,
+                    id.clone(),
+                    name.clone(),
+                    true,
+                    None,
+                );
             }
-            IrStreamEvent::ToolCallArgDelta { delta, .. }
-            | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
-                if let Some((_, _, args, _, _)) = current.as_mut() {
-                    args.push_str(delta);
-                }
+            IrStreamEvent::ToolCallArgDelta { delta, index }
+            | IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
+                indexed_tool_delta(&mut open_tools, *index, delta);
             }
-            IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args, signature, custom)) = current.take()
-                    && let Some(part) =
-                        gemini_function_call_value(&id, &name, &args, signature.as_deref(), custom)
-                {
-                    tool_calls.push(part);
-                }
-            }
+            IrStreamEvent::ToolCallEnd => {}
             IrStreamEvent::ServiceTier { tier } => {
                 if let Some((mapped, _)) = crate::map::gemini_service_tier(tier) {
                     service_tier = Some(mapped);
@@ -807,11 +893,16 @@ fn encode_gemini_complete(events: &[IrStreamEvent], model: &str) -> Value {
             _ => {}
         }
     }
-    if let Some((id, name, args, signature, custom)) = current.take()
-        && let Some(part) =
-            gemini_function_call_value(&id, &name, &args, signature.as_deref(), custom)
-    {
-        tool_calls.push(part);
+    for (_, tool) in indexed_tool_finish(done_tools, open_tools) {
+        if let Some(part) = gemini_function_call_value(
+            &tool.id,
+            &tool.name,
+            &tool.args,
+            tool.signature.as_deref(),
+            tool.custom,
+        ) {
+            tool_calls.push(part);
+        }
     }
 
     let mut parts = Vec::new();
@@ -1006,10 +1097,10 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
     let mut moderation = None;
     let mut tool_calls = Vec::new();
     let mut tool_extras: BTreeMap<u32, super::responses::ResponsesToolExtra> = BTreeMap::new();
-    let mut open_tool: Option<u32> = None;
+    let mut open_tools: BTreeMap<u32, IndexedTool> = BTreeMap::new();
+    let mut done_tools: Vec<(u32, IndexedTool)> = Vec::new();
     let mut replay_items = Vec::new();
     let mut saw_reasoning_item = false;
-    let mut current: Option<(String, String, String, bool)> = None;
     for ev in events {
         match ev {
             IrStreamEvent::TextDelta { text: delta } => text.push_str(delta),
@@ -1072,35 +1163,34 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             IrStreamEvent::ToolCallStart {
                 id, name, index, ..
             } => {
-                if let Some((id, name, args, custom)) = current.take() {
-                    let extra = take_tool_extra(&mut open_tool, &mut tool_extras);
-                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, &extra));
-                }
-                open_tool = Some(*index);
-                current = Some((id.clone(), name.clone(), String::new(), false));
+                indexed_tool_start(
+                    &mut open_tools,
+                    &mut done_tools,
+                    *index,
+                    id.clone(),
+                    name.clone(),
+                    false,
+                    None,
+                );
             }
             IrStreamEvent::CustomToolCallStart {
                 id, name, index, ..
             } => {
-                if let Some((id, name, args, custom)) = current.take() {
-                    let extra = take_tool_extra(&mut open_tool, &mut tool_extras);
-                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, &extra));
-                }
-                open_tool = Some(*index);
-                current = Some((id.clone(), name.clone(), String::new(), true));
+                indexed_tool_start(
+                    &mut open_tools,
+                    &mut done_tools,
+                    *index,
+                    id.clone(),
+                    name.clone(),
+                    true,
+                    None,
+                );
             }
-            IrStreamEvent::ToolCallArgDelta { delta, .. }
-            | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
-                if let Some((_, _, args, _)) = current.as_mut() {
-                    args.push_str(delta);
-                }
+            IrStreamEvent::ToolCallArgDelta { delta, index }
+            | IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
+                indexed_tool_delta(&mut open_tools, *index, delta);
             }
-            IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args, custom)) = current.take() {
-                    let extra = take_tool_extra(&mut open_tool, &mut tool_extras);
-                    tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, &extra));
-                }
-            }
+            IrStreamEvent::ToolCallEnd => {}
             IrStreamEvent::Protocol { item_type, payload }
                 if let Some((index, extra)) =
                     super::responses::tool_extra_from_protocol(item_type, payload) =>
@@ -1177,9 +1267,15 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
             _ => {}
         }
     }
-    if let Some((id, name, args, custom)) = current.take() {
-        let extra = take_tool_extra(&mut open_tool, &mut tool_extras);
-        tool_calls.push(responses_tool_call_value(&id, &name, &args, custom, &extra));
+    for (index, tool) in indexed_tool_finish(done_tools, open_tools) {
+        let extra = tool_extras.remove(&index).unwrap_or_default();
+        tool_calls.push(responses_tool_call_value(
+            &tool.id,
+            &tool.name,
+            &tool.args,
+            tool.custom,
+            &extra,
+        ));
     }
 
     let mut output = Vec::new();
@@ -1336,16 +1432,6 @@ fn responses_complete_status(reason: &str) -> &str {
         // Chat `tool_calls` is a completed Responses turn with function_call output.
         _ => "completed",
     }
-}
-
-fn take_tool_extra(
-    open_tool: &mut Option<u32>,
-    tool_extras: &mut BTreeMap<u32, super::responses::ResponsesToolExtra>,
-) -> super::responses::ResponsesToolExtra {
-    open_tool
-        .take()
-        .and_then(|index| tool_extras.remove(&index))
-        .unwrap_or_default()
 }
 
 fn responses_tool_call_value(
@@ -2301,6 +2387,98 @@ wire = "responses"
 "#,
         )
         .expect("profile")
+    }
+
+    fn parallel_tool_events() -> Vec<IrStreamEvent> {
+        vec![
+            IrStreamEvent::ToolCallStart {
+                id: "call_a".into(),
+                name: "get_weather".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallStart {
+                id: "call_b".into(),
+                name: "get_time".into(),
+                thought_signature: None,
+                index: 1,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"city":"Paris"}"#.into(),
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"tz":"UTC"}"#.into(),
+                index: 1,
+            },
+        ]
+    }
+
+    fn tool_argument(body: &Value, id: &str) -> String {
+        fn walk(value: &Value, id: &str, found: &mut Option<String>) {
+            if found.is_some() {
+                return;
+            }
+            match value {
+                Value::Object(map) => {
+                    let call_id = map
+                        .get("id")
+                        .or_else(|| map.get("tool_use_id"))
+                        .or_else(|| map.get("toolUseId"))
+                        .or_else(|| map.get("call_id"))
+                        .and_then(Value::as_str);
+                    if call_id == Some(id) {
+                        let direct = map
+                            .get("arguments")
+                            .or_else(|| map.get("input"))
+                            .or_else(|| map.get("args"));
+                        let nested = map
+                            .get("function")
+                            .and_then(|func| func.get("arguments").or_else(|| func.get("input")));
+                        if let Some(args) = direct.or(nested) {
+                            *found = Some(args.to_string());
+                            return;
+                        }
+                    }
+                    for child in map.values() {
+                        walk(child, id, found);
+                    }
+                }
+                Value::Array(items) => {
+                    for child in items {
+                        walk(child, id, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut found = None;
+        walk(body, id, &mut found);
+        found.unwrap_or_default()
+    }
+
+    #[test]
+    fn parallel_tool_arguments_stay_on_their_call() {
+        let events = parallel_tool_events();
+        for wire in [
+            Wire::ChatCompletions,
+            Wire::Messages,
+            Wire::Gemini,
+            Wire::Responses,
+            Wire::Converse,
+        ] {
+            let body = encode_response(wire, &events).expect("encode");
+            let weather = tool_argument(&body, "call_a");
+            let time = tool_argument(&body, "call_b");
+            assert!(
+                weather.contains("Paris") && !weather.contains("UTC"),
+                "{wire:?} call_a must keep Paris, got {weather} body {body}"
+            );
+            assert!(
+                time.contains("UTC") && !time.contains("Paris"),
+                "{wire:?} call_b must keep UTC, got {time} body {body}"
+            );
+        }
     }
 
     #[test]

@@ -1,5 +1,7 @@
 //! Bedrock Converse stream and complete JSON (not AWS eventstream bytes).
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 use crate::ir::IrStreamEvent;
@@ -229,7 +231,10 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<Value, MapError> {
 pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapError> {
     let mut text = String::new();
     let mut content = Vec::new();
-    let mut current_tool: Option<(String, String, String, bool)> = None;
+    // Parallel calls announce every start before any argument text.
+    // Key by index so a later start does not steal the earlier call's deltas.
+    let mut open_tools: BTreeMap<u32, ConverseTool> = BTreeMap::new();
+    let mut done_tools: Vec<(u32, ConverseTool)> = Vec::new();
     let mut citations = Vec::new();
     let mut reasoning = String::new();
     let mut reasoning_signature = None;
@@ -273,27 +278,21 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
             IrStreamEvent::AnnotationAdded { annotation } => {
                 citations.push(citation_from_annotation(annotation));
             }
-            IrStreamEvent::ToolCallStart { id, name, .. }
-            | IrStreamEvent::CustomToolCallStart { id, name, .. } => {
+            IrStreamEvent::ToolCallStart {
+                id, name, index, ..
+            }
+            | IrStreamEvent::CustomToolCallStart { id, name, index } => {
                 let custom = matches!(ev, IrStreamEvent::CustomToolCallStart { .. });
                 flush_text(&mut text, &mut content);
-                if let Some((id, name, args, custom)) = current_tool.take() {
-                    content.push(tool_use(&id, &name, &args, custom));
-                }
-                current_tool = Some((id.clone(), name.clone(), String::new(), custom));
+                note_converse_tool(&mut open_tools, &mut done_tools, *index, id, name, custom);
             }
-            IrStreamEvent::ToolCallArgDelta { delta, .. }
-            | IrStreamEvent::CustomToolCallInputDelta { delta, .. } => {
-                if let Some((_, _, args, _)) = current_tool.as_mut() {
-                    args.push_str(delta);
-                }
+            IrStreamEvent::ToolCallArgDelta { delta, index }
+            | IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
+                open_tools.entry(*index).or_default().args.push_str(delta);
             }
-            IrStreamEvent::ToolCallEnd => {
-                if let Some((id, name, args, custom)) = current_tool.take() {
-                    content.push(tool_use(&id, &name, &args, custom));
-                    stop = "tool_use";
-                }
-            }
+            // `ToolCallEnd` has no index. Committing the newest call here
+            // would emit it before a sibling call's arguments arrive.
+            IrStreamEvent::ToolCallEnd => {}
             IrStreamEvent::FinishReason { reason, .. } => stop = finish_reason(reason),
             IrStreamEvent::ServiceTier { tier } => {
                 if let Some((mapped, _)) = crate::map::converse_service_tier(tier) {
@@ -416,11 +415,16 @@ pub(super) fn encode_complete(events: &[IrStreamEvent]) -> Result<Value, MapErro
         content = kept;
     }
     flush_text(&mut text, &mut content);
-    if let Some((id, name, args, custom)) = current_tool.take() {
-        content.push(tool_use(&id, &name, &args, custom));
-        if stop == "end_turn" {
-            stop = "tool_use";
+    done_tools.extend(open_tools);
+    let saw_tool = done_tools.iter().any(|(_, tool)| tool.named());
+    for (_, tool) in done_tools {
+        if !tool.named() {
+            continue;
         }
+        content.push(tool_use(&tool.id, &tool.name, &tool.args, tool.custom));
+    }
+    if saw_tool && stop == "end_turn" {
+        stop = "tool_use";
     }
     let mut body = json!({
         "output": { "message": { "role": "assistant", "content": content } },
@@ -877,6 +881,46 @@ fn flush_text(text: &mut String, content: &mut Vec<Value>) {
         content.push(json!({ "text": text.as_str() }));
         text.clear();
     }
+}
+
+#[derive(Default)]
+struct ConverseTool {
+    id: String,
+    name: String,
+    args: String,
+    custom: bool,
+}
+
+impl ConverseTool {
+    fn named(&self) -> bool {
+        !self.id.is_empty() || !self.name.is_empty()
+    }
+}
+
+fn note_converse_tool(
+    open: &mut BTreeMap<u32, ConverseTool>,
+    done: &mut Vec<(u32, ConverseTool)>,
+    index: u32,
+    id: &str,
+    name: &str,
+    custom: bool,
+) {
+    if let Some(existing) = open.get(&index)
+        && !id.is_empty()
+        && !existing.id.is_empty()
+        && existing.id != id
+        && let Some(prev) = open.remove(&index)
+    {
+        done.push((index, prev));
+    }
+    let slot = open.entry(index).or_default();
+    if slot.id.is_empty() {
+        slot.id = id.to_string();
+    }
+    if slot.name.is_empty() {
+        slot.name = name.to_string();
+    }
+    slot.custom = custom;
 }
 
 fn tool_use(id: &str, name: &str, args: &str, custom: bool) -> Value {

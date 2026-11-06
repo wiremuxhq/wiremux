@@ -574,10 +574,19 @@ pub(super) fn encode(
     // A system prompt with no turn is not a request Anthropic will accept.
     // A truly empty item list stays an empty messages array so Continue is
     // not invented onto a request that had no turns.
-    if system.is_some() && messages.as_array().is_none_or(|rows| rows.is_empty()) {
-        return Err(MapError::Invalid(
-            "messages must not be empty: system text needs a message turn".into(),
-        ));
+    if messages.as_array().is_none_or(|rows| rows.is_empty()) {
+        if system.is_some() {
+            return Err(MapError::Invalid(
+                "messages must not be empty: system text needs a message turn".into(),
+            ));
+        }
+        let dropped = super::dropped_details(report);
+        if !dropped.is_empty() {
+            return Err(MapError::Invalid(format!(
+                "messages must not be empty: {}",
+                dropped.join("; ")
+            )));
+        }
     }
     if ir.sampling.max_tokens == Some(0) {
         return Err(MapError::hard(

@@ -1055,6 +1055,12 @@ impl ToolCallAssembler {
         thought_signature: Option<String>,
         index: u32,
     ) -> Vec<IrStreamEvent> {
+        // A later chunk can repeat the id after the call already started.
+        // That is the same call. A new pending start would flush as a
+        // second tool with an empty name.
+        if self.started.contains(&index) {
+            return Vec::new();
+        }
         let (id, name, thought_signature, args) = if let Some(prev) = self.pending.remove(&index) {
             (
                 if id.is_empty() { prev.id } else { id },

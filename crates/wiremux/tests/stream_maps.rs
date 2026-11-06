@@ -9776,6 +9776,43 @@ fn chat_arguments_before_the_start_follow_it() {
 }
 
 #[test]
+fn repeated_chat_tool_id_does_not_open_a_second_call() {
+    let mut assembler = ToolCallAssembler::new();
+    let mut out = assembler.push(IrStreamEvent::ToolCallStart {
+        id: "call_a".into(),
+        name: "get_weather".into(),
+        thought_signature: None,
+        index: 0,
+    });
+    out.extend(assembler.push(IrStreamEvent::ToolCallStart {
+        id: "call_a".into(),
+        name: String::new(),
+        thought_signature: None,
+        index: 0,
+    }));
+    out.extend(assembler.push(IrStreamEvent::ToolCallArgDelta {
+        delta: r#"{"city":"Paris"}"#.into(),
+        index: 0,
+    }));
+    out.extend(assembler.flush());
+    let starts = out
+        .iter()
+        .filter(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. }))
+        .count();
+    assert_eq!(
+        starts, 1,
+        "a repeated id must not open another call, got {out:?}"
+    );
+    assert!(
+        out.iter().any(|ev| matches!(
+            ev,
+            IrStreamEvent::ToolCallArgDelta { delta, index: 0 } if delta.contains("Paris")
+        )),
+        "the argument fragment must stay on the first call, got {out:?}"
+    );
+}
+
+#[test]
 fn chat_arguments_without_a_start_flush_as_deltas() {
     let mut assembler = ToolCallAssembler::new();
     let held = assembler.push(IrStreamEvent::ToolCallArgDelta {
