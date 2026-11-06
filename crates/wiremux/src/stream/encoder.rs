@@ -20,6 +20,14 @@ enum BlockKind {
     CustomTool,
 }
 
+/// One dest Converse tool call announced while another tool block is open.
+struct ConverseHeld {
+    id: String,
+    name: String,
+    signature: Option<String>,
+    args: String,
+}
+
 /// One dest Gemini function call while its argument fragments are still open.
 struct GeminiHeldCall {
     id: String,
@@ -105,6 +113,10 @@ pub struct StreamEncoder {
     /// Tool starts that arrived while another tool block was still open.
     /// Flushed when that block closes, in content-block index order.
     held_tools: BTreeMap<u32, (u32, String, String, String)>,
+    /// Responses function calls announced before the open call's arguments.
+    responses_held: BTreeMap<u32, ()>,
+    /// Converse function calls announced before the open call's input.
+    converse_held: BTreeMap<u32, ConverseHeld>,
     /// Non-tool events that arrived while a tool block was still open.
     deferred: Vec<IrStreamEvent>,
     closed_tools: HashSet<u32>,
@@ -189,6 +201,8 @@ impl StreamEncoder {
             moderation: None,
             refusal: String::new(),
             held_tools: BTreeMap::new(),
+            responses_held: BTreeMap::new(),
+            converse_held: BTreeMap::new(),
             deferred: Vec::new(),
             closed_tools: HashSet::new(),
             gemini_open_calls: BTreeMap::new(),
@@ -1459,26 +1473,33 @@ impl StreamEncoder {
                 id, name, index, ..
             } => {
                 let enc = self.alloc_tool(index);
-                out.extend(self.close_item());
-                out.push(named(
-                    "response.output_item.added",
-                    json!({
-                        "type": "response.output_item.added",
-                        "output_index": enc,
-                        "item": {
-                            "type": "function_call",
-                            "id": id,
-                            "call_id": id,
-                            "name": name,
-                            "arguments": ""
-                        }
-                    }),
-                ));
+                let other_open = self.open.is_some_and(|(open_enc, kind)| {
+                    matches!(kind, BlockKind::Tool | BlockKind::CustomTool) && open_enc != enc
+                });
                 self.tool_ids.insert(enc, id.clone());
                 self.tool_items
                     .insert(enc, (id.clone(), name.clone(), String::new()));
                 self.take_pending_tool_extra(index, enc);
-                self.open = Some((enc, BlockKind::Tool));
+                if other_open {
+                    self.responses_held.insert(enc, ());
+                } else {
+                    out.extend(self.close_item());
+                    out.push(named(
+                        "response.output_item.added",
+                        json!({
+                            "type": "response.output_item.added",
+                            "output_index": enc,
+                            "item": {
+                                "type": "function_call",
+                                "id": id,
+                                "call_id": id,
+                                "name": name,
+                                "arguments": ""
+                            }
+                        }),
+                    ));
+                    self.open = Some((enc, BlockKind::Tool));
+                }
             }
             IrStreamEvent::AnnotationAdded { annotation } => {
                 out.extend(self.ensure_item(BlockKind::Text));
@@ -1607,16 +1628,18 @@ impl StreamEncoder {
                 if let Some((_, _, args)) = self.tool_items.get_mut(&enc) {
                     args.push_str(&delta);
                 }
-                let item_id = self.tool_ids.get(&enc).cloned().unwrap_or_default();
-                out.push(named(
-                    "response.function_call_arguments.delta",
-                    json!({
-                        "type": "response.function_call_arguments.delta",
-                        "output_index": enc,
-                        "item_id": item_id,
-                        "delta": delta
-                    }),
-                ));
+                if !self.responses_held.contains_key(&enc) {
+                    let item_id = self.tool_ids.get(&enc).cloned().unwrap_or_default();
+                    out.push(named(
+                        "response.function_call_arguments.delta",
+                        json!({
+                            "type": "response.function_call_arguments.delta",
+                            "output_index": enc,
+                            "item_id": item_id,
+                            "delta": delta
+                        }),
+                    ));
+                }
             }
             IrStreamEvent::ToolCallEnd => {
                 out.extend(self.close_item());
@@ -1845,8 +1868,63 @@ impl StreamEncoder {
         out
     }
 
+    fn flush_responses_held(&mut self) -> Vec<RawSse> {
+        let held = std::mem::take(&mut self.responses_held);
+        let mut out = Vec::new();
+        for (enc, _) in held {
+            let Some((id, name, arguments)) = self.tool_items.remove(&enc) else {
+                continue;
+            };
+            out.push(named(
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "output_index": enc,
+                    "item": {
+                        "type": "function_call",
+                        "id": id,
+                        "call_id": id,
+                        "name": name,
+                        "arguments": ""
+                    }
+                }),
+            ));
+            if !arguments.is_empty() {
+                out.push(named(
+                    "response.function_call_arguments.delta",
+                    json!({
+                        "type": "response.function_call_arguments.delta",
+                        "output_index": enc,
+                        "item_id": id,
+                        "delta": arguments
+                    }),
+                ));
+            }
+            let mut item = json!({
+                "type": "function_call",
+                "id": id,
+                "call_id": id,
+                "name": name,
+                "arguments": arguments
+            });
+            if let Some(extra) = self.responses_tool_extra.remove(&enc) {
+                extra.write_item(&mut item);
+            }
+            out.push(named(
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": enc,
+                    "item": item
+                }),
+            ));
+        }
+        out
+    }
+
     fn finish_responses(&mut self) -> Vec<RawSse> {
         let mut out = self.close_item();
+        out.extend(self.flush_responses_held());
         let reason = self.finish.as_deref().unwrap_or("stop");
         let (event, status) = match reason {
             "failed" => ("response.failed", "failed"),
@@ -2066,22 +2144,43 @@ impl StreamEncoder {
                 index,
             } => {
                 let enc = self.alloc_tool(index);
-                out.extend(self.close_converse());
+                let other_open = self
+                    .open
+                    .is_some_and(|(open_enc, kind)| kind == BlockKind::Tool && open_enc != enc);
                 self.note_custom_slot(enc, custom);
-                out.push(converse_frame_with_index(
-                    super::converse::encode(&IrStreamEvent::ToolCallStart {
-                        id,
-                        name,
-                        thought_signature,
-                        index,
-                    })?,
-                    enc,
-                ));
-                self.open = Some((enc, BlockKind::Tool));
+                if other_open {
+                    self.converse_held.insert(
+                        enc,
+                        ConverseHeld {
+                            id,
+                            name,
+                            signature: thought_signature,
+                            args: String::new(),
+                        },
+                    );
+                } else {
+                    out.extend(self.close_converse());
+                    out.push(converse_frame_with_index(
+                        super::converse::encode(&IrStreamEvent::ToolCallStart {
+                            id,
+                            name,
+                            thought_signature,
+                            index,
+                        })?,
+                        enc,
+                    ));
+                    self.open = Some((enc, BlockKind::Tool));
+                }
             }
             IrStreamEvent::ToolCallArgDelta { delta, index } => {
                 let enc = self.tool_enc(index);
-                if custom || self.custom_args.contains_key(&enc) {
+                if let Some(held) = self.converse_held.get_mut(&enc) {
+                    if custom || self.custom_args.contains_key(&enc) {
+                        self.custom_args.entry(enc).or_default().push_str(&delta);
+                    } else {
+                        held.args.push_str(&delta);
+                    }
+                } else if custom || self.custom_args.contains_key(&enc) {
                     self.custom_args.entry(enc).or_default().push_str(&delta);
                 } else {
                     out.push(converse_frame_with_index(
@@ -2198,8 +2297,49 @@ impl StreamEncoder {
         out
     }
 
+    fn flush_converse_held(&mut self) -> Result<Vec<RawSse>, MapError> {
+        let held = std::mem::take(&mut self.converse_held);
+        let mut out = Vec::new();
+        for (enc, held) in held {
+            out.push(converse_frame_with_index(
+                super::converse::encode(&IrStreamEvent::ToolCallStart {
+                    id: held.id,
+                    name: held.name,
+                    thought_signature: held.signature,
+                    index: enc,
+                })?,
+                enc,
+            ));
+            if let Some(text) = self.take_custom_json(enc) {
+                out.push(converse_frame_with_index(
+                    json!({
+                        "contentBlockDelta": {
+                            "delta": { "toolUse": { "input": text } }
+                        }
+                    }),
+                    enc,
+                ));
+            } else if !held.args.is_empty() {
+                out.push(converse_frame_with_index(
+                    json!({
+                        "contentBlockDelta": {
+                            "delta": { "toolUse": { "input": held.args } }
+                        }
+                    }),
+                    enc,
+                ));
+            }
+            out.push(converse_frame_with_index(
+                json!({ "contentBlockStop": {} }),
+                enc,
+            ));
+        }
+        Ok(out)
+    }
+
     fn finish_converse(&mut self) -> Result<Vec<RawSse>, MapError> {
         let mut out = self.close_converse();
+        out.extend(self.flush_converse_held()?);
         let reason = self.finish.take().unwrap_or_else(|| "end_turn".into());
         out.push(encode_stream_event(
             Wire::Converse,
@@ -2901,6 +3041,98 @@ mod tests {
                     })
             }),
             "dest Messages STREAM refusal must not fold into text_delta, got {all:?}"
+        );
+    }
+
+    fn parallel_tool_starts_then_args() -> [IrStreamEvent; 4] {
+        [
+            IrStreamEvent::ToolCallStart {
+                id: "call_a".into(),
+                name: "get_weather".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallStart {
+                id: "call_b".into(),
+                name: "get_time".into(),
+                thought_signature: None,
+                index: 1,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"city":"Paris"}"#.into(),
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"tz":"UTC"}"#.into(),
+                index: 1,
+            },
+        ]
+    }
+
+    #[test]
+    fn responses_encoder_keeps_parallel_tool_arguments() {
+        let mut enc = StreamEncoder::new(Wire::Responses);
+        let mut frames = Vec::new();
+        for ev in parallel_tool_starts_then_args() {
+            frames.extend(enc.push(ev).expect("push"));
+        }
+        frames.extend(enc.finish().expect("finish"));
+        let done_args = |id: &str| -> String {
+            for frame in &frames {
+                let Ok(value) = serde_json::from_str::<Value>(&frame.data) else {
+                    continue;
+                };
+                if value.get("type").and_then(Value::as_str) != Some("response.output_item.done") {
+                    continue;
+                }
+                let Some(item) = value.get("item") else {
+                    continue;
+                };
+                if item.get("id").and_then(Value::as_str) == Some(id) {
+                    return item
+                        .get("arguments")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                }
+            }
+            String::new()
+        };
+        let weather = done_args("call_a");
+        let time = done_args("call_b");
+        assert!(
+            weather.contains("Paris") && !weather.contains("UTC"),
+            "Responses done for call_a must keep Paris, got {weather}"
+        );
+        assert!(
+            time.contains("UTC") && !time.contains("Paris"),
+            "Responses done for call_b must keep UTC, got {time}"
+        );
+    }
+
+    #[test]
+    fn converse_encoder_keeps_parallel_tool_arguments() {
+        let mut enc = StreamEncoder::new(Wire::Converse);
+        let mut frames = Vec::new();
+        for ev in parallel_tool_starts_then_args() {
+            frames.extend(enc.push(ev).expect("push"));
+        }
+        frames.extend(enc.finish().expect("finish"));
+        let body = frames
+            .iter()
+            .map(|frame| frame.data.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let paris = body.find("Paris").expect("Paris");
+        let utc = body.find("UTC").expect("UTC");
+        let first_stop = body.find("contentBlockStop").expect("stop");
+        assert!(
+            paris < first_stop,
+            "index 0 input must precede the first contentBlockStop, got {body}"
+        );
+        assert!(
+            body.contains("call_b") && body.contains("get_time") && utc > paris,
+            "second tool must still be emitted after the first input, got {body}"
         );
     }
 
