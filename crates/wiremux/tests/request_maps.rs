@@ -15542,6 +15542,46 @@ fn system_content_parts_nested_breakpoint_keeps_text() {
 }
 
 #[test]
+fn converse_tool_nested_cache_breakpoint_keeps_text() {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: String::new(),
+            is_error: false,
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::PromptCacheBreakpoint {
+                    mode: "nested".into(),
+                    inner: Box::new(IrPart::Text("kept-tool-text".into())),
+                }),
+            }],
+        }],
+    );
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let texts: Vec<&str> = body
+        .pointer("/messages/0/content/0/toolResult/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|block| block.pointer("/text").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["kept-tool-text"],
+        "two breakpoints must keep the tool text and not add a dot, got {body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| event.detail.contains("empty content became")),
+        "the tool text is present, got {report:?}"
+    );
+}
+
+#[test]
 fn system_content_parts_messages_empty_parts_keeps_text() {
     let ir = IrRequest::new(
         "test-model",
