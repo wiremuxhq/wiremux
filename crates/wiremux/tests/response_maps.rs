@@ -59,6 +59,18 @@ fn crate_root_encode_response_omits_empty_dest_model() {
         mapped.get("model").is_none(),
         "empty dest model must omit dest Chat model, got {mapped}"
     );
+    let messages = encode_response(Wire::Messages, &events).expect("encode dest Messages");
+    assert!(
+        messages.get("model").is_none(),
+        "empty dest model must omit dest Messages model, got {messages}"
+    );
+    let stamped = encode_response_with_model(Wire::Messages, &events, "claude-sonnet-4")
+        .expect("stamp dest Messages");
+    assert_eq!(
+        stamped.get("model").and_then(serde_json::Value::as_str),
+        Some("claude-sonnet-4"),
+        "a real dest model must stay on Messages, got {stamped}"
+    );
     assert_eq!(
         mapped.get("id").and_then(serde_json::Value::as_str),
         Some("chatcmpl-wiremux"),

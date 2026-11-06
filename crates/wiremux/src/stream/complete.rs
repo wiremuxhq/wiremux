@@ -489,9 +489,11 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
         "id": messages_id.as_deref().unwrap_or("msg_wiremux"),
         "type": "message",
         "role": "assistant",
-        "model": model,
         "content": content,
     });
+    if !model.is_empty() {
+        out["model"] = json!(model);
+    }
     if let Some(ref reason) = finish {
         out["stop_reason"] = json!(reason);
     }
