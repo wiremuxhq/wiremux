@@ -2424,6 +2424,7 @@ wire = "responses"
                     let call_id = map
                         .get("id")
                         .or_else(|| map.get("tool_use_id"))
+                        .or_else(|| map.get("toolUseId"))
                         .or_else(|| map.get("call_id"))
                         .and_then(Value::as_str);
                     if call_id == Some(id) {
@@ -2464,6 +2465,7 @@ wire = "responses"
             Wire::Messages,
             Wire::Gemini,
             Wire::Responses,
+            Wire::Converse,
         ] {
             let body = encode_response(wire, &events).expect("encode");
             let weather = tool_argument(&body, "call_a");
