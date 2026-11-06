@@ -531,6 +531,9 @@ and `system_content_parts_nested_breakpoint_keeps_text`.
 Converse tool text inside those breakpoints is that text alone.
 It does not gain a leading `.`. Locked by
 `converse_tool_nested_cache_breakpoint_keeps_text`.
+A Chat tool image inside a breakpoint still has no image slot.
+The loss log records that drop and the breakpoint mode. Locked by
+`chat_tool_image_inside_cache_breakpoint_records_the_drop`.
 
 ## Pin
 

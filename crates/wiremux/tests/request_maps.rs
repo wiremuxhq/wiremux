@@ -3561,6 +3561,42 @@ fn chat_tool_nested_cache_breakpoint_keeps_text() {
 }
 
 #[test]
+fn chat_tool_image_inside_cache_breakpoint_records_the_drop() {
+    let ir = IrRequest::new(
+        "probe-model",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: String::new(),
+            is_error: false,
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::ImageUrl {
+                    url: "https://example.com/cat.png".into(),
+                    detail: None,
+                    bucket_owner: None,
+                    file_id: None,
+                }),
+            }],
+        }],
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        !body.to_string().contains("cat.png"),
+        "Chat tool messages have no image slot, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "items[0].image"),
+        "a breakpoint around a tool image must still record the drop, got {report:?}"
+    );
+    assert_eq!(
+        breakpoint_drops(&report),
+        1,
+        "the breakpoint mode cannot be written, got {report:?}"
+    );
+}
+
+#[test]
 fn chat_tool_breakpoint_keeps_the_image_for_messages() {
     let req = br#"{
         "model": "gpt-4o",

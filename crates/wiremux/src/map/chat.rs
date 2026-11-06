@@ -606,13 +606,26 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 is_error,
             } => {
                 for part in parts {
-                    if matches!(part, IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. })
-                        || super::function_response_image(part).is_some()
+                    let (visible, modes) = super::peel_prompt_cache_modes(part);
+                    if !matches!(visible, IrPart::Text(_)) {
+                        for mode in &modes {
+                            super::apply_prompt_cache(
+                                &mut serde_json::Value::Null,
+                                Some(mode),
+                                false,
+                                report,
+                            );
+                        }
+                    }
+                    if matches!(
+                        visible,
+                        IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. }
+                    ) || super::function_response_image(visible).is_some()
                     {
                         report.record(format!("items[{idx}].image"), LossAction::Drop, "no slot");
-                    } else if matches!(part, IrPart::Document { .. })
+                    } else if matches!(visible, IrPart::Document { .. })
                         || matches!(
-                            part,
+                            visible,
                             IrPart::Raw { type_name, .. }
                                 if type_name == "video" || type_name == "searchResult"
                         )
