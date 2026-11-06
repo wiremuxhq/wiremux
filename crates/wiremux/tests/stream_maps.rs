@@ -9799,7 +9799,10 @@ fn repeated_chat_tool_id_does_not_open_a_second_call() {
         .iter()
         .filter(|ev| matches!(ev, IrStreamEvent::ToolCallStart { .. }))
         .count();
-    assert_eq!(starts, 1, "a repeated id must not open another call, got {out:?}");
+    assert_eq!(
+        starts, 1,
+        "a repeated id must not open another call, got {out:?}"
+    );
     assert!(
         out.iter().any(|ev| matches!(
             ev,
