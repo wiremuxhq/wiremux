@@ -1184,6 +1184,73 @@ fn gemini_function_output_keeps_image_inside_cache_breakpoint() {
     );
 }
 
+#[test]
+fn gemini_function_output_keeps_text_inside_nested_cache_breakpoints() {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: String::new(),
+            is_error: false,
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::PromptCacheBreakpoint {
+                    mode: "nested".into(),
+                    inner: Box::new(IrPart::Text("kept-tool-text".into())),
+                }),
+            }],
+        }],
+    );
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/functionResponse/response/result")
+            .and_then(Value::as_str),
+        Some("kept-tool-text"),
+        "two breakpoints must keep the tool text, got {body}"
+    );
+    assert_eq!(
+        breakpoint_drops(&report),
+        2,
+        "each breakpoint layer has no Gemini slot, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_function_output_keeps_image_inside_nested_cache_breakpoints() {
+    let ir = IrRequest::new(
+        "gemini-2.5-flash",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: String::new(),
+            is_error: false,
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::PromptCacheBreakpoint {
+                    mode: "nested".into(),
+                    inner: Box::new(IrPart::ImageBase64 {
+                        media_type: "image/png".into(),
+                        data: "aGVsbG8".into(),
+                    }),
+                }),
+            }],
+        }],
+    );
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/contents/0/parts/0/functionResponse/parts/0/inlineData/data")
+            .and_then(Value::as_str),
+        Some("aGVsbG8"),
+        "two breakpoints must keep the tool image, got {body}"
+    );
+    assert_eq!(
+        breakpoint_drops(&report),
+        2,
+        "each breakpoint layer has no Gemini slot, got {report:?}"
+    );
+}
+
 fn gemini_profile() -> ResolvedProfile {
     profile(
         r#"
@@ -3449,6 +3516,51 @@ fn chat_tool_prompt_cache_breakpoint_round_trips() {
 }
 
 #[test]
+fn chat_tool_nested_cache_breakpoint_keeps_text() {
+    let ir = IrRequest::new(
+        "probe-model",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: String::new(),
+            is_error: false,
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::PromptCacheBreakpoint {
+                    mode: "nested".into(),
+                    inner: Box::new(IrPart::Text("kept-tool-text".into())),
+                }),
+            }],
+        }],
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.to_string().contains("kept-tool-text"),
+        "two breakpoints must keep the tool text, got {body}"
+    );
+    assert_ne!(
+        body.pointer("/messages/0/content").and_then(Value::as_str),
+        Some(""),
+        "tool text must not become an empty string, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/prompt_cache_breakpoint/mode")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "outer cache breakpoint must stay, got {body}"
+    );
+    assert!(
+        !body.to_string().contains("nested"),
+        "inner breakpoint mode must not replace the outer mode, got {body}"
+    );
+    assert_eq!(
+        breakpoint_drops(&report),
+        1,
+        "the inner mode cannot be written and must be a drop, got {report:?}"
+    );
+}
+
+#[test]
 fn chat_tool_breakpoint_keeps_the_image_for_messages() {
     let req = br#"{
         "model": "gpt-4o",
@@ -5268,6 +5380,16 @@ fn loss_dropped(report: &LossReport, path: &str) -> bool {
         .events
         .iter()
         .any(|event| event.path == path && event.action == LossAction::Drop)
+}
+
+fn breakpoint_drops(report: &LossReport) -> usize {
+    report
+        .events
+        .iter()
+        .filter(|event| {
+            event.path == "part.prompt_cache_breakpoint" && event.action == LossAction::Drop
+        })
+        .count()
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
