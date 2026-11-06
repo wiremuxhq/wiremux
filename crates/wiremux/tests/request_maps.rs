@@ -15798,3 +15798,84 @@ fn system_content_parts_messages_empty_parts_keeps_text() {
         "empty content_parts must not Drop part.image, got {report:?}"
     );
 }
+
+#[test]
+fn responses_json_only_tool_output_keeps_the_json() {
+    let json_part = || IrPart::Raw {
+        type_name: "json".into(),
+        raw: serde_json::json!({"ok": true, "n": 1}),
+    };
+    let json_only = IrRequest::new(
+        "gpt-5",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: String::new(),
+            is_error: false,
+            parts: vec![json_part()],
+        }],
+    );
+    let (bytes, _) = encode(Wire::Responses, &json_only, &hard_error_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let output = body
+        .pointer("/input/0/output")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        !output.is_empty() && output.contains("ok"),
+        "json-only tool output must keep the JSON text, got {body}"
+    );
+
+    let joined = IrRequest::new(
+        "gpt-5",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: "hello".into(),
+            is_error: false,
+            parts: vec![json_part()],
+        }],
+    );
+    let (bytes, _) = encode(Wire::Responses, &joined, &hard_error_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let output = body
+        .pointer("/input/0/output")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        output.contains("hello") && output.contains("ok"),
+        "joined tool output must keep the text and the JSON, got {body}"
+    );
+}
+
+#[test]
+fn responses_tool_image_survives_breakpoint_around_thinking() {
+    let ir = IrRequest::new(
+        "gpt-5",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: String::new(),
+            is_error: false,
+            parts: vec![
+                IrPart::ImageUrl {
+                    url: "https://example.com/cat.png".into(),
+                    detail: None,
+                    bucket_owner: None,
+                    file_id: None,
+                },
+                IrPart::PromptCacheBreakpoint {
+                    mode: "explicit".into(),
+                    inner: Box::new(IrPart::Thinking {
+                        text: "hidden".into(),
+                        signature: None,
+                    }),
+                },
+            ],
+        }],
+    );
+    let (bytes, _) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("https://example.com/cat.png"),
+        "a later breakpoint that adds no parts must not drop the image, got {body}"
+    );
+}
