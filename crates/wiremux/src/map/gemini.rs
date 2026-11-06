@@ -790,12 +790,13 @@ pub(super) fn encode(
                     );
                 }
                 let mut wire_parts = Vec::new();
+                let mut peeled = Vec::with_capacity(parts.len());
                 for part in parts {
-                    let (inner, mode) = super::peel_prompt_cache(part);
-                    if mode.is_some() {
+                    let (inner, modes) = super::peel_prompt_cache_modes(part);
+                    for mode in &modes {
                         super::apply_prompt_cache(
                             &mut serde_json::Value::Null,
-                            mode,
+                            Some(mode),
                             false,
                             report,
                         );
@@ -816,16 +817,13 @@ pub(super) fn encode(
                     {
                         report.record(format!("items[{idx}].part"), LossAction::Drop, "no slot");
                     }
+                    peeled.push(inner.clone());
                 }
                 let name = call_names
                     .iter()
                     .rev()
                     .find_map(|(id, name)| (*id == call_id).then_some(*name))
                     .unwrap_or(call_id.as_str());
-                let peeled: Vec<IrPart> = parts
-                    .iter()
-                    .map(|part| super::peel_prompt_cache(part).0.clone())
-                    .collect();
                 let response = super::json_object_or_raw(
                     &super::function_output_text(output, &peeled),
                     "functionResponse.response",

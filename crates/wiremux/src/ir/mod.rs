@@ -533,6 +533,10 @@ pub enum IrPart {
     /// Chat and Responses `prompt_cache_breakpoint` on `inner`.
     /// Other wires keep `inner` and record that the marker has no slot.
     /// `mode` is the breakpoint mode. The API documents `explicit`.
+    /// Nested markers unwrap. Chat and Responses keep the outer mode.
+    /// A Chat tool result records each inner mode as a drop. Gemini
+    /// records every layer on a tool result and still writes the text
+    /// or image.
     PromptCacheBreakpoint {
         mode: String,
         inner: Box<IrPart>,

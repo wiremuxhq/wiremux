@@ -637,9 +637,12 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 let content = if has_breakpoint {
                     let text_parts: Vec<IrPart> = parts
                         .iter()
-                        .filter(|part| matches!(super::peel_prompt_cache(part).0, IrPart::Text(_)))
+                        .filter(|part| {
+                            matches!(super::peel_prompt_cache_all(part).0, IrPart::Text(_))
+                        })
                         .cloned()
                         .collect();
+                    note_inner_breakpoint_modes(&text_parts, report);
                     encode_parts(&text_parts, report)
                 } else {
                     json!(super::function_output_text(output, parts))
@@ -796,6 +799,17 @@ fn custom_tool_call_json(call_id: &str, name: &str, input: &str) -> Value {
             "input": input,
         }
     })
+}
+
+/// Chat writes one breakpoint mode. Each mode inside that layer is a drop.
+fn note_inner_breakpoint_modes(parts: &[IrPart], report: &mut LossReport) {
+    for part in parts {
+        let (_, modes) = super::peel_prompt_cache_modes(part);
+        let skip = usize::from(modes.first().is_some_and(|mode| !mode.is_empty()));
+        for mode in modes.iter().skip(skip) {
+            super::apply_prompt_cache(&mut serde_json::Value::Null, Some(mode), false, report);
+        }
+    }
 }
 
 fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Value {

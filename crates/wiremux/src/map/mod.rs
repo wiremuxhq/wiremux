@@ -175,6 +175,17 @@ pub(super) fn peel_prompt_cache(part: &IrPart) -> (&IrPart, Option<&str>) {
     }
 }
 
+/// Payload plus every cache breakpoint mode, outermost first.
+pub(super) fn peel_prompt_cache_modes(part: &IrPart) -> (&IrPart, Vec<&str>) {
+    let mut modes = Vec::new();
+    let mut current = part;
+    while let IrPart::PromptCacheBreakpoint { mode, inner } = current {
+        modes.push(mode.as_str());
+        current = inner.as_ref();
+    }
+    (current, modes)
+}
+
 /// Payload plus the outermost cache breakpoint mode.
 /// Every nested breakpoint unwraps. The first layer's mode is kept.
 pub(super) fn peel_prompt_cache_all(part: &IrPart) -> (&IrPart, Option<&str>) {

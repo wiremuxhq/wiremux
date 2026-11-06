@@ -516,6 +516,16 @@ developer role. `content_parts` keeps a later breakpoint on that role.
 `file_id` is the Responses input image file id. Chat, Messages,
 Converse, and Gemini have no slot for `file_id`.
 
+A tool result can wrap its text or image in more than one cache
+breakpoint. Chat writes the outer mode and records each inner mode
+as a drop. Gemini has no breakpoint field, so every layer is a drop,
+and the tool text or inline image stays. One breakpoint and two
+breakpoints send the same payload. Locked by
+`chat_tool_nested_cache_breakpoint_keeps_text`,
+`gemini_function_output_keeps_text_inside_nested_cache_breakpoints`,
+and
+`gemini_function_output_keeps_image_inside_nested_cache_breakpoints`.
+
 ## Pin
 
 Published hosts pin crates.io `0.11.9`. <!-- x-release-please-version -->
