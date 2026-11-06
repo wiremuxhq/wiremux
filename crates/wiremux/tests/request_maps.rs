@@ -3597,6 +3597,160 @@ fn chat_tool_image_inside_cache_breakpoint_records_the_drop() {
 }
 
 #[test]
+fn chat_tool_output_survives_breakpoint_around_image() {
+    let image = IrPart::ImageUrl {
+        url: "https://example.com/cat.png".into(),
+        detail: None,
+        bucket_owner: None,
+        file_id: None,
+    };
+    let ir = IrRequest::new(
+        "probe-model",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: "hello-from-output".into(),
+            is_error: false,
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(image),
+            }],
+        }],
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content").and_then(Value::as_str),
+        Some("hello-from-output"),
+        "a breakpoint around an image must not erase tool output, got {body}"
+    );
+    assert!(
+        !body.to_string().contains("cat.png"),
+        "Chat tool messages have no image slot, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "items[0].image"),
+        "the image drop stays, got {report:?}"
+    );
+    assert_eq!(
+        breakpoint_drops(&report),
+        1,
+        "the breakpoint mode stays a drop, got {report:?}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| event.path.contains("output")),
+        "sent output must not also be a drop, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_tool_output_survives_breakpoint_around_document() {
+    let ir = IrRequest::new(
+        "probe-model",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: "hello-from-output".into(),
+            is_error: false,
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::Document {
+                    source: IrDocumentSource::Url("https://example.com/doc.pdf".into()),
+                    media_type: "application/pdf".into(),
+                    name: None,
+                    citations_enabled: None,
+                    context: None,
+                }),
+            }],
+        }],
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content").and_then(Value::as_str),
+        Some("hello-from-output"),
+        "a breakpoint around a document must not erase tool output, got {body}"
+    );
+    assert!(
+        loss_dropped(&report, "items[0].part"),
+        "the document drop stays, got {report:?}"
+    );
+}
+
+#[test]
+fn chat_tool_output_survives_breakpoint_around_empty_text() {
+    let ir = IrRequest::new(
+        "probe-model",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: "hello-from-output".into(),
+            is_error: false,
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::Text(String::new())),
+            }],
+        }],
+    );
+    let (bytes, report) = encode(Wire::ChatCompletions, &ir, &chat_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content").and_then(Value::as_str),
+        Some("hello-from-output"),
+        "a breakpoint around empty text must not erase tool output, got {body}"
+    );
+    assert_eq!(
+        breakpoint_drops(&report),
+        1,
+        "the unused breakpoint mode must stay a drop, got {report:?}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| event.path.contains("output")),
+        "sent output must not also be a drop, got {report:?}"
+    );
+}
+
+#[test]
+fn other_wires_keep_tool_output_around_breakpoint_image() {
+    let ir = IrRequest::new(
+        "probe-model",
+        vec![IrItem::FunctionOutput {
+            call_id: "call-1".into(),
+            output: "hello-from-output".into(),
+            is_error: false,
+            parts: vec![IrPart::PromptCacheBreakpoint {
+                mode: "explicit".into(),
+                inner: Box::new(IrPart::ImageUrl {
+                    url: "https://example.com/cat.png".into(),
+                    detail: None,
+                    bucket_owner: None,
+                    file_id: None,
+                }),
+            }],
+        }],
+    );
+    for (wire, wire_name) in [
+        (Wire::Messages, "messages"),
+        (Wire::Gemini, "gemini"),
+        (Wire::Responses, "responses"),
+        (Wire::Converse, "converse"),
+    ] {
+        let profile = profile(&format!(
+            "schema_version = 1\nid = \"probe\"\nwire = \"{wire_name}\"\n"
+        ));
+        let (bytes, _) = encode(wire, &ir, &profile).expect("encode");
+        let encoded = String::from_utf8(bytes).expect("utf8");
+        assert!(
+            encoded.contains("hello-from-output"),
+            "{wire:?} must keep tool output beside a breakpoint image, got {encoded}"
+        );
+    }
+}
+
+#[test]
 fn chat_tool_breakpoint_keeps_the_image_for_messages() {
     let req = br#"{
         "model": "gpt-4o",
