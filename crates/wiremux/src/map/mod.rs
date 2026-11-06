@@ -1322,6 +1322,51 @@ mod tests {
     }
 
     #[test]
+    fn document_url_only_user_is_not_an_empty_success() {
+        let ir = crate::ir::IrRequest::new(
+            "m",
+            vec![crate::ir::IrItem::User {
+                parts: vec![crate::ir::IrPart::Document {
+                    source: crate::ir::IrDocumentSource::Url("https://example.com/a.pdf".into()),
+                    media_type: "application/pdf".into(),
+                    name: None,
+                    citations_enabled: None,
+                    context: None,
+                }],
+            }],
+        );
+        let cases = [
+            (Wire::ChatCompletions, "chat-completions"),
+            (Wire::Messages, "messages"),
+            (Wire::Responses, "responses"),
+            (Wire::Gemini, "gemini"),
+            (Wire::Converse, "converse"),
+        ];
+        for (wire, name) in cases {
+            let profile = crate::parse_profile_str(&format!(
+                "schema_version = 1\nid = \"t\"\nwire = \"{name}\"\n"
+            ))
+            .expect("profile");
+            match encode(wire, &ir, &profile) {
+                Ok((bytes, report)) => {
+                    let body = String::from_utf8(bytes).expect("utf8");
+                    assert!(
+                        body.contains("example.com/a.pdf"),
+                        "{name} encoded a document URL without the URL: {body} loss={report:?}"
+                    );
+                }
+                Err(err) => {
+                    let text = err.to_string();
+                    assert!(
+                        text.contains("document"),
+                        "{name} rejected the document without naming it: {text}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn system_only_chat_does_not_become_an_empty_messages_or_responses_success() {
         let src = br#"{"model":"gpt-4o","messages":[{"role":"system","content":"be brief"}]}"#;
         let (ir, _) = decode(Wire::ChatCompletions, src).expect("decode");

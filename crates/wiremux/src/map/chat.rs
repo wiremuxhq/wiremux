@@ -481,7 +481,11 @@ pub(super) fn encode(
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
     let messages = encode_messages(ir, report);
-    if messages.as_array().is_none_or(|rows| rows.is_empty()) {
+    let dropped_turn = messages.as_array().is_none_or(|rows| rows.is_empty())
+        || messages
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(message_content_is_blank));
+    if dropped_turn {
         let dropped = super::dropped_details(report);
         if !dropped.is_empty() {
             return Err(MapError::Invalid(format!(
@@ -538,6 +542,42 @@ pub(super) fn encode(
     }
     encode_sampling(ir, &mut body, report);
     Ok(body)
+}
+
+fn message_content_is_blank(msg: &Value) -> bool {
+    let role = msg.get("role").and_then(Value::as_str);
+    if !matches!(role, Some("user" | "assistant" | "system" | "developer")) {
+        return false;
+    }
+    if msg
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|calls| !calls.is_empty())
+    {
+        return false;
+    }
+    if msg
+        .get("refusal")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty())
+    {
+        return false;
+    }
+    match msg.get("content") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(text)) => text.is_empty(),
+        Some(Value::Array(parts)) => {
+            parts.is_empty()
+                || parts.iter().all(|part| {
+                    part.get("type").and_then(Value::as_str) == Some("text")
+                        && part
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .is_none_or(str::is_empty)
+                })
+        }
+        Some(_) => false,
+    }
 }
 
 fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
