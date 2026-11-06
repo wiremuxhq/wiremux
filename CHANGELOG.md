@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.11.10](https://github.com/wiremuxhq/wiremux/compare/v0.11.9...v0.11.10) (2026-11-06)
+
+
+### Bug Fixes
+
+* keep Converse tool text inside cache breakpoints ([#716](https://github.com/wiremuxhq/wiremux/issues/716)) ([aa7f592](https://github.com/wiremuxhq/wiremux/commit/aa7f592c523a10023247e642213d441c3ffb8a52))
+* keep system text inside nested cache breakpoints ([#715](https://github.com/wiremuxhq/wiremux/issues/715)) ([af4f3a4](https://github.com/wiremuxhq/wiremux/commit/af4f3a4f4e92e282e8d0f614651935e5d346cdcb))
+* keep tool results wrapped in nested cache breakpoints ([#713](https://github.com/wiremuxhq/wiremux/issues/713)) ([5f7b7d3](https://github.com/wiremuxhq/wiremux/commit/5f7b7d35871979c1b3f3e9e766a933808bce2c7c))
+* record a Chat tool image hidden by a cache breakpoint ([#717](https://github.com/wiremuxhq/wiremux/issues/717)) ([08edcbb](https://github.com/wiremuxhq/wiremux/commit/08edcbbc1027b3895041c547800b76dc60f387a3))
+
 ## [0.11.9](https://github.com/wiremuxhq/wiremux/compare/v0.11.8...v0.11.9) (2026-10-24)
 
 
