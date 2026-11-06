@@ -1203,7 +1203,9 @@ fn encode_function_output(
                         report,
                     );
                 }
-                kept_structured = content.len() > before;
+                if content.len() > before {
+                    kept_structured = true;
+                }
             }
             _ => report.record(
                 format!("items[{idx}].part"),
@@ -1214,6 +1216,8 @@ fn encode_function_output(
     }
     let output_value = if kept_structured {
         Value::Array(content)
+    } else if !ordered_text && !text.is_empty() {
+        json!(text)
     } else {
         json!(output)
     };
