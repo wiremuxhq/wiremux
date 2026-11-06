@@ -266,7 +266,7 @@ pub(super) fn system_role_text(
     }
     let mut texts = Vec::new();
     for part in content_parts {
-        let (inner, _) = peel_prompt_cache(part);
+        let (inner, _) = peel_prompt_cache_all(part);
         match inner {
             IrPart::Text(value) => texts.push(value.as_str()),
             IrPart::Thinking { text, .. } => texts.push(text.as_str()),

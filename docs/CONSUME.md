@@ -520,11 +520,14 @@ A tool result can wrap its text or image in more than one cache
 breakpoint. Chat writes the outer mode and records each inner mode
 as a drop. Gemini has no breakpoint field, so every layer is a drop,
 and the tool text or inline image stays. One breakpoint and two
-breakpoints send the same payload. Locked by
+breakpoints send the same payload. System and developer
+`content_parts` unwrap every layer too, so Messages, Gemini, and
+Converse still send that text. Locked by
 `chat_tool_nested_cache_breakpoint_keeps_text`,
 `gemini_function_output_keeps_text_inside_nested_cache_breakpoints`,
 and
-`gemini_function_output_keeps_image_inside_nested_cache_breakpoints`.
+`gemini_function_output_keeps_image_inside_nested_cache_breakpoints`,
+and `system_content_parts_nested_breakpoint_keeps_text`.
 
 ## Pin
 
