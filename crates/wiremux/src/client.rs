@@ -1078,7 +1078,7 @@ fn classify_aws_exception_type(
     full: &str,
 ) -> ClientError {
     let ty = exception_type.to_ascii_lowercase();
-    if ty.contains("throttl") {
+    if ty.contains("throttl") || ty.contains("toomanyrequest") {
         return ClientError::RateLimit {
             status: Some(status),
             retry_after: None,
@@ -1256,7 +1256,10 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
                 message,
             });
         }
-        if looks_like_model_not_found(body) || looks_like_model_not_found(&message) {
+        if code == Some(404)
+            || looks_like_model_not_found(body)
+            || looks_like_model_not_found(&message)
+        {
             return Some(ClientError::NotFound {
                 status: Some(status),
                 message,
@@ -1318,7 +1321,11 @@ fn classify_error_payload(
             message: stored,
         };
     }
-    if looks_like_model_not_found(body) || looks_like_model_not_found(message) {
+    if code == Some(404)
+        || code_name.is_some_and(is_not_found_name)
+        || looks_like_model_not_found(body)
+        || looks_like_model_not_found(message)
+    {
         return ClientError::NotFound {
             status,
             message: stored,
@@ -1337,7 +1344,13 @@ fn classify_error_payload(
 }
 
 fn is_rate_limit_code(name: &str) -> bool {
-    matches!(name, "slow_down" | "rate_limit_exceeded")
+    name.eq_ignore_ascii_case("slow_down")
+        || name.eq_ignore_ascii_case("rate_limit_exceeded")
+        || name.eq_ignore_ascii_case("RESOURCE_EXHAUSTED")
+}
+
+fn is_not_found_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("NOT_FOUND") || name.eq_ignore_ascii_case("model_not_found")
 }
 
 fn is_permanent_request_name(name: &str) -> bool {
@@ -1385,8 +1398,26 @@ fn json_error_type_name(error: &Value) -> Option<String> {
     Some(name.to_string())
 }
 
+fn json_error_status_name(error: &Value) -> Option<String> {
+    let name = error.get("status")?.as_str()?.trim();
+    if name.is_empty() || name.parse::<i64>().is_ok() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 fn json_error_name(error: &Value) -> Option<String> {
-    json_error_code_name(error).or_else(|| json_error_type_name(error))
+    // Gemini puts the class in `status`, not `code` or `type`.
+    let status = json_error_status_name(error);
+    if status
+        .as_deref()
+        .is_some_and(|name| is_rate_limit_code(name) || is_not_found_name(name))
+    {
+        return status;
+    }
+    json_error_code_name(error)
+        .or_else(|| json_error_type_name(error))
+        .or(status)
 }
 
 fn is_transient_code(code: i64) -> bool {
@@ -1412,6 +1443,8 @@ fn looks_like_model_not_found(text: &str) -> bool {
         || t.contains("unknown model")
         || t.contains("model not found")
         || t.contains("no such model")
+        || t.contains("modelnotfound")
+        || (t.contains("not found") && t.contains("model"))
         || (t.contains("does not exist") && t.contains("model"))
 }
 
@@ -1968,6 +2001,22 @@ mod tests {
         match classify_http(400, missing, None) {
             Some(ClientError::NotFound { status, .. }) => assert_eq!(status, Some(400)),
             other => panic!("model not found is a missing model, got {other:?}"),
+        }
+        let gemini_missing =
+            r#"{"error":{"message":"models/gemini-2.5-flash is not found","code":400}}"#;
+        match classify_http(400, gemini_missing, None) {
+            Some(ClientError::NotFound { .. }) => {}
+            other => panic!("Gemini is not found is a missing model, got {other:?}"),
+        }
+        let exhausted = r#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"please wait"}}"#;
+        match classify_http(200, exhausted, None) {
+            Some(ClientError::RateLimit { .. }) => {}
+            other => panic!("RESOURCE_EXHAUSTED is a rate limit, got {other:?}"),
+        }
+        let code_404 = r#"{"error":{"code":404,"message":"missing"}}"#;
+        match classify_http(200, code_404, None) {
+            Some(ClientError::NotFound { .. }) => {}
+            other => panic!("JSON code 404 is a missing model, got {other:?}"),
         }
         let mixed = r#"{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED","details":"backup model does not exist"}}"#;
         match classify_http(200, mixed, None) {
