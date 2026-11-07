@@ -265,38 +265,84 @@ fn decode_function_response_parts(fr: &Value) -> Vec<IrPart> {
     };
     let mut out = Vec::new();
     for part in parts {
-        let Some(inline) = part.get("inlineData") else {
-            continue;
-        };
-        let media = str_field(inline, "mimeType").unwrap_or_default();
-        let data = str_field(inline, "data").unwrap_or_default();
-        if data.is_empty() {
-            continue;
-        }
-        let name = str_field(inline, "displayName").filter(|item| !item.is_empty());
-        if is_pdf_media_type(&media) || media.eq_ignore_ascii_case("text/plain") {
-            out.push(IrPart::Document {
-                source: IrDocumentSource::Base64(data),
-                media_type: media,
-                name,
-                citations_enabled: None,
-                context: None,
+        if let Some(inline) = part.get("inlineData") {
+            let media = str_field(inline, "mimeType").unwrap_or_default();
+            let data = str_field(inline, "data").unwrap_or_default();
+            if data.is_empty() {
+                continue;
+            }
+            let name = str_field(inline, "displayName").filter(|item| !item.is_empty());
+            if is_pdf_media_type(&media) || media.eq_ignore_ascii_case("text/plain") {
+                out.push(IrPart::Document {
+                    source: IrDocumentSource::Base64(data),
+                    media_type: media,
+                    name,
+                    citations_enabled: None,
+                    context: None,
+                });
+                continue;
+            }
+            if media.to_ascii_lowercase().starts_with("image/") && name.is_none() {
+                out.push(IrPart::ImageBase64 {
+                    media_type: media,
+                    data,
+                });
+                continue;
+            }
+            out.push(IrPart::Raw {
+                type_name: "functionResponse.inlineData".into(),
+                raw: json!({ "inlineData": inline }),
             });
             continue;
         }
-        if media.to_ascii_lowercase().starts_with("image/") && name.is_none() {
-            out.push(IrPart::ImageBase64 {
-                media_type: media,
-                data,
-            });
-            continue;
+        if let Some(file) = part.get("fileData") {
+            let media = str_field(file, "mimeType").unwrap_or_default();
+            let uri = str_field(file, "fileUri").unwrap_or_default();
+            if is_pdf_media_type(&media) && !uri.is_empty() && !super::part_has_media_hint(part) {
+                out.push(IrPart::Document {
+                    source: super::document_ref_source(uri),
+                    media_type: media,
+                    name: None,
+                    citations_enabled: None,
+                    context: None,
+                });
+            } else {
+                out.push(IrPart::Raw {
+                    type_name: "fileData".into(),
+                    raw: part.clone(),
+                });
+            }
         }
-        out.push(IrPart::Raw {
-            type_name: "functionResponse.inlineData".into(),
-            raw: json!({ "inlineData": inline }),
-        });
     }
     out
+}
+
+fn function_response_file(part: &IrPart) -> Option<Value> {
+    match part {
+        IrPart::Document {
+            source, media_type, ..
+        } => {
+            let uri = match source {
+                IrDocumentSource::Url(uri) | IrDocumentSource::FileId(uri) => uri.as_str(),
+                IrDocumentSource::S3 { uri, .. } => uri.as_str(),
+                IrDocumentSource::Text(_) | IrDocumentSource::Base64(_) => return None,
+            };
+            if uri.trim().is_empty() {
+                return None;
+            }
+            let mut file = json!({ "fileUri": uri });
+            if !media_type.is_empty() {
+                file["mimeType"] = json!(media_type);
+            }
+            Some(json!({ "fileData": file }))
+        }
+        IrPart::Raw { raw, .. }
+            if raw.get("fileData").is_some() || raw.get("fileUri").is_some() =>
+        {
+            Some(raw.clone())
+        }
+        _ => None,
+    }
 }
 
 fn flush_parts(role: &str, parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
@@ -810,6 +856,8 @@ pub(super) fn encode(
                             blob["displayName"] = json!(name);
                         }
                         wire_parts.push(json!({ "inlineData": blob }));
+                    } else if let Some(file) = function_response_file(inner) {
+                        wire_parts.push(file);
                     } else if matches!(
                         inner,
                         IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. } | IrPart::Audio { .. }

@@ -11774,6 +11774,62 @@ fn gemini_function_response_parts_round_trip() {
 }
 
 #[test]
+fn gemini_function_response_file_data_round_trip() {
+    let req = br#"{
+        "contents": [
+            {
+                "role": "model",
+                "parts": [{
+                    "functionCall": {"id": "call_a", "name": "lookup", "args": {}}
+                }]
+            },
+            {
+                "role": "user",
+                "parts": [{
+                    "functionResponse": {
+                        "id": "call_a",
+                        "name": "lookup",
+                        "response": {"ok": true},
+                        "parts": [
+                            {"fileData": {"mimeType": "application/pdf", "fileUri": "files/doc"}},
+                            {"fileData": {"mimeType": "image/png", "fileUri": "files/pic"}}
+                        ]
+                    }
+                }]
+            }
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let parts = body
+        .pointer("/contents/1/parts/0/functionResponse/parts")
+        .and_then(Value::as_array)
+        .expect("functionResponse.parts");
+    assert_eq!(
+        parts[0]
+            .pointer("/fileData/fileUri")
+            .and_then(Value::as_str),
+        Some("files/doc"),
+        "PDF fileUri must survive a tool result, got {body}"
+    );
+    assert_eq!(
+        parts[1]
+            .pointer("/fileData/fileUri")
+            .and_then(Value::as_str),
+        Some("files/pic"),
+        "image fileUri must survive a tool result, got {body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| event.action == LossAction::Drop && event.path.contains("part")),
+        "fileData has a functionResponse.parts slot, got {report:?}"
+    );
+}
+
+#[test]
 fn gemini_server_tool_call_round_trip() {
     let req = br#"{
         "contents": [
