@@ -456,6 +456,9 @@ pub(super) fn encode_finish(reason: &str) -> &str {
     match reason {
         "max_tokens" | "model_context_window_exceeded" => "length",
         "failed" | "cancelled" | "canceled" | "end_turn" | "stop_sequence" | "pause_turn" => "stop",
+        // Chat has no malformed-call token. `content_filter` is a legal
+        // finish_reason and does not promote an open tool to `tool_calls`.
+        "malformed_function_call" => "content_filter",
         other => other,
     }
 }

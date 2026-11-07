@@ -2636,7 +2636,7 @@ base_url = "http://127.0.0.1"
             .expect("stopReason stays");
         assert!(
             kept.iter().any(
-                |ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "end_turn")
+                |ev| matches!(ev, IrStreamEvent::FinishReason { reason, .. } if reason == "stop")
             ),
             "{kept:?}"
         );

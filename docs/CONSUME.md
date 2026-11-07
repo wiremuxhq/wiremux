@@ -263,9 +263,37 @@ the vendor message. Text already received in that read is kept.
 are `ClientError::Transient` with `TransientKind::Http`.
 A Messages `api_error` is that same transient error.
 `slow_down` and `rate_limit_exceeded` are `ClientError::RateLimit`.
+A Gemini rate-limit object inside HTTP 200 (`code` 429 or
+`RESOURCE_EXHAUSTED`) is HTTP 429 on a cross-wire proxy response,
+and Chat `error.type` is `rate_limit_exceeded`. A billing error in
+that same HTTP 200 stays HTTP 400. `api_error`, `server_error`, and
+`overloaded_error` in that HTTP 200 are HTTP 503, the same retry the
+client uses for those classes. A numeric `code` of 503, including the string `"503"`, or Gemini
+`status` `UNAVAILABLE` is that same HTTP 503. Gemini `status`
+`INVALID_ARGUMENT` stays HTTP 400 even when the message says overloaded.
+A numeric 4xx other than 408 and 429 wins over a rate-limit phrase.
+Code 408 with that phrase is still a rate limit. Code 408 without
+it is HTTP 503.
+A bad-key phrase wins over a numeric 5xx and is HTTP 401. A rate-limit
+phrase in `error.detail` is a rate limit.
+`InvalidTimeoutException` is a rejected parameter, not a retry.
+`quota_not_overloaded` is not a server overload. An `invalid_request_error` that only
+mentions the word overloaded stays HTTP 400. Locked by
+`gemini_rate_limit_inside_http_200_is_chat_429`. Locked by
+`gemini_rate_limit_inside_http_200_is_chat_429`.
 `insufficient_quota` stays `ClientError::Vendor`. An auth message
 stays `ClientError::Auth`, and a `model_not_found` message stays
-`ClientError::NotFound`. `response.failed` uses `last_error.code`
+`ClientError::NotFound`. A Gemini `API key not valid` message and a
+Bedrock `not authorized` message are Auth. A permanent
+`invalid_request_error` stays a vendor error when the message only
+mentions `rate_limit` or `overloaded` as a field name. `does not exist`
+is a missing model only when the text is about a model. `model not found`,
+`no such model`, and `models/<id> is not found` are a missing model too.
+Gemini `status` `RESOURCE_EXHAUSTED` is a rate limit. A JSON `code` of
+404 is a missing model. `TooManyRequestsException` is a rate limit. The words `too many requests`
+are a rate limit unless the class is `invalid_request_error`. An explicit
+code 429 stays a rate limit when the details mention another model.
+Locked by `classify_http_field_names_do_not_change_the_class`. `response.failed` uses `last_error.code`
 and `last_error.message` the same way. A code or a message does not
 finish as `failed` when that frame has no payload the stream decoder
 emits. Non-empty `encrypted_content` and a hosted item with a payload
@@ -309,7 +337,27 @@ Passthrough still forwards that frame as an unknown event. Gemini
 is terminal on a non-empty `finishReason`,
 or on a non-empty `promptFeedback.blockReason` when that frame has no
 candidate `finishReason`. Converse is terminal when a frame decodes to
-`FinishReason`. An empty frame list is not terminal. `RawSse::parse_all`
+`FinishReason`. A Converse `tool_use` stop is canonical `tool_calls`,
+and `end_turn` is `stop`. Messages
+`model_context_window_exceeded` encodes as Converse `max_tokens`
+and Gemini `MAX_TOKENS`, and Responses
+`response.incomplete` with `max_output_tokens`. That is the same
+cut Chat already writes as `length`. It does not encode as a
+normal end. Converse `end_turn`, Chat `tool_calls`, and
+`stop_sequence` encode as Responses `completed`. They do not
+become the `status` string. That context-window stop is
+`incomplete` on a stream event, on `StreamEncoder::finish`, and
+on complete JSON. Messages `content_filter` encodes as `refusal`.
+An open tool on that turn stays `refusal` and does not become
+`tool_use`. Gemini `malformed_function_call` encodes as
+`MALFORMED_FUNCTION_CALL`, including when `vendor` is empty. It
+does not encode as `STOP`. Chat encodes that reason as
+`content_filter`. Converse encodes it as `content_filtered`, so
+an open tool does not become `tool_use`. Responses encodes it as
+`failed`. A Responses turn whose status is `cancelled` stays
+`cancelled` on the stream event, on `StreamEncoder::finish`, and
+on complete JSON. The one-l spelling `canceled` encodes as
+`cancelled`. It does not encode as `completed`. An empty frame list is not terminal. `RawSse::parse_all`
 returns an error when a line or `data:` payload exceeds the SSE size
 cap. It does not turn that document into an empty frame list.
 `StreamEncoder::finish()` is for a stream the caller already knows

@@ -1078,14 +1078,17 @@ fn classify_aws_exception_type(
     full: &str,
 ) -> ClientError {
     let ty = exception_type.to_ascii_lowercase();
-    if ty.contains("throttl") {
+    if ty.contains("throttl") || ty.contains("toomanyrequest") {
         return ClientError::RateLimit {
             status: Some(status),
             retry_after: None,
             message: clip_client_message(full),
         };
     }
-    if ty.contains("internal") || ty.contains("serviceunavailable") || ty.contains("timeout") {
+    // InvalidTimeoutException is a rejected parameter, not a timed-out call.
+    if !ty.contains("invalid")
+        && (ty.contains("internal") || ty.contains("serviceunavailable") || ty.contains("timeout"))
+    {
         return transient(Some(status), clip_client_message(full), TransientKind::Http);
     }
     classify_error_payload(Some(status), None, None, message, full, None)
@@ -1256,7 +1259,10 @@ fn classify_http(status: u16, body: &str, retry_after: Option<u64>) -> Option<Cl
                 message,
             });
         }
-        if looks_like_model_not_found(body) || looks_like_model_not_found(&message) {
+        if code == Some(404)
+            || looks_like_model_not_found(body)
+            || looks_like_model_not_found(&message)
+        {
             return Some(ClientError::NotFound {
                 status: Some(status),
                 message,
@@ -1297,22 +1303,24 @@ fn classify_error_payload(
     retry_after: Option<u64>,
 ) -> ClientError {
     let stored = clip_client_message(message);
+    // An explicit class wins over a word in the message. "rate_limit
+    // must be a positive integer" is not a rate limit, and a 429 whose
+    // details mention another model is still a rate limit.
+    let explicit_rate_limit = code == Some(429) || code_name.is_some_and(is_rate_limit_code);
+    // A numeric 4xx other than 408 and 429 is a rejected request.
+    // A rate-limit phrase in that message does not make it retryable.
+    let explicit_client_error =
+        code.is_some_and(|value| (400..500).contains(&value) && value != 408 && value != 429);
+    let permanent_request = explicit_client_error
+        || (!explicit_rate_limit && code_name.is_some_and(is_permanent_request_name));
     if looks_like_bad_key(body) || looks_like_bad_key(message) {
         return ClientError::Auth {
             status,
             message: stored,
         };
     }
-    if looks_like_model_not_found(body) || looks_like_model_not_found(message) {
-        return ClientError::NotFound {
-            status,
-            message: stored,
-        };
-    }
-    if code == Some(429)
-        || code_name.is_some_and(is_rate_limit_code)
-        || looks_like_rate_limit(message)
-        || looks_like_rate_limit(body)
+    if explicit_rate_limit
+        || (!permanent_request && (looks_like_rate_limit(message) || looks_like_rate_limit(body)))
     {
         return ClientError::RateLimit {
             status,
@@ -1320,10 +1328,19 @@ fn classify_error_payload(
             message: stored,
         };
     }
+    if code == Some(404)
+        || code_name.is_some_and(is_not_found_name)
+        || looks_like_model_not_found(body)
+        || looks_like_model_not_found(message)
+    {
+        return ClientError::NotFound {
+            status,
+            message: stored,
+        };
+    }
     if code.is_some_and(is_transient_code)
         || code_name.is_some_and(is_retryable_server_code)
-        || looks_like_overload(body)
-        || looks_like_overload(message)
+        || (!permanent_request && (looks_like_overload(body) || looks_like_overload(message)))
     {
         return transient(status, stored, TransientKind::Http);
     }
@@ -1334,7 +1351,18 @@ fn classify_error_payload(
 }
 
 fn is_rate_limit_code(name: &str) -> bool {
-    matches!(name, "slow_down" | "rate_limit_exceeded")
+    name.eq_ignore_ascii_case("slow_down")
+        || name.eq_ignore_ascii_case("rate_limit_exceeded")
+        || name.eq_ignore_ascii_case("RESOURCE_EXHAUSTED")
+}
+
+fn is_not_found_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("NOT_FOUND") || name.eq_ignore_ascii_case("model_not_found")
+}
+
+fn is_permanent_request_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("invalid_request_error")
+        || name.eq_ignore_ascii_case("invalid_argument")
 }
 
 fn is_retryable_server_code(name: &str) -> bool {
@@ -1347,7 +1375,8 @@ fn is_retryable_server_code(name: &str) -> bool {
             | "server_is_overloaded"
             | "server_overloaded"
             | "api_error"
-    )
+            | "overloaded_error"
+    ) || name.eq_ignore_ascii_case("UNAVAILABLE")
 }
 
 fn json_error_code(error: &Value) -> Option<i64> {
@@ -1377,8 +1406,25 @@ fn json_error_type_name(error: &Value) -> Option<String> {
     Some(name.to_string())
 }
 
+fn json_error_status_name(error: &Value) -> Option<String> {
+    let name = error.get("status")?.as_str()?.trim();
+    if name.is_empty() || name.parse::<i64>().is_ok() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 fn json_error_name(error: &Value) -> Option<String> {
-    json_error_code_name(error).or_else(|| json_error_type_name(error))
+    // Gemini puts the class in `status`, not `code` or `type`.
+    let status = json_error_status_name(error);
+    if status.as_deref().is_some_and(|name| {
+        is_rate_limit_code(name) || is_not_found_name(name) || is_retryable_server_code(name)
+    }) {
+        return status;
+    }
+    json_error_code_name(error)
+        .or_else(|| json_error_type_name(error))
+        .or(status)
 }
 
 fn is_transient_code(code: i64) -> bool {
@@ -1387,12 +1433,26 @@ fn is_transient_code(code: i64) -> bool {
 
 fn looks_like_bad_key(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
-    t.contains("incorrect api key") || t.contains("unauthorized") || t.contains("invalid key")
+    // "not authorized" is the phrase. Bare "authorized" is not a bad key.
+    t.contains("incorrect api key")
+        || t.contains("unauthorized")
+        || t.contains("invalid key")
+        || t.contains("api key not valid")
+        || t.contains("invalid api key")
+        || t.contains("not authorized")
 }
 
 fn looks_like_model_not_found(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
-    t.contains("does not exist") || t.contains("model_not_found") || t.contains("unknown model")
+    // "does not exist" only counts when the text is about a model.
+    // A tool-schema error uses the same words and is not a missing model.
+    t.contains("model_not_found")
+        || t.contains("unknown model")
+        || t.contains("model not found")
+        || t.contains("no such model")
+        || t.contains("modelnotfound")
+        || (t.contains("not found") && t.contains("model"))
+        || (t.contains("does not exist") && t.contains("model"))
 }
 
 fn json_retry_after(error: &Value) -> Option<u64> {
@@ -1404,11 +1464,14 @@ fn json_retry_after(error: &Value) -> Option<u64> {
 
 fn looks_like_rate_limit(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
-    t.contains("rate_limit") || t.contains("rate limit")
+    t.contains("rate_limit") || t.contains("rate limit") || t.contains("too many requests")
 }
 
 fn looks_like_overload(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
+    if t.contains("not_overloaded") || t.contains("not overloaded") {
+        return false;
+    }
     t.contains("upstream overload") || t.contains("overloaded")
 }
 
@@ -1906,6 +1969,146 @@ mod tests {
             classify_http(200, beside, None).is_none(),
             "choice text must stay a completion when error is a string"
         );
+    }
+
+    #[test]
+    fn classify_http_rejected_keys_are_auth() {
+        let gemini = r#"{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}"#;
+        match classify_http(400, gemini, None) {
+            Some(ClientError::Auth { status, .. }) => assert_eq!(status, Some(400)),
+            other => panic!("expected Auth, got {other:?}"),
+        }
+        let bedrock = r#"{"message":"User is not authorized to perform: bedrock:InvokeModel"}"#;
+        match classify_http(403, bedrock, None) {
+            Some(ClientError::Auth { status, .. }) => assert_eq!(status, Some(403)),
+            other => panic!("expected Auth, got {other:?}"),
+        }
+        let bad_request = r#"{"error":{"message":"bad request"}}"#;
+        match classify_http(400, bad_request, None) {
+            Some(ClientError::Vendor { status, .. }) => assert_eq!(status, Some(400)),
+            other => panic!("expected Vendor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_http_field_names_do_not_change_the_class() {
+        let validation = r#"{"error":{"type":"invalid_request_error","code":400,"message":"rate_limit must be a positive integer"}}"#;
+        match classify_http(200, validation, None) {
+            Some(ClientError::Vendor { .. }) => {}
+            other => panic!("a field name is not a rate limit, got {other:?}"),
+        }
+        let overloaded = r#"{"error":{"type":"invalid_request_error","message":"parameter overloaded must be an object"}}"#;
+        match classify_http(200, overloaded, None) {
+            Some(ClientError::Vendor { .. }) => {}
+            other => panic!("a field name is not overload, got {other:?}"),
+        }
+        let schema = r#"{"error":{"type":"invalid_request_error","message":"tool property foo does not exist"}}"#;
+        match classify_http(400, schema, None) {
+            Some(ClientError::Vendor { status, .. }) => assert_eq!(status, Some(400)),
+            other => panic!("a schema error is not a missing model, got {other:?}"),
+        }
+        let missing = r#"{"error":{"message":"model not found","type":"invalid_request_error"}}"#;
+        match classify_http(400, missing, None) {
+            Some(ClientError::NotFound { status, .. }) => assert_eq!(status, Some(400)),
+            other => panic!("model not found is a missing model, got {other:?}"),
+        }
+        let gemini_missing =
+            r#"{"error":{"message":"models/gemini-2.5-flash is not found","code":400}}"#;
+        match classify_http(400, gemini_missing, None) {
+            Some(ClientError::NotFound { .. }) => {}
+            other => panic!("Gemini is not found is a missing model, got {other:?}"),
+        }
+        let exhausted = r#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"please wait"}}"#;
+        match classify_http(200, exhausted, None) {
+            Some(ClientError::RateLimit { .. }) => {}
+            other => panic!("RESOURCE_EXHAUSTED is a rate limit, got {other:?}"),
+        }
+        let code_404 = r#"{"error":{"code":404,"message":"missing"}}"#;
+        match classify_http(200, code_404, None) {
+            Some(ClientError::NotFound { .. }) => {}
+            other => panic!("JSON code 404 is a missing model, got {other:?}"),
+        }
+        let too_many = r#"{"error":{"message":"too many requests"}}"#;
+        match classify_http(200, too_many, None) {
+            Some(ClientError::RateLimit { .. }) => {}
+            other => panic!("too many requests is a rate limit, got {other:?}"),
+        }
+        let too_many_field = r#"{"error":{"type":"invalid_request_error","message":"too many requests must be an integer"}}"#;
+        match classify_http(200, too_many_field, None) {
+            Some(ClientError::Vendor { .. }) => {}
+            other => panic!("a field name is not a rate limit, got {other:?}"),
+        }
+        let code_503 = r#"{"error":{"code":503,"message":"unavailable"}}"#;
+        match classify_http(200, code_503, None) {
+            Some(ClientError::Transient { .. }) => {}
+            other => panic!("JSON code 503 is transient, got {other:?}"),
+        }
+        let code_503_string = r#"{"error":{"code":"503","message":"unavailable"}}"#;
+        match classify_http(200, code_503_string, None) {
+            Some(ClientError::Transient { .. }) => {}
+            other => panic!("string code 503 is transient, got {other:?}"),
+        }
+        let argument = r#"{"error":{"status":"INVALID_ARGUMENT","message":"parameter overloaded must be an object"}}"#;
+        match classify_http(200, argument, None) {
+            Some(ClientError::Vendor { .. }) => {}
+            other => panic!("INVALID_ARGUMENT is not an overload, got {other:?}"),
+        }
+        let coded_phrase = r#"{"error":{"code":400,"message":"rate limit exceeded"}}"#;
+        match classify_http(200, coded_phrase, None) {
+            Some(ClientError::Vendor { .. }) => {}
+            other => panic!("numeric 400 wins over a rate-limit phrase, got {other:?}"),
+        }
+        let bad_key_500 = r#"{"error":{"code":500,"message":"invalid api key"}}"#;
+        match classify_http(200, bad_key_500, None) {
+            Some(ClientError::Auth { .. }) => {}
+            other => panic!("a bad key wins over numeric 500, got {other:?}"),
+        }
+        let detail = r#"{"error":{"message":"please wait","detail":"rate limit reached"}}"#;
+        match classify_http(200, detail, None) {
+            Some(ClientError::RateLimit { .. }) => {}
+            other => panic!("detail rate limit is a rate limit, got {other:?}"),
+        }
+        let timeout_limit = r#"{"error":{"code":408,"message":"rate limit exceeded"}}"#;
+        match classify_http(200, timeout_limit, None) {
+            Some(ClientError::RateLimit { .. }) => {}
+            other => panic!("408 does not beat a rate-limit phrase, got {other:?}"),
+        }
+        let unavailable = r#"{"error":{"status":"UNAVAILABLE","message":"unavailable"}}"#;
+        match classify_http(200, unavailable, None) {
+            Some(ClientError::Transient { .. }) => {}
+            other => panic!("UNAVAILABLE is transient, got {other:?}"),
+        }
+        match classify_aws_exception_type(
+            400,
+            "InvalidTimeoutException",
+            "timeout must be an integer",
+            "eventstream exception InvalidTimeoutException: timeout must be an integer",
+        ) {
+            ClientError::Transient { .. } => {
+                panic!("a rejected timeout parameter is not transient")
+            }
+            ClientError::Vendor { .. } => {}
+            other => panic!("expected Vendor, got {other:?}"),
+        }
+        match classify_aws_exception_type(
+            500,
+            "RequestTimeoutException",
+            "timed out",
+            "eventstream exception RequestTimeoutException: timed out",
+        ) {
+            ClientError::Transient { .. } => {}
+            other => panic!("a request timeout stays transient, got {other:?}"),
+        }
+        let not_overloaded = r#"{"error":{"type":"permission_error","code":"quota_not_overloaded","message":"payment required"}}"#;
+        match classify_http(200, not_overloaded, None) {
+            Some(ClientError::Vendor { .. }) => {}
+            other => panic!("not overloaded is not a server overload, got {other:?}"),
+        }
+        let mixed = r#"{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED","details":"backup model does not exist"}}"#;
+        match classify_http(200, mixed, None) {
+            Some(ClientError::RateLimit { .. }) => {}
+            other => panic!("an explicit 429 stays a rate limit, got {other:?}"),
+        }
     }
 
     /// The same class as the proxy table: an empty string is not

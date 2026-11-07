@@ -15512,6 +15512,54 @@ fn converse_none_tool_choice_omits_tool_config() {
 }
 
 #[test]
+fn converse_none_tool_choice_keeps_tools_when_history_has_a_call() {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![
+            IrItem::FunctionCall {
+                call_id: "call_a".into(),
+                name: "lookup".into(),
+                arguments: "{}".into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionOutput {
+                call_id: "call_a".into(),
+                output: "ok".into(),
+                parts: Vec::new(),
+                is_error: false,
+            },
+        ],
+    )
+    .with_tools(vec![IrTool::Function {
+        name: "lookup".into(),
+        description: "d".into(),
+        parameters: serde_json::json!({"type": "object", "properties": {}}),
+        strict: None,
+    }])
+    .with_sampling(IrSampling::patch(|s| {
+        s.tool_choice = IrToolChoice::None;
+    }));
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/toolConfig/tools/0/toolSpec/name")
+            .and_then(Value::as_str),
+        Some("lookup"),
+        "tool history must keep toolConfig or Bedrock rejects the turn, got {body}"
+    );
+    assert!(
+        body.pointer("/toolConfig/toolChoice").is_none(),
+        "None must not become a toolChoice, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.tool_choice" && event.detail.contains("no none slot")
+        }),
+        "None must still be recorded, got {report:?}"
+    );
+}
+
+#[test]
 fn messages_image_file_id_round_trips() {
     let req = br#"{
         "model": "claude-sonnet-4-5",

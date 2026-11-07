@@ -424,6 +424,22 @@ pub(super) fn encode_stop_reason(reason: &str) -> &str {
         "stop" | "end_turn" => "end_turn",
         "length" | "max_tokens" => "max_tokens",
         "tool_calls" | "tool_use" => "tool_use",
+        "content_filter" | "content-filter" | "malformed_function_call" => "refusal",
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_stop_reason;
+
+    #[test]
+    fn content_filter_and_malformed_call_encode_as_refusal() {
+        assert_eq!(encode_stop_reason("content_filter"), "refusal");
+        assert_eq!(encode_stop_reason("content-filter"), "refusal");
+        assert_eq!(encode_stop_reason("malformed_function_call"), "refusal");
+        assert_eq!(encode_stop_reason("stop"), "end_turn");
+        assert_eq!(encode_stop_reason("tool_calls"), "tool_use");
+        assert_eq!(encode_stop_reason("max_tokens"), "max_tokens");
     }
 }
