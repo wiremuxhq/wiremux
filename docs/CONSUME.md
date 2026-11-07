@@ -274,7 +274,8 @@ stays `ClientError::Auth`, and a `model_not_found` message stays
 Bedrock `not authorized` message are Auth. A permanent
 `invalid_request_error` stays a vendor error when the message only
 mentions `rate_limit` or `overloaded` as a field name. `does not exist`
-is a missing model only when the text is about a model. An explicit
+is a missing model only when the text is about a model. `model not found`
+and `no such model` are a missing model too. An explicit
 code 429 stays a rate limit when the details mention another model.
 Locked by `classify_http_field_names_do_not_change_the_class`. `response.failed` uses `last_error.code`
 and `last_error.message` the same way. A code or a message does not

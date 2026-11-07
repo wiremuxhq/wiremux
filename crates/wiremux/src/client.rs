@@ -1410,6 +1410,8 @@ fn looks_like_model_not_found(text: &str) -> bool {
     // A tool-schema error uses the same words and is not a missing model.
     t.contains("model_not_found")
         || t.contains("unknown model")
+        || t.contains("model not found")
+        || t.contains("no such model")
         || (t.contains("does not exist") && t.contains("model"))
 }
 
@@ -1961,6 +1963,11 @@ mod tests {
         match classify_http(400, schema, None) {
             Some(ClientError::Vendor { status, .. }) => assert_eq!(status, Some(400)),
             other => panic!("a schema error is not a missing model, got {other:?}"),
+        }
+        let missing = r#"{"error":{"message":"model not found","type":"invalid_request_error"}}"#;
+        match classify_http(400, missing, None) {
+            Some(ClientError::NotFound { status, .. }) => assert_eq!(status, Some(400)),
+            other => panic!("model not found is a missing model, got {other:?}"),
         }
         let mixed = r#"{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED","details":"backup model does not exist"}}"#;
         match classify_http(200, mixed, None) {
