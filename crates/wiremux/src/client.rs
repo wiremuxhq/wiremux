@@ -2068,6 +2068,11 @@ mod tests {
             Some(ClientError::RateLimit { .. }) => {}
             other => panic!("detail rate limit is a rate limit, got {other:?}"),
         }
+        let timeout_limit = r#"{"error":{"code":408,"message":"rate limit exceeded"}}"#;
+        match classify_http(200, timeout_limit, None) {
+            Some(ClientError::RateLimit { .. }) => {}
+            other => panic!("408 does not beat a rate-limit phrase, got {other:?}"),
+        }
         let unavailable = r#"{"error":{"status":"UNAVAILABLE","message":"unavailable"}}"#;
         match classify_http(200, unavailable, None) {
             Some(ClientError::Transient { .. }) => {}

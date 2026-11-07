@@ -272,6 +272,8 @@ client uses for those classes. A numeric `code` of 503, including the string `"5
 `status` `UNAVAILABLE` is that same HTTP 503. Gemini `status`
 `INVALID_ARGUMENT` stays HTTP 400 even when the message says overloaded.
 A numeric 4xx other than 408 and 429 wins over a rate-limit phrase.
+Code 408 with that phrase is still a rate limit. Code 408 without
+it is HTTP 503.
 A bad-key phrase wins over a numeric 5xx and is HTTP 401. A rate-limit
 phrase in `error.detail` is a rate limit.
 `InvalidTimeoutException` is a rejected parameter, not a retry.

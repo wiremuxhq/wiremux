@@ -1967,16 +1967,18 @@ fn body_is_rate_limit(body: &[u8]) -> bool {
         return false;
     };
     if let Some(code) = err.get("code") {
-        if code.as_i64() == Some(429) {
-            return true;
-        }
         if code.as_str().is_some_and(is_rate_limit_token) {
             return true;
         }
-        // A numeric code other than 429 is a different class. The
-        // message may mention rate_limit as a field name.
-        if code.as_i64().is_some() {
-            return false;
+        if let Some(number) = json_code_number(code) {
+            if number == 429 {
+                return true;
+            }
+            // 400-499 except 408 and 429 beat a rate-limit phrase.
+            // 408 is a timeout, so the phrase still counts.
+            if (400..500).contains(&number) && number != 408 {
+                return false;
+            }
         }
     }
     for key in ["status", "type"] {
@@ -3689,6 +3691,10 @@ anthropic-beta = "context-1m-2025-08-07"
         assert_eq!(super::vendor_failure_status(bad_key_500).as_u16(), 401);
         let detail = br#"{"error":{"message":"please wait","detail":"rate limit reached"}}"#;
         assert_eq!(super::vendor_failure_status(detail).as_u16(), 429);
+        let timeout_limit = br#"{"error":{"code":408,"message":"rate limit exceeded"}}"#;
+        assert_eq!(super::vendor_failure_status(timeout_limit).as_u16(), 429);
+        let timeout_plain = br#"{"error":{"code":408,"message":"timed out"}}"#;
+        assert_eq!(super::vendor_failure_status(timeout_plain).as_u16(), 503);
         let mapped = super::cross_wire_vendor_failure(
             wiremux_auth::Wire::ChatCompletions,
             wiremux_auth::Wire::Gemini,
