@@ -268,8 +268,9 @@ A Gemini rate-limit object inside HTTP 200 (`code` 429 or
 and Chat `error.type` is `rate_limit_exceeded`. A billing error in
 that same HTTP 200 stays HTTP 400. `api_error`, `server_error`, and
 `overloaded_error` in that HTTP 200 are HTTP 503, the same retry the
-client uses for those classes. A numeric `code` of 503 or Gemini
-`status` `UNAVAILABLE` is that same HTTP 503.
+client uses for those classes. A numeric `code` of 503, including the string `"503"`, or Gemini
+`status` `UNAVAILABLE` is that same HTTP 503. Gemini `status`
+`INVALID_ARGUMENT` stays HTTP 400 even when the message says overloaded.
 `InvalidTimeoutException` is a rejected parameter, not a retry.
 `quota_not_overloaded` is not a server overload. An `invalid_request_error` that only
 mentions the word overloaded stays HTTP 400. Locked by

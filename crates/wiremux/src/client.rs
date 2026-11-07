@@ -2039,6 +2039,16 @@ mod tests {
             Some(ClientError::Transient { .. }) => {}
             other => panic!("JSON code 503 is transient, got {other:?}"),
         }
+        let code_503_string = r#"{"error":{"code":"503","message":"unavailable"}}"#;
+        match classify_http(200, code_503_string, None) {
+            Some(ClientError::Transient { .. }) => {}
+            other => panic!("string code 503 is transient, got {other:?}"),
+        }
+        let argument = r#"{"error":{"status":"INVALID_ARGUMENT","message":"parameter overloaded must be an object"}}"#;
+        match classify_http(200, argument, None) {
+            Some(ClientError::Vendor { .. }) => {}
+            other => panic!("INVALID_ARGUMENT is not an overload, got {other:?}"),
+        }
         let unavailable = r#"{"error":{"status":"UNAVAILABLE","message":"unavailable"}}"#;
         match classify_http(200, unavailable, None) {
             Some(ClientError::Transient { .. }) => {}

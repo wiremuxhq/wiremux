@@ -1871,6 +1871,16 @@ fn vendor_failure_status(body: &[u8]) -> StatusCode {
     }
 }
 
+fn json_code_number(code: &serde_json::Value) -> Option<i64> {
+    code.as_i64()
+        .or_else(|| code.as_str().and_then(|text| text.parse().ok()))
+}
+
+fn is_permanent_request_class(name: &str) -> bool {
+    name.eq_ignore_ascii_case("invalid_request_error")
+        || name.eq_ignore_ascii_case("invalid_argument")
+}
+
 fn name_says_overloaded(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     !lower.contains("not_overloaded") && lower.contains("overloaded")
@@ -1899,17 +1909,21 @@ fn body_is_retryable_server(body: &[u8]) -> bool {
     let Some(err) = value.get("error").filter(|item| item.is_object()) else {
         return false;
     };
-    if err
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|name| name.eq_ignore_ascii_case("invalid_request_error"))
-    {
-        return false;
-    }
-    if let Some(code) = err.get("code").and_then(serde_json::Value::as_i64)
+    if let Some(code) = err.get("code").and_then(json_code_number)
         && (code == 408 || (500..600).contains(&code))
     {
         return true;
+    }
+    // Gemini puts INVALID_ARGUMENT in status, not type. That class
+    // wins over the word overloaded in the message, same as the client.
+    for key in ["type", "code", "status"] {
+        if err
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(is_permanent_request_class)
+        {
+            return false;
+        }
     }
     for key in ["type", "code", "status"] {
         if let Some(name) = err.get(key).and_then(serde_json::Value::as_str)
@@ -3639,6 +3653,10 @@ anthropic-beta = "context-1m-2025-08-07"
         assert_eq!(super::vendor_failure_status(unavailable).as_u16(), 503);
         let not_overloaded = br#"{"error":{"type":"permission_error","code":"quota_not_overloaded","message":"payment required"}}"#;
         assert_eq!(super::vendor_failure_status(not_overloaded).as_u16(), 400);
+        let code_503_string = br#"{"error":{"code":"503","message":"unavailable"}}"#;
+        assert_eq!(super::vendor_failure_status(code_503_string).as_u16(), 503);
+        let argument = br#"{"error":{"status":"INVALID_ARGUMENT","message":"parameter overloaded must be an object"}}"#;
+        assert_eq!(super::vendor_failure_status(argument).as_u16(), 400);
         let mapped = super::cross_wire_vendor_failure(
             wiremux_auth::Wire::ChatCompletions,
             wiremux_auth::Wire::Gemini,
