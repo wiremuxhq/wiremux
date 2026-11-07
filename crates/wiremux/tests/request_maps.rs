@@ -1512,6 +1512,36 @@ fn thought_part_signature_is_not_stolen_by_later_function_call() {
 }
 
 #[test]
+fn gemini_signature_only_thought_round_trips() {
+    let req = br#"{
+        "contents": [{
+            "role": "model",
+            "parts": [
+                { "text": "answer", "thoughtSignature": "sig_answer" },
+                { "thought": true, "thoughtSignature": "sig_thought" },
+                { "thoughtSignature": "sig_only" }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let parts = body
+        .pointer("/contents/0/parts")
+        .and_then(Value::as_array)
+        .expect("parts");
+    let sigs: Vec<&str> = parts
+        .iter()
+        .filter_map(|part| part.get("thoughtSignature").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        sigs,
+        ["sig_answer", "sig_thought", "sig_only"],
+        "each thoughtSignature must be sent back, got {body}"
+    );
+}
+
+#[test]
 fn gemini_reasoning_summary_encodes_as_thought_part() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",
@@ -2622,6 +2652,42 @@ fn chat_penalty_outside_vendor_range_is_a_hard_error() {
 }
 
 #[test]
+fn messages_keeps_temperature_when_top_p_is_also_set() {
+    let mut ir = IrRequest::new(
+        "claude",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    );
+    ir.sampling.temperature = Some(0.2);
+    ir.sampling.top_p = Some(0.9);
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("\"temperature\":0.2"),
+        "temperature must stay, got {body}"
+    );
+    assert!(
+        !body.contains("top_p"),
+        "Messages must not send top_p with temperature, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.top_p" && event.detail.contains("cannot both be specified")
+        }),
+        "the dropped top_p must be recorded, got {report:?}"
+    );
+
+    ir.sampling.temperature = None;
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("top_p only");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("\"top_p\":0.9"),
+        "top_p alone must still be sent, got {body}"
+    );
+}
+
+#[test]
 fn sampling_outside_vendor_range_is_a_hard_error() {
     let mut messages = IrRequest::new(
         "claude",
@@ -3047,6 +3113,81 @@ fn responses_data_url_becomes_image_base64_for_gemini() {
             .and_then(Value::as_str),
         Some("iVBORw0KGgo="),
         "Gemini must encode inlineData/data, got {body}"
+    );
+}
+
+#[test]
+fn chat_tool_audio_is_recorded() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "tool",
+            "tool_call_id": "call_a",
+            "content": [{
+                "type": "input_audio",
+                "input_audio": {"data": "AAAA", "format": "wav"}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) =
+        encode(Wire::ChatCompletions, &ir, &hard_error_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        !body.contains("AAAA"),
+        "tool audio must not vanish into the tool text, got {body}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| { event.path.contains("audio") && event.detail.contains("no slot") }),
+        "tool audio must be recorded, got {report:?}"
+    );
+}
+
+#[test]
+fn responses_assistant_image_is_not_input_image() {
+    let ir = IrRequest::new(
+        "gpt-4o",
+        vec![IrItem::Assistant {
+            parts: vec![
+                IrPart::Text("see".into()),
+                IrPart::ImageBase64 {
+                    media_type: "image/png".into(),
+                    data: "AAAA".into(),
+                },
+                IrPart::Audio {
+                    data: "AAAA".into(),
+                    format: "wav".into(),
+                },
+            ],
+            phase: None,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("\"type\":\"output_text\""),
+        "assistant text must stay output_text, got {body}"
+    );
+    assert!(
+        !body.contains("input_image") && !body.contains("input_audio"),
+        "an assistant message must not carry input media, got {body}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.detail.contains("cannot carry an image")),
+        "the image drop must be recorded, got {report:?}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.detail.contains("cannot carry audio")),
+        "the audio drop must be recorded, got {report:?}"
     );
 }
 
@@ -11774,6 +11915,134 @@ fn gemini_function_response_parts_round_trip() {
 }
 
 #[test]
+fn gemini_function_response_file_data_round_trip() {
+    let req = br#"{
+        "contents": [
+            {
+                "role": "model",
+                "parts": [{
+                    "functionCall": {"id": "call_a", "name": "lookup", "args": {}}
+                }]
+            },
+            {
+                "role": "user",
+                "parts": [{
+                    "functionResponse": {
+                        "id": "call_a",
+                        "name": "lookup",
+                        "response": {"ok": true},
+                        "parts": [
+                            {"fileData": {"mimeType": "application/pdf", "fileUri": "files/doc"}},
+                            {"fileData": {"mimeType": "image/png", "fileUri": "files/pic"}}
+                        ]
+                    }
+                }]
+            }
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, report) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let parts = body
+        .pointer("/contents/1/parts/0/functionResponse/parts")
+        .and_then(Value::as_array)
+        .expect("functionResponse.parts");
+    assert_eq!(
+        parts[0]
+            .pointer("/fileData/fileUri")
+            .and_then(Value::as_str),
+        Some("files/doc"),
+        "PDF fileUri must survive a tool result, got {body}"
+    );
+    assert_eq!(
+        parts[1]
+            .pointer("/fileData/fileUri")
+            .and_then(Value::as_str),
+        Some("files/pic"),
+        "image fileUri must survive a tool result, got {body}"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| event.action == LossAction::Drop && event.path.contains("part")),
+        "fileData has a functionResponse.parts slot, got {report:?}"
+    );
+}
+
+#[test]
+fn gemini_drops_s3_and_blank_file_urls() {
+    let s3 = IrPart::Document {
+        source: IrDocumentSource::S3 {
+            uri: "s3://bucket/doc.pdf".into(),
+            bucket_owner: None,
+        },
+        media_type: "application/pdf".into(),
+        name: None,
+        citations_enabled: None,
+        context: None,
+    };
+    let blank = IrPart::Document {
+        source: IrDocumentSource::Url("  ".into()),
+        media_type: "application/pdf".into(),
+        name: None,
+        citations_enabled: None,
+        context: None,
+    };
+    let content = IrRequest::new(
+        "gemini-2.0-flash",
+        vec![IrItem::User {
+            parts: vec![s3.clone(), blank.clone()],
+        }],
+    );
+    let err = encode(Wire::Gemini, &content, &gemini_profile()).expect_err("content");
+    let message = err.to_string();
+    assert!(
+        message.contains("S3 document has no Gemini slot"),
+        "content S3 must be recorded, got {message}"
+    );
+    assert!(
+        message.contains("document url is empty"),
+        "blank content url must be recorded, got {message}"
+    );
+    assert!(
+        !message.contains("s3://bucket/doc.pdf"),
+        "the S3 URI must not be sent, got {message}"
+    );
+
+    let tool = IrRequest::new(
+        "gemini-2.0-flash",
+        vec![IrItem::FunctionOutput {
+            call_id: "call_a".into(),
+            output: "{}".into(),
+            parts: vec![s3, blank],
+            is_error: false,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Gemini, &tool, &gemini_profile()).expect("tool");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.pointer("/contents/0/parts/0/functionResponse/parts")
+            .is_none(),
+        "a tool result must not send S3 or a blank fileUri, got {body}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.detail.contains("S3 document has no Gemini slot")),
+        "tool S3 must be recorded, got {report:?}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.detail.contains("document url is empty")),
+        "blank tool url must be recorded, got {report:?}"
+    );
+}
+
+#[test]
 fn gemini_server_tool_call_round_trip() {
     let req = br#"{
         "contents": [
@@ -15508,6 +15777,54 @@ fn converse_none_tool_choice_omits_tool_config() {
                 && event.detail.contains("no none slot")
         }),
         "None with tools must record tool_choice no none slot, got {report:?}"
+    );
+}
+
+#[test]
+fn converse_none_tool_choice_keeps_tools_when_history_has_a_call() {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![
+            IrItem::FunctionCall {
+                call_id: "call_a".into(),
+                name: "lookup".into(),
+                arguments: "{}".into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionOutput {
+                call_id: "call_a".into(),
+                output: "ok".into(),
+                parts: Vec::new(),
+                is_error: false,
+            },
+        ],
+    )
+    .with_tools(vec![IrTool::Function {
+        name: "lookup".into(),
+        description: "d".into(),
+        parameters: serde_json::json!({"type": "object", "properties": {}}),
+        strict: None,
+    }])
+    .with_sampling(IrSampling::patch(|s| {
+        s.tool_choice = IrToolChoice::None;
+    }));
+    let (bytes, report) = encode(Wire::Converse, &ir, &converse_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/toolConfig/tools/0/toolSpec/name")
+            .and_then(Value::as_str),
+        Some("lookup"),
+        "tool history must keep toolConfig or Bedrock rejects the turn, got {body}"
+    );
+    assert!(
+        body.pointer("/toolConfig/toolChoice").is_none(),
+        "None must not become a toolChoice, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.tool_choice" && event.detail.contains("no none slot")
+        }),
+        "None must still be recorded, got {report:?}"
     );
 }
 

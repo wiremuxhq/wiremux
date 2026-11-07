@@ -598,7 +598,7 @@ fn encode_messages_complete(events: &[IrStreamEvent], model: &str) -> Value {
             "type": "refusal",
             "explanation": refusal,
         });
-        if finish.as_deref().is_none_or(|r| r == "content_filter") {
+        if finish.as_deref().is_none_or(|r| r == "refusal") {
             out["stop_reason"] = json!("refusal");
         }
     }
@@ -1427,8 +1427,13 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
 
 fn responses_complete_status(reason: &str) -> &str {
     match reason {
-        "failed" => "failed",
-        "incomplete" | "length" | "max_tokens" | "content_filter" => "incomplete",
+        "failed" | "malformed_function_call" => "failed",
+        "cancelled" | "canceled" => "cancelled",
+        "incomplete"
+        | "length"
+        | "max_tokens"
+        | "content_filter"
+        | "model_context_window_exceeded" => "incomplete",
         // Chat `tool_calls` is a completed Responses turn with function_call output.
         _ => "completed",
     }
@@ -3084,6 +3089,73 @@ wire = "converse"
             mapped.get("model").and_then(Value::as_str),
             Some("claude-haiku-4-5"),
             "dest Chat complete must keep dest model, got {mapped}"
+        );
+    }
+
+    #[test]
+    fn non_success_finish_reasons_encode_on_each_dest() {
+        let filtered = [IrStreamEvent::FinishReason {
+            reason: "content_filter".into(),
+            vendor: None,
+        }];
+        let messages = encode_response(Wire::Messages, &filtered).expect("messages");
+        assert_eq!(
+            messages.get("stop_reason").and_then(Value::as_str),
+            Some("refusal"),
+            "Messages content_filter must be refusal, got {messages}"
+        );
+
+        let malformed = [IrStreamEvent::FinishReason {
+            reason: "malformed_function_call".into(),
+            vendor: None,
+        }];
+        let gemini = encode_response(Wire::Gemini, &malformed).expect("gemini");
+        assert_eq!(
+            gemini
+                .pointer("/candidates/0/finishReason")
+                .and_then(Value::as_str),
+            Some("MALFORMED_FUNCTION_CALL"),
+            "Gemini must keep MALFORMED_FUNCTION_CALL when vendor is empty, got {gemini}"
+        );
+        let chat = encode_response(Wire::ChatCompletions, &malformed).expect("chat");
+        assert_eq!(
+            chat.pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str),
+            Some("content_filter"),
+            "Chat must not copy malformed_function_call, got {chat}"
+        );
+        let responses = encode_response(Wire::Responses, &malformed).expect("responses");
+        assert_eq!(
+            responses.get("status").and_then(Value::as_str),
+            Some("failed"),
+            "Responses must not complete a malformed call, got {responses}"
+        );
+        let window = [IrStreamEvent::FinishReason {
+            reason: "model_context_window_exceeded".into(),
+            vendor: None,
+        }];
+        let cut = encode_response(Wire::Responses, &window).expect("window");
+        assert_eq!(
+            cut.get("status").and_then(Value::as_str),
+            Some("incomplete"),
+            "complete JSON must not report a context-window cut as completed, got {cut}"
+        );
+        assert_eq!(
+            cut.pointer("/incomplete_details/reason")
+                .and_then(Value::as_str),
+            Some("max_output_tokens"),
+            "{cut}"
+        );
+
+        let cancelled = [IrStreamEvent::FinishReason {
+            reason: "cancelled".into(),
+            vendor: None,
+        }];
+        let stopped = encode_response(Wire::Responses, &cancelled).expect("cancelled");
+        assert_eq!(
+            stopped.get("status").and_then(Value::as_str),
+            Some("cancelled"),
+            "complete JSON must keep a cancelled turn, got {stopped}"
         );
     }
 

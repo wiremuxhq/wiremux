@@ -669,11 +669,13 @@ fn encode_items(
             })),
             IrItem::Assistant { parts, phase } => {
                 let rest = peel_signed_thinking(parts, &mut input, report);
-                if !rest.is_empty() || !parts.iter().any(is_signed_thinking) {
+                let content = encode_parts(&rest, false, report);
+                let has_content = content.as_array().is_some_and(|items| !items.is_empty());
+                if has_content || (rest.is_empty() && !parts.iter().any(is_signed_thinking)) {
                     let mut message = json!({
                         "type": "message",
                         "role": "assistant",
-                        "content": encode_parts(&rest, false, report),
+                        "content": content,
                     });
                     if let Some(phase) = super::assistant_phase(phase) {
                         message["phase"] = json!(phase);
@@ -1027,11 +1029,28 @@ fn encode_parts(parts: &[IrPart], input: bool, report: &mut LossReport) -> Value
                     }
                     IrPart::PromptCacheBreakpoint { .. } => return None,
                 };
+                if !input
+                    && let Some((path, detail)) = assistant_input_loss(
+                        value.get("type").and_then(Value::as_str).unwrap_or(""),
+                    )
+                {
+                    report.record(path, LossAction::Drop, detail);
+                    return None;
+                }
                 super::apply_prompt_cache(&mut value, mode, true, report);
                 Some(value)
             })
             .collect(),
     )
+}
+
+fn assistant_input_loss(ty: &str) -> Option<(&'static str, &'static str)> {
+    match ty {
+        "input_image" => Some(("part.image", "assistant message cannot carry an image")),
+        "input_audio" => Some(("part.audio", "assistant message cannot carry audio")),
+        "input_file" => Some(("part.document", "assistant message cannot carry a file")),
+        _ => None,
+    }
 }
 
 fn encode_document(

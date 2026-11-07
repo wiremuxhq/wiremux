@@ -142,16 +142,32 @@ pub(super) fn annotation_from_messages_citation(citation: &Value) -> Option<Valu
     {
         out["title"] = json!(title);
     }
+    for key in ["encrypted_index", "cited_text"] {
+        if let Some(value) = citation
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            out[key] = json!(value);
+        }
+    }
     Some(out)
 }
 
 pub(super) fn citation_from_annotation(annotation: &Value) -> Value {
     let url = super::chat::annotation_url(annotation).unwrap_or("");
+    let text_field = |key: &str| {
+        annotation
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("")
+    };
     let mut citation = json!({
         "type": "web_search_result_location",
         "url": url,
-        "encrypted_index": "",
-        "cited_text": "",
+        "encrypted_index": text_field("encrypted_index"),
+        "cited_text": text_field("cited_text"),
     });
     if let Some(title) = super::chat::annotation_title(annotation) {
         citation["title"] = json!(title);
@@ -424,6 +440,47 @@ pub(super) fn encode_stop_reason(reason: &str) -> &str {
         "stop" | "end_turn" => "end_turn",
         "length" | "max_tokens" => "max_tokens",
         "tool_calls" | "tool_use" => "tool_use",
+        "content_filter" | "content-filter" | "malformed_function_call" => "refusal",
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{annotation_from_messages_citation, citation_from_annotation, encode_stop_reason};
+
+    #[test]
+    fn web_citation_keeps_encrypted_index_and_cited_text() {
+        let citation = serde_json::json!({
+            "type": "web_search_result_location",
+            "url": "https://example.com",
+            "title": "Example",
+            "encrypted_index": "idx",
+            "cited_text": "example.com"
+        });
+        let annotation = annotation_from_messages_citation(&citation).expect("annotation");
+        let back = citation_from_annotation(&annotation);
+        assert_eq!(
+            back.get("encrypted_index").and_then(|v| v.as_str()),
+            Some("idx")
+        );
+        assert_eq!(
+            back.get("cited_text").and_then(|v| v.as_str()),
+            Some("example.com")
+        );
+        assert_eq!(
+            back.get("url").and_then(|v| v.as_str()),
+            Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn content_filter_and_malformed_call_encode_as_refusal() {
+        assert_eq!(encode_stop_reason("content_filter"), "refusal");
+        assert_eq!(encode_stop_reason("content-filter"), "refusal");
+        assert_eq!(encode_stop_reason("malformed_function_call"), "refusal");
+        assert_eq!(encode_stop_reason("stop"), "end_turn");
+        assert_eq!(encode_stop_reason("tool_calls"), "tool_use");
+        assert_eq!(encode_stop_reason("max_tokens"), "max_tokens");
     }
 }

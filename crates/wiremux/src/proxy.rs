@@ -531,7 +531,10 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         // 5xx is retried as a transient HTTP failure. A billing or
         // request error that arrived inside HTTP 200 must stay a
         // client error so the caller surfaces the vendor message.
-        return bytes_response(StatusCode::BAD_REQUEST, "application/json", mapped);
+        // A rate limit in that body is still retried, so it is 429.
+        // api_error, server_error, and overloaded_error are 503 for
+        // the same reason the client treats them as transient.
+        return bytes_response(vendor_failure_status(&body), "application/json", mapped);
     }
     if ir.sampling.stream == Some(true)
         && status.is_success()
@@ -856,8 +859,13 @@ async fn handle_count(
     }
     if status.is_success() && count_body_hides_vendor_error(route, &upstream_body) {
         // 5xx is retried as a transient HTTP failure. A vendor error
-        // that arrived inside HTTP 200 must stay a client error.
-        return bytes_response(StatusCode::BAD_REQUEST, "application/json", upstream_body);
+        // that arrived inside HTTP 200 must stay a client error,
+        // except a rate limit (429) or a server error the client retries (503).
+        return bytes_response(
+            vendor_failure_status(&upstream_body),
+            "application/json",
+            upstream_body,
+        );
     }
     bytes_response(status_from_reqwest(status), &content_type, upstream_body)
 }
@@ -1830,6 +1838,184 @@ fn dest_frame_bytes(from: Wire, raw: &RawSse) -> Bytes {
     }
 }
 
+fn rate_limit_dest_code(from: Wire, code: &str) -> &str {
+    // A numeric 429 is not a destination error type. Named codes,
+    // including RESOURCE_EXHAUSTED and rate_limit_error, stay as written.
+    if code == "429" {
+        return if matches!(from, Wire::Gemini) {
+            "RESOURCE_EXHAUSTED"
+        } else {
+            "rate_limit_exceeded"
+        };
+    }
+    code
+}
+
+fn is_rate_limit_token(code: &str) -> bool {
+    code == "429"
+        || code.eq_ignore_ascii_case("RESOURCE_EXHAUSTED")
+        || code.eq_ignore_ascii_case("rate_limit_exceeded")
+        || code.eq_ignore_ascii_case("rate_limit_error")
+        || code.eq_ignore_ascii_case("slow_down")
+}
+
+/// True when the JSON `error` object is a rate limit. Numeric `code`
+/// 429 and `RESOURCE_EXHAUSTED` count. A billing 400 does not.
+fn vendor_failure_status(body: &[u8]) -> StatusCode {
+    // A bad key wins over a numeric 5xx, same as the client.
+    if body_looks_like_bad_key(body) {
+        return StatusCode::UNAUTHORIZED;
+    }
+    if body_is_rate_limit(body) {
+        StatusCode::TOO_MANY_REQUESTS
+    } else if body_is_retryable_server(body) {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::BAD_REQUEST
+    }
+}
+
+fn body_looks_like_bad_key(body: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(body) else {
+        return false;
+    };
+    let lower = text.to_ascii_lowercase();
+    lower.contains("incorrect api key")
+        || lower.contains("invalid api key")
+        || lower.contains("api key not valid")
+        || lower.contains("invalid key")
+        || lower.contains("unauthorized")
+        || lower.contains("not authorized")
+}
+
+fn json_code_number(code: &serde_json::Value) -> Option<i64> {
+    code.as_i64()
+        .or_else(|| code.as_str().and_then(|text| text.parse().ok()))
+}
+
+fn is_permanent_request_class(name: &str) -> bool {
+    name.eq_ignore_ascii_case("invalid_request_error")
+        || name.eq_ignore_ascii_case("invalid_argument")
+}
+
+fn name_says_overloaded(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    !lower.contains("not_overloaded") && lower.contains("overloaded")
+}
+
+fn is_retryable_server_name(name: &str) -> bool {
+    matches!(
+        name,
+        "server_error"
+            | "internal_error"
+            | "connection_failed"
+            | "request_timeout"
+            | "server_is_overloaded"
+            | "server_overloaded"
+            | "api_error"
+            | "overloaded_error"
+    ) || name.eq_ignore_ascii_case("UNAVAILABLE")
+}
+
+/// True when the JSON error is one the client retries. An
+/// `invalid_request_error` that merely says "overloaded" is not.
+fn body_is_retryable_server(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    let Some(err) = value.get("error").filter(|item| item.is_object()) else {
+        return false;
+    };
+    if let Some(code) = err.get("code").and_then(json_code_number)
+        && (code == 408 || (500..600).contains(&code))
+    {
+        return true;
+    }
+    // Gemini puts INVALID_ARGUMENT in status, not type. That class
+    // wins over the word overloaded in the message, same as the client.
+    for key in ["type", "code", "status"] {
+        if err
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(is_permanent_request_class)
+        {
+            return false;
+        }
+    }
+    for key in ["type", "code", "status"] {
+        if let Some(name) = err.get(key).and_then(serde_json::Value::as_str)
+            && (is_retryable_server_name(name) || name_says_overloaded(name))
+        {
+            return true;
+        }
+    }
+    err.get("message")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|text| {
+            let lower = text.to_ascii_lowercase();
+            !lower.contains("not_overloaded")
+                && !lower.contains("not overloaded")
+                && (lower.contains("upstream overload") || lower.contains("overloaded"))
+        })
+}
+
+fn body_is_rate_limit(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    let Some(err) = value.get("error").filter(|item| item.is_object()) else {
+        return false;
+    };
+    if let Some(code) = err.get("code") {
+        if code.as_str().is_some_and(is_rate_limit_token) {
+            return true;
+        }
+        if let Some(number) = json_code_number(code) {
+            if number == 429 {
+                return true;
+            }
+            // 400-499 except 408 and 429 beat a rate-limit phrase.
+            // 408 is a timeout, so the phrase still counts.
+            if (400..500).contains(&number) && number != 408 {
+                return false;
+            }
+        }
+    }
+    for key in ["status", "type"] {
+        if err
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(is_rate_limit_token)
+        {
+            return true;
+        }
+    }
+    if err
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("invalid_request_error"))
+    {
+        return false;
+    }
+    for key in ["message", "detail"] {
+        if err
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(text_is_rate_limit)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn text_is_rate_limit(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("rate limit")
+        || lower.contains("rate_limit")
+        || lower.contains("too many requests")
+}
+
 fn split_error_prefix(msg: &str) -> (Option<&str>, &str) {
     match msg.split_once(": ") {
         Some((code, rest))
@@ -1850,6 +2036,7 @@ fn dest_error_json(from: Wire, msg: &str) -> serde_json::Value {
         return serde_json::json!({ "message": msg });
     }
     let (code, text) = split_error_prefix(msg);
+    let code = code.map(|code| rate_limit_dest_code(from, code));
     match from {
         Wire::Messages => {
             let ty = code.unwrap_or("api_error");
@@ -3470,6 +3657,66 @@ anthropic-beta = "context-1m-2025-08-07"
         let value: serde_json::Value = serde_json::from_str(data).expect("error json");
         assert_eq!(value["error"]["type"], "rate_limit_exceeded", "{text}");
         assert_eq!(value["error"]["message"], "please wait", "{text}");
+    }
+
+    #[test]
+    fn gemini_rate_limit_inside_http_200_is_chat_429() {
+        let body = br#"{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}"#;
+        assert!(super::body_is_rate_limit(body));
+        let billing = br#"{"error":{"code":400,"message":"billing","status":"INVALID_ARGUMENT"}}"#;
+        assert!(!super::body_is_rate_limit(billing));
+        let field = br#"{"error":{"type":"invalid_request_error","code":400,"message":"rate_limit must be a positive integer"}}"#;
+        assert!(!super::body_is_rate_limit(field));
+        let too_many = br#"{"error":{"message":"too many requests"}}"#;
+        assert!(super::body_is_rate_limit(too_many));
+        let too_many_field = br#"{"error":{"type":"invalid_request_error","message":"too many requests must be an integer"}}"#;
+        assert!(!super::body_is_rate_limit(too_many_field));
+        let api_error = br#"{"type":"error","content":[{"type":"text","text":""}],"error":{"type":"api_error","message":"nope"}}"#;
+        assert_eq!(super::vendor_failure_status(api_error).as_u16(), 503);
+        let overloaded_field = br#"{"error":{"type":"invalid_request_error","message":"parameter overloaded must be an object"}}"#;
+        assert_eq!(super::vendor_failure_status(overloaded_field).as_u16(), 400);
+        let code_503 = br#"{"error":{"code":503,"message":"unavailable","status":"UNAVAILABLE"}}"#;
+        assert_eq!(super::vendor_failure_status(code_503).as_u16(), 503);
+        let unavailable = br#"{"error":{"status":"UNAVAILABLE","message":"unavailable"}}"#;
+        assert_eq!(super::vendor_failure_status(unavailable).as_u16(), 503);
+        let not_overloaded = br#"{"error":{"type":"permission_error","code":"quota_not_overloaded","message":"payment required"}}"#;
+        assert_eq!(super::vendor_failure_status(not_overloaded).as_u16(), 400);
+        let code_503_string = br#"{"error":{"code":"503","message":"unavailable"}}"#;
+        assert_eq!(super::vendor_failure_status(code_503_string).as_u16(), 503);
+        let argument = br#"{"error":{"status":"INVALID_ARGUMENT","message":"parameter overloaded must be an object"}}"#;
+        assert_eq!(super::vendor_failure_status(argument).as_u16(), 400);
+        let coded_phrase = br#"{"error":{"code":400,"message":"rate limit exceeded"}}"#;
+        assert_eq!(super::vendor_failure_status(coded_phrase).as_u16(), 400);
+        let bad_key_500 = br#"{"error":{"code":500,"message":"invalid api key"}}"#;
+        assert_eq!(super::vendor_failure_status(bad_key_500).as_u16(), 401);
+        let detail = br#"{"error":{"message":"please wait","detail":"rate limit reached"}}"#;
+        assert_eq!(super::vendor_failure_status(detail).as_u16(), 429);
+        let timeout_limit = br#"{"error":{"code":408,"message":"rate limit exceeded"}}"#;
+        assert_eq!(super::vendor_failure_status(timeout_limit).as_u16(), 429);
+        let timeout_plain = br#"{"error":{"code":408,"message":"timed out"}}"#;
+        assert_eq!(super::vendor_failure_status(timeout_plain).as_u16(), 503);
+        let mapped = super::cross_wire_vendor_failure(
+            wiremux_auth::Wire::ChatCompletions,
+            wiremux_auth::Wire::Gemini,
+            false,
+            body,
+        )
+        .expect("rate limit maps");
+        let value: serde_json::Value = serde_json::from_slice(&mapped).expect("json");
+        assert_eq!(
+            value
+                .pointer("/error/type")
+                .and_then(serde_json::Value::as_str),
+            Some("rate_limit_exceeded"),
+            "{value}"
+        );
+        assert_eq!(
+            value
+                .pointer("/error/message")
+                .and_then(serde_json::Value::as_str),
+            Some("Resource exhausted"),
+            "{value}"
+        );
     }
 
     #[test]

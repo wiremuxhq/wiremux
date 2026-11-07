@@ -693,9 +693,13 @@ pub(super) fn encode(
     }
     encode_sampling(ir, &mut body, report);
     if !prepared.is_empty() {
-        if matches!(ir.sampling.tool_choice, IrToolChoice::None) {
+        let none = matches!(ir.sampling.tool_choice, IrToolChoice::None);
+        if none {
             report.record("sampling.tool_choice", LossAction::Degrade, "no none slot");
-        } else {
+        }
+        // Bedrock rejects toolUse or toolResult history when toolConfig is
+        // missing. A turn with no tool blocks can still omit the tools.
+        if !none || history_needs_tool_config(&ir.items) {
             let tools: Vec<Value> = prepared.iter().filter_map(encode_tool).collect();
             if !tools.is_empty() {
                 let mut cfg = json!({ "tools": tools });
@@ -1738,6 +1742,17 @@ fn converse_effort(effort: &str) -> Option<(String, Option<&'static str>)> {
         "x-high" => Some(("xhigh".into(), Some("x-high maps to xhigh"))),
         _ => None,
     }
+}
+
+fn history_needs_tool_config(items: &[IrItem]) -> bool {
+    items.iter().any(|item| {
+        matches!(
+            item,
+            IrItem::FunctionCall { .. }
+                | IrItem::FunctionOutput { .. }
+                | IrItem::CustomToolCall { .. }
+        )
+    })
 }
 
 fn encode_tool_choice(choice: &IrToolChoice, cfg: &mut Value) {

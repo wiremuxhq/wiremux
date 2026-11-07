@@ -1592,8 +1592,8 @@ chat_path = "/v1/responses"
         "blank completion must not look successful, got: {resp}"
     );
     assert!(
-        resp.starts_with("HTTP/1.1 400"),
-        "a vendor failure inside HTTP 200 must not stay 200, got: {resp}"
+        resp.starts_with("HTTP/1.1 429"),
+        "a rate limit inside HTTP 200 must be retried, got: {resp}"
     );
 }
 
@@ -1705,7 +1705,7 @@ fn proxy_same_wire_chat_error_is_http_400() {
         upstream_body: r#"{"error":{"message":"please wait","type":"rate_limit_error","code":"rate_limit_exceeded"}}"#,
         upstream_content_type: "application/json",
     });
-    assert!(resp.starts_with("HTTP/1.1 400"), "{resp}");
+    assert!(resp.starts_with("HTTP/1.1 429"), "{resp}");
     assert!(resp.contains("please wait"), "{resp}");
     assert!(resp.contains("rate_limit_error"), "{resp}");
     assert!(resp.contains("rate_limit_exceeded"), "{resp}");
@@ -1880,7 +1880,7 @@ fn proxy_gemini_error_object_is_http_400() {
         upstream_content_type: "application/json",
     });
     assert!(req.contains(":generateContent"), "{req}");
-    assert!(resp.starts_with("HTTP/1.1 400"), "{resp}");
+    assert!(resp.starts_with("HTTP/1.1 429"), "{resp}");
     assert!(resp.contains("please wait"), "{resp}");
     assert!(resp.contains("RESOURCE_EXHAUSTED"), "{resp}");
     assert!(!resp.contains("\"choices\""), "{resp}");
