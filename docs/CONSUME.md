@@ -263,6 +263,11 @@ the vendor message. Text already received in that read is kept.
 are `ClientError::Transient` with `TransientKind::Http`.
 A Messages `api_error` is that same transient error.
 `slow_down` and `rate_limit_exceeded` are `ClientError::RateLimit`.
+A Gemini rate-limit object inside HTTP 200 (`code` 429 or
+`RESOURCE_EXHAUSTED`) is HTTP 429 on a cross-wire proxy response,
+and Chat `error.type` is `rate_limit_exceeded`. A billing error in
+that same HTTP 200 stays HTTP 400. Locked by
+`gemini_rate_limit_inside_http_200_is_chat_429`.
 `insufficient_quota` stays `ClientError::Vendor`. An auth message
 stays `ClientError::Auth`, and a `model_not_found` message stays
 `ClientError::NotFound`. A Gemini `API key not valid` message and a

@@ -531,7 +531,13 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         // 5xx is retried as a transient HTTP failure. A billing or
         // request error that arrived inside HTTP 200 must stay a
         // client error so the caller surfaces the vendor message.
-        return bytes_response(StatusCode::BAD_REQUEST, "application/json", mapped);
+        // A rate limit in that body is still retried, so it is 429.
+        let status = if body_is_rate_limit(&body) {
+            StatusCode::TOO_MANY_REQUESTS
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        return bytes_response(status, "application/json", mapped);
     }
     if ir.sampling.stream == Some(true)
         && status.is_success()
@@ -1830,6 +1836,61 @@ fn dest_frame_bytes(from: Wire, raw: &RawSse) -> Bytes {
     }
 }
 
+fn rate_limit_dest_code(from: Wire, code: &str) -> &str {
+    // A numeric 429 is not a destination error type. Named codes,
+    // including RESOURCE_EXHAUSTED and rate_limit_error, stay as written.
+    if code == "429" {
+        return if matches!(from, Wire::Gemini) {
+            "RESOURCE_EXHAUSTED"
+        } else {
+            "rate_limit_exceeded"
+        };
+    }
+    code
+}
+
+fn is_rate_limit_token(code: &str) -> bool {
+    code == "429"
+        || code.eq_ignore_ascii_case("RESOURCE_EXHAUSTED")
+        || code.eq_ignore_ascii_case("rate_limit_exceeded")
+        || code.eq_ignore_ascii_case("rate_limit_error")
+        || code.eq_ignore_ascii_case("slow_down")
+}
+
+/// True when the JSON `error` object is a rate limit. Numeric `code`
+/// 429 and `RESOURCE_EXHAUSTED` count. A billing 400 does not.
+fn body_is_rate_limit(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    let Some(err) = value.get("error").filter(|item| item.is_object()) else {
+        return false;
+    };
+    if let Some(code) = err.get("code") {
+        if code.as_i64() == Some(429) {
+            return true;
+        }
+        if code.as_str().is_some_and(is_rate_limit_token) {
+            return true;
+        }
+    }
+    for key in ["status", "type"] {
+        if err
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(is_rate_limit_token)
+        {
+            return true;
+        }
+    }
+    err.get("message")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|text| {
+            let lower = text.to_ascii_lowercase();
+            lower.contains("rate limit") || lower.contains("rate_limit")
+        })
+}
+
 fn split_error_prefix(msg: &str) -> (Option<&str>, &str) {
     match msg.split_once(": ") {
         Some((code, rest))
@@ -1850,6 +1911,7 @@ fn dest_error_json(from: Wire, msg: &str) -> serde_json::Value {
         return serde_json::json!({ "message": msg });
     }
     let (code, text) = split_error_prefix(msg);
+    let code = code.map(|code| rate_limit_dest_code(from, code));
     match from {
         Wire::Messages => {
             let ty = code.unwrap_or("api_error");
@@ -3470,6 +3532,36 @@ anthropic-beta = "context-1m-2025-08-07"
         let value: serde_json::Value = serde_json::from_str(data).expect("error json");
         assert_eq!(value["error"]["type"], "rate_limit_exceeded", "{text}");
         assert_eq!(value["error"]["message"], "please wait", "{text}");
+    }
+
+    #[test]
+    fn gemini_rate_limit_inside_http_200_is_chat_429() {
+        let body = br#"{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}"#;
+        assert!(super::body_is_rate_limit(body));
+        let billing = br#"{"error":{"code":400,"message":"billing","status":"INVALID_ARGUMENT"}}"#;
+        assert!(!super::body_is_rate_limit(billing));
+        let mapped = super::cross_wire_vendor_failure(
+            wiremux_auth::Wire::ChatCompletions,
+            wiremux_auth::Wire::Gemini,
+            false,
+            body,
+        )
+        .expect("rate limit maps");
+        let value: serde_json::Value = serde_json::from_slice(&mapped).expect("json");
+        assert_eq!(
+            value
+                .pointer("/error/type")
+                .and_then(serde_json::Value::as_str),
+            Some("rate_limit_exceeded"),
+            "{value}"
+        );
+        assert_eq!(
+            value
+                .pointer("/error/message")
+                .and_then(serde_json::Value::as_str),
+            Some("Resource exhausted"),
+            "{value}"
+        );
     }
 
     #[test]
