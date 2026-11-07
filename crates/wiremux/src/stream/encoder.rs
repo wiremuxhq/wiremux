@@ -1276,7 +1276,7 @@ impl StreamEncoder {
         let refusal = std::mem::take(&mut self.refusal);
         let mapped = self.finish.as_deref().map(encode_stop_reason);
         let saw_tool = !self.used_tool.is_empty();
-        let stop = if !refusal.is_empty() && mapped.is_none_or(|r| r == "content_filter") {
+        let stop = if !refusal.is_empty() && mapped.is_none_or(|r| r == "refusal") {
             "refusal"
         } else if saw_tool && mapped.is_none_or(|reason| reason == "end_turn") {
             "tool_use"
@@ -1927,10 +1927,12 @@ impl StreamEncoder {
         out.extend(self.flush_responses_held());
         let reason = self.finish.as_deref().unwrap_or("stop");
         let (event, status) = match reason {
-            "failed" => ("response.failed", "failed"),
-            "incomplete" | "length" | "max_tokens" | "content_filter" => {
-                ("response.incomplete", "incomplete")
-            }
+            "failed" | "malformed_function_call" => ("response.failed", "failed"),
+            "incomplete"
+            | "length"
+            | "max_tokens"
+            | "content_filter"
+            | "model_context_window_exceeded" => ("response.incomplete", "incomplete"),
             _ => ("response.completed", "completed"),
         };
         let mut response = json!({
@@ -2924,6 +2926,59 @@ mod tests {
     }
 
     #[test]
+    fn dest_responses_encoder_finish_maps_context_window_and_malformed_call() {
+        let mut window = StreamEncoder::new(Wire::Responses);
+        window
+            .push(IrStreamEvent::FinishReason {
+                reason: "model_context_window_exceeded".into(),
+                vendor: None,
+            })
+            .expect("push window");
+        let frames = window.finish().expect("finish window");
+        let incomplete = frames
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.incomplete"))
+            .expect("response.incomplete");
+        let json: Value = serde_json::from_str(&incomplete.data).expect("json");
+        assert_eq!(
+            json.pointer("/response/status").and_then(Value::as_str),
+            Some("incomplete"),
+            "{json}"
+        );
+        assert_eq!(
+            json.pointer("/response/incomplete_details/reason")
+                .and_then(Value::as_str),
+            Some("max_output_tokens"),
+            "{json}"
+        );
+
+        let mut malformed = StreamEncoder::new(Wire::Responses);
+        malformed
+            .push(IrStreamEvent::FinishReason {
+                reason: "malformed_function_call".into(),
+                vendor: None,
+            })
+            .expect("push malformed");
+        let frames = malformed.finish().expect("finish malformed");
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.event.as_deref() != Some("response.completed")),
+            "a malformed call must not finish completed, got {frames:?}"
+        );
+        let failed = frames
+            .iter()
+            .find(|frame| frame.event.as_deref() == Some("response.failed"))
+            .expect("response.failed");
+        let json: Value = serde_json::from_str(&failed.data).expect("json");
+        assert_eq!(
+            json.pointer("/response/status").and_then(Value::as_str),
+            Some("failed"),
+            "{json}"
+        );
+    }
+
+    #[test]
     fn dest_responses_encoder_finish_maps_length() {
         let mut enc = StreamEncoder::new(Wire::Responses);
         enc.push(IrStreamEvent::FinishReason {
@@ -3338,8 +3393,12 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            filtered_body.contains("\"stop_reason\":\"content_filter\""),
-            "content_filter stays after a tool, got {filtered_body}"
+            filtered_body.contains("\"stop_reason\":\"refusal\""),
+            "content_filter after a tool must be refusal, not tool_use, got {filtered_body}"
+        );
+        assert!(
+            !filtered_body.contains("\"stop_reason\":\"tool_use\""),
+            "content_filter must not promote an open tool, got {filtered_body}"
         );
 
         let mut interrupted = StreamEncoder::new(Wire::Messages);

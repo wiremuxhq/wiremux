@@ -999,7 +999,9 @@ fn finish_reason(reason: &str) -> &'static str {
     match reason {
         "tool_use" | "tool-use" | "tool_calls" => "tool_use",
         "max_tokens" | "length" | "model_context_window_exceeded" => "max_tokens",
-        "content_filtered" | "content_filter" | "content-filter" => "content_filtered",
+        "content_filtered" | "content_filter" | "content-filter" | "malformed_function_call" => {
+            "content_filtered"
+        }
         "stop_sequence" => "stop_sequence",
         "guardrail_intervened" => "guardrail_intervened",
         _ => "end_turn",
@@ -1195,6 +1197,43 @@ mod tests {
             complete.get("stopReason").and_then(Value::as_str),
             Some("content_filtered"),
             "complete JSON must map content_filter, got {complete}"
+        );
+    }
+
+    #[test]
+    fn malformed_function_call_is_not_tool_use() {
+        let stop = encode(&IrStreamEvent::FinishReason {
+            reason: "malformed_function_call".into(),
+            vendor: None,
+        })
+        .expect("encode malformed");
+        assert_eq!(
+            stop.pointer("/messageStop/stopReason")
+                .and_then(Value::as_str),
+            Some("content_filtered"),
+            "a malformed call must not encode as end_turn, got {stop}"
+        );
+        let complete = encode_complete(&[
+            IrStreamEvent::ToolCallStart {
+                id: "call_a".into(),
+                name: "read_file".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: "{".into(),
+                index: 0,
+            },
+            IrStreamEvent::FinishReason {
+                reason: "malformed_function_call".into(),
+                vendor: None,
+            },
+        ])
+        .expect("complete malformed");
+        assert_eq!(
+            complete.get("stopReason").and_then(Value::as_str),
+            Some("content_filtered"),
+            "an open tool must not turn a malformed call into tool_use, got {complete}"
         );
     }
 

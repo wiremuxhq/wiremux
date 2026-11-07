@@ -720,6 +720,7 @@ pub(super) fn encode_finish(reason: &str) -> &'static str {
     match reason {
         "max_tokens" | "length" | "model_context_window_exceeded" => "MAX_TOKENS",
         "content_filter" => "SAFETY",
+        "malformed_function_call" => "MALFORMED_FUNCTION_CALL",
         "tool_calls" => "STOP",
         _ => "STOP",
     }
@@ -732,6 +733,22 @@ mod tests {
     #[test]
     fn context_window_stop_is_max_tokens() {
         assert_eq!(encode_finish("model_context_window_exceeded"), "MAX_TOKENS");
+    }
+
+    #[test]
+    fn malformed_function_call_is_not_stop() {
+        assert_eq!(
+            encode_finish("malformed_function_call"),
+            "MALFORMED_FUNCTION_CALL"
+        );
+        assert_eq!(
+            finish_token("malformed_function_call", None).as_str(),
+            "MALFORMED_FUNCTION_CALL"
+        );
+        assert_eq!(
+            finish_token("malformed_function_call", Some("MALFORMED_FUNCTION_CALL")).as_str(),
+            "MALFORMED_FUNCTION_CALL"
+        );
     }
 
     #[test]

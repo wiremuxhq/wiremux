@@ -345,7 +345,16 @@ and Gemini `MAX_TOKENS`, and Responses
 cut Chat already writes as `length`. It does not encode as a
 normal end. Converse `end_turn`, Chat `tool_calls`, and
 `stop_sequence` encode as Responses `completed`. They do not
-become the `status` string. An empty frame list is not terminal. `RawSse::parse_all`
+become the `status` string. That context-window stop is
+`incomplete` on a stream event, on `StreamEncoder::finish`, and
+on complete JSON. Messages `content_filter` encodes as `refusal`.
+An open tool on that turn stays `refusal` and does not become
+`tool_use`. Gemini `malformed_function_call` encodes as
+`MALFORMED_FUNCTION_CALL`, including when `vendor` is empty. It
+does not encode as `STOP`. Chat encodes that reason as
+`content_filter`. Converse encodes it as `content_filtered`, so
+an open tool does not become `tool_use`. Responses encodes it as
+`failed`. An empty frame list is not terminal. `RawSse::parse_all`
 returns an error when a line or `data:` payload exceeds the SSE size
 cap. It does not turn that document into an empty frame list.
 `StreamEncoder::finish()` is for a stream the caller already knows
