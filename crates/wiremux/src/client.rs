@@ -1368,7 +1368,8 @@ fn is_retryable_server_code(name: &str) -> bool {
             | "server_is_overloaded"
             | "server_overloaded"
             | "api_error"
-    )
+            | "overloaded_error"
+    ) || name.eq_ignore_ascii_case("UNAVAILABLE")
 }
 
 fn json_error_code(error: &Value) -> Option<i64> {
@@ -1409,10 +1410,9 @@ fn json_error_status_name(error: &Value) -> Option<String> {
 fn json_error_name(error: &Value) -> Option<String> {
     // Gemini puts the class in `status`, not `code` or `type`.
     let status = json_error_status_name(error);
-    if status
-        .as_deref()
-        .is_some_and(|name| is_rate_limit_code(name) || is_not_found_name(name))
-    {
+    if status.as_deref().is_some_and(|name| {
+        is_rate_limit_code(name) || is_not_found_name(name) || is_retryable_server_code(name)
+    }) {
         return status;
     }
     json_error_code_name(error)
@@ -2027,6 +2027,16 @@ mod tests {
         match classify_http(200, too_many_field, None) {
             Some(ClientError::Vendor { .. }) => {}
             other => panic!("a field name is not a rate limit, got {other:?}"),
+        }
+        let code_503 = r#"{"error":{"code":503,"message":"unavailable"}}"#;
+        match classify_http(200, code_503, None) {
+            Some(ClientError::Transient { .. }) => {}
+            other => panic!("JSON code 503 is transient, got {other:?}"),
+        }
+        let unavailable = r#"{"error":{"status":"UNAVAILABLE","message":"unavailable"}}"#;
+        match classify_http(200, unavailable, None) {
+            Some(ClientError::Transient { .. }) => {}
+            other => panic!("UNAVAILABLE is transient, got {other:?}"),
         }
         let mixed = r#"{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED","details":"backup model does not exist"}}"#;
         match classify_http(200, mixed, None) {

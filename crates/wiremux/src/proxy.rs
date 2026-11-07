@@ -1882,7 +1882,7 @@ fn is_retryable_server_name(name: &str) -> bool {
             | "server_overloaded"
             | "api_error"
             | "overloaded_error"
-    )
+    ) || name.eq_ignore_ascii_case("UNAVAILABLE")
 }
 
 /// True when the JSON error is one the client retries. An
@@ -1900,6 +1900,11 @@ fn body_is_retryable_server(body: &[u8]) -> bool {
         .is_some_and(|name| name.eq_ignore_ascii_case("invalid_request_error"))
     {
         return false;
+    }
+    if let Some(code) = err.get("code").and_then(serde_json::Value::as_i64)
+        && (code == 408 || (500..600).contains(&code))
+    {
+        return true;
     }
     for key in ["type", "code", "status"] {
         if let Some(name) = err.get(key).and_then(serde_json::Value::as_str)
@@ -3621,6 +3626,10 @@ anthropic-beta = "context-1m-2025-08-07"
         assert_eq!(super::vendor_failure_status(api_error).as_u16(), 503);
         let overloaded_field = br#"{"error":{"type":"invalid_request_error","message":"parameter overloaded must be an object"}}"#;
         assert_eq!(super::vendor_failure_status(overloaded_field).as_u16(), 400);
+        let code_503 = br#"{"error":{"code":503,"message":"unavailable","status":"UNAVAILABLE"}}"#;
+        assert_eq!(super::vendor_failure_status(code_503).as_u16(), 503);
+        let unavailable = br#"{"error":{"status":"UNAVAILABLE","message":"unavailable"}}"#;
+        assert_eq!(super::vendor_failure_status(unavailable).as_u16(), 503);
         let mapped = super::cross_wire_vendor_failure(
             wiremux_auth::Wire::ChatCompletions,
             wiremux_auth::Wire::Gemini,
