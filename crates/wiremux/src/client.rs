@@ -1387,7 +1387,13 @@ fn is_transient_code(code: i64) -> bool {
 
 fn looks_like_bad_key(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
-    t.contains("incorrect api key") || t.contains("unauthorized") || t.contains("invalid key")
+    // "not authorized" is the phrase. Bare "authorized" is not a bad key.
+    t.contains("incorrect api key")
+        || t.contains("unauthorized")
+        || t.contains("invalid key")
+        || t.contains("api key not valid")
+        || t.contains("invalid api key")
+        || t.contains("not authorized")
 }
 
 fn looks_like_model_not_found(text: &str) -> bool {
@@ -1906,6 +1912,25 @@ mod tests {
             classify_http(200, beside, None).is_none(),
             "choice text must stay a completion when error is a string"
         );
+    }
+
+    #[test]
+    fn classify_http_rejected_keys_are_auth() {
+        let gemini = r#"{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}"#;
+        match classify_http(400, gemini, None) {
+            Some(ClientError::Auth { status, .. }) => assert_eq!(status, Some(400)),
+            other => panic!("expected Auth, got {other:?}"),
+        }
+        let bedrock = r#"{"message":"User is not authorized to perform: bedrock:InvokeModel"}"#;
+        match classify_http(403, bedrock, None) {
+            Some(ClientError::Auth { status, .. }) => assert_eq!(status, Some(403)),
+            other => panic!("expected Auth, got {other:?}"),
+        }
+        let bad_request = r#"{"error":{"message":"bad request"}}"#;
+        match classify_http(400, bad_request, None) {
+            Some(ClientError::Vendor { status, .. }) => assert_eq!(status, Some(400)),
+            other => panic!("expected Vendor, got {other:?}"),
+        }
     }
 
     /// The same class as the proxy table: an empty string is not

@@ -265,7 +265,8 @@ A Messages `api_error` is that same transient error.
 `slow_down` and `rate_limit_exceeded` are `ClientError::RateLimit`.
 `insufficient_quota` stays `ClientError::Vendor`. An auth message
 stays `ClientError::Auth`, and a `model_not_found` message stays
-`ClientError::NotFound`. `response.failed` uses `last_error.code`
+`ClientError::NotFound`. A Gemini `API key not valid` message and a
+Bedrock `not authorized` message are Auth. `response.failed` uses `last_error.code`
 and `last_error.message` the same way. A code or a message does not
 finish as `failed` when that frame has no payload the stream decoder
 emits. Non-empty `encrypted_content` and a hosted item with a payload
