@@ -1871,6 +1871,11 @@ fn vendor_failure_status(body: &[u8]) -> StatusCode {
     }
 }
 
+fn name_says_overloaded(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    !lower.contains("not_overloaded") && lower.contains("overloaded")
+}
+
 fn is_retryable_server_name(name: &str) -> bool {
     matches!(
         name,
@@ -1908,7 +1913,7 @@ fn body_is_retryable_server(body: &[u8]) -> bool {
     }
     for key in ["type", "code", "status"] {
         if let Some(name) = err.get(key).and_then(serde_json::Value::as_str)
-            && (is_retryable_server_name(name) || name.to_ascii_lowercase().contains("overloaded"))
+            && (is_retryable_server_name(name) || name_says_overloaded(name))
         {
             return true;
         }
@@ -1917,7 +1922,9 @@ fn body_is_retryable_server(body: &[u8]) -> bool {
         .and_then(serde_json::Value::as_str)
         .is_some_and(|text| {
             let lower = text.to_ascii_lowercase();
-            lower.contains("upstream overload") || lower.contains("overloaded")
+            !lower.contains("not_overloaded")
+                && !lower.contains("not overloaded")
+                && (lower.contains("upstream overload") || lower.contains("overloaded"))
         })
 }
 
@@ -3630,6 +3637,8 @@ anthropic-beta = "context-1m-2025-08-07"
         assert_eq!(super::vendor_failure_status(code_503).as_u16(), 503);
         let unavailable = br#"{"error":{"status":"UNAVAILABLE","message":"unavailable"}}"#;
         assert_eq!(super::vendor_failure_status(unavailable).as_u16(), 503);
+        let not_overloaded = br#"{"error":{"type":"permission_error","code":"quota_not_overloaded","message":"payment required"}}"#;
+        assert_eq!(super::vendor_failure_status(not_overloaded).as_u16(), 400);
         let mapped = super::cross_wire_vendor_failure(
             wiremux_auth::Wire::ChatCompletions,
             wiremux_auth::Wire::Gemini,

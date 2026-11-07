@@ -1085,7 +1085,10 @@ fn classify_aws_exception_type(
             message: clip_client_message(full),
         };
     }
-    if ty.contains("internal") || ty.contains("serviceunavailable") || ty.contains("timeout") {
+    // InvalidTimeoutException is a rejected parameter, not a timed-out call.
+    if !ty.contains("invalid")
+        && (ty.contains("internal") || ty.contains("serviceunavailable") || ty.contains("timeout"))
+    {
         return transient(Some(status), clip_client_message(full), TransientKind::Http);
     }
     classify_error_payload(Some(status), None, None, message, full, None)
@@ -1462,6 +1465,9 @@ fn looks_like_rate_limit(text: &str) -> bool {
 
 fn looks_like_overload(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
+    if t.contains("not_overloaded") || t.contains("not overloaded") {
+        return false;
+    }
     t.contains("upstream overload") || t.contains("overloaded")
 }
 
@@ -2037,6 +2043,32 @@ mod tests {
         match classify_http(200, unavailable, None) {
             Some(ClientError::Transient { .. }) => {}
             other => panic!("UNAVAILABLE is transient, got {other:?}"),
+        }
+        match classify_aws_exception_type(
+            400,
+            "InvalidTimeoutException",
+            "timeout must be an integer",
+            "eventstream exception InvalidTimeoutException: timeout must be an integer",
+        ) {
+            ClientError::Transient { .. } => {
+                panic!("a rejected timeout parameter is not transient")
+            }
+            ClientError::Vendor { .. } => {}
+            other => panic!("expected Vendor, got {other:?}"),
+        }
+        match classify_aws_exception_type(
+            500,
+            "RequestTimeoutException",
+            "timed out",
+            "eventstream exception RequestTimeoutException: timed out",
+        ) {
+            ClientError::Transient { .. } => {}
+            other => panic!("a request timeout stays transient, got {other:?}"),
+        }
+        let not_overloaded = r#"{"error":{"type":"permission_error","code":"quota_not_overloaded","message":"payment required"}}"#;
+        match classify_http(200, not_overloaded, None) {
+            Some(ClientError::Vendor { .. }) => {}
+            other => panic!("not overloaded is not a server overload, got {other:?}"),
         }
         let mixed = r#"{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED","details":"backup model does not exist"}}"#;
         match classify_http(200, mixed, None) {
