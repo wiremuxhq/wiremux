@@ -884,7 +884,7 @@ fn terminal_finish_reason(name: &str, value: &Value) -> Option<String> {
 pub(super) fn incomplete_details_reason(ir_reason: &str) -> Option<&'static str> {
     match ir_reason {
         "content_filter" => Some("content_filter"),
-        "length" | "max_tokens" => Some("max_output_tokens"),
+        "length" | "max_tokens" | "model_context_window_exceeded" => Some("max_output_tokens"),
         _ => None,
     }
 }
@@ -1111,9 +1111,11 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         IrStreamEvent::FinishReason { reason, .. } => {
             let (event, status) = match reason.as_str() {
                 "failed" => ("response.failed", "failed"),
-                "incomplete" | "length" | "max_tokens" | "content_filter" => {
-                    ("response.incomplete", "incomplete")
-                }
+                "incomplete"
+                | "length"
+                | "max_tokens"
+                | "content_filter"
+                | "model_context_window_exceeded" => ("response.incomplete", "incomplete"),
                 "stop" => ("response.completed", "completed"),
                 other => ("response.completed", other),
             };
@@ -1191,4 +1193,33 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         event: Some(event.into()),
         data: data.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode;
+    use crate::ir::IrStreamEvent;
+    use serde_json::Value;
+
+    #[test]
+    fn context_window_stop_is_incomplete() {
+        let frame = encode(&IrStreamEvent::FinishReason {
+            reason: "model_context_window_exceeded".into(),
+            vendor: None,
+        })
+        .expect("encode");
+        let value: Value = serde_json::from_str(&frame.data).expect("json");
+        assert_eq!(
+            value.get("type").and_then(Value::as_str),
+            Some("response.incomplete"),
+            "{value}"
+        );
+        assert_eq!(
+            value
+                .pointer("/response/incomplete_details/reason")
+                .and_then(Value::as_str),
+            Some("max_output_tokens"),
+            "{value}"
+        );
+    }
 }
