@@ -343,7 +343,9 @@ and `end_turn` is `stop`. Messages
 and Gemini `MAX_TOKENS`, and Responses
 `response.incomplete` with `max_output_tokens`. That is the same
 cut Chat already writes as `length`. It does not encode as a
-normal end. An empty frame list is not terminal. `RawSse::parse_all`
+normal end. Converse `end_turn`, Chat `tool_calls`, and
+`stop_sequence` encode as Responses `completed`. They do not
+become the `status` string. An empty frame list is not terminal. `RawSse::parse_all`
 returns an error when a line or `data:` payload exceeds the SSE size
 cap. It does not turn that document into an empty frame list.
 `StreamEncoder::finish()` is for a stream the caller already knows

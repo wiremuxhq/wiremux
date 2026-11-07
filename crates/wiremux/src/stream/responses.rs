@@ -1116,7 +1116,9 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
                 | "max_tokens"
                 | "content_filter"
                 | "model_context_window_exceeded" => ("response.incomplete", "incomplete"),
-                "stop" => ("response.completed", "completed"),
+                "stop" | "end_turn" | "tool_calls" | "tool_use" | "stop_sequence" => {
+                    ("response.completed", "completed")
+                }
                 other => ("response.completed", other),
             };
             let mut response = json!({ "status": status });
@@ -1221,5 +1223,22 @@ mod tests {
             Some("max_output_tokens"),
             "{value}"
         );
+    }
+
+    #[test]
+    fn foreign_stop_reasons_complete() {
+        for reason in ["end_turn", "tool_calls", "stop_sequence"] {
+            let frame = encode(&IrStreamEvent::FinishReason {
+                reason: reason.into(),
+                vendor: None,
+            })
+            .expect("encode");
+            let value: Value = serde_json::from_str(&frame.data).expect("json");
+            assert_eq!(
+                value.pointer("/response/status").and_then(Value::as_str),
+                Some("completed"),
+                "{reason} must not become the status, got {value}"
+            );
+        }
     }
 }
