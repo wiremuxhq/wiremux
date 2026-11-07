@@ -1899,7 +1899,9 @@ fn body_is_rate_limit(body: &[u8]) -> bool {
         .and_then(serde_json::Value::as_str)
         .is_some_and(|text| {
             let lower = text.to_ascii_lowercase();
-            lower.contains("rate limit") || lower.contains("rate_limit")
+            lower.contains("rate limit")
+                || lower.contains("rate_limit")
+                || lower.contains("too many requests")
         })
 }
 
@@ -3554,6 +3556,10 @@ anthropic-beta = "context-1m-2025-08-07"
         assert!(!super::body_is_rate_limit(billing));
         let field = br#"{"error":{"type":"invalid_request_error","code":400,"message":"rate_limit must be a positive integer"}}"#;
         assert!(!super::body_is_rate_limit(field));
+        let too_many = br#"{"error":{"message":"too many requests"}}"#;
+        assert!(super::body_is_rate_limit(too_many));
+        let too_many_field = br#"{"error":{"type":"invalid_request_error","message":"too many requests must be an integer"}}"#;
+        assert!(!super::body_is_rate_limit(too_many_field));
         let mapped = super::cross_wire_vendor_failure(
             wiremux_auth::Wire::ChatCompletions,
             wiremux_auth::Wire::Gemini,

@@ -1457,7 +1457,7 @@ fn json_retry_after(error: &Value) -> Option<u64> {
 
 fn looks_like_rate_limit(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
-    t.contains("rate_limit") || t.contains("rate limit")
+    t.contains("rate_limit") || t.contains("rate limit") || t.contains("too many requests")
 }
 
 fn looks_like_overload(text: &str) -> bool {
@@ -2017,6 +2017,16 @@ mod tests {
         match classify_http(200, code_404, None) {
             Some(ClientError::NotFound { .. }) => {}
             other => panic!("JSON code 404 is a missing model, got {other:?}"),
+        }
+        let too_many = r#"{"error":{"message":"too many requests"}}"#;
+        match classify_http(200, too_many, None) {
+            Some(ClientError::RateLimit { .. }) => {}
+            other => panic!("too many requests is a rate limit, got {other:?}"),
+        }
+        let too_many_field = r#"{"error":{"type":"invalid_request_error","message":"too many requests must be an integer"}}"#;
+        match classify_http(200, too_many_field, None) {
+            Some(ClientError::Vendor { .. }) => {}
+            other => panic!("a field name is not a rate limit, got {other:?}"),
         }
         let mixed = r#"{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED","details":"backup model does not exist"}}"#;
         match classify_http(200, mixed, None) {
