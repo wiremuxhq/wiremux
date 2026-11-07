@@ -2622,6 +2622,42 @@ fn chat_penalty_outside_vendor_range_is_a_hard_error() {
 }
 
 #[test]
+fn messages_keeps_temperature_when_top_p_is_also_set() {
+    let mut ir = IrRequest::new(
+        "claude",
+        vec![IrItem::User {
+            parts: vec![IrPart::Text("hello".into())],
+        }],
+    );
+    ir.sampling.temperature = Some(0.2);
+    ir.sampling.top_p = Some(0.9);
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("\"temperature\":0.2"),
+        "temperature must stay, got {body}"
+    );
+    assert!(
+        !body.contains("top_p"),
+        "Messages must not send top_p with temperature, got {body}"
+    );
+    assert!(
+        report.events.iter().any(|event| {
+            event.path == "sampling.top_p" && event.detail.contains("cannot both be specified")
+        }),
+        "the dropped top_p must be recorded, got {report:?}"
+    );
+
+    ir.sampling.temperature = None;
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("top_p only");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("\"top_p\":0.9"),
+        "top_p alone must still be sent, got {body}"
+    );
+}
+
+#[test]
 fn sampling_outside_vendor_range_is_a_hard_error() {
     let mut messages = IrRequest::new(
         "claude",

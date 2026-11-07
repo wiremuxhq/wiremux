@@ -2292,6 +2292,17 @@ fn omit_sampling_rejected_by_thinking(s: &IrSampling, body: &mut Value, report: 
         .and_then(Value::as_str)
         .is_some_and(|kind| kind == "enabled");
     if !thinking_on {
+        // Anthropic 2023-06-01 rejects a body that sets both.
+        if s.temperature.is_some() && s.top_p.is_some() {
+            if let Some(obj) = body.as_object_mut() {
+                obj.remove("top_p");
+            }
+            report.record(
+                "sampling.top_p",
+                LossAction::Drop,
+                "temperature and top_p cannot both be specified",
+            );
+        }
         return;
     }
     if let Some(obj) = body.as_object_mut() {
