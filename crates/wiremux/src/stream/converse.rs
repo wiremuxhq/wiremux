@@ -104,7 +104,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         .and_then(Value::as_str)
     {
         return Ok(Some(IrStreamEvent::FinishReason {
-            reason: stop.to_string(),
+            reason: map_converse_stop(stop).to_string(),
             vendor: None,
         }));
     }
@@ -718,7 +718,7 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
     }
     if let Some(reason) = value.get("stopReason").and_then(Value::as_str) {
         out.push(IrStreamEvent::FinishReason {
-            reason: reason.to_string(),
+            reason: map_converse_stop(reason).to_string(),
             vendor: None,
         });
     }
@@ -987,6 +987,14 @@ fn content_block_index(block: &Value) -> Result<u32, MapError> {
         .unwrap_or(0))
 }
 
+fn map_converse_stop(reason: &str) -> &str {
+    match reason {
+        "tool_use" | "tool-use" => "tool_calls",
+        "end_turn" => "stop",
+        other => other,
+    }
+}
+
 fn finish_reason(reason: &str) -> &'static str {
     match reason {
         "tool_use" | "tool-use" | "tool_calls" => "tool_use",
@@ -1021,6 +1029,101 @@ mod tests {
         assert!(
             matches!(kept, Some(IrStreamEvent::TextDelta { ref text }) if text == "Hi"),
             "{kept:?}"
+        );
+    }
+
+    #[test]
+    fn converse_decode_maps_stop_reasons() {
+        let tool = decode(&json!({"messageStop":{"stopReason":"tool_use"}}))
+            .expect("decode tool_use")
+            .expect("finish");
+        assert!(
+            matches!(
+                tool,
+                IrStreamEvent::FinishReason {
+                    ref reason,
+                    vendor: None
+                } if reason == "tool_calls"
+            ),
+            "Converse tool_use must be tool_calls with no vendor, got {tool:?}"
+        );
+        let hyphen = decode(&json!({"messageStop":{"stopReason":"tool-use"}}))
+            .expect("decode tool-use")
+            .expect("finish");
+        assert!(
+            matches!(
+                hyphen,
+                IrStreamEvent::FinishReason {
+                    ref reason,
+                    vendor: None
+                } if reason == "tool_calls"
+            ),
+            "Converse tool-use must be tool_calls with no vendor, got {hyphen:?}"
+        );
+        let end = decode(&json!({"messageStop":{"stopReason":"end_turn"}}))
+            .expect("decode end_turn")
+            .expect("finish");
+        assert!(
+            matches!(
+                end,
+                IrStreamEvent::FinishReason {
+                    ref reason,
+                    vendor: None
+                } if reason == "stop"
+            ),
+            "Converse end_turn must be stop with no vendor, got {end:?}"
+        );
+        let max = decode(&json!({"messageStop":{"stopReason":"max_tokens"}}))
+            .expect("decode max_tokens")
+            .expect("finish");
+        assert!(
+            matches!(
+                max,
+                IrStreamEvent::FinishReason {
+                    ref reason,
+                    vendor: None
+                } if reason == "max_tokens"
+            ),
+            "Converse max_tokens stays max_tokens, got {max:?}"
+        );
+        for reason in ["content_filtered", "stop_sequence", "guardrail_intervened"] {
+            let ev = decode(&json!({"messageStop":{"stopReason": reason}}))
+                .expect("decode other")
+                .expect("finish");
+            assert!(
+                matches!(
+                    ev,
+                    IrStreamEvent::FinishReason {
+                        reason: ref got,
+                        vendor: None
+                    } if got == reason
+                ),
+                "{reason} must stay unchanged, got {ev:?}"
+            );
+        }
+        let complete =
+            decode_complete(&json!({"stopReason":"tool_use"})).expect("complete tool_use");
+        assert!(
+            complete.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::FinishReason {
+                    reason,
+                    vendor: None
+                } if reason == "tool_calls"
+            )),
+            "complete tool_use must be tool_calls, got {complete:?}"
+        );
+        let complete =
+            decode_complete(&json!({"stopReason":"end_turn"})).expect("complete end_turn");
+        assert!(
+            complete.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::FinishReason {
+                    reason,
+                    vendor: None
+                } if reason == "stop"
+            )),
+            "complete end_turn must be stop, got {complete:?}"
         );
     }
 
