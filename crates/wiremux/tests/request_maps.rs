@@ -1512,6 +1512,36 @@ fn thought_part_signature_is_not_stolen_by_later_function_call() {
 }
 
 #[test]
+fn gemini_signature_only_thought_round_trips() {
+    let req = br#"{
+        "contents": [{
+            "role": "model",
+            "parts": [
+                { "text": "answer", "thoughtSignature": "sig_answer" },
+                { "thought": true, "thoughtSignature": "sig_thought" },
+                { "thoughtSignature": "sig_only" }
+            ]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::Gemini, req).expect("decode");
+    let (bytes, _) = encode(Wire::Gemini, &ir, &gemini_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let parts = body
+        .pointer("/contents/0/parts")
+        .and_then(Value::as_array)
+        .expect("parts");
+    let sigs: Vec<&str> = parts
+        .iter()
+        .filter_map(|part| part.get("thoughtSignature").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        sigs,
+        ["sig_answer", "sig_thought", "sig_only"],
+        "each thoughtSignature must be sent back, got {body}"
+    );
+}
+
+#[test]
 fn gemini_reasoning_summary_encodes_as_thought_part() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",

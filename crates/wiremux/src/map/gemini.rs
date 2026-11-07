@@ -167,6 +167,15 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
                         .and_then(Value::as_str)
                         .map(str::to_string),
                 });
+            } else if part
+                .get("thoughtSignature")
+                .and_then(Value::as_str)
+                .is_some_and(|sig| !sig.is_empty())
+            {
+                text_parts.push(IrPart::Raw {
+                    type_name: "thought".into(),
+                    raw: part.clone(),
+                });
             }
             continue;
         }
@@ -209,6 +218,20 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
                     data,
                 });
             }
+        }
+        if part.get("text").is_none()
+            && part.get("inlineData").is_none()
+            && part.get("fileData").is_none()
+            && part
+                .get("thoughtSignature")
+                .and_then(Value::as_str)
+                .is_some_and(|sig| !sig.is_empty())
+        {
+            text_parts.push(IrPart::Raw {
+                type_name: "thoughtSignature".into(),
+                raw: part.clone(),
+            });
+            continue;
         }
         if let Some(file) = part.get("fileData") {
             let media = str_field(file, "mimeType").unwrap_or_default();
