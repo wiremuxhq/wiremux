@@ -1873,6 +1873,11 @@ fn body_is_rate_limit(body: &[u8]) -> bool {
         if code.as_str().is_some_and(is_rate_limit_token) {
             return true;
         }
+        // A numeric code other than 429 is a different class. The
+        // message may mention rate_limit as a field name.
+        if code.as_i64().is_some() {
+            return false;
+        }
     }
     for key in ["status", "type"] {
         if err
@@ -1882,6 +1887,13 @@ fn body_is_rate_limit(body: &[u8]) -> bool {
         {
             return true;
         }
+    }
+    if err
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("invalid_request_error"))
+    {
+        return false;
     }
     err.get("message")
         .and_then(serde_json::Value::as_str)
@@ -3540,6 +3552,8 @@ anthropic-beta = "context-1m-2025-08-07"
         assert!(super::body_is_rate_limit(body));
         let billing = br#"{"error":{"code":400,"message":"billing","status":"INVALID_ARGUMENT"}}"#;
         assert!(!super::body_is_rate_limit(billing));
+        let field = br#"{"error":{"type":"invalid_request_error","code":400,"message":"rate_limit must be a positive integer"}}"#;
+        assert!(!super::body_is_rate_limit(field));
         let mapped = super::cross_wire_vendor_failure(
             wiremux_auth::Wire::ChatCompletions,
             wiremux_auth::Wire::Gemini,

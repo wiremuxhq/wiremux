@@ -1297,9 +1297,24 @@ fn classify_error_payload(
     retry_after: Option<u64>,
 ) -> ClientError {
     let stored = clip_client_message(message);
+    // An explicit class wins over a word in the message. "rate_limit
+    // must be a positive integer" is not a rate limit, and a 429 whose
+    // details mention another model is still a rate limit.
+    let explicit_rate_limit = code == Some(429) || code_name.is_some_and(is_rate_limit_code);
+    let permanent_request =
+        !explicit_rate_limit && code_name.is_some_and(is_permanent_request_name);
     if looks_like_bad_key(body) || looks_like_bad_key(message) {
         return ClientError::Auth {
             status,
+            message: stored,
+        };
+    }
+    if explicit_rate_limit
+        || (!permanent_request && (looks_like_rate_limit(message) || looks_like_rate_limit(body)))
+    {
+        return ClientError::RateLimit {
+            status,
+            retry_after,
             message: stored,
         };
     }
@@ -1309,21 +1324,9 @@ fn classify_error_payload(
             message: stored,
         };
     }
-    if code == Some(429)
-        || code_name.is_some_and(is_rate_limit_code)
-        || looks_like_rate_limit(message)
-        || looks_like_rate_limit(body)
-    {
-        return ClientError::RateLimit {
-            status,
-            retry_after,
-            message: stored,
-        };
-    }
     if code.is_some_and(is_transient_code)
         || code_name.is_some_and(is_retryable_server_code)
-        || looks_like_overload(body)
-        || looks_like_overload(message)
+        || (!permanent_request && (looks_like_overload(body) || looks_like_overload(message)))
     {
         return transient(status, stored, TransientKind::Http);
     }
@@ -1335,6 +1338,11 @@ fn classify_error_payload(
 
 fn is_rate_limit_code(name: &str) -> bool {
     matches!(name, "slow_down" | "rate_limit_exceeded")
+}
+
+fn is_permanent_request_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("invalid_request_error")
+        || name.eq_ignore_ascii_case("invalid_argument")
 }
 
 fn is_retryable_server_code(name: &str) -> bool {
@@ -1398,7 +1406,11 @@ fn looks_like_bad_key(text: &str) -> bool {
 
 fn looks_like_model_not_found(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
-    t.contains("does not exist") || t.contains("model_not_found") || t.contains("unknown model")
+    // "does not exist" only counts when the text is about a model.
+    // A tool-schema error uses the same words and is not a missing model.
+    t.contains("model_not_found")
+        || t.contains("unknown model")
+        || (t.contains("does not exist") && t.contains("model"))
 }
 
 fn json_retry_after(error: &Value) -> Option<u64> {
@@ -1930,6 +1942,30 @@ mod tests {
         match classify_http(400, bad_request, None) {
             Some(ClientError::Vendor { status, .. }) => assert_eq!(status, Some(400)),
             other => panic!("expected Vendor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_http_field_names_do_not_change_the_class() {
+        let validation = r#"{"error":{"type":"invalid_request_error","code":400,"message":"rate_limit must be a positive integer"}}"#;
+        match classify_http(200, validation, None) {
+            Some(ClientError::Vendor { .. }) => {}
+            other => panic!("a field name is not a rate limit, got {other:?}"),
+        }
+        let overloaded = r#"{"error":{"type":"invalid_request_error","message":"parameter overloaded must be an object"}}"#;
+        match classify_http(200, overloaded, None) {
+            Some(ClientError::Vendor { .. }) => {}
+            other => panic!("a field name is not overload, got {other:?}"),
+        }
+        let schema = r#"{"error":{"type":"invalid_request_error","message":"tool property foo does not exist"}}"#;
+        match classify_http(400, schema, None) {
+            Some(ClientError::Vendor { status, .. }) => assert_eq!(status, Some(400)),
+            other => panic!("a schema error is not a missing model, got {other:?}"),
+        }
+        let mixed = r#"{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED","details":"backup model does not exist"}}"#;
+        match classify_http(200, mixed, None) {
+            Some(ClientError::RateLimit { .. }) => {}
+            other => panic!("an explicit 429 stays a rate limit, got {other:?}"),
         }
     }
 
