@@ -998,7 +998,7 @@ fn map_converse_stop(reason: &str) -> &str {
 fn finish_reason(reason: &str) -> &'static str {
     match reason {
         "tool_use" | "tool-use" | "tool_calls" => "tool_use",
-        "max_tokens" | "length" => "max_tokens",
+        "max_tokens" | "length" | "model_context_window_exceeded" => "max_tokens",
         "content_filtered" | "content_filter" | "content-filter" => "content_filtered",
         "stop_sequence" => "stop_sequence",
         "guardrail_intervened" => "guardrail_intervened",
@@ -1151,6 +1151,18 @@ mod tests {
                 .and_then(Value::as_str),
             Some("tool_use"),
             "Chat tool_calls must become AWS tool_use, got {tools}"
+        );
+        let window = encode(&IrStreamEvent::FinishReason {
+            reason: "model_context_window_exceeded".into(),
+            vendor: None,
+        })
+        .expect("encode context window");
+        assert_eq!(
+            window
+                .pointer("/messageStop/stopReason")
+                .and_then(Value::as_str),
+            Some("max_tokens"),
+            "a context-window stop must not look like a normal end, got {window}"
         );
         let done = encode(&IrStreamEvent::Done).expect("encode done");
         assert_eq!(

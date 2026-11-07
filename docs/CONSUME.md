@@ -338,7 +338,10 @@ is terminal on a non-empty `finishReason`,
 or on a non-empty `promptFeedback.blockReason` when that frame has no
 candidate `finishReason`. Converse is terminal when a frame decodes to
 `FinishReason`. A Converse `tool_use` stop is canonical `tool_calls`,
-and `end_turn` is `stop`. An empty frame list is not terminal. `RawSse::parse_all`
+and `end_turn` is `stop`. Messages
+`model_context_window_exceeded` encodes as Converse `max_tokens`
+and Gemini `MAX_TOKENS`, the same cut Chat already writes as
+`length`. It does not encode as a normal end. An empty frame list is not terminal. `RawSse::parse_all`
 returns an error when a line or `data:` payload exceeds the SSE size
 cap. It does not turn that document into an empty frame list.
 `StreamEncoder::finish()` is for a stream the caller already knows
