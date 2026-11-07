@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.12](https://github.com/wiremuxhq/wiremux/compare/v0.11.11...v0.11.12) (2026-11-07)
+
+
+### Bug Fixes
+
+* align vendor errors, stop reasons, and tool payloads ([#730](https://github.com/wiremuxhq/wiremux/issues/730)) ([7ffdddd](https://github.com/wiremuxhq/wiremux/commit/7ffddddbc267aa305ff910706a1a86d5796c0465))
+* keep wrapped tool JSON and the Gemini call that owns the arguments ([#728](https://github.com/wiremuxhq/wiremux/issues/728)) ([30fbec0](https://github.com/wiremuxhq/wiremux/commit/30fbec08161aebb7ec2a9d8a80bd376a4405bc10)), closes [#726](https://github.com/wiremuxhq/wiremux/issues/726) [#727](https://github.com/wiremuxhq/wiremux/issues/727)
+
 ## [0.11.11](https://github.com/wiremuxhq/wiremux/compare/v0.11.10...v0.11.11) (2026-11-06)
 
 
