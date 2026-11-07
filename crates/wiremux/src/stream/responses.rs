@@ -1111,6 +1111,7 @@ pub(super) fn encode(ev: &IrStreamEvent) -> Result<RawSse, MapError> {
         IrStreamEvent::FinishReason { reason, .. } => {
             let (event, status) = match reason.as_str() {
                 "failed" | "malformed_function_call" => ("response.failed", "failed"),
+                "cancelled" | "canceled" => ("response.completed", "cancelled"),
                 "incomplete"
                 | "length"
                 | "max_tokens"
@@ -1260,5 +1261,27 @@ mod tests {
             Some("failed"),
             "{value}"
         );
+    }
+
+    #[test]
+    fn cancelled_stays_cancelled() {
+        for reason in ["cancelled", "canceled"] {
+            let frame = encode(&IrStreamEvent::FinishReason {
+                reason: reason.into(),
+                vendor: None,
+            })
+            .expect("encode");
+            let value: Value = serde_json::from_str(&frame.data).expect("json");
+            assert_eq!(
+                value.get("type").and_then(Value::as_str),
+                Some("response.completed"),
+                "{reason} stays on response.completed, got {value}"
+            );
+            assert_eq!(
+                value.pointer("/response/status").and_then(Value::as_str),
+                Some("cancelled"),
+                "{reason} must not encode as completed, got {value}"
+            );
+        }
     }
 }

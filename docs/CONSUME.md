@@ -354,7 +354,10 @@ An open tool on that turn stays `refusal` and does not become
 does not encode as `STOP`. Chat encodes that reason as
 `content_filter`. Converse encodes it as `content_filtered`, so
 an open tool does not become `tool_use`. Responses encodes it as
-`failed`. An empty frame list is not terminal. `RawSse::parse_all`
+`failed`. A Responses turn whose status is `cancelled` stays
+`cancelled` on the stream event, on `StreamEncoder::finish`, and
+on complete JSON. The one-l spelling `canceled` encodes as
+`cancelled`. It does not encode as `completed`. An empty frame list is not terminal. `RawSse::parse_all`
 returns an error when a line or `data:` payload exceeds the SSE size
 cap. It does not turn that document into an empty frame list.
 `StreamEncoder::finish()` is for a stream the caller already knows

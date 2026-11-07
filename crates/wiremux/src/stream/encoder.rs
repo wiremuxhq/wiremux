@@ -1928,6 +1928,7 @@ impl StreamEncoder {
         let reason = self.finish.as_deref().unwrap_or("stop");
         let (event, status) = match reason {
             "failed" | "malformed_function_call" => ("response.failed", "failed"),
+            "cancelled" | "canceled" => ("response.completed", "cancelled"),
             "incomplete"
             | "length"
             | "max_tokens"
@@ -2976,6 +2977,29 @@ mod tests {
             Some("failed"),
             "{json}"
         );
+    }
+
+    #[test]
+    fn dest_responses_encoder_finish_keeps_cancelled() {
+        for reason in ["cancelled", "canceled"] {
+            let mut enc = StreamEncoder::new(Wire::Responses);
+            enc.push(IrStreamEvent::FinishReason {
+                reason: reason.into(),
+                vendor: None,
+            })
+            .expect("push");
+            let frames = enc.finish().expect("finish");
+            let done = frames
+                .iter()
+                .find(|frame| frame.event.as_deref() == Some("response.completed"))
+                .expect("response.completed");
+            let json: Value = serde_json::from_str(&done.data).expect("json");
+            assert_eq!(
+                json.pointer("/response/status").and_then(Value::as_str),
+                Some("cancelled"),
+                "{reason} must stay cancelled, got {json}"
+            );
+        }
     }
 
     #[test]

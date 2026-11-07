@@ -1428,6 +1428,7 @@ fn encode_responses_complete(events: &[IrStreamEvent], model: &str) -> Value {
 fn responses_complete_status(reason: &str) -> &str {
     match reason {
         "failed" | "malformed_function_call" => "failed",
+        "cancelled" | "canceled" => "cancelled",
         "incomplete"
         | "length"
         | "max_tokens"
@@ -3144,6 +3145,17 @@ wire = "converse"
                 .and_then(Value::as_str),
             Some("max_output_tokens"),
             "{cut}"
+        );
+
+        let cancelled = [IrStreamEvent::FinishReason {
+            reason: "cancelled".into(),
+            vendor: None,
+        }];
+        let stopped = encode_response(Wire::Responses, &cancelled).expect("cancelled");
+        assert_eq!(
+            stopped.get("status").and_then(Value::as_str),
+            Some("cancelled"),
+            "complete JSON must keep a cancelled turn, got {stopped}"
         );
     }
 
