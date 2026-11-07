@@ -675,8 +675,16 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                         .collect();
                     if text_parts.is_empty() {
                         // A breakpoint around an image or document is not the
-                        // tool text. `output` is still the result.
+                        // tool text. `output` and a JSON part still are.
                         json!(super::function_output_text(output, parts))
+                    } else if parts
+                        .iter()
+                        .any(|part| super::function_output_json_text(part).is_some())
+                    {
+                        // A sibling breakpoint must not drop the JSON. The
+                        // text part still carries its own mode.
+                        note_inner_breakpoint_modes(&text_parts, report);
+                        encode_parts(&tool_text_and_json_parts(parts), report)
                     } else {
                         note_inner_breakpoint_modes(&text_parts, report);
                         encode_parts(&text_parts, report)
@@ -836,6 +844,24 @@ fn custom_tool_call_json(call_id: &str, name: &str, input: &str) -> Value {
             "input": input,
         }
     })
+}
+
+/// Text parts in order, plus JSON tool payloads as text. A breakpoint
+/// around the JSON was already recorded as a drop. A breakpoint around
+/// the text stays on that part.
+fn tool_text_and_json_parts(parts: &[IrPart]) -> Vec<IrPart> {
+    let mut kept = Vec::new();
+    for part in parts {
+        let (inner, _) = super::peel_prompt_cache_all(part);
+        match inner {
+            IrPart::Text(text) if !text.is_empty() => kept.push(part.clone()),
+            IrPart::Raw { type_name, raw } if type_name == "json" => {
+                kept.push(IrPart::Text(raw.to_string()));
+            }
+            _ => {}
+        }
+    }
+    kept
 }
 
 /// Chat writes one breakpoint mode. Each mode inside that layer is a drop.

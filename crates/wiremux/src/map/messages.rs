@@ -1748,6 +1748,21 @@ fn tool_result_block(
                 content.push(json!({"type": "text", "text": raw.to_string()}));
             }
             IrPart::Raw { type_name, .. } if type_name == "json" => {}
+            IrPart::PromptCacheBreakpoint { .. } => {
+                let (inner, _) = super::peel_prompt_cache_all(part);
+                if let IrPart::Raw { type_name, raw } = inner
+                    && type_name == "json"
+                {
+                    // `encode_part` treats this object as not Messages-shaped
+                    // and drops it. The JSON is the tool text.
+                    super::drop_prompt_cache_modes(part, report);
+                    if ordered_text {
+                        content.push(json!({"type": "text", "text": raw.to_string()}));
+                    }
+                } else if let Some(encoded) = encode_part(part, report) {
+                    content.push(encoded);
+                }
+            }
             _ => {
                 if let Some(encoded) = encode_part(part, report) {
                     content.push(encoded);

@@ -485,6 +485,12 @@ name stay on that index. The host sees `ToolCallStart`, then the
 fragments in order. If the stream ends with arguments and never
 sends an id or a name, those fragments are still released. Parallel
 indexes do not take each other's arguments.
+Gemini stream encoding stores each argument delta on the index
+that carried it, including a custom-tool delta. A delta for an
+index that is not open yet waits on that index. It is not appended
+to the other open call. A later start at that index fills the name
+and keeps the bytes. Locked by
+`gemini_encoder_keeps_args_on_the_delta_index`.
 
 ```rust
 IrItem::System {
@@ -543,6 +549,14 @@ a drop. Locked by
 `chat_tool_output_survives_breakpoint_around_empty_text`.
 Messages, Gemini, Responses, and Converse already keep that text.
 Locked by `other_wires_keep_tool_output_around_breakpoint_image`.
+A JSON tool part wrapped in one or two cache breakpoints is still
+the tool payload. Chat, Responses, Converse, Messages, and Gemini
+send the same JSON as the bare part. Text beside that JSON stays,
+and `FunctionOutput.output` stays. The breakpoint is a drop when
+that wire cannot attach it to the payload. The loss log does not
+call the JSON an unknown raw part, and Converse does not replace
+it with `.`. Locked by
+`json_tool_output_inside_cache_breakpoint_is_kept`.
 
 ## Pin
 

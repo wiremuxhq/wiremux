@@ -734,9 +734,29 @@ fn function_response_mime_allowed(mime: &str) -> bool {
     mime.starts_with("image/") || is_pdf_media_type(&mime) || mime == "text/plain"
 }
 
+/// JSON tool payload, including one wrapped in cache breakpoints.
+/// The breakpoint is a marker. It is not the payload.
+pub(super) fn function_output_json_text(part: &IrPart) -> Option<String> {
+    match peel_prompt_cache_all(part).0 {
+        IrPart::Raw { type_name, raw } if type_name == "json" => Some(raw.to_string()),
+        _ => None,
+    }
+}
+
+/// Record every cache breakpoint on `part`. The wire cannot attach
+/// those modes to this payload.
+pub(super) fn drop_prompt_cache_modes(part: &IrPart, report: &mut LossReport) {
+    let (_, modes) = peel_prompt_cache_modes(part);
+    for mode in modes {
+        apply_prompt_cache(&mut serde_json::Value::Null, Some(mode), false, report);
+    }
+}
+
 /// Text other wires can show for a tool result. JSON blocks stay structured
-/// on Converse and become text here. When text parts are present they already
-/// carry the prose, in block order with the JSON.
+/// on Converse and become text here. A cache breakpoint around the JSON is
+/// unwrapped. When text parts are present they already carry the prose, in
+/// block order with the JSON. Wrapped text stays on the part encoder so a
+/// breakpoint mode is not flattened into this string.
 pub(super) fn function_output_text(output: &str, parts: &[IrPart]) -> String {
     let has_text_part = parts
         .iter()
@@ -744,10 +764,8 @@ pub(super) fn function_output_text(output: &str, parts: &[IrPart]) -> String {
     if has_text_part {
         let mut text = String::new();
         for part in parts {
-            let piece = match part {
-                IrPart::Text(piece) if !piece.is_empty() => piece.clone(),
-                IrPart::Raw { type_name, raw } if type_name == "json" => raw.to_string(),
-                _ => continue,
+            let Some(piece) = top_level_text_or_json(part) else {
+                continue;
             };
             if !text.is_empty() {
                 text.push('\n');
@@ -761,16 +779,24 @@ pub(super) fn function_output_text(output: &str, parts: &[IrPart]) -> String {
         text.push_str(output);
     }
     for part in parts {
-        if let IrPart::Raw { type_name, raw } = part
-            && type_name == "json"
-        {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str(&raw.to_string());
+        let Some(piece) = function_output_json_text(part) else {
+            continue;
+        };
+        if !text.is_empty() {
+            text.push('\n');
         }
+        text.push_str(&piece);
     }
     text
+}
+
+fn top_level_text_or_json(part: &IrPart) -> Option<String> {
+    if let IrPart::Text(piece) = part
+        && !piece.is_empty()
+    {
+        return Some(piece.clone());
+    }
+    function_output_json_text(part)
 }
 
 /// Image bytes inside a function result, including a Gemini part that
