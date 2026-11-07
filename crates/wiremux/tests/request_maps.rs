@@ -3117,6 +3117,36 @@ fn responses_data_url_becomes_image_base64_for_gemini() {
 }
 
 #[test]
+fn chat_tool_audio_is_recorded() {
+    let req = br#"{
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "tool",
+            "tool_call_id": "call_a",
+            "content": [{
+                "type": "input_audio",
+                "input_audio": {"data": "AAAA", "format": "wav"}
+            }]
+        }]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, report) =
+        encode(Wire::ChatCompletions, &ir, &hard_error_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        !body.contains("AAAA"),
+        "tool audio must not vanish into the tool text, got {body}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| { event.path.contains("audio") && event.detail.contains("no slot") }),
+        "tool audio must be recorded, got {report:?}"
+    );
+}
+
+#[test]
 fn responses_assistant_image_is_not_input_image() {
     let ir = IrRequest::new(
         "gpt-4o",

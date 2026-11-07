@@ -87,21 +87,23 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport)
                     .filter(|part| {
                         matches!(
                             super::peel_prompt_cache(part).0,
-                            IrPart::Text(_) | IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. }
+                            IrPart::Text(_)
+                                | IrPart::ImageUrl { .. }
+                                | IrPart::ImageBase64 { .. }
+                                | IrPart::Audio { .. }
+                                | IrPart::Document { .. }
                         )
                     })
                     .cloned()
                     .collect();
                 (String::new(), kept)
             } else {
-                let images = parts
+                let kept = parts
                     .iter()
-                    .filter(|part| {
-                        matches!(part, IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. })
-                    })
+                    .filter(|part| !matches!(part, IrPart::Text(_)))
                     .cloned()
                     .collect();
-                (parts_text(&parts), images)
+                (parts_text(&parts), kept)
             };
             items.push(IrItem::FunctionOutput {
                 call_id: str_field(msg, "tool_call_id").unwrap_or_default(),
@@ -632,7 +634,9 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                             );
                         }
                     }
-                    if matches!(
+                    if matches!(visible, IrPart::Audio { .. }) {
+                        report.record(format!("items[{idx}].audio"), LossAction::Drop, "no slot");
+                    } else if matches!(
                         visible,
                         IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. }
                     ) || super::function_response_image(visible).is_some()
