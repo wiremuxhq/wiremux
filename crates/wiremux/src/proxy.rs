@@ -532,12 +532,9 @@ async fn handle_inner(state: Arc<ProxyState>, req: Request<Incoming>) -> Respons
         // request error that arrived inside HTTP 200 must stay a
         // client error so the caller surfaces the vendor message.
         // A rate limit in that body is still retried, so it is 429.
-        let status = if body_is_rate_limit(&body) {
-            StatusCode::TOO_MANY_REQUESTS
-        } else {
-            StatusCode::BAD_REQUEST
-        };
-        return bytes_response(status, "application/json", mapped);
+        // api_error, server_error, and overloaded_error are 503 for
+        // the same reason the client treats them as transient.
+        return bytes_response(vendor_failure_status(&body), "application/json", mapped);
     }
     if ir.sampling.stream == Some(true)
         && status.is_success()
@@ -862,8 +859,13 @@ async fn handle_count(
     }
     if status.is_success() && count_body_hides_vendor_error(route, &upstream_body) {
         // 5xx is retried as a transient HTTP failure. A vendor error
-        // that arrived inside HTTP 200 must stay a client error.
-        return bytes_response(StatusCode::BAD_REQUEST, "application/json", upstream_body);
+        // that arrived inside HTTP 200 must stay a client error,
+        // except a rate limit (429) or a server error the client retries (503).
+        return bytes_response(
+            vendor_failure_status(&upstream_body),
+            "application/json",
+            upstream_body,
+        );
     }
     bytes_response(status_from_reqwest(status), &content_type, upstream_body)
 }
@@ -1859,6 +1861,61 @@ fn is_rate_limit_token(code: &str) -> bool {
 
 /// True when the JSON `error` object is a rate limit. Numeric `code`
 /// 429 and `RESOURCE_EXHAUSTED` count. A billing 400 does not.
+fn vendor_failure_status(body: &[u8]) -> StatusCode {
+    if body_is_rate_limit(body) {
+        StatusCode::TOO_MANY_REQUESTS
+    } else if body_is_retryable_server(body) {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::BAD_REQUEST
+    }
+}
+
+fn is_retryable_server_name(name: &str) -> bool {
+    matches!(
+        name,
+        "server_error"
+            | "internal_error"
+            | "connection_failed"
+            | "request_timeout"
+            | "server_is_overloaded"
+            | "server_overloaded"
+            | "api_error"
+            | "overloaded_error"
+    )
+}
+
+/// True when the JSON error is one the client retries. An
+/// `invalid_request_error` that merely says "overloaded" is not.
+fn body_is_retryable_server(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    let Some(err) = value.get("error").filter(|item| item.is_object()) else {
+        return false;
+    };
+    if err
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("invalid_request_error"))
+    {
+        return false;
+    }
+    for key in ["type", "code", "status"] {
+        if let Some(name) = err.get(key).and_then(serde_json::Value::as_str)
+            && (is_retryable_server_name(name) || name.to_ascii_lowercase().contains("overloaded"))
+        {
+            return true;
+        }
+    }
+    err.get("message")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|text| {
+            let lower = text.to_ascii_lowercase();
+            lower.contains("upstream overload") || lower.contains("overloaded")
+        })
+}
+
 fn body_is_rate_limit(body: &[u8]) -> bool {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
         return false;
@@ -3560,6 +3617,10 @@ anthropic-beta = "context-1m-2025-08-07"
         assert!(super::body_is_rate_limit(too_many));
         let too_many_field = br#"{"error":{"type":"invalid_request_error","message":"too many requests must be an integer"}}"#;
         assert!(!super::body_is_rate_limit(too_many_field));
+        let api_error = br#"{"type":"error","content":[{"type":"text","text":""}],"error":{"type":"api_error","message":"nope"}}"#;
+        assert_eq!(super::vendor_failure_status(api_error).as_u16(), 503);
+        let overloaded_field = br#"{"error":{"type":"invalid_request_error","message":"parameter overloaded must be an object"}}"#;
+        assert_eq!(super::vendor_failure_status(overloaded_field).as_u16(), 400);
         let mapped = super::cross_wire_vendor_failure(
             wiremux_auth::Wire::ChatCompletions,
             wiremux_auth::Wire::Gemini,

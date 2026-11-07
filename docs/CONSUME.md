@@ -266,7 +266,11 @@ A Messages `api_error` is that same transient error.
 A Gemini rate-limit object inside HTTP 200 (`code` 429 or
 `RESOURCE_EXHAUSTED`) is HTTP 429 on a cross-wire proxy response,
 and Chat `error.type` is `rate_limit_exceeded`. A billing error in
-that same HTTP 200 stays HTTP 400. Locked by
+that same HTTP 200 stays HTTP 400. `api_error`, `server_error`, and
+`overloaded_error` in that HTTP 200 are HTTP 503, the same retry the
+client uses for those classes. An `invalid_request_error` that only
+mentions the word overloaded stays HTTP 400. Locked by
+`gemini_rate_limit_inside_http_200_is_chat_429`. Locked by
 `gemini_rate_limit_inside_http_200_is_chat_429`.
 `insufficient_quota` stays `ClientError::Vendor`. An auth message
 stays `ClientError::Auth`, and a `model_not_found` message stays
