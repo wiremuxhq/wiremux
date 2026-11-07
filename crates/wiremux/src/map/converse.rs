@@ -1021,7 +1021,15 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                             }
                         }
                         IrPart::PromptCacheBreakpoint { .. } => {
-                            if let Some(block) = encode_part(part, report) {
+                            let (inner, _) = super::peel_prompt_cache_all(part);
+                            if let IrPart::Raw { type_name, raw } = inner
+                                && type_name == "json"
+                            {
+                                // `encode_part` has no JSON arm. Leaving the block
+                                // empty makes the fallback write `.`.
+                                super::drop_prompt_cache_modes(part, report);
+                                content.push(json!({ "json": raw }));
+                            } else if let Some(block) = encode_part(part, report) {
                                 content.push(block);
                             }
                         }

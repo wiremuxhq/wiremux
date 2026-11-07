@@ -15800,6 +15800,121 @@ fn system_content_parts_messages_empty_parts_keeps_text() {
 }
 
 #[test]
+fn json_tool_output_inside_cache_breakpoint_is_kept() {
+    let json_part = || IrPart::Raw {
+        type_name: "json".into(),
+        raw: serde_json::json!({"ok": true}),
+    };
+    let wrapped = |inner: IrPart| IrPart::PromptCacheBreakpoint {
+        mode: "explicit".into(),
+        inner: Box::new(inner),
+    };
+    let nested = IrPart::PromptCacheBreakpoint {
+        mode: "explicit".into(),
+        inner: Box::new(IrPart::PromptCacheBreakpoint {
+            mode: "nested".into(),
+            inner: Box::new(json_part()),
+        }),
+    };
+    let cases = [
+        ("wrapped", String::new(), vec![wrapped(json_part())], 1usize),
+        ("nested", String::new(), vec![nested], 2),
+        (
+            "beside-text",
+            String::new(),
+            vec![IrPart::Text("hello".into()), wrapped(json_part())],
+            0,
+        ),
+        (
+            "json-then-text",
+            String::new(),
+            vec![wrapped(json_part()), IrPart::Text("hello".into())],
+            0,
+        ),
+        (
+            "output-and-json",
+            "hello-from-output".into(),
+            vec![wrapped(json_part())],
+            1,
+        ),
+    ];
+    for (label, output, parts, json_breakpoint_drops) in cases {
+        for wire in [
+            Wire::ChatCompletions,
+            Wire::Responses,
+            Wire::Converse,
+            Wire::Messages,
+            Wire::Gemini,
+        ] {
+            let profile = match wire {
+                Wire::ChatCompletions => chat_profile(),
+                Wire::Responses => hard_error_profile(),
+                Wire::Converse => converse_profile(),
+                Wire::Messages => messages_profile(),
+                Wire::Gemini => gemini_profile(),
+                _ => unreachable!("tool JSON wires"),
+            };
+            let ir = IrRequest::new(
+                "probe-model",
+                vec![IrItem::FunctionOutput {
+                    call_id: "call-1".into(),
+                    output: output.clone(),
+                    is_error: false,
+                    parts: parts.clone(),
+                }],
+            );
+            let (bytes, report) = encode(wire, &ir, &profile).expect("encode");
+            let encoded = String::from_utf8(bytes).expect("utf8");
+            assert!(
+                encoded.contains("ok"),
+                "{wire:?} {label} must keep the JSON tool payload, got {encoded} {report:?}"
+            );
+            if label == "beside-text" || label == "json-then-text" {
+                assert!(
+                    encoded.contains("hello"),
+                    "{wire:?} {label} must keep the tool text beside the JSON, got {encoded}"
+                );
+            }
+            if label == "output-and-json" {
+                assert!(
+                    encoded.contains("hello-from-output"),
+                    "{wire:?} {label} must keep FunctionOutput.output, got {encoded}"
+                );
+            }
+            assert!(
+                !encoded.contains("\"text\":\".\""),
+                "{wire:?} {label} must not replace the JSON with a dot, got {encoded}"
+            );
+            assert!(
+                !report.events.iter().any(|event| {
+                    event.detail.contains("not Responses-shaped")
+                        || event.detail.contains("not Messages-shaped")
+                        || event.detail.contains("converse image/raw dropped")
+                        || event.detail.contains("raw part has no Chat")
+                }),
+                "{wire:?} {label} must not drop the JSON as an unknown raw part, got {report:?}"
+            );
+            let expect_drops = match (label, wire) {
+                ("beside-text" | "json-then-text", Wire::Responses) => 0,
+                ("beside-text" | "json-then-text", _) => 1,
+                _ => json_breakpoint_drops,
+            };
+            assert_eq!(
+                breakpoint_drops(&report),
+                expect_drops,
+                "{wire:?} {label} breakpoint drops, got {report:?}"
+            );
+            if expect_drops == 0 {
+                assert!(
+                    encoded.contains("\"mode\":\"explicit\""),
+                    "{wire:?} {label} must keep the breakpoint on the JSON part, got {encoded}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn responses_json_only_tool_output_keeps_the_json() {
     let json_part = || IrPart::Raw {
         type_name: "json".into(),

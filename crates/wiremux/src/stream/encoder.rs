@@ -2430,17 +2430,12 @@ impl StreamEncoder {
         frames
     }
 
+    /// Argument bytes stay on `index`. Another open call does not receive
+    /// them. A later start at `index` fills an empty id and name.
     fn append_gemini_args(&mut self, index: u32, delta: &str, custom: bool) {
         if let Some(call) = self.gemini_open_calls.get_mut(&index) {
             call.args.push_str(delta);
             call.custom |= custom;
-            return;
-        }
-        if self.gemini_open_calls.len() == 1 {
-            if let Some(call) = self.gemini_open_calls.values_mut().next() {
-                call.args.push_str(delta);
-                call.custom |= custom;
-            }
             return;
         }
         self.gemini_open_calls.insert(
@@ -3041,6 +3036,137 @@ mod tests {
                     })
             }),
             "dest Messages STREAM refusal must not fold into text_delta, got {all:?}"
+        );
+    }
+
+    fn gemini_function_calls(frames: &[RawSse]) -> Vec<(String, Value)> {
+        let mut calls = Vec::new();
+        for frame in frames {
+            let Ok(value) = serde_json::from_str::<Value>(&frame.data) else {
+                continue;
+            };
+            let Some(parts) = value
+                .pointer("/candidates/0/content/parts")
+                .and_then(Value::as_array)
+            else {
+                continue;
+            };
+            for part in parts {
+                let Some(call) = part.get("functionCall") else {
+                    continue;
+                };
+                let name = call
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let args = call.get("args").cloned().unwrap_or_else(|| json!({}));
+                calls.push((name, args));
+            }
+        }
+        calls
+    }
+
+    fn push_gemini_finish(events: Vec<IrStreamEvent>) -> Vec<(String, Value)> {
+        let mut enc = StreamEncoder::new(Wire::Gemini);
+        let mut frames = Vec::new();
+        for ev in events {
+            frames.extend(enc.push(ev).expect("push"));
+        }
+        frames.extend(enc.finish().expect("finish"));
+        gemini_function_calls(&frames)
+    }
+
+    #[test]
+    fn gemini_encoder_keeps_args_on_the_delta_index() {
+        let calls = push_gemini_finish(vec![
+            IrStreamEvent::ToolCallStart {
+                id: "call_read".into(),
+                name: "read_file".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"path":"b.txt"}"#.into(),
+                index: 1,
+            },
+            IrStreamEvent::ToolCallStart {
+                id: "call_write".into(),
+                name: "write_file".into(),
+                thought_signature: None,
+                index: 1,
+            },
+        ]);
+        assert_eq!(
+            calls,
+            vec![
+                ("read_file".into(), json!({})),
+                ("write_file".into(), json!({"path": "b.txt"})),
+            ],
+            "a delta for index 1 must wait for write_file, got {calls:?}"
+        );
+
+        let matching = push_gemini_finish(vec![
+            IrStreamEvent::ToolCallStart {
+                id: "call_read".into(),
+                name: "read_file".into(),
+                thought_signature: None,
+                index: 0,
+            },
+            IrStreamEvent::ToolCallArgDelta {
+                delta: r#"{"path":"a.txt"}"#.into(),
+                index: 0,
+            },
+        ]);
+        assert_eq!(
+            matching,
+            vec![("read_file".into(), json!({"path": "a.txt"}))],
+            "a delta for the open index stays on that call, got {matching:?}"
+        );
+
+        let custom = push_gemini_finish(vec![
+            IrStreamEvent::CustomToolCallStart {
+                id: "call_read".into(),
+                name: "read_file".into(),
+                index: 0,
+            },
+            IrStreamEvent::CustomToolCallInputDelta {
+                delta: "pri".into(),
+                index: 1,
+            },
+            IrStreamEvent::CustomToolCallInputDelta {
+                delta: "nt(1)".into(),
+                index: 1,
+            },
+            IrStreamEvent::CustomToolCallStart {
+                id: "call_write".into(),
+                name: "write_file".into(),
+                index: 1,
+            },
+        ]);
+        assert_eq!(
+            custom,
+            vec![
+                ("read_file".into(), json!({})),
+                ("write_file".into(), json!({"raw": "print(1)"})),
+            ],
+            "custom input for index 1 must not join the open call, got {custom:?}"
+        );
+
+        let mut parallel = StreamEncoder::new(Wire::Gemini);
+        let mut frames = Vec::new();
+        for ev in parallel_tool_starts_then_args() {
+            frames.extend(parallel.push(ev).expect("push"));
+        }
+        frames.extend(parallel.finish().expect("finish"));
+        let calls = gemini_function_calls(&frames);
+        assert_eq!(
+            calls,
+            vec![
+                ("get_weather".into(), json!({"city": "Paris"})),
+                ("get_time".into(), json!({"tz": "UTC"})),
+            ],
+            "two open calls keep their own arguments, got {calls:?}"
         );
     }
 

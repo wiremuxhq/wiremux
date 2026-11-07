@@ -1191,25 +1191,59 @@ fn encode_function_output(
                     );
                 }
             }
-            IrPart::PromptCacheBreakpoint { inner, mode } => {
-                let before = content.len();
-                let encoded = encode_parts(std::slice::from_ref(inner.as_ref()), true, report);
-                if let Some(mut items) = encoded.as_array().cloned() {
-                    for item in &mut items {
-                        super::apply_prompt_cache(item, Some(mode), true, report);
+            IrPart::PromptCacheBreakpoint { .. } => {
+                let (inner, modes) = super::peel_prompt_cache_modes(part);
+                if let IrPart::Raw { type_name, raw } = inner
+                    && type_name == "json"
+                {
+                    // JSON alone is already in `text`. Beside other text it
+                    // is its own part, and that part can carry one mode.
+                    if ordered_text {
+                        let mut item = json!({"type": "input_text", "text": raw.to_string()});
+                        let mut kept_mode = false;
+                        for mode in &modes {
+                            if !kept_mode && !mode.is_empty() {
+                                super::apply_prompt_cache(&mut item, Some(mode), true, report);
+                                kept_mode = true;
+                            } else {
+                                super::apply_prompt_cache(
+                                    &mut serde_json::Value::Null,
+                                    Some(mode),
+                                    false,
+                                    report,
+                                );
+                            }
+                        }
+                        content.push(item);
+                        kept_structured = true;
+                    } else {
+                        super::drop_prompt_cache_modes(part, report);
                     }
-                    content.extend(items);
-                }
-                if content.len() == before {
-                    super::apply_prompt_cache(
-                        &mut serde_json::Value::Null,
-                        Some(mode),
-                        false,
-                        report,
-                    );
-                }
-                if content.len() > before {
-                    kept_structured = true;
+                } else {
+                    let before = content.len();
+                    let encoded = encode_parts(std::slice::from_ref(inner), true, report);
+                    if let Some(mut items) = encoded.as_array().cloned() {
+                        if let Some(mode) = modes.first().copied().filter(|mode| !mode.is_empty()) {
+                            for item in &mut items {
+                                super::apply_prompt_cache(item, Some(mode), true, report);
+                            }
+                        }
+                        for mode in modes.iter().skip(1) {
+                            super::apply_prompt_cache(
+                                &mut serde_json::Value::Null,
+                                Some(mode),
+                                false,
+                                report,
+                            );
+                        }
+                        content.extend(items);
+                    }
+                    if content.len() == before {
+                        super::drop_prompt_cache_modes(part, report);
+                    }
+                    if content.len() > before {
+                        kept_structured = true;
+                    }
                 }
             }
             _ => report.record(
