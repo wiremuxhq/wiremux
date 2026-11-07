@@ -11830,6 +11830,78 @@ fn gemini_function_response_file_data_round_trip() {
 }
 
 #[test]
+fn gemini_drops_s3_and_blank_file_urls() {
+    let s3 = IrPart::Document {
+        source: IrDocumentSource::S3 {
+            uri: "s3://bucket/doc.pdf".into(),
+            bucket_owner: None,
+        },
+        media_type: "application/pdf".into(),
+        name: None,
+        citations_enabled: None,
+        context: None,
+    };
+    let blank = IrPart::Document {
+        source: IrDocumentSource::Url("  ".into()),
+        media_type: "application/pdf".into(),
+        name: None,
+        citations_enabled: None,
+        context: None,
+    };
+    let content = IrRequest::new(
+        "gemini-2.0-flash",
+        vec![IrItem::User {
+            parts: vec![s3.clone(), blank.clone()],
+        }],
+    );
+    let err = encode(Wire::Gemini, &content, &gemini_profile()).expect_err("content");
+    let message = err.to_string();
+    assert!(
+        message.contains("S3 document has no Gemini slot"),
+        "content S3 must be recorded, got {message}"
+    );
+    assert!(
+        message.contains("document url is empty"),
+        "blank content url must be recorded, got {message}"
+    );
+    assert!(
+        !message.contains("s3://bucket/doc.pdf"),
+        "the S3 URI must not be sent, got {message}"
+    );
+
+    let tool = IrRequest::new(
+        "gemini-2.0-flash",
+        vec![IrItem::FunctionOutput {
+            call_id: "call_a".into(),
+            output: "{}".into(),
+            parts: vec![s3, blank],
+            is_error: false,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Gemini, &tool, &gemini_profile()).expect("tool");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert!(
+        body.pointer("/contents/0/parts/0/functionResponse/parts")
+            .is_none(),
+        "a tool result must not send S3 or a blank fileUri, got {body}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.detail.contains("S3 document has no Gemini slot")),
+        "tool S3 must be recorded, got {report:?}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.detail.contains("document url is empty")),
+        "blank tool url must be recorded, got {report:?}"
+    );
+}
+
+#[test]
 fn gemini_server_tool_call_round_trip() {
     let req = br#"{
         "contents": [

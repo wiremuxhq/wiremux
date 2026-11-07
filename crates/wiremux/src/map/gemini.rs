@@ -317,6 +317,19 @@ fn decode_function_response_parts(fr: &Value) -> Vec<IrPart> {
     out
 }
 
+fn gemini_document_loss(part: &IrPart) -> Option<&'static str> {
+    let IrPart::Document { source, .. } = part else {
+        return None;
+    };
+    Some(match source {
+        IrDocumentSource::S3 { .. } => "S3 document has no Gemini slot",
+        IrDocumentSource::FileId(id) if id.trim().is_empty() => "file id is empty",
+        IrDocumentSource::Url(uri) if uri.trim().is_empty() => "document url is empty",
+        IrDocumentSource::Base64(data) if data.trim().is_empty() => "document data is empty",
+        _ => return None,
+    })
+}
+
 fn function_response_file(part: &IrPart) -> Option<Value> {
     match part {
         IrPart::Document {
@@ -324,8 +337,9 @@ fn function_response_file(part: &IrPart) -> Option<Value> {
         } => {
             let uri = match source {
                 IrDocumentSource::Url(uri) | IrDocumentSource::FileId(uri) => uri.as_str(),
-                IrDocumentSource::S3 { uri, .. } => uri.as_str(),
-                IrDocumentSource::Text(_) | IrDocumentSource::Base64(_) => return None,
+                IrDocumentSource::S3 { .. }
+                | IrDocumentSource::Text(_)
+                | IrDocumentSource::Base64(_) => return None,
             };
             if uri.trim().is_empty() {
                 return None;
@@ -858,6 +872,8 @@ pub(super) fn encode(
                         wire_parts.push(json!({ "inlineData": blob }));
                     } else if let Some(file) = function_response_file(inner) {
                         wire_parts.push(file);
+                    } else if let Some(detail) = gemini_document_loss(inner) {
+                        report.record(format!("items[{idx}].part"), LossAction::Drop, detail);
                     } else if matches!(
                         inner,
                         IrPart::ImageUrl { .. } | IrPart::ImageBase64 { .. } | IrPart::Audio { .. }
@@ -1304,6 +1320,12 @@ fn encode_parts(parts: &[IrPart], report: &mut LossReport) -> Vec<Value> {
                 ..
             } if id.trim().is_empty() => {
                 report.record("part.document", LossAction::Drop, "file id is empty");
+            }
+            IrPart::Document {
+                source: IrDocumentSource::Url(uri),
+                ..
+            } if uri.trim().is_empty() => {
+                report.record("part.document", LossAction::Drop, "document url is empty");
             }
             IrPart::Document {
                 source: IrDocumentSource::S3 { .. },
