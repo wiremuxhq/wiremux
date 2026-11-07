@@ -3117,6 +3117,51 @@ fn responses_data_url_becomes_image_base64_for_gemini() {
 }
 
 #[test]
+fn responses_assistant_image_is_not_input_image() {
+    let ir = IrRequest::new(
+        "gpt-4o",
+        vec![IrItem::Assistant {
+            parts: vec![
+                IrPart::Text("see".into()),
+                IrPart::ImageBase64 {
+                    media_type: "image/png".into(),
+                    data: "AAAA".into(),
+                },
+                IrPart::Audio {
+                    data: "AAAA".into(),
+                    format: "wav".into(),
+                },
+            ],
+            phase: None,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Responses, &ir, &hard_error_profile()).expect("encode");
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("\"type\":\"output_text\""),
+        "assistant text must stay output_text, got {body}"
+    );
+    assert!(
+        !body.contains("input_image") && !body.contains("input_audio"),
+        "an assistant message must not carry input media, got {body}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.detail.contains("cannot carry an image")),
+        "the image drop must be recorded, got {report:?}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.detail.contains("cannot carry audio")),
+        "the audio drop must be recorded, got {report:?}"
+    );
+}
+
+#[test]
 fn responses_input_image_file_id_round_trips() {
     let req = br#"{
         "model": "gpt-5",
