@@ -1862,6 +1862,10 @@ fn is_rate_limit_token(code: &str) -> bool {
 /// True when the JSON `error` object is a rate limit. Numeric `code`
 /// 429 and `RESOURCE_EXHAUSTED` count. A billing 400 does not.
 fn vendor_failure_status(body: &[u8]) -> StatusCode {
+    // A bad key wins over a numeric 5xx, same as the client.
+    if body_looks_like_bad_key(body) {
+        return StatusCode::UNAUTHORIZED;
+    }
     if body_is_rate_limit(body) {
         StatusCode::TOO_MANY_REQUESTS
     } else if body_is_retryable_server(body) {
@@ -1869,6 +1873,19 @@ fn vendor_failure_status(body: &[u8]) -> StatusCode {
     } else {
         StatusCode::BAD_REQUEST
     }
+}
+
+fn body_looks_like_bad_key(body: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(body) else {
+        return false;
+    };
+    let lower = text.to_ascii_lowercase();
+    lower.contains("incorrect api key")
+        || lower.contains("invalid api key")
+        || lower.contains("api key not valid")
+        || lower.contains("invalid key")
+        || lower.contains("unauthorized")
+        || lower.contains("not authorized")
 }
 
 fn json_code_number(code: &serde_json::Value) -> Option<i64> {
@@ -1978,14 +1995,23 @@ fn body_is_rate_limit(body: &[u8]) -> bool {
     {
         return false;
     }
-    err.get("message")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|text| {
-            let lower = text.to_ascii_lowercase();
-            lower.contains("rate limit")
-                || lower.contains("rate_limit")
-                || lower.contains("too many requests")
-        })
+    for key in ["message", "detail"] {
+        if err
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(text_is_rate_limit)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn text_is_rate_limit(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("rate limit")
+        || lower.contains("rate_limit")
+        || lower.contains("too many requests")
 }
 
 fn split_error_prefix(msg: &str) -> (Option<&str>, &str) {
@@ -3657,6 +3683,12 @@ anthropic-beta = "context-1m-2025-08-07"
         assert_eq!(super::vendor_failure_status(code_503_string).as_u16(), 503);
         let argument = br#"{"error":{"status":"INVALID_ARGUMENT","message":"parameter overloaded must be an object"}}"#;
         assert_eq!(super::vendor_failure_status(argument).as_u16(), 400);
+        let coded_phrase = br#"{"error":{"code":400,"message":"rate limit exceeded"}}"#;
+        assert_eq!(super::vendor_failure_status(coded_phrase).as_u16(), 400);
+        let bad_key_500 = br#"{"error":{"code":500,"message":"invalid api key"}}"#;
+        assert_eq!(super::vendor_failure_status(bad_key_500).as_u16(), 401);
+        let detail = br#"{"error":{"message":"please wait","detail":"rate limit reached"}}"#;
+        assert_eq!(super::vendor_failure_status(detail).as_u16(), 429);
         let mapped = super::cross_wire_vendor_failure(
             wiremux_auth::Wire::ChatCompletions,
             wiremux_auth::Wire::Gemini,

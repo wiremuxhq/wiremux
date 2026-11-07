@@ -1307,8 +1307,12 @@ fn classify_error_payload(
     // must be a positive integer" is not a rate limit, and a 429 whose
     // details mention another model is still a rate limit.
     let explicit_rate_limit = code == Some(429) || code_name.is_some_and(is_rate_limit_code);
-    let permanent_request =
-        !explicit_rate_limit && code_name.is_some_and(is_permanent_request_name);
+    // A numeric 4xx other than 408 and 429 is a rejected request.
+    // A rate-limit phrase in that message does not make it retryable.
+    let explicit_client_error =
+        code.is_some_and(|value| (400..500).contains(&value) && value != 408 && value != 429);
+    let permanent_request = explicit_client_error
+        || (!explicit_rate_limit && code_name.is_some_and(is_permanent_request_name));
     if looks_like_bad_key(body) || looks_like_bad_key(message) {
         return ClientError::Auth {
             status,
@@ -2048,6 +2052,21 @@ mod tests {
         match classify_http(200, argument, None) {
             Some(ClientError::Vendor { .. }) => {}
             other => panic!("INVALID_ARGUMENT is not an overload, got {other:?}"),
+        }
+        let coded_phrase = r#"{"error":{"code":400,"message":"rate limit exceeded"}}"#;
+        match classify_http(200, coded_phrase, None) {
+            Some(ClientError::Vendor { .. }) => {}
+            other => panic!("numeric 400 wins over a rate-limit phrase, got {other:?}"),
+        }
+        let bad_key_500 = r#"{"error":{"code":500,"message":"invalid api key"}}"#;
+        match classify_http(200, bad_key_500, None) {
+            Some(ClientError::Auth { .. }) => {}
+            other => panic!("a bad key wins over numeric 500, got {other:?}"),
+        }
+        let detail = r#"{"error":{"message":"please wait","detail":"rate limit reached"}}"#;
+        match classify_http(200, detail, None) {
+            Some(ClientError::RateLimit { .. }) => {}
+            other => panic!("detail rate limit is a rate limit, got {other:?}"),
         }
         let unavailable = r#"{"error":{"status":"UNAVAILABLE","message":"unavailable"}}"#;
         match classify_http(200, unavailable, None) {

@@ -271,6 +271,9 @@ that same HTTP 200 stays HTTP 400. `api_error`, `server_error`, and
 client uses for those classes. A numeric `code` of 503, including the string `"503"`, or Gemini
 `status` `UNAVAILABLE` is that same HTTP 503. Gemini `status`
 `INVALID_ARGUMENT` stays HTTP 400 even when the message says overloaded.
+A numeric 4xx other than 408 and 429 wins over a rate-limit phrase.
+A bad-key phrase wins over a numeric 5xx and is HTTP 401. A rate-limit
+phrase in `error.detail` is a rate limit.
 `InvalidTimeoutException` is a rejected parameter, not a retry.
 `quota_not_overloaded` is not a server overload. An `invalid_request_error` that only
 mentions the word overloaded stays HTTP 400. Locked by
