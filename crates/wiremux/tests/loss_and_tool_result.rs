@@ -2,8 +2,8 @@
 
 use serde_json::{Value, json};
 use wiremux::{
-    IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction, LossReport, ResolvedProfile,
-    Wire, decode, encode, parse_profile_str,
+    IrItem, IrPart, IrRequest, IrSampling, IrToolChoice, LossAction, LossReport, MapError,
+    ResolvedProfile, Wire, decode, encode, parse_profile_str,
 };
 
 fn profile(wire: &str) -> ResolvedProfile {
@@ -163,28 +163,235 @@ fn chat_tool_result_image_is_a_drop() {
     assert!(!body.to_string().contains("aaaa"), "{body}");
 }
 
+fn tool_output(call_id: &str, is_error: bool, parts: Vec<IrPart>) -> IrItem {
+    IrItem::FunctionOutput {
+        call_id: call_id.into(),
+        output: r#"{"ok":false}"#.into(),
+        parts,
+        is_error,
+    }
+}
+
+fn assert_success_has_no_tool_error(wire: Wire, ir: &IrRequest) {
+    let (body, report) = encode_value(wire, ir);
+    let rendered = body.to_string();
+    assert!(
+        !rendered.contains("\"is_error\":true") && !rendered.contains("\"status\":\"error\""),
+        "{wire:?} treated a normal payload as a failed tool: {body}"
+    );
+    assert!(
+        !has_action(&report, LossAction::Drop, "is_error"),
+        "{wire:?} dropped is_error on a success, got {report:?}"
+    );
+}
+
+fn assert_hard_tool_error(wire: Wire, ir: &IrRequest, index: usize) {
+    let err = encode(wire, ir, &profile(wire.as_str())).expect_err("tool error has no field");
+    let MapError::HardError { path, detail } = err else {
+        panic!("{wire:?} expected a hard error");
+    };
+    assert_eq!(path, format!("items[{index}].is_error"), "{wire:?}");
+    assert_eq!(
+        detail,
+        format!("{} has no tool error field", wire.as_str()),
+        "{wire:?}"
+    );
+}
+
 #[test]
-fn chat_is_error_is_a_drop_without_error_prefix() {
-    let raw = r#"{
+fn failed_tool_without_vendor_field_is_a_hard_error() {
+    let ir = IrRequest::new("m", vec![tool_output("call-1", true, Vec::new())]);
+    for wire in [Wire::ChatCompletions, Wire::Responses, Wire::Gemini] {
+        assert_hard_tool_error(wire, &ir, 0);
+    }
+
+    let with_parts = IrRequest::new(
+        "m",
+        vec![tool_output(
+            "call-1",
+            true,
+            vec![IrPart::Text("boom".into())],
+        )],
+    );
+    for wire in [Wire::ChatCompletions, Wire::Responses, Wire::Gemini] {
+        assert_hard_tool_error(wire, &with_parts, 0);
+    }
+
+    let later = IrRequest::new(
+        "m",
+        vec![
+            IrItem::User {
+                parts: vec![IrPart::Text("hi".into())],
+            },
+            tool_output("call-2", true, Vec::new()),
+        ],
+    );
+    assert_hard_tool_error(Wire::ChatCompletions, &later, 1);
+    assert_hard_tool_error(Wire::Responses, &later, 1);
+    assert_hard_tool_error(Wire::Gemini, &later, 1);
+}
+
+#[test]
+fn messages_and_converse_still_mark_a_failed_tool() {
+    let ir = IrRequest::new("m", vec![tool_output("call-1", true, Vec::new())]);
+    let (messages, report) = encode_value(Wire::Messages, &ir);
+    let block = &messages["messages"][0]["content"][0];
+    assert_eq!(block["type"], "tool_result", "{messages}");
+    assert_eq!(block["tool_use_id"], "call-1", "{messages}");
+    assert_eq!(block["is_error"], true, "{messages}");
+    assert_eq!(block["content"], r#"{"ok":false}"#, "{messages}");
+    assert!(
+        !has_action(&report, LossAction::Drop, "is_error"),
+        "Messages writes is_error, got {report:?}"
+    );
+
+    let (converse, report) = encode_value(Wire::Converse, &ir);
+    let result = &converse["messages"][0]["content"][0]["toolResult"];
+    assert_eq!(result["toolUseId"], "call-1", "{converse}");
+    assert_eq!(result["status"], "error", "{converse}");
+    assert_eq!(
+        result["content"][0]["text"], r#"{"ok":false}"#,
+        "{converse}"
+    );
+    assert!(
+        !has_action(&report, LossAction::Drop, "is_error"),
+        "Converse writes status, got {report:?}"
+    );
+}
+
+#[test]
+fn ok_false_payload_is_not_a_tool_error() {
+    let ir = IrRequest::new("m", vec![tool_output("call-1", false, Vec::new())]);
+
+    let (chat, report) = encode_value(Wire::ChatCompletions, &ir);
+    let message = &chat["messages"][0];
+    assert_eq!(message["role"], "tool", "{chat}");
+    assert_eq!(message["tool_call_id"], "call-1", "{chat}");
+    assert_eq!(message["content"], r#"{"ok":false}"#, "{chat}");
+    assert!(message.get("is_error").is_none(), "{chat}");
+    assert!(
+        !has_action(&report, LossAction::Drop, "is_error"),
+        "a success must not drop is_error, got {report:?}"
+    );
+
+    let (responses, report) = encode_value(Wire::Responses, &ir);
+    let item = &responses["input"][0];
+    assert_eq!(item["type"], "function_call_output", "{responses}");
+    assert_eq!(item["call_id"], "call-1", "{responses}");
+    assert_eq!(item["output"], r#"{"ok":false}"#, "{responses}");
+    assert!(item.get("is_error").is_none(), "{responses}");
+    assert!(
+        !has_action(&report, LossAction::Drop, "is_error"),
+        "a success must not drop is_error, got {report:?}"
+    );
+
+    let (gemini, report) = encode_value(Wire::Gemini, &ir);
+    let response = &gemini["contents"][0]["parts"][0]["functionResponse"];
+    assert_eq!(response["id"], "call-1", "{gemini}");
+    assert_eq!(response["name"], "call-1", "{gemini}");
+    assert_eq!(response["response"]["ok"], false, "{gemini}");
+    assert!(response.get("is_error").is_none(), "{gemini}");
+    assert!(
+        !has_action(&report, LossAction::Drop, "is_error"),
+        "a success must not drop is_error, got {report:?}"
+    );
+
+    let (messages, _) = encode_value(Wire::Messages, &ir);
+    let block = &messages["messages"][0]["content"][0];
+    assert!(block.get("is_error").is_none(), "{messages}");
+    assert_eq!(block["content"], r#"{"ok":false}"#, "{messages}");
+
+    let (converse, _) = encode_value(Wire::Converse, &ir);
+    let result = &converse["messages"][0]["content"][0]["toolResult"];
+    assert!(result.get("status").is_none(), "{converse}");
+    assert_eq!(
+        result["content"][0]["text"], r#"{"ok":false}"#,
+        "{converse}"
+    );
+}
+
+#[test]
+fn decoded_vendor_tool_error_fails_on_wires_without_a_field() {
+    let messages = br#"{
         "model": "claude-haiku-4-5",
         "max_tokens": 16,
         "messages": [{
             "role": "user",
+            "content": [
+                {"type": "text", "text": "hi"},
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call-1",
+                    "is_error": true,
+                    "content": "{\"ok\":false}"
+                }
+            ]
+        }]
+    }"#;
+    let (from_messages, _) = decode(Wire::Messages, messages).expect("decode messages");
+    for wire in [Wire::ChatCompletions, Wire::Responses, Wire::Gemini] {
+        assert_hard_tool_error(wire, &from_messages, 1);
+    }
+
+    let converse = br#"{
+        "messages": [{
+            "role": "user",
             "content": [{
-                "type": "tool_result",
-                "tool_use_id": "call_1",
-                "is_error": true,
-                "content": "no"
+                "toolResult": {
+                    "toolUseId": "call-1",
+                    "status": "error",
+                    "content": [{"text": "{\"ok\":false}"}]
+                }
             }]
         }]
     }"#;
-    let (ir, _) = decode(Wire::Messages, raw.as_bytes()).expect("decode");
-    let (body, report) = encode_value(Wire::ChatCompletions, &ir);
-    assert!(
-        has_action(&report, LossAction::Drop, "is_error"),
-        "is_error has no Chat slot, got {report:?}"
-    );
-    assert!(!body.to_string().contains("ERROR:"), "{body}");
+    let (from_converse, _) = decode(Wire::Converse, converse).expect("decode converse");
+    for wire in [Wire::ChatCompletions, Wire::Responses, Wire::Gemini] {
+        assert_hard_tool_error(wire, &from_converse, 0);
+    }
+}
+
+#[test]
+fn decoded_ok_false_payload_stays_a_success() {
+    let chat = br#"{
+        "model": "gpt-4.1",
+        "messages": [{
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "{\"ok\":false}"
+        }]
+    }"#;
+    let (from_chat, _) = decode(Wire::ChatCompletions, chat).expect("decode chat");
+    assert_success_has_no_tool_error(Wire::Messages, &from_chat);
+    assert_success_has_no_tool_error(Wire::Converse, &from_chat);
+
+    let responses = br#"{
+        "model": "gpt-4.1",
+        "input": [{
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": "{\"ok\":false}"
+        }]
+    }"#;
+    let (from_responses, _) = decode(Wire::Responses, responses).expect("decode responses");
+    assert_success_has_no_tool_error(Wire::Messages, &from_responses);
+    assert_success_has_no_tool_error(Wire::Converse, &from_responses);
+
+    let gemini = br#"{
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "functionResponse": {
+                    "id": "call-1",
+                    "name": "lookup",
+                    "response": {"ok": false}
+                }
+            }]
+        }]
+    }"#;
+    let (from_gemini, _) = decode(Wire::Gemini, gemini).expect("decode gemini");
+    assert_success_has_no_tool_error(Wire::Messages, &from_gemini);
+    assert_success_has_no_tool_error(Wire::Converse, &from_gemini);
 }
 
 #[test]

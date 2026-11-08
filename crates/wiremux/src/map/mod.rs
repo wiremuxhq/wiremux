@@ -329,6 +329,22 @@ pub(super) fn dropped_details(report: &LossReport) -> Vec<&str> {
         .collect()
 }
 
+/// Chat Completions, Responses, and Gemini have no vendor field for a
+/// failed tool. A drop would send the same body as a success. Messages
+/// writes `is_error` and Converse writes `toolResult.status`, so those
+/// encoders do not call this.
+pub(super) fn refuse_tool_error_without_slot(ir: &IrRequest, wire: Wire) -> Result<(), MapError> {
+    for (idx, item) in ir.items.iter().enumerate() {
+        if let IrItem::FunctionOutput { is_error: true, .. } = item {
+            return Err(MapError::hard(
+                format!("items[{idx}].is_error"),
+                format!("{} has no tool error field", wire.as_str()),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Encode IR into a dialect request body. Applies `tool_type_policy` and fingerprint.
 pub fn encode(
     wire: Wire,

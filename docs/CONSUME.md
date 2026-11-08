@@ -431,8 +431,13 @@ A profile file that will not load is `ClientError::Transport`, not
 
 Converse `toolResult.status` is `error` when the IR tool result is
 `is_error`. A missing status is success, on encode and on decode.
-An unknown role inside `messages` is a loss. The top-level `system`
-array is unchanged.
+Messages writes `is_error` on the tool result. Chat Completions,
+Responses, and Gemini have no tool error field. `encode` fails when
+`is_error` is true on those wires, including from `send` and the
+proxy, instead of emitting the same body as a success. A tool result
+whose text is `{"ok":false}` is still a success when `is_error` is
+false. An unknown role inside `messages` is a loss. The top-level
+`system` array is unchanged.
 
 Refresh-only hosts call `token_for_profile_cached`. A URL-first host
 whose `base_url` host is `cli-chat-proxy.grok.com` (trailing-dot FQDN

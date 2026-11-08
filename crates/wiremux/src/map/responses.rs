@@ -1,7 +1,7 @@
 //! OpenAI Responses request map.
 
 use serde_json::{Value, json};
-use wiremux_auth::{ResolvedProfile, ToolTypePolicy};
+use wiremux_auth::{ResolvedProfile, ToolTypePolicy, Wire};
 
 use super::tools::{PreparedTool, decode_tool, qualify_call_name, split_namespace_name};
 use super::{
@@ -519,6 +519,7 @@ pub(super) fn encode(
     profile: &ResolvedProfile,
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
+    super::refuse_tool_error_without_slot(ir, Wire::Responses)?;
     // Split dotted IR names only when keeping native namespace tools (hard-error).
     // flatten-namespace emits dotted function names on the wire, including Responses.
     let restore_calls = matches!(profile.dialect.tool_type_policy, ToolTypePolicy::HardError);
@@ -729,10 +730,8 @@ fn encode_items(
                 call_id,
                 output,
                 parts,
-                is_error,
-            } => input.push(encode_function_output(
-                call_id, output, parts, *is_error, idx, report,
-            )),
+                is_error: _,
+            } => input.push(encode_function_output(call_id, output, parts, idx, report)),
             IrItem::Reasoning {
                 encrypted,
                 summary,
@@ -1115,17 +1114,9 @@ fn encode_function_output(
     call_id: &str,
     output: &str,
     parts: &[IrPart],
-    is_error: bool,
     idx: usize,
     report: &mut LossReport,
 ) -> Value {
-    if is_error {
-        report.record(
-            format!("items[{idx}].is_error"),
-            LossAction::Drop,
-            "no slot",
-        );
-    }
     let ordered_text = parts
         .iter()
         .any(|part| matches!(part, IrPart::Text(text) if !text.is_empty()));
