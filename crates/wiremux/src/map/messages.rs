@@ -892,7 +892,7 @@ fn encode_user(
     report: &mut LossReport,
 ) -> (Value, usize) {
     let mut consumed = 1;
-    let mut content = encode_user_parts(parts, &format!("items[{start}]"), report);
+    let mut tool_results = Vec::new();
     while let Some(IrItem::FunctionOutput {
         call_id,
         output,
@@ -900,7 +900,7 @@ fn encode_user(
         is_error,
     }) = ir.items.get(start + consumed)
     {
-        content.push(tool_result_block(
+        tool_results.push(tool_result_block(
             call_id,
             output,
             parts,
@@ -911,6 +911,18 @@ fn encode_user(
         ));
         consumed += 1;
     }
+    // Anthropic rejects text that sits before `tool_result` in the same
+    // user message. A blank turn's "." placeholder is that text.
+    let content = if tool_results.is_empty() {
+        encode_user_parts(parts, &format!("items[{start}]"), report)
+    } else {
+        let mut text = parts
+            .iter()
+            .filter_map(|part| encode_part(part, report))
+            .collect::<Vec<_>>();
+        tool_results.append(&mut text);
+        tool_results
+    };
     (
         json!({
             "role": "user",
