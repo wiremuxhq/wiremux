@@ -7072,6 +7072,37 @@ fn messages_blank_user_before_tool_result_does_not_lead_with_a_dot() {
 }
 
 #[test]
+fn messages_empty_error_tool_result_is_not_blank() {
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![IrItem::FunctionOutput {
+            call_id: "call_1".into(),
+            output: String::new(),
+            parts: Vec::new(),
+            is_error: true,
+        }],
+    );
+    let (bytes, report) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content/0/content")
+            .and_then(Value::as_str),
+        Some("."),
+        "an error tool result with no text must not be empty, got {body}"
+    );
+    assert_eq!(
+        body.pointer("/messages/0/content/0/is_error")
+            .and_then(Value::as_bool),
+        Some(true),
+        "is_error must stay set, got {body}"
+    );
+    assert!(
+        loss_degraded(&report, "items[0]"),
+        "the placeholder must Degrade, got {report:?}"
+    );
+}
+
+#[test]
 fn messages_joined_users_keep_tool_result_before_earlier_text() {
     let ir = IrRequest::new(
         "claude-haiku-4-5",
