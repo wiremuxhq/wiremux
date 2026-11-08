@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.11.13](https://github.com/wiremuxhq/wiremux/compare/v0.11.12...v0.11.13) (2026-11-08)
+
+
+### Bug Fixes
+
+* fill an empty Messages error tool result ([#736](https://github.com/wiremuxhq/wiremux/issues/736)) ([1040768](https://github.com/wiremuxhq/wiremux/commit/1040768d9c054d7a412ea3ee1a35922e21d7a550))
+* keep same-role Messages turns in one message ([#734](https://github.com/wiremuxhq/wiremux/issues/734)) ([04f0857](https://github.com/wiremuxhq/wiremux/commit/04f0857c1b286f44a07ea4333fa812c29b229401))
+* put Messages tool results before user text ([#735](https://github.com/wiremuxhq/wiremux/issues/735)) ([219c169](https://github.com/wiremuxhq/wiremux/commit/219c1692acf86c78b34ccad5c02ed0878398b908))
+* refuse a failed tool result when the wire has no error field ([#732](https://github.com/wiremuxhq/wiremux/issues/732)) ([7d74470](https://github.com/wiremuxhq/wiremux/commit/7d74470b188e192a65603807ec4aeb959daf27a5))
+
 ## [0.11.12](https://github.com/wiremuxhq/wiremux/compare/v0.11.11...v0.11.12) (2026-11-07)
 
 
