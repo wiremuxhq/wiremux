@@ -180,6 +180,11 @@ one text block `"."`. Anthropic rejects empty text. Adapters take
 the crate choice. Locked by
 `messages_whitespace_only_assistant_becomes_dot`.
 
+Messages encode writes `"."` when a failed tool result has no text.
+Anthropic rejects `tool_result` content that is empty while `is_error`
+is true. A successful empty result stays empty. Locked by
+`messages_empty_error_tool_result_is_not_blank`.
+
 Messages encode puts `tool_result` blocks before any other blocks in
 that user message, including when a later user turn is joined onto
 earlier text. Text that arrived first is written after the results.

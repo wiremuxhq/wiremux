@@ -1766,7 +1766,8 @@ fn tool_result_block(
     tool_ids: &mut HashMap<String, String>,
     report: &mut LossReport,
 ) -> Value {
-    let id = rewrite_messages_tool_use_id(call_id, path, tool_ids, report);
+    let path = path.into();
+    let id = rewrite_messages_tool_use_id(call_id, path.as_str(), tool_ids, report);
     let mut block = json!({
         "type": "tool_result",
         "tool_use_id": id,
@@ -1784,7 +1785,7 @@ fn tool_result_block(
     };
     if parts.is_empty() {
         block["content"] = json!(text);
-        return block;
+        return fill_empty_error_tool_result(block, is_error, &path, report);
     }
     let mut content = Vec::new();
     if !text.is_empty() {
@@ -1827,6 +1828,32 @@ fn tool_result_block(
     } else {
         Value::Array(content)
     };
+    fill_empty_error_tool_result(block, is_error, &path, report)
+}
+
+fn fill_empty_error_tool_result(
+    mut block: Value,
+    is_error: bool,
+    path: &str,
+    report: &mut LossReport,
+) -> Value {
+    if !is_error {
+        return block;
+    }
+    let empty = match block.get("content") {
+        Some(Value::String(text)) => text.is_empty(),
+        Some(Value::Array(parts)) => parts.is_empty(),
+        None => true,
+        Some(_) => false,
+    };
+    if empty {
+        report.record(
+            path,
+            LossAction::Degrade,
+            "empty error tool result became '.'",
+        );
+        block["content"] = json!(".");
+    }
     block
 }
 
