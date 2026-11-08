@@ -7074,6 +7074,43 @@ fn messages_blank_user_before_tool_result_does_not_lead_with_a_dot() {
 }
 
 #[test]
+fn messages_joined_users_keep_tool_result_before_earlier_text() {
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![
+            IrItem::User {
+                parts: vec![IrPart::Text("first".into())],
+            },
+            IrItem::System {
+                text: "late rule".into(),
+                prompt_cache_breakpoint: None,
+                content_parts: Vec::new(),
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("second".into())],
+            },
+            IrItem::FunctionOutput {
+                call_id: "call_1".into(),
+                output: "sunny".into(),
+                parts: Vec::new(),
+                is_error: false,
+            },
+        ],
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content"),
+        Some(&serde_json::json!([
+            {"type": "tool_result", "tool_use_id": "call_1", "content": "sunny"},
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"}
+        ])),
+        "joining a later tool result must not leave earlier text in front, got {body}"
+    );
+}
+
+#[test]
 fn chat_tool_turn_encodes_one_messages_pair() {
     let req = br#"{
         "model": "gpt-4",

@@ -181,10 +181,12 @@ the crate choice. Locked by
 `messages_whitespace_only_assistant_becomes_dot`.
 
 Messages encode puts `tool_result` blocks before any other blocks in
-that user message. Text that arrived first is written after the
-results. A blank user turn does not insert `"."` when a tool result
-follows it. Anthropic rejects text before `tool_result`. Locked by
-`messages_user_text_before_tool_result_puts_tool_result_first`.
+that user message, including when a later user turn is joined onto
+earlier text. Text that arrived first is written after the results.
+A blank user turn does not insert `"."` when a tool result follows
+it. Anthropic rejects text before `tool_result`. Locked by
+`messages_user_text_before_tool_result_puts_tool_result_first` and
+`messages_joined_users_keep_tool_result_before_earlier_text`.
 
 Messages encode also appends one user text turn `Continue.` when the
 last IR item is Assistant, FunctionCall, or CustomToolCall. xAI

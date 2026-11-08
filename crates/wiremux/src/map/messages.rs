@@ -869,7 +869,24 @@ fn push_alternating_message(
             LossAction::Degrade,
             "consecutive turns with the same role were joined",
         );
-        dst.extend(src.iter().cloned());
+        let tool_result =
+            |block: &Value| block.get("type").and_then(Value::as_str) == Some("tool_result");
+        if src.iter().any(&tool_result) || dst.iter().any(&tool_result) {
+            let mut tools = Vec::new();
+            let mut rest = Vec::new();
+            for block in dst.iter().chain(src.iter()) {
+                if tool_result(block) {
+                    tools.push(block.clone());
+                } else {
+                    rest.push(block.clone());
+                }
+            }
+            dst.clear();
+            dst.extend(tools);
+            dst.extend(rest);
+        } else {
+            dst.extend(src.iter().cloned());
+        }
         return;
     }
     messages.push(msg);
