@@ -7126,6 +7126,88 @@ fn messages_reasoning_then_call_is_one_assistant_message() {
 }
 
 #[test]
+fn messages_reasoning_then_assistant_text_is_one_assistant_message() {
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![
+            IrItem::Reasoning {
+                encrypted: None,
+                summary: Some("check the index".into()),
+                raw: None,
+            },
+            IrItem::Assistant {
+                phase: None,
+                parts: vec![IrPart::Text("done".into())],
+            },
+        ],
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    let assistants: Vec<_> = messages
+        .iter()
+        .filter(|msg| msg.get("role").and_then(Value::as_str) == Some("assistant"))
+        .collect();
+    assert_eq!(
+        assistants.len(),
+        1,
+        "reasoning then assistant text must be one assistant message, got {body}"
+    );
+    let content = assistants[0]
+        .get("content")
+        .and_then(Value::as_array)
+        .expect("assistant content");
+    assert_eq!(
+        content.len(),
+        2,
+        "thinking and text must share one assistant message, got {body}"
+    );
+    assert_eq!(content[0]["type"], "thinking");
+    assert_eq!(content[0]["thinking"], "check the index");
+    assert_eq!(content[1]["type"], "text");
+    assert_eq!(content[1]["text"], "done");
+}
+
+#[test]
+fn messages_tool_use_then_text_round_trips_one_assistant_message() {
+    let req = br#"{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{"q":"x"}},{"type":"text","text":"done"}]}]}"#;
+    let (ir, _) = decode(Wire::Messages, req).expect("decode");
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    let assistants: Vec<_> = messages
+        .iter()
+        .filter(|msg| msg.get("role").and_then(Value::as_str) == Some("assistant"))
+        .collect();
+    assert_eq!(
+        assistants.len(),
+        1,
+        "tool_use then text must round-trip as one assistant message, got {body}"
+    );
+    let content = assistants[0]
+        .get("content")
+        .and_then(Value::as_array)
+        .expect("assistant content");
+    assert_eq!(
+        content.len(),
+        2,
+        "tool_use and text must share one content array, got {body}"
+    );
+    assert_eq!(content[0]["type"], "tool_use");
+    assert_eq!(content[0]["id"], "call_1");
+    assert_eq!(content[0]["name"], "lookup");
+    assert_eq!(content[0]["input"], serde_json::json!({"q": "x"}));
+    assert_eq!(content[1]["type"], "text");
+    assert_eq!(content[1]["text"], "done");
+}
+
+#[test]
 fn gemini_encode_does_not_invent_empty_function_call_args() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",

@@ -701,7 +701,7 @@ fn encode_items(
             IrItem::Assistant { parts, phase } => {
                 super::drop_assistant_phase(phase, &format!("items[{idx}].phase"), report);
                 let (msg, consumed) = encode_assistant(ir, idx, parts, tool_ids, report);
-                messages.push(msg);
+                push_alternating_message(&mut messages, msg, idx, report);
                 idx += consumed;
             }
             IrItem::FunctionCall {
