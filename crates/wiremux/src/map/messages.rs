@@ -701,7 +701,7 @@ fn encode_items(
             IrItem::Assistant { parts, phase } => {
                 super::drop_assistant_phase(phase, &format!("items[{idx}].phase"), report);
                 let (msg, consumed) = encode_assistant(ir, idx, parts, tool_ids, report);
-                messages.push(msg);
+                push_alternating_message(&mut messages, msg, idx, report);
                 idx += consumed;
             }
             IrItem::FunctionCall {
@@ -717,17 +717,23 @@ fn encode_items(
                         "thoughtSignature has no Messages slot",
                     );
                 }
-                messages.push(json!({
-                    "role": "assistant",
-                    "content": [tool_use_block(
-                        call_id,
-                        name,
-                        arguments,
-                        format!("items[{idx}]"),
-                        tool_ids,
-                        report,
-                    )],
-                }));
+                let block = tool_use_block(
+                    call_id,
+                    name,
+                    arguments,
+                    format!("items[{idx}]"),
+                    tool_ids,
+                    report,
+                );
+                push_alternating_message(
+                    &mut messages,
+                    json!({
+                        "role": "assistant",
+                        "content": [block],
+                    }),
+                    idx,
+                    report,
+                );
                 idx += 1;
             }
             IrItem::CustomToolCall {
@@ -736,17 +742,23 @@ fn encode_items(
                 input,
                 ..
             } => {
-                messages.push(json!({
-                    "role": "assistant",
-                    "content": [tool_use_block(
-                        call_id,
-                        name,
-                        input,
-                        format!("items[{idx}]"),
-                        tool_ids,
-                        report,
-                    )],
-                }));
+                let block = tool_use_block(
+                    call_id,
+                    name,
+                    input,
+                    format!("items[{idx}]"),
+                    tool_ids,
+                    report,
+                );
+                push_alternating_message(
+                    &mut messages,
+                    json!({
+                        "role": "assistant",
+                        "content": [block],
+                    }),
+                    idx,
+                    report,
+                );
                 idx += 1;
             }
             IrItem::FunctionOutput {
@@ -755,18 +767,24 @@ fn encode_items(
                 parts,
                 is_error,
             } => {
-                messages.push(json!({
-                    "role": "user",
-                    "content": [tool_result_block(
-                        call_id,
-                        output,
-                        parts,
-                        *is_error,
-                        format!("items[{idx}]"),
-                        tool_ids,
-                        report,
-                    )],
-                }));
+                let block = tool_result_block(
+                    call_id,
+                    output,
+                    parts,
+                    *is_error,
+                    format!("items[{idx}]"),
+                    tool_ids,
+                    report,
+                );
+                push_alternating_message(
+                    &mut messages,
+                    json!({
+                        "role": "user",
+                        "content": [block],
+                    }),
+                    idx,
+                    report,
+                );
                 idx += 1;
             }
             IrItem::Reasoning {
@@ -1004,10 +1022,15 @@ fn encode_reasoning(
     report: &mut LossReport,
 ) -> usize {
     if let Some(block) = reasoning_block(encrypted, summary, raw) {
-        messages.push(json!({
-            "role": "assistant",
-            "content": [block],
-        }));
+        push_alternating_message(
+            messages,
+            json!({
+                "role": "assistant",
+                "content": [block],
+            }),
+            idx,
+            report,
+        );
         report.record(
             format!("items[{idx}]"),
             LossAction::Preserve,
