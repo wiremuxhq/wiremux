@@ -5651,12 +5651,10 @@ fn placeholder_dot_does_not_hide_a_tool_result_breakpoint() {
         .and_then(Value::as_array)
         .expect("content");
     assert!(
-        content.iter().any(|block| {
-            block.get("type").and_then(Value::as_str) == Some("text")
-                && block.get("text").and_then(Value::as_str) == Some(".")
-                && block.get("cache_control").is_none()
-        }),
-        "placeholder dot must not take the breakpoint, got {body}"
+        content
+            .iter()
+            .all(|block| { block.get("text").and_then(Value::as_str) != Some(".") }),
+        "a blank user turn must not insert '.' beside the tool result, got {body}"
     );
     assert!(
         content.iter().any(|block| {
