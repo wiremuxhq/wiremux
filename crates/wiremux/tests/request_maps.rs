@@ -6896,6 +6896,236 @@ fn chat_standalone_function_calls_encode_one_tool_calls_message() {
 }
 
 #[test]
+fn messages_parallel_function_calls_are_one_assistant_message() {
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![
+            IrItem::FunctionCall {
+                call_id: "call_1".into(),
+                name: "lookup".into(),
+                arguments: r#"{"q":"x"}"#.into(),
+                thought_signature: None,
+            },
+            IrItem::FunctionCall {
+                call_id: "call_2".into(),
+                name: "search".into(),
+                arguments: r#"{"q":"y"}"#.into(),
+                thought_signature: None,
+            },
+        ],
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    let assistants: Vec<_> = messages
+        .iter()
+        .filter(|msg| msg.get("role").and_then(Value::as_str) == Some("assistant"))
+        .collect();
+    assert_eq!(
+        assistants.len(),
+        1,
+        "two FunctionCalls must be one assistant message, got {body}"
+    );
+    let content = assistants[0]
+        .get("content")
+        .and_then(Value::as_array)
+        .expect("assistant content");
+    assert_eq!(
+        content.len(),
+        2,
+        "one assistant message must hold both tool_use blocks, got {body}"
+    );
+    assert_eq!(content[0]["type"], "tool_use");
+    assert_eq!(content[0]["id"], "call_1");
+    assert_eq!(content[0]["name"], "lookup");
+    assert_eq!(content[0]["input"], serde_json::json!({"q": "x"}));
+    assert_eq!(content[1]["type"], "tool_use");
+    assert_eq!(content[1]["id"], "call_2");
+    assert_eq!(content[1]["name"], "search");
+    assert_eq!(content[1]["input"], serde_json::json!({"q": "y"}));
+}
+
+#[test]
+fn messages_parallel_function_outputs_are_one_user_message() {
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![
+            IrItem::FunctionOutput {
+                call_id: "call_1".into(),
+                output: "ok".into(),
+                parts: Vec::new(),
+                is_error: false,
+            },
+            IrItem::FunctionOutput {
+                call_id: "call_2".into(),
+                output: "failed".into(),
+                parts: Vec::new(),
+                is_error: true,
+            },
+        ],
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    assert_eq!(
+        messages.len(),
+        1,
+        "two FunctionOutputs must be one user message, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "user");
+    let content = messages[0]
+        .get("content")
+        .and_then(Value::as_array)
+        .expect("user content");
+    assert_eq!(
+        content.len(),
+        2,
+        "one user message must hold both tool_result blocks, got {body}"
+    );
+    assert_eq!(content[0]["type"], "tool_result");
+    assert_eq!(content[0]["tool_use_id"], "call_1");
+    assert_eq!(content[0]["content"], "ok");
+    assert!(
+        content[0].get("is_error").is_none(),
+        "a successful tool result must omit is_error, got {body}"
+    );
+    assert_eq!(content[1]["type"], "tool_result");
+    assert_eq!(content[1]["tool_use_id"], "call_2");
+    assert_eq!(content[1]["content"], "failed");
+    assert_eq!(
+        content[1]["is_error"], true,
+        "only the failed tool result sets is_error, got {body}"
+    );
+}
+
+#[test]
+fn chat_tool_turn_encodes_one_messages_pair() {
+    let req = br#"{
+        "model": "gpt-4",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{\"q\":\"x\"}"}
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{\"q\":\"y\"}"}
+                    }
+                ]
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "one"},
+            {"role": "tool", "tool_call_id": "call_2", "content": "two"}
+        ]
+    }"#;
+    let (ir, _) = decode(Wire::ChatCompletions, req).expect("decode");
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    assert_eq!(
+        messages.len(),
+        2,
+        "Chat parallel tool turn must be one assistant message and one user message, got {body}"
+    );
+    assert_eq!(messages[0]["role"], "assistant");
+    assert_eq!(messages[1]["role"], "user");
+    let calls = messages[0]
+        .get("content")
+        .and_then(Value::as_array)
+        .expect("assistant content");
+    assert_eq!(
+        calls.len(),
+        2,
+        "both Chat tool_calls must be tool_use blocks on one assistant message, got {body}"
+    );
+    assert_eq!(calls[0]["type"], "tool_use");
+    assert_eq!(calls[0]["id"], "call_1");
+    assert_eq!(calls[0]["name"], "lookup");
+    assert_eq!(calls[1]["type"], "tool_use");
+    assert_eq!(calls[1]["id"], "call_2");
+    assert_eq!(calls[1]["name"], "search");
+    let results = messages[1]
+        .get("content")
+        .and_then(Value::as_array)
+        .expect("user content");
+    assert_eq!(
+        results.len(),
+        2,
+        "the second tool result must not be a separate user turn, got {body}"
+    );
+    assert_eq!(results[0]["type"], "tool_result");
+    assert_eq!(results[0]["tool_use_id"], "call_1");
+    assert_eq!(results[0]["content"], "one");
+    assert_eq!(results[1]["type"], "tool_result");
+    assert_eq!(results[1]["tool_use_id"], "call_2");
+    assert_eq!(results[1]["content"], "two");
+}
+
+#[test]
+fn messages_reasoning_then_call_is_one_assistant_message() {
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![
+            IrItem::Reasoning {
+                encrypted: None,
+                summary: Some("check the index".into()),
+                raw: None,
+            },
+            IrItem::FunctionCall {
+                call_id: "call_1".into(),
+                name: "lookup".into(),
+                arguments: r#"{"q":"x"}"#.into(),
+                thought_signature: None,
+            },
+        ],
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    let assistants: Vec<_> = messages
+        .iter()
+        .filter(|msg| msg.get("role").and_then(Value::as_str) == Some("assistant"))
+        .collect();
+    assert_eq!(
+        assistants.len(),
+        1,
+        "reasoning then FunctionCall must be one assistant message, got {body}"
+    );
+    let content = assistants[0]
+        .get("content")
+        .and_then(Value::as_array)
+        .expect("assistant content");
+    assert_eq!(
+        content.len(),
+        2,
+        "thinking and tool_use must share one assistant message, got {body}"
+    );
+    assert_eq!(content[0]["type"], "thinking");
+    assert_eq!(content[0]["thinking"], "check the index");
+    assert_eq!(content[1]["type"], "tool_use");
+    assert_eq!(content[1]["id"], "call_1");
+    assert_eq!(content[1]["name"], "lookup");
+    assert_eq!(content[1]["input"], serde_json::json!({"q": "x"}));
+}
+
+#[test]
 fn gemini_encode_does_not_invent_empty_function_call_args() {
     let ir = IrRequest::new(
         "gemini-2.5-flash",
