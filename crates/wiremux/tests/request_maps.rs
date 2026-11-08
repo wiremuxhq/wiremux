@@ -5651,12 +5651,10 @@ fn placeholder_dot_does_not_hide_a_tool_result_breakpoint() {
         .and_then(Value::as_array)
         .expect("content");
     assert!(
-        content.iter().any(|block| {
-            block.get("type").and_then(Value::as_str) == Some("text")
-                && block.get("text").and_then(Value::as_str) == Some(".")
-                && block.get("cache_control").is_none()
-        }),
-        "placeholder dot must not take the breakpoint, got {body}"
+        content
+            .iter()
+            .all(|block| { block.get("text").and_then(Value::as_str) != Some(".") }),
+        "a blank user turn must not insert '.' beside the tool result, got {body}"
     );
     assert!(
         content.iter().any(|block| {
@@ -7001,6 +6999,112 @@ fn messages_parallel_function_outputs_are_one_user_message() {
     assert_eq!(
         content[1]["is_error"], true,
         "only the failed tool result sets is_error, got {body}"
+    );
+}
+
+#[test]
+fn messages_user_text_before_tool_result_puts_tool_result_first() {
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![
+            IrItem::User {
+                parts: vec![IrPart::Text("Use metric next time.".into())],
+            },
+            IrItem::FunctionOutput {
+                call_id: "call_1".into(),
+                output: "sunny".into(),
+                parts: Vec::new(),
+                is_error: false,
+            },
+        ],
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("user content");
+    assert_eq!(
+        content.len(),
+        2,
+        "text and the tool result must share one user message, got {body}"
+    );
+    assert_eq!(
+        content[0]["type"], "tool_result",
+        "tool_result must come before text, got {body}"
+    );
+    assert_eq!(content[0]["tool_use_id"], "call_1");
+    assert_eq!(content[0]["content"], "sunny");
+    assert_eq!(content[1]["type"], "text");
+    assert_eq!(content[1]["text"], "Use metric next time.");
+}
+
+#[test]
+fn messages_blank_user_before_tool_result_does_not_lead_with_a_dot() {
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![
+            IrItem::User {
+                parts: vec![IrPart::Text("\n".into())],
+            },
+            IrItem::FunctionOutput {
+                call_id: "call_1".into(),
+                output: "sunny".into(),
+                parts: Vec::new(),
+                is_error: true,
+            },
+        ],
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    let content = body
+        .pointer("/messages/0/content")
+        .and_then(Value::as_array)
+        .expect("user content");
+    assert_eq!(
+        content.len(),
+        1,
+        "a blank user turn must not add text beside the tool result, got {body}"
+    );
+    assert_eq!(content[0]["type"], "tool_result");
+    assert_eq!(content[0]["tool_use_id"], "call_1");
+    assert_eq!(content[0]["is_error"], true);
+}
+
+#[test]
+fn messages_joined_users_keep_tool_result_before_earlier_text() {
+    let ir = IrRequest::new(
+        "claude-haiku-4-5",
+        vec![
+            IrItem::User {
+                parts: vec![IrPart::Text("first".into())],
+            },
+            IrItem::System {
+                text: "late rule".into(),
+                prompt_cache_breakpoint: None,
+                content_parts: Vec::new(),
+            },
+            IrItem::User {
+                parts: vec![IrPart::Text("second".into())],
+            },
+            IrItem::FunctionOutput {
+                call_id: "call_1".into(),
+                output: "sunny".into(),
+                parts: Vec::new(),
+                is_error: false,
+            },
+        ],
+    );
+    let (bytes, _) = encode(Wire::Messages, &ir, &messages_profile()).expect("encode");
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(
+        body.pointer("/messages/0/content"),
+        Some(&serde_json::json!([
+            {"type": "tool_result", "tool_use_id": "call_1", "content": "sunny"},
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"}
+        ])),
+        "joining a later tool result must not leave earlier text in front, got {body}"
     );
 }
 
