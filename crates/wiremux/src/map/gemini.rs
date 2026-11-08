@@ -1,6 +1,7 @@
 //! Gemini generateContent request map.
 
 use serde_json::{Value, json};
+use wiremux_auth::Wire;
 
 use super::tools::PreparedTool;
 use super::{
@@ -756,6 +757,7 @@ pub(super) fn encode(
     prepared: &[PreparedTool],
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
+    super::refuse_tool_error_without_slot(ir, Wire::Gemini)?;
     let mut system_parts = Vec::new();
     let mut contents = Vec::new();
     let mut call_names = Vec::new();
@@ -863,15 +865,8 @@ pub(super) fn encode(
                 call_id,
                 output,
                 parts,
-                is_error,
+                is_error: _,
             } => {
-                if *is_error {
-                    report.record(
-                        format!("items[{idx}].is_error"),
-                        LossAction::Drop,
-                        "no slot",
-                    );
-                }
                 let mut wire_parts = Vec::new();
                 let mut peeled = Vec::with_capacity(parts.len());
                 for part in parts {

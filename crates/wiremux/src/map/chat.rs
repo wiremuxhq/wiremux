@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
+use wiremux_auth::Wire;
 
 use super::tools::{PreparedTool, decode_tool};
 use super::{
@@ -482,6 +483,7 @@ pub(super) fn encode(
     tools: &[PreparedTool],
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
+    super::refuse_tool_error_without_slot(ir, Wire::ChatCompletions)?;
     let messages = encode_messages(ir, report);
     if messages.as_array().is_none_or(|rows| rows.is_empty()) {
         let dropped = super::dropped_details(report);
@@ -615,7 +617,7 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                 call_id,
                 output,
                 parts,
-                is_error,
+                is_error: _,
             } => {
                 for part in parts {
                     let (visible, modes) = super::peel_prompt_cache_modes(part);
@@ -655,13 +657,6 @@ fn encode_messages(ir: &IrRequest, report: &mut LossReport) -> Value {
                             "tool result document, video, or search result has no slot",
                         );
                     }
-                }
-                if *is_error {
-                    report.record(
-                        format!("items[{idx}].is_error"),
-                        LossAction::Drop,
-                        "no slot",
-                    );
                 }
                 let has_breakpoint = parts
                     .iter()

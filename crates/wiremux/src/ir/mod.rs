@@ -464,6 +464,10 @@ pub enum IrItem {
         /// Joined text. Images and other blocks live in `parts`.
         output: String,
         parts: Vec<IrPart>,
+        /// Messages writes this as `is_error`. Converse writes
+        /// `toolResult.status` of `error` when it is true. Chat
+        /// Completions, Responses, and Gemini have no field for it,
+        /// so encode fails instead of sending a normal tool result.
         is_error: bool,
     },
     Reasoning {
