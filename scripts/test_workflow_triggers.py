@@ -716,7 +716,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertNotIn("0.9.3", text)
         self.assertNotIn("CHOCOLATEY_API_KEY", text)
         self.assertIn(
-            "step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43",
+            "step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a",
             text,
         )
 
@@ -739,7 +739,7 @@ class WorkflowTriggerTests(unittest.TestCase):
         self.assertIn("gh release view --repo wiremuxhq/wiremux", text)
         self.assertNotIn("0.9.3", text)
         self.assertIn(
-            "step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43",
+            "step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a",
             text,
         )
 
