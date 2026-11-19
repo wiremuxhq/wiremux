@@ -107,7 +107,7 @@ jobs:
       - name: Public surfaces
         run: bash scripts/assert-public.sh
       - uses: ./.github/actions/rust-ci
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
         with:
           tool: cargo-deny@0.20.2
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
@@ -192,7 +192,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
         with:
           tool: zizmor@1.16.0
       - run: python3 scripts/test_workflow_triggers.py
@@ -253,7 +253,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/rust-ci
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
         with:
           tool: cargo-semver-checks@0.51.0
       - name: Public API against the latest v0.11 tag
@@ -350,7 +350,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/rust-ci
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
         if: >-
           github.event_name != 'pull_request' ||
           (!startsWith(github.head_ref, 'release-please') || github.event.pull_request.user.login != 'github-actions[bot]')
