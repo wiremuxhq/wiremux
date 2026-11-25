@@ -104,9 +104,15 @@ pub(crate) fn response_custom_tool_input(raw_text: &str) -> Value {
     json_object_or_wrapped(raw_text, "raw").0
 }
 
+/// Drop a leading UTF-8 BOM. Notepad and PowerShell write one, and
+/// serde_json then reports invalid JSON at column 1.
+fn without_utf8_bom(bytes: &[u8]) -> &[u8] {
+    bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes)
+}
+
 /// Decode a dialect request body into IR. Does not apply profile policy.
 pub fn decode(wire: Wire, bytes: &[u8]) -> Result<(IrRequest, LossReport), MapError> {
-    let value: Value = match serde_json::from_slice(bytes) {
+    let value: Value = match serde_json::from_slice(without_utf8_bom(bytes)) {
         Ok(value) => value,
         Err(err) => {
             return Err(MapError::Invalid(format!(
@@ -1630,6 +1636,14 @@ mod tests {
             }),
             "{converse_loss:?}"
         );
+    }
+
+    #[test]
+    fn decode_utf8_bom_chat_request() {
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend(br#"{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}"#);
+        let (ir, _) = decode(Wire::ChatCompletions, &bytes).expect("bom is json");
+        assert_eq!(ir.model, "gpt-4o");
     }
 
     #[test]
