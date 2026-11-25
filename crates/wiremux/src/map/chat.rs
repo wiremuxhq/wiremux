@@ -73,7 +73,7 @@ fn decode_message(
             }
             if let Some(calls) = msg.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
-                    items.push(decode_tool_call(call));
+                    items.push(decode_tool_call(call)?);
                 }
             }
         }
@@ -123,26 +123,30 @@ fn decode_message(
     Ok(())
 }
 
-fn decode_tool_call(call: &Value) -> IrItem {
+fn decode_tool_call(call: &Value) -> Result<IrItem, MapError> {
+    let call_id = str_field(call, "id").unwrap_or_default();
+    if call_id.trim().is_empty() {
+        return Err(MapError::Invalid("tool call omitted id".into()));
+    }
     if is_custom_tool_call(call) {
         let custom = call.get("custom").unwrap_or(call);
-        return IrItem::CustomToolCall {
-            call_id: str_field(call, "id").unwrap_or_default(),
+        return Ok(IrItem::CustomToolCall {
+            call_id,
             name: str_field(custom, "name").unwrap_or_default(),
             input: custom.get("input").map(value_as_string).unwrap_or_default(),
             responses_item: None,
-        };
+        });
     }
     let func = call.get("function").unwrap_or(call);
-    IrItem::FunctionCall {
-        call_id: str_field(call, "id").unwrap_or_default(),
+    Ok(IrItem::FunctionCall {
+        call_id,
         name: str_field(func, "name").unwrap_or_default(),
         arguments: func
             .get("arguments")
             .map(value_as_string)
             .unwrap_or_else(|| "{}".into()),
         thought_signature: None,
-    }
+    })
 }
 
 /// `type: custom`, or a call that only carries `custom`.
@@ -1699,6 +1703,24 @@ mod tests {
     use super::encode_parts;
     use crate::ir::{IrPart, LossAction};
     use serde_json::json;
+
+    #[test]
+    fn tool_call_without_id_fails() {
+        let err = super::decode(&json!({
+            "model": "gpt-4o",
+            "messages": [{
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"}
+                }]
+            }]
+        }))
+        .expect_err("blank tool call id");
+        let msg = err.to_string();
+        assert!(msg.contains("tool call omitted id"), "{msg}");
+    }
 
     #[test]
     fn tool_message_without_id_fails() {
