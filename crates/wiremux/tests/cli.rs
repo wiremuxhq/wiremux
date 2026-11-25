@@ -8199,6 +8199,55 @@ fn map_reads_a_request_file() {
 }
 
 #[test]
+fn map_gemini_without_model_omits_empty_model() {
+    let dir = unique_scratch();
+    let path = dir.join("gem.json");
+    std::fs::write(
+        &path,
+        r#"{"contents":[{"role":"user","parts":[{"text":"ping"}]}]}"#,
+    )
+    .expect("request");
+    let path = path.to_str().expect("utf8");
+    for dest in ["chat", "messages", "responses"] {
+        let out = run_map(&["map", "--from", "gemini", "--to", dest, path], None);
+        assert_eq!(out.status.code(), Some(0), "{dest} {out:?}");
+        let stdout = String::from_utf8(out.stdout).expect("utf8");
+        assert!(
+            !stdout.contains("\"model\":\"\""),
+            "{dest} wrote an empty model: {stdout}"
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("drop model: empty model is omitted"),
+            "{dest} stderr: {err}"
+        );
+    }
+}
+
+#[test]
+fn map_directory_says_directory() {
+    let dir = unique_scratch();
+    let out = run_map(
+        &[
+            "map",
+            "--from",
+            "chat",
+            "--to",
+            "messages",
+            dir.to_str().expect("utf8"),
+        ],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("is a directory"),
+        "a directory path must not look like a permission error, got: {err}"
+    );
+}
+
+#[test]
 fn map_invalid_json_exits_1_without_a_body() {
     let out = run_map(&["map", "--from", "messages", "--to", "chat"], Some(b"{"));
     assert_eq!(out.status.code(), Some(1), "{out:?}");

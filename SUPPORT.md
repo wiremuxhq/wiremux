@@ -59,13 +59,18 @@ The manifest is in
 Later releases push those two repositories when
 `HOMEBREW_TAP_TOKEN` is set. That secret is set on this repo.
 
-winget manifests are generated on the release. The first package pull
-request is
-[microsoft/winget-pkgs#444315](https://github.com/microsoft/winget-pkgs/pull/444315).
-`winget install` does not work until that pull request merges.
-`WINGET_TOKEN` is set, so a later release can open an update pull
-request. That update still waits until this first package is in the
-community repository.
+winget:
+
+```bash
+winget install Wiremux.Wiremux
+```
+
+The community package is 0.9.3
+([microsoft/winget-pkgs#444315](https://github.com/microsoft/winget-pkgs/pull/444315)).
+GitHub Release v0.11.13 is newer. `WINGET_TOKEN` is set. A release
+published after that package is in the community repository can open
+an update pull request. v0.11.13 was published before the package
+merged, so `winget install` still installs 0.9.3.
 
 Chocolatey files are on the release. `CHOCOLATEY_API_KEY` is set.
 Publish Chocolatey submits the current release to the community

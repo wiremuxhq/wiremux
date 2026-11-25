@@ -14,9 +14,10 @@
 [![FOSSA Status](https://github.com/wiremuxhq/wiremux/actions/workflows/fossa.yml/badge.svg?event=push)](https://github.com/wiremuxhq/wiremux/actions/workflows/fossa.yml?query=event%3Apush)
 [![wiremux-auth](https://img.shields.io/crates/v/wiremux-auth?logo=rust&label=wiremux-auth)](https://crates.io/crates/wiremux-auth)
 
-Map Chat Completions, Messages, Responses, Gemini, and Converse
-through one in-process IR. Refresh tokens from the same pasteable
-vendor profiles. The host keeps the agent loop.
+Wiremux turns Chat Completions, Messages, Responses, Gemini, and
+Converse into one in-process request (`IrRequest`), then writes
+another dialect. The same TOML profiles refresh vendor tokens. Your
+application still runs the tool loop.
 
 ## Crates
 
@@ -49,19 +50,11 @@ cargo install wiremux --locked
 GitHub Release archives, provenance, and the other installers are
 described in [`SUPPORT.md`](SUPPORT.md).
 
-Maps-only hosts stop after the first command. TokenProvider hosts
-also add `wiremux-auth`.
-
 ## Maps
 
 Decode a vendor JSON body into `IrRequest`, then encode another wire.
-The profile supplies vendor quirks. Encode-side loss is typed
-(`preserve` / `degrade` / `drop` / `harderror`).
-`wiremux map` prints one stderr line per change:
-
-```text
-degrade sampling.max_tokens: messages requires max_tokens
-```
+The profile supplies vendor quirks. The load below skips shipped and
+user profiles, so encode uses an empty quirk set.
 
 ```rust
 use wiremux::{LoadOptions, Wire, decode, encode, load_profile_for_wire};
@@ -80,6 +73,8 @@ let profile = load_profile_for_wire(
 let (_out, _loss) = encode(Wire::Messages, &ir, &profile).unwrap();
 ```
 
+Encode-side loss is `preserve`, `degrade`, `drop`, or `harderror`.
+
 Run the same program from this tree:
 
 ```bash
@@ -89,8 +84,12 @@ cargo run -p wiremux --example remap --no-default-features
 That example prints the encoded JSON. Loss, when there is any, is
 the Debug form of the report on stderr.
 
-`wiremux map` prints the encoded body on stdout and the loss lines
-above on stderr. It has no `--dump-loss` flag.
+`wiremux map` prints the encoded body on stdout and one stderr line
+per change. It has no `--dump-loss` flag.
+
+```text
+degrade sampling.max_tokens: messages requires max_tokens
+```
 
 ```bash
 wiremux map --from chat --to messages request.json
@@ -104,8 +103,8 @@ Wires: `chat-completions` (CLI also accepts `chat`), `messages`,
 
 Shipped vendors are ordinary TOML. A gist uses the same schema, so a
 rotated token URL, client id, or beta header does not need a crate
-release. Profiles are data: no functions, no `!command`, no
-URL-as-script. `$VAR` / `${VAR}` / `{env:VAR}` are allowed.
+release. A profile cannot run a command or treat a URL as a script.
+`$VAR`, `${VAR}`, and `{env:VAR}` expand to environment variables.
 
 ```bash
 wiremux profile list
@@ -113,15 +112,12 @@ wiremux profile validate openai
 wiremux auth status openai
 ```
 
-`wiremux auth login` needs a profile id (`--profile` or the
-positional argument). Omitting it exits 1.
-
-The command follows the profile `login` engine. Shipped
-`openai-codex-oauth` uses `login = "none"` until a public Wiremux
-client id exists. `wiremux auth login --profile openai-codex-oauth`
-exits 2 and prints why (set `pkce` or `device`, and a client id).
-`login = "setup-token"` (shipped Anthropic) prints
-`setup_token_hint` and also exits 2.
+| Situation | Result |
+| --- | --- |
+| No profile id (`--profile` or the positional argument) | Exits 1 |
+| Profile `login` field | The command follows that field |
+| `openai-codex-oauth` | Exits 2. Shipped `login` is `none` until a public Wiremux client id exists. Set `pkce` or `device`, and a client id. |
+| `login = "setup-token"` (shipped Anthropic) | Prints `setup_token_hint` and exits 2 |
 
 `wiremux profile ingest` writes user-dir profiles from
 [models.dev](https://models.dev/api.json) (default) or LiteLLM
@@ -147,7 +143,7 @@ A bad `--listen` value and `--read-timeout-secs 0` are reported
 before the profile is loaded.
 
 `--dump-loss` prints `loss.encode:` plus each loss event on stderr
-per request. `wiremux map` does not take this flag.
+per request.
 
 ## Host attach
 
@@ -163,6 +159,8 @@ Copy-paste examples: [`examples/`](examples/).
 
 0.x. Public IR and error enums are `#[non_exhaustive]`. Dual license
 [MIT](LICENSE) OR [Apache-2.0](LICENSE-APACHE).
+
+## Out of scope
 
 This crate is not a LiteLLM clone, not a desktop switcher, and not a
 subscription pool. It does not ship a public Claude-Pro-in-Codex,

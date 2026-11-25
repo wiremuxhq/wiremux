@@ -449,7 +449,12 @@ fn read_map_input(file: Option<&Path>) -> Result<Vec<u8>, String> {
     match file {
         None => read_stdin(),
         Some(path) if path.as_os_str() == "-" => read_stdin(),
-        Some(path) => std::fs::read(path).map_err(|err| format!("{}: {err}", path.display())),
+        Some(path) => {
+            if path.is_dir() {
+                return Err(format!("{}: is a directory", path.display()));
+            }
+            std::fs::read(path).map_err(|err| format!("{}: {err}", path.display()))
+        }
     }
 }
 

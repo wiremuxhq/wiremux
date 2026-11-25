@@ -495,9 +495,13 @@ pub(super) fn encode(
         }
     }
     let mut body = json!({
-        "model": ir.model,
         "messages": messages,
     });
+    if ir.model.is_empty() {
+        report.record("model", LossAction::Drop, "empty model is omitted");
+    } else {
+        body["model"] = json!(ir.model);
+    }
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools.iter().map(encode_tool).collect());
     }

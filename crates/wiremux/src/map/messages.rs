@@ -609,9 +609,13 @@ pub(super) fn encode(
         "top_p must be between 0 and 1",
     )?;
     let mut body = json!({
-        "model": ir.model,
         "messages": messages,
     });
+    if ir.model.is_empty() {
+        report.record("model", LossAction::Drop, "empty model is omitted");
+    } else {
+        body["model"] = json!(ir.model);
+    }
     if let Some(system) = system {
         body["system"] = system;
     }
