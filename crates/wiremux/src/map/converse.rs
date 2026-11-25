@@ -184,6 +184,14 @@ fn tool_set_change_name(block: &Value) -> Option<&'static str> {
     }
 }
 
+fn tool_use_id<'a>(block: &'a Value, label: &str) -> Result<&'a str, MapError> {
+    match block.get("toolUseId").and_then(Value::as_str) {
+        Some(id) if !id.trim().is_empty() => Ok(id),
+        Some(_) => Err(MapError::Invalid(format!("{label} toolUseId is empty"))),
+        None => Err(MapError::Invalid(format!("{label} omitted toolUseId"))),
+    }
+}
+
 fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), MapError> {
     let Some(arr) = content.and_then(Value::as_array) else {
         if let Some(s) = content.and_then(Value::as_str) {
@@ -197,10 +205,7 @@ fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), M
     for block in arr {
         if let Some(result) = block.get("toolResult") {
             flush_user(&mut parts, items);
-            let id = result
-                .get("toolUseId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| MapError::Invalid("toolResult omitted toolUseId".into()))?;
+            let id = tool_use_id(result, "toolResult")?;
             let (output, parts) = tool_result_output(result);
             items.push(IrItem::FunctionOutput {
                 call_id: id.to_string(),
@@ -240,10 +245,7 @@ fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<
     for block in arr {
         if let Some(tool) = block.get("toolUse") {
             flush_assistant(&mut parts, items);
-            let id = tool
-                .get("toolUseId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| MapError::Invalid("toolUse omitted toolUseId".into()))?;
+            let id = tool_use_id(tool, "toolUse")?;
             let name = tool
                 .get("name")
                 .and_then(Value::as_str)

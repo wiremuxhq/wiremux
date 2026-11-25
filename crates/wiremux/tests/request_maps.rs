@@ -15047,6 +15047,40 @@ fn converse_decode_tool_result_missing_id_fails() {
 }
 
 #[test]
+fn converse_decode_blank_tool_use_id_fails() {
+    for (role, block, label) in [
+        (
+            "assistant",
+            r#"{"toolUse":{"toolUseId":"","name":"lookup","input":{}}}"#,
+            "toolUse",
+        ),
+        (
+            "assistant",
+            r#"{"toolUse":{"toolUseId":"  ","name":"lookup","input":{}}}"#,
+            "toolUse",
+        ),
+        (
+            "user",
+            r#"{"toolResult":{"toolUseId":"","content":[{"text":"ok"}]}}"#,
+            "toolResult",
+        ),
+        (
+            "user",
+            r#"{"toolResult":{"toolUseId":"  ","content":[{"text":"ok"}]}}"#,
+            "toolResult",
+        ),
+    ] {
+        let req = format!(r#"{{"messages":[{{"role":"{role}","content":[{block}]}}]}}"#);
+        let err = decode(Wire::Converse, req.as_bytes()).expect_err(label);
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("{label} toolUseId is empty")),
+            "{label} {msg}"
+        );
+    }
+}
+
+#[test]
 fn converse_function_output_is_error_sets_tool_result_status() {
     let ir = IrRequest::new(
         "amazon.nova-lite-v1:0",
