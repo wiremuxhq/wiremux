@@ -646,7 +646,7 @@ pub(super) fn encode(
             "modelId is the /model/{modelId}/converse URL, not a JSON field",
         );
     }
-    let (system, messages) = encode_items(ir, report);
+    let (system, messages) = encode_items(ir, report)?;
     if messages.as_array().is_none_or(|a| a.is_empty()) {
         let mut dropped: Vec<&str> = report
             .events
@@ -713,7 +713,21 @@ pub(super) fn encode(
     Ok(body)
 }
 
-fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Value) {
+fn require_encoded_tool_use_id(call_id: &str, idx: usize) -> Result<&str, MapError> {
+    if call_id.trim().is_empty() {
+        Err(MapError::hard(
+            format!("items[{idx}]"),
+            "toolUseId is empty",
+        ))
+    } else {
+        Ok(call_id)
+    }
+}
+
+fn encode_items(
+    ir: &IrRequest,
+    report: &mut LossReport,
+) -> Result<(Option<Value>, Value), MapError> {
     let mut system = Vec::new();
     let mut messages = Vec::new();
     for (idx, item) in ir.items.iter().enumerate() {
@@ -867,6 +881,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 arguments,
                 ..
             } => {
+                let call_id = require_encoded_tool_use_id(call_id, idx)?;
                 let input = converse_tool_input(arguments, report);
                 let block = json!({
                     "toolUse": {
@@ -890,6 +905,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 input: tool_input,
                 ..
             } => {
+                let call_id = require_encoded_tool_use_id(call_id, idx)?;
                 let input = converse_tool_input(tool_input, report);
                 let block = json!({
                     "toolUse": {
@@ -913,6 +929,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 parts,
                 is_error,
             } => {
+                let call_id = require_encoded_tool_use_id(call_id, idx)?;
                 let has_media = parts.iter().any(|part| {
                     let part = super::peel_prompt_cache_all(part).0;
                     matches!(
@@ -1110,7 +1127,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
     } else {
         Some(Value::Array(system))
     };
-    (system, Value::Array(messages))
+    Ok((system, Value::Array(messages)))
 }
 
 fn last_is_user(messages: &[Value]) -> bool {

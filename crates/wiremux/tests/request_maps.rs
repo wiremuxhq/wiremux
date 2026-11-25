@@ -15047,6 +15047,27 @@ fn converse_decode_tool_result_missing_id_fails() {
 }
 
 #[test]
+fn converse_encode_blank_tool_use_id_fails() {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::FunctionCall {
+            call_id: "  ".into(),
+            name: "lookup".into(),
+            arguments: "{}".into(),
+            thought_signature: None,
+        }],
+    );
+    let err = encode(Wire::Converse, &ir, &converse_profile()).expect_err("blank tool id");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "items[0]", "{path}");
+            assert!(detail.contains("toolUseId is empty"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+}
+
+#[test]
 fn converse_decode_blank_tool_use_id_fails() {
     for (role, block, label) in [
         (
