@@ -1182,7 +1182,11 @@ fn i64_field(value: &Value, key: &str) -> Option<i64> {
 }
 
 fn u32_field(value: &Value, key: &str) -> Option<u32> {
-    value.get(key)?.as_u64().and_then(|n| u32::try_from(n).ok())
+    match value.get(key)? {
+        Value::Number(number) => number.as_u64().and_then(|n| u32::try_from(n).ok()),
+        Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
 }
 
 fn bool_field(value: &Value, key: &str) -> Option<bool> {

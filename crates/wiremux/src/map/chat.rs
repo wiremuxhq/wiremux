@@ -1690,6 +1690,17 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn string_max_tokens_is_kept() {
+        let (ir, _) = super::decode(&json!({
+            "model": "gpt-4o",
+            "max_tokens": "16",
+            "messages": [{"role": "user", "content": "ping"}]
+        }))
+        .expect("decode");
+        assert_eq!(ir.sampling.max_tokens, Some(16), "{ir:?}");
+    }
+
+    #[test]
     fn string_messages_are_dropped() {
         let (ir, report) = super::decode(&json!({
             "model": "gpt-4o",
