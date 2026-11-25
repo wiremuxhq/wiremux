@@ -25,10 +25,8 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
             content_parts: vec![],
         });
     }
-    if let Some(contents) = value.get("contents").and_then(Value::as_array) {
-        for content in contents {
-            decode_content(content, &mut items);
-        }
+    for content in super::array_or_drop(value, "contents", &mut report) {
+        decode_content(content, &mut items);
     }
     let tools = decode_tools(value);
     let ir = IrRequest {

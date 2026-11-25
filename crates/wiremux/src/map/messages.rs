@@ -21,10 +21,8 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     let mut items = Vec::new();
     decode_system(value.get("system"), &mut items);
 
-    if let Some(messages) = value.get("messages").and_then(Value::as_array) {
-        for msg in messages {
-            decode_message(msg, &mut items);
-        }
+    for msg in super::array_or_drop(value, "messages", &mut report) {
+        decode_message(msg, &mut items);
     }
 
     let tools = value

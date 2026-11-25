@@ -15023,6 +15023,37 @@ fn converse_system_role_tool_add_and_remove_round_trip() {
 }
 
 #[test]
+fn non_array_message_lists_are_dropped() {
+    for (wire, body, path) in [
+        (
+            Wire::Messages,
+            br#"{"model":"claude","messages":"ping"}"#.as_slice(),
+            "messages",
+        ),
+        (Wire::Gemini, br#"{"contents":"ping"}"#, "contents"),
+        (Wire::Converse, br#"{"messages":"ping"}"#, "messages"),
+    ] {
+        let (ir, report) = decode(wire, body).expect("decode");
+        assert!(ir.items.is_empty(), "{wire:?} {ir:?}");
+        assert!(
+            report.events.iter().any(|event| {
+                event.action == LossAction::Drop
+                    && event.path == path
+                    && event.detail.contains("got string")
+            }),
+            "{wire:?} {report:?}"
+        );
+    }
+
+    let (ir, report) = decode(Wire::Messages, br#"{"model":"claude"}"#).expect("decode");
+    assert!(ir.items.is_empty(), "{ir:?}");
+    assert!(
+        report.events.iter().all(|event| event.path != "messages"),
+        "a missing messages field is not a drop, got {report:?}"
+    );
+}
+
+#[test]
 fn converse_decode_tool_use_missing_id_fails() {
     let req = br#"{
       "messages": [
