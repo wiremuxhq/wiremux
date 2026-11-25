@@ -48,6 +48,25 @@ fn load_id(id: &str, dir: &Path) -> Result<ResolvedProfile, ProfileError> {
 }
 
 #[test]
+fn load_profile_from_cli_json_bom_parses() {
+    let dir = std::env::temp_dir().join(format!(
+        "wiremux-auth-bom-{}-{}",
+        std::process::id(),
+        TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("bom.json");
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(
+        br#"{"schema_version":1,"id":"bom-json","wire":"chat-completions","base_url":"http://127.0.0.1:9"}"#,
+    );
+    fs::write(&path, bytes).expect("write bom json");
+    let profile = load_profile_from_cli(path.to_str().expect("utf-8"), &empty_opts())
+        .expect("json bom should parse");
+    assert_eq!(profile.id, "bom-json");
+}
+
+#[test]
 fn load_profile_from_cli_directory_says_directory() {
     let dir = std::env::temp_dir().join(format!(
         "wiremux-auth-dir-{}-{}",

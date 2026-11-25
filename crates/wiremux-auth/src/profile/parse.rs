@@ -41,6 +41,8 @@ pub(crate) fn parse_layer_str(text: &str) -> Result<RawProfile, ProfileError> {
 }
 
 fn parse_layer_text(text: &str, path: Option<&Path>) -> Result<RawProfile, ProfileError> {
+    // Notepad writes a UTF-8 BOM. serde_json then reports column 1.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let value = parse_to_value(text, path)?;
     refuse::scan(&value)?;
     refuse_nested_struct_tables(&value)?;
