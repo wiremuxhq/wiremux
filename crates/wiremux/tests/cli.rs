@@ -3795,8 +3795,12 @@ chat_path = "/model/{{model}}/converse"
     let _ = child.wait();
     upstream_thread.join().expect("upstream");
     assert!(
-        resp.contains("200") || resp.contains("hi"),
-        "proxy should reach converse-stream, got: {resp}"
+        resp.contains("HTTP/1.1 200"),
+        "proxy should return 200 from converse-stream, got: {resp}"
+    );
+    assert!(
+        resp.contains("\"content\":\"hi\""),
+        "converse-stream text must be a chat delta, got: {resp}"
     );
 }
 
@@ -3875,7 +3879,11 @@ chat_path = "/model/{{model}}/converse"
         "eventstream must go through the stream mapper, got: {resp}"
     );
     assert!(
-        resp.contains("hi"),
+        resp.contains("HTTP/1.1 200"),
+        "eventstream remap must return 200, got: {resp}"
+    );
+    assert!(
+        resp.contains("\"content\":\"hi\""),
         "stream mapper must remap Converse text delta, got: {resp}"
     );
 }
@@ -4570,7 +4578,11 @@ chat_path = "/v1/chat/completions"
         "unary dest Converse must not dest-encode Event Stream, got: {resp}"
     );
     assert!(
-        resp.contains("hi"),
+        resp.contains("HTTP/1.1 200"),
+        "unary dest Converse must return 200, got: {resp}"
+    );
+    assert!(
+        resp.contains("\"text\":\"hi\""),
         "unary dest Converse must remap assistant text, got: {resp}"
     );
 }
@@ -4649,8 +4661,12 @@ chat_path = "/v1/chat/completions"
     let _ = child.wait();
     upstream_thread.join().expect("upstream");
     assert!(
-        resp.contains("200") || resp.contains("hi"),
-        "dest Gemini path-model remap must reach upstream, got: {resp}"
+        resp.contains("HTTP/1.1 200"),
+        "dest Gemini path-model remap must return 200, got: {resp}"
+    );
+    assert!(
+        resp.contains("\"text\":\"hi\""),
+        "dest Gemini must remap assistant text, got: {resp}"
     );
 }
 
@@ -4724,8 +4740,12 @@ chat_path = "/v1/chat/completions"
     let _ = child.wait();
     upstream_thread.join().expect("upstream");
     assert!(
-        resp.contains("200") || resp.contains("hi"),
-        "dest Converse path-model remap must reach upstream, got: {resp}"
+        resp.contains("HTTP/1.1 200"),
+        "dest Converse path-model remap must return 200, got: {resp}"
+    );
+    assert!(
+        resp.contains("\"text\":\"hi\""),
+        "dest Converse must remap assistant text, got: {resp}"
     );
 }
 
@@ -4802,8 +4822,12 @@ chat_path = "/v1/chat/completions"
     let _ = child.wait();
     upstream_thread.join().expect("upstream");
     assert!(
-        resp.contains("data:") || resp.contains("hi"),
-        "dest Gemini stream path must remap as SSE, got: {resp}"
+        resp.contains("HTTP/1.1 200"),
+        "dest Gemini stream path must return 200, got: {resp}"
+    );
+    assert!(
+        resp.contains("\"text\":\"hi\""),
+        "dest Gemini stream must remap the text delta, got: {resp}"
     );
 }
 
@@ -6590,8 +6614,12 @@ chat_path = "/v1/chat/completions"
     let _ = child.wait();
     upstream_thread.join().expect("upstream");
     assert!(
-        resp.contains("200") || resp.contains("hi"),
-        "dest Messages path-model remap must reach upstream, got: {resp}"
+        resp.contains("HTTP/1.1 200"),
+        "dest Messages path-model remap must return 200, got: {resp}"
+    );
+    assert!(
+        resp.contains("\"text\":\"hi\""),
+        "dest Messages must remap assistant text, got: {resp}"
     );
 }
 
@@ -6827,8 +6855,16 @@ chat_path = "/v1/chat/completions"
     let _ = child.wait();
     upstream_thread.join().expect("upstream");
     assert!(
-        resp.contains("200") || resp.contains("hi"),
-        "dest Chat Azure path-model remap must reach upstream, got: {resp}"
+        resp.contains("HTTP/1.1 200"),
+        "dest Chat Azure path-model remap must return 200, got: {resp}"
+    );
+    assert!(
+        resp.contains("\"object\":\"chat.completion\""),
+        "dest Chat Azure must keep the completion object, got: {resp}"
+    );
+    assert!(
+        resp.contains("\"content\":\"hi\""),
+        "dest Chat Azure must keep assistant text, got: {resp}"
     );
 }
 
@@ -7860,8 +7896,16 @@ gcp_key_env = "GOOGLE_APPLICATION_CREDENTIALS"
         let mut resp = String::new();
         let _ = client.read_to_string(&mut resp);
         assert!(
-            resp.contains("ok") || resp.contains("chat.completion"),
-            "vertex proxy request failed: {resp}"
+            resp.contains("HTTP/1.1 200"),
+            "vertex proxy must return 200, got: {resp}"
+        );
+        assert!(
+            resp.contains("\"object\":\"chat.completion\""),
+            "vertex Gemini text must map to a chat completion, got: {resp}"
+        );
+        assert!(
+            resp.contains("\"content\":\"ok\""),
+            "vertex Gemini text must map to assistant content, got: {resp}"
         );
     }
     let _ = child.kill();
