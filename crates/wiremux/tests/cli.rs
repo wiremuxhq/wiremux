@@ -49,6 +49,26 @@ fn unique_scratch() -> PathBuf {
 }
 
 #[test]
+fn profile_validate_json_bom_parses() {
+    let dir = unique_scratch();
+    let path = dir.join("bom.json");
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(
+        br#"{"schema_version":1,"id":"bom-json","wire":"chat-completions","base_url":"http://127.0.0.1:9"}"#,
+    );
+    std::fs::write(&path, bytes).expect("write bom json");
+    let (_home, mut cmd) = isolated_home();
+    let out = cmd
+        .args(["profile", "validate", path.to_str().expect("utf8")])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("bom-json"), "{stdout}");
+    assert!(out.stderr.is_empty(), "{out:?}");
+}
+
+#[test]
 fn profile_validate_directory_says_directory() {
     let dir = unique_scratch();
     let (_home, mut cmd) = isolated_home();
