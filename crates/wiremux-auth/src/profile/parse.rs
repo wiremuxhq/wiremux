@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -22,6 +23,12 @@ pub fn parse_profile_str(text: &str) -> Result<ResolvedProfile, ProfileError> {
 }
 
 pub(crate) fn parse_layer_file(path: &Path) -> Result<RawProfile, ProfileError> {
+    if path.is_dir() {
+        return Err(ProfileError::Io {
+            path: path.to_path_buf(),
+            source: io::Error::other("is a directory"),
+        });
+    }
     let text = fs::read_to_string(path).map_err(|source| ProfileError::Io {
         path: path.to_path_buf(),
         source,

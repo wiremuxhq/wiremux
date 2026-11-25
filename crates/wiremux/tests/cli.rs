@@ -49,6 +49,24 @@ fn unique_scratch() -> PathBuf {
 }
 
 #[test]
+fn profile_validate_directory_says_directory() {
+    let dir = unique_scratch();
+    let (_home, mut cmd) = isolated_home();
+    let out = cmd
+        .args(["profile", "validate", dir.to_str().expect("utf8")])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("is a directory"),
+        "a directory path must not look like a permission error, got: {err}"
+    );
+    assert!(!err.contains("os error"), "{err}");
+}
+
+#[test]
 fn profile_validate_refuses_code_exec() {
     let dir = unique_scratch();
     let path = write_profile(

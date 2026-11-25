@@ -48,6 +48,24 @@ fn load_id(id: &str, dir: &Path) -> Result<ResolvedProfile, ProfileError> {
 }
 
 #[test]
+fn load_profile_from_cli_directory_says_directory() {
+    let dir = std::env::temp_dir().join(format!(
+        "wiremux-auth-dir-{}-{}",
+        std::process::id(),
+        TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&dir).expect("temp dir");
+    let err =
+        load_profile_from_cli(dir.to_str().expect("utf-8"), &empty_opts()).expect_err("directory");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("is a directory"),
+        "a directory must not look like a permission error, got: {msg}"
+    );
+    assert!(!msg.contains("os error"), "{msg}");
+}
+
+#[test]
 fn exact_anthropic_oauth_toml_parses() {
     let path = fixtures_dir().join("anthropic-oauth.toml");
     let text = fs::read_to_string(&path)
