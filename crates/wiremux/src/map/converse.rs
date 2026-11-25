@@ -184,6 +184,14 @@ fn tool_set_change_name(block: &Value) -> Option<&'static str> {
     }
 }
 
+fn tool_use_id<'a>(block: &'a Value, label: &str) -> Result<&'a str, MapError> {
+    match block.get("toolUseId").and_then(Value::as_str) {
+        Some(id) if !id.trim().is_empty() => Ok(id),
+        Some(_) => Err(MapError::Invalid(format!("{label} toolUseId is empty"))),
+        None => Err(MapError::Invalid(format!("{label} omitted toolUseId"))),
+    }
+}
+
 fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), MapError> {
     let Some(arr) = content.and_then(Value::as_array) else {
         if let Some(s) = content.and_then(Value::as_str) {
@@ -197,10 +205,7 @@ fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), M
     for block in arr {
         if let Some(result) = block.get("toolResult") {
             flush_user(&mut parts, items);
-            let id = result
-                .get("toolUseId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| MapError::Invalid("toolResult omitted toolUseId".into()))?;
+            let id = tool_use_id(result, "toolResult")?;
             let (output, parts) = tool_result_output(result);
             items.push(IrItem::FunctionOutput {
                 call_id: id.to_string(),
@@ -240,10 +245,7 @@ fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<
     for block in arr {
         if let Some(tool) = block.get("toolUse") {
             flush_assistant(&mut parts, items);
-            let id = tool
-                .get("toolUseId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| MapError::Invalid("toolUse omitted toolUseId".into()))?;
+            let id = tool_use_id(tool, "toolUse")?;
             let name = tool
                 .get("name")
                 .and_then(Value::as_str)
@@ -544,7 +546,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         if is_json_schema
             && let Some(js) = text_format.and_then(|tf| tf.pointer("/structure/jsonSchema"))
         {
-            sampling.json_schema = converse_json_schema(js.get("schema"));
+            sampling.json_schema = converse_json_schema(js.get("schema"), report);
             sampling.json_schema_name = js
                 .get("name")
                 .and_then(Value::as_str)
@@ -606,11 +608,29 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     sampling
 }
 
-fn converse_json_schema(schema: Option<&Value>) -> Option<Value> {
+fn converse_json_schema(schema: Option<&Value>, report: &mut LossReport) -> Option<Value> {
     match schema {
-        Some(Value::String(raw)) => serde_json::from_str(raw).ok().filter(Value::is_object),
+        Some(Value::String(raw)) => match serde_json::from_str::<Value>(raw) {
+            Ok(value) if value.is_object() => Some(value),
+            _ => {
+                report.record(
+                    "sampling.json_schema",
+                    LossAction::Drop,
+                    "schema string is not a JSON object",
+                );
+                None
+            }
+        },
         Some(obj) if obj.is_object() => Some(obj.clone()),
-        _ => None,
+        Some(_) => {
+            report.record(
+                "sampling.json_schema",
+                LossAction::Drop,
+                "schema is not a JSON object",
+            );
+            None
+        }
+        None => None,
     }
 }
 
@@ -644,7 +664,7 @@ pub(super) fn encode(
             "modelId is the /model/{modelId}/converse URL, not a JSON field",
         );
     }
-    let (system, messages) = encode_items(ir, report);
+    let (system, messages) = encode_items(ir, report)?;
     if messages.as_array().is_none_or(|a| a.is_empty()) {
         let mut dropped: Vec<&str> = report
             .events
@@ -711,7 +731,21 @@ pub(super) fn encode(
     Ok(body)
 }
 
-fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Value) {
+fn require_encoded_tool_use_id(call_id: &str, idx: usize) -> Result<&str, MapError> {
+    if call_id.trim().is_empty() {
+        Err(MapError::hard(
+            format!("items[{idx}]"),
+            "toolUseId is empty",
+        ))
+    } else {
+        Ok(call_id)
+    }
+}
+
+fn encode_items(
+    ir: &IrRequest,
+    report: &mut LossReport,
+) -> Result<(Option<Value>, Value), MapError> {
     let mut system = Vec::new();
     let mut messages = Vec::new();
     for (idx, item) in ir.items.iter().enumerate() {
@@ -865,6 +899,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 arguments,
                 ..
             } => {
+                let call_id = require_encoded_tool_use_id(call_id, idx)?;
                 let input = converse_tool_input(arguments, report);
                 let block = json!({
                     "toolUse": {
@@ -888,6 +923,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 input: tool_input,
                 ..
             } => {
+                let call_id = require_encoded_tool_use_id(call_id, idx)?;
                 let input = converse_tool_input(tool_input, report);
                 let block = json!({
                     "toolUse": {
@@ -911,6 +947,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
                 parts,
                 is_error,
             } => {
+                let call_id = require_encoded_tool_use_id(call_id, idx)?;
                 let has_media = parts.iter().any(|part| {
                     let part = super::peel_prompt_cache_all(part).0;
                     matches!(
@@ -1108,7 +1145,7 @@ fn encode_items(ir: &IrRequest, report: &mut LossReport) -> (Option<Value>, Valu
     } else {
         Some(Value::Array(system))
     };
-    (system, Value::Array(messages))
+    Ok((system, Value::Array(messages)))
 }
 
 fn last_is_user(messages: &[Value]) -> bool {

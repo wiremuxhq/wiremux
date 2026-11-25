@@ -8116,7 +8116,7 @@ fn map_chat_stdin_to_messages_prints_body() {
     let stdout = String::from_utf8(out.stdout).expect("utf8");
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
     assert!(parsed["messages"].is_array(), "{stdout}");
-    assert!(parsed.get("max_tokens").is_some(), "{stdout}");
+    assert_eq!(parsed["max_tokens"].as_u64(), Some(4096), "{stdout}");
     assert!(stdout.contains("ping"), "{stdout}");
 }
 
@@ -8194,8 +8194,13 @@ fn map_reads_a_request_file() {
     );
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let stdout = String::from_utf8(out.stdout).expect("utf8");
-    assert!(stdout.contains("max_tokens"), "{stdout}");
-    assert!(stdout.contains("messages"), "{stdout}");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert!(parsed["messages"].is_array(), "{stdout}");
+    assert_eq!(parsed["max_tokens"].as_u64(), Some(4096), "{stdout}");
+    assert_eq!(
+        parsed["messages"][0]["content"][0]["text"], "ping",
+        "{stdout}"
+    );
 }
 
 #[test]

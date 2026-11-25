@@ -15047,6 +15047,61 @@ fn converse_decode_tool_result_missing_id_fails() {
 }
 
 #[test]
+fn converse_encode_blank_tool_use_id_fails() {
+    let ir = IrRequest::new(
+        "amazon.nova-lite-v1:0",
+        vec![IrItem::FunctionCall {
+            call_id: "  ".into(),
+            name: "lookup".into(),
+            arguments: "{}".into(),
+            thought_signature: None,
+        }],
+    );
+    let err = encode(Wire::Converse, &ir, &converse_profile()).expect_err("blank tool id");
+    match err {
+        MapError::HardError { path, detail } => {
+            assert_eq!(path, "items[0]", "{path}");
+            assert!(detail.contains("toolUseId is empty"), "{detail}");
+        }
+        other => panic!("expected HardError, got {other}"),
+    }
+}
+
+#[test]
+fn converse_decode_blank_tool_use_id_fails() {
+    for (role, block, label) in [
+        (
+            "assistant",
+            r#"{"toolUse":{"toolUseId":"","name":"lookup","input":{}}}"#,
+            "toolUse",
+        ),
+        (
+            "assistant",
+            r#"{"toolUse":{"toolUseId":"  ","name":"lookup","input":{}}}"#,
+            "toolUse",
+        ),
+        (
+            "user",
+            r#"{"toolResult":{"toolUseId":"","content":[{"text":"ok"}]}}"#,
+            "toolResult",
+        ),
+        (
+            "user",
+            r#"{"toolResult":{"toolUseId":"  ","content":[{"text":"ok"}]}}"#,
+            "toolResult",
+        ),
+    ] {
+        let req = format!(r#"{{"messages":[{{"role":"{role}","content":[{block}]}}]}}"#);
+        let err = decode(Wire::Converse, req.as_bytes()).expect_err(label);
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("{label} toolUseId is empty")),
+            "{label} {msg}"
+        );
+    }
+}
+
+#[test]
 fn converse_function_output_is_error_sets_tool_result_status() {
     let ir = IrRequest::new(
         "amazon.nova-lite-v1:0",
@@ -15941,6 +15996,25 @@ fn converse_encode_output_config_schema_and_effort() {
             && !loss_dropped(&report, "sampling.json_schema_name")
             && !loss_dropped(&report, "sampling.reasoning_effort"),
         "mapped outputConfig fields must not Drop, got {report:?}"
+    );
+}
+
+#[test]
+fn converse_bad_schema_string_is_dropped() {
+    let req = br#"{
+      "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+      "outputConfig": {
+        "textFormat": {
+          "type": "json_schema",
+          "structure": {"jsonSchema": {"schema": "not-json", "name": "answer"}}
+        }
+      }
+    }"#;
+    let (ir, report) = decode(Wire::Converse, req).expect("decode");
+    assert!(ir.sampling.json_schema.is_none(), "{ir:?}");
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "a bad schema string must Drop, got {report:?}"
     );
 }
 

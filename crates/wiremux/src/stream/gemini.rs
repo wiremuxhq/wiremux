@@ -763,7 +763,12 @@ mod tests {
             "candidates": [{"content": {"parts": [{"text": "Hi"}]}, "finishReason": "STOP"}]
         }))
         .expect("candidate");
-        assert!(kept.is_some(), "{kept:?}");
+        assert_eq!(
+            kept,
+            Some(IrStreamEvent::TextDelta {
+                text: "Hi".to_string(),
+            })
+        );
         let err = decode(&serde_json::json!({
             "candidates": [{}],
             "error": {"message": "overloaded"}
