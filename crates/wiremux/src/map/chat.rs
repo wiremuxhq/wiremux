@@ -17,14 +17,21 @@ use crate::ir::{
 };
 
 pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError> {
-    let messages = value
-        .get("messages")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let mut report = LossReport::default();
+    let messages = match value.get("messages") {
+        Some(Value::Array(items)) => items.clone(),
+        Some(other) => {
+            report.record(
+                "messages",
+                LossAction::Drop,
+                format!("messages must be an array, got {}", super::json_kind(other)),
+            );
+            Vec::new()
+        }
+        None => Vec::new(),
+    };
 
     let mut items = Vec::new();
-    let mut report = LossReport::default();
     for msg in &messages {
         decode_message(msg, &mut items, &mut report);
     }
@@ -1693,6 +1700,31 @@ mod tests {
     use super::encode_parts;
     use crate::ir::{IrPart, LossAction};
     use serde_json::json;
+
+    #[test]
+    fn string_messages_are_dropped() {
+        let (ir, report) = super::decode(&json!({
+            "model": "gpt-4o",
+            "messages": "ping"
+        }))
+        .expect("decode");
+        assert!(ir.items.is_empty(), "{ir:?}");
+        assert!(
+            report.events.iter().any(|event| {
+                event.action == LossAction::Drop
+                    && event.path == "messages"
+                    && event.detail.contains("got string")
+            }),
+            "{report:?}"
+        );
+
+        let (ir, report) = super::decode(&json!({"model": "gpt-4o"})).expect("decode");
+        assert!(ir.items.is_empty(), "{ir:?}");
+        assert!(
+            report.events.iter().all(|event| event.path != "messages"),
+            "a missing messages field is not a drop, got {report:?}"
+        );
+    }
 
     #[test]
     fn assistant_refusal_is_kept_as_text() {
