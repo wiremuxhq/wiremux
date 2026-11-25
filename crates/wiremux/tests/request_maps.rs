@@ -16000,6 +16000,25 @@ fn converse_encode_output_config_schema_and_effort() {
 }
 
 #[test]
+fn converse_bad_schema_string_is_dropped() {
+    let req = br#"{
+      "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+      "outputConfig": {
+        "textFormat": {
+          "type": "json_schema",
+          "structure": {"jsonSchema": {"schema": "not-json", "name": "answer"}}
+        }
+      }
+    }"#;
+    let (ir, report) = decode(Wire::Converse, req).expect("decode");
+    assert!(ir.sampling.json_schema.is_none(), "{ir:?}");
+    assert!(
+        loss_dropped(&report, "sampling.json_schema"),
+        "a bad schema string must Drop, got {report:?}"
+    );
+}
+
+#[test]
 fn converse_decode_reads_output_config_schema_and_effort() {
     let req = br#"{
       "messages": [{"role": "user", "content": [{"text": "hi"}]}],

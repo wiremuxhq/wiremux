@@ -546,7 +546,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         if is_json_schema
             && let Some(js) = text_format.and_then(|tf| tf.pointer("/structure/jsonSchema"))
         {
-            sampling.json_schema = converse_json_schema(js.get("schema"));
+            sampling.json_schema = converse_json_schema(js.get("schema"), report);
             sampling.json_schema_name = js
                 .get("name")
                 .and_then(Value::as_str)
@@ -608,11 +608,29 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     sampling
 }
 
-fn converse_json_schema(schema: Option<&Value>) -> Option<Value> {
+fn converse_json_schema(schema: Option<&Value>, report: &mut LossReport) -> Option<Value> {
     match schema {
-        Some(Value::String(raw)) => serde_json::from_str(raw).ok().filter(Value::is_object),
+        Some(Value::String(raw)) => match serde_json::from_str::<Value>(raw) {
+            Ok(value) if value.is_object() => Some(value),
+            _ => {
+                report.record(
+                    "sampling.json_schema",
+                    LossAction::Drop,
+                    "schema string is not a JSON object",
+                );
+                None
+            }
+        },
         Some(obj) if obj.is_object() => Some(obj.clone()),
-        _ => None,
+        Some(_) => {
+            report.record(
+                "sampling.json_schema",
+                LossAction::Drop,
+                "schema is not a JSON object",
+            );
+            None
+        }
+        None => None,
     }
 }
 
