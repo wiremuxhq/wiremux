@@ -1174,7 +1174,11 @@ fn json_f32(value: f32) -> Value {
 }
 
 fn f32_field(value: &Value, key: &str) -> Option<f32> {
-    value.get(key)?.as_f64().map(|n| n as f32)
+    match value.get(key)? {
+        Value::Number(number) => number.as_f64().map(|n| n as f32),
+        Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
 }
 
 fn i64_field(value: &Value, key: &str) -> Option<i64> {

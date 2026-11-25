@@ -1690,6 +1690,21 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn string_temperature_is_kept() {
+        let (ir, report) = super::decode(&json!({
+            "model": "gpt-4o",
+            "temperature": "0.2",
+            "messages": [{"role": "user", "content": "ping"}]
+        }))
+        .expect("decode");
+        let temperature = ir.sampling.temperature.expect("temperature");
+        assert!(
+            (temperature - 0.2).abs() < 0.000_1,
+            "{temperature} {report:?}"
+        );
+    }
+
+    #[test]
     fn string_max_tokens_is_kept() {
         let (ir, _) = super::decode(&json!({
             "model": "gpt-4o",
