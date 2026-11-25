@@ -18,21 +18,9 @@ use crate::ir::{
 
 pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError> {
     let mut report = LossReport::default();
-    let messages = match value.get("messages") {
-        Some(Value::Array(items)) => items.clone(),
-        Some(other) => {
-            report.record(
-                "messages",
-                LossAction::Drop,
-                format!("messages must be an array, got {}", super::json_kind(other)),
-            );
-            Vec::new()
-        }
-        None => Vec::new(),
-    };
-
+    let messages = super::array_or_drop(value, "messages", &mut report);
     let mut items = Vec::new();
-    for msg in &messages {
+    for msg in messages {
         decode_message(msg, &mut items, &mut report);
     }
 

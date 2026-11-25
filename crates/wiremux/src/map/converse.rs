@@ -23,10 +23,8 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     if let Some(system) = value.get("system") {
         decode_system(system, &mut items);
     }
-    if let Some(messages) = value.get("messages").and_then(Value::as_array) {
-        for msg in messages {
-            decode_message(msg, &mut items, &mut report)?;
-        }
+    for msg in super::array_or_drop(value, "messages", &mut report) {
+        decode_message(msg, &mut items, &mut report)?;
     }
     let model = value
         .get("modelId")

@@ -48,6 +48,26 @@ impl MapError {
     }
 }
 
+/// The field is an array, or it is absent. A present non-array is dropped.
+pub(super) fn array_or_drop<'a>(
+    value: &'a Value,
+    key: &str,
+    report: &mut LossReport,
+) -> &'a [Value] {
+    match value.get(key) {
+        Some(Value::Array(items)) => items.as_slice(),
+        Some(other) => {
+            report.record(
+                key,
+                LossAction::Drop,
+                format!("{key} must be an array, got {}", json_kind(other)),
+            );
+            &[]
+        }
+        None => &[],
+    }
+}
+
 fn json_kind(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
