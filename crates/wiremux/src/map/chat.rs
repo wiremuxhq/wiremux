@@ -21,7 +21,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     let messages = super::array_or_drop(value, "messages", &mut report);
     let mut items = Vec::new();
     for msg in messages {
-        decode_message(msg, &mut items, &mut report);
+        decode_message(msg, &mut items, &mut report)?;
     }
 
     let tools = value
@@ -39,7 +39,11 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     Ok((ir, report))
 }
 
-fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport) {
+fn decode_message(
+    msg: &Value,
+    items: &mut Vec<IrItem>,
+    report: &mut LossReport,
+) -> Result<(), MapError> {
     let role = msg.get("role").and_then(Value::as_str).unwrap_or("user");
     let mut parts = decode_content(msg.get("content"));
     if role == "assistant"
@@ -101,8 +105,14 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport)
                     .collect();
                 (parts_text(&parts), kept)
             };
+            let call_id = str_field(msg, "tool_call_id").unwrap_or_default();
+            if call_id.trim().is_empty() {
+                return Err(MapError::Invalid(
+                    "tool message omitted tool_call_id".into(),
+                ));
+            }
             items.push(IrItem::FunctionOutput {
-                call_id: str_field(msg, "tool_call_id").unwrap_or_default(),
+                call_id,
                 output,
                 parts: kept,
                 is_error: false,
@@ -110,6 +120,7 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport)
         }
         _ => items.push(IrItem::User { parts }),
     }
+    Ok(())
 }
 
 fn decode_tool_call(call: &Value) -> IrItem {
@@ -1688,6 +1699,17 @@ mod tests {
     use super::encode_parts;
     use crate::ir::{IrPart, LossAction};
     use serde_json::json;
+
+    #[test]
+    fn tool_message_without_id_fails() {
+        let err = super::decode(&json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "tool", "content": "ok"}]
+        }))
+        .expect_err("missing tool_call_id");
+        let msg = err.to_string();
+        assert!(msg.contains("tool_call_id"), "{msg}");
+    }
 
     #[test]
     fn string_temperature_is_kept() {
