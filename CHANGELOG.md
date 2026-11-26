@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.11.14](https://github.com/wiremuxhq/wiremux/compare/v0.11.13...v0.11.14) (2026-11-26)
+
+
+### Bug Fixes
+
+* accept a profile BOM and report a non-array messages field ([#746](https://github.com/wiremuxhq/wiremux/issues/746)) ([48e65a8](https://github.com/wiremuxhq/wiremux/commit/48e65a8922ae979dee3a49e6dc34c2a103c09272))
+* accept a request BOM and omit an empty model ([#741](https://github.com/wiremuxhq/wiremux/issues/741)) ([72217df](https://github.com/wiremuxhq/wiremux/commit/72217df714a49c03a693e2f5a9d0cc663f74f472))
+* drop an unknown role and a non-text stop ([#753](https://github.com/wiremuxhq/wiremux/issues/753)) ([d3ab645](https://github.com/wiremuxhq/wiremux/commit/d3ab6457f966ff2f8017574874686e40c8ad423f))
+* keep a temperature written as a string ([#749](https://github.com/wiremuxhq/wiremux/issues/749)) ([822dc5e](https://github.com/wiremuxhq/wiremux/commit/822dc5e19abe8c59c4b442c54650f09ed5e11121))
+* keep a token limit written as a string ([#748](https://github.com/wiremuxhq/wiremux/issues/748)) ([61ca1ed](https://github.com/wiremuxhq/wiremux/commit/61ca1ed61c9760162d74fd3c4463600d2aafba97))
+* reject a blank Converse toolUseId ([#744](https://github.com/wiremuxhq/wiremux/issues/744)) ([5dbb4f4](https://github.com/wiremuxhq/wiremux/commit/5dbb4f4cf94fcb402b5e92d5100378862cf8fddc))
+* reject a Chat tool call with no id ([#751](https://github.com/wiremuxhq/wiremux/issues/751)) ([27d86e8](https://github.com/wiremuxhq/wiremux/commit/27d86e8f7e12909da8a02f6061493770379f1513))
+* reject a Chat tool message with no tool_call_id ([#750](https://github.com/wiremuxhq/wiremux/issues/750)) ([d8fdd57](https://github.com/wiremuxhq/wiremux/commit/d8fdd57bcd9ec9b0791425a9fa232d0676659852))
+* report a non-array message list on every source wire ([#747](https://github.com/wiremuxhq/wiremux/issues/747)) ([1e506ac](https://github.com/wiremuxhq/wiremux/commit/1e506acfe58a3da8cdde386b67b5b6554deac3d2))
+* say when a profile path is a directory ([#745](https://github.com/wiremuxhq/wiremux/issues/745)) ([eca1c29](https://github.com/wiremuxhq/wiremux/commit/eca1c29aa1ac87740c05b8cd61b9ac5a08a95c5f))
+
 ## [0.11.13](https://github.com/wiremuxhq/wiremux/compare/v0.11.12...v0.11.13) (2026-11-08)
 
 
