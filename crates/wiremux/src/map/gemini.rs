@@ -477,7 +477,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         top_p: f32_field(cfg, "topP").or_else(|| f32_field(cfg, "top_p")),
         top_k: u32_field(cfg, "topK").or_else(|| u32_field(cfg, "top_k")),
         max_tokens: u32_field(cfg, "maxOutputTokens").or_else(|| u32_field(cfg, "max_tokens")),
-        stop: stop_values(cfg, &["stopSequences", "stop"]),
+        stop: stop_values(cfg, &["stopSequences", "stop"], report),
         tool_choice,
         parallel_tool_calls: bool_field(value, "parallel_tool_calls"),
         store: bool_field(value, "store"),

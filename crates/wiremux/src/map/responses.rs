@@ -51,7 +51,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         model: str_field(value, "model").unwrap_or_default(),
         items,
         tools,
-        sampling: decode_sampling(value),
+        sampling: decode_sampling(value, &mut report),
     };
     Ok((ir, report))
 }
@@ -322,7 +322,7 @@ fn parts_text(parts: &[IrPart]) -> String {
         .join("")
 }
 
-fn decode_sampling(value: &Value) -> IrSampling {
+fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     let (json_schema, json_schema_name, json_schema_strict, json_schema_description) =
         responses_json_schema(value);
     let json_object = responses_json_object(value);
@@ -332,7 +332,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         top_k: None,
         max_tokens: u32_field(value, "max_output_tokens")
             .or_else(|| u32_field(value, "max_tokens")),
-        stop: stop_values(value, &["stop"]),
+        stop: stop_values(value, &["stop"], report),
         tool_choice: decode_tool_choice(value.get("tool_choice")),
         parallel_tool_calls: bool_field(value, "parallel_tool_calls"),
         store: bool_field(value, "store"),
