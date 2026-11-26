@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.15](https://github.com/wiremuxhq/wiremux/compare/v0.11.14...v0.11.15) (2026-11-26)
+
+
+### Bug Fixes
+
+* reject a blank tool id on every encode ([#756](https://github.com/wiremuxhq/wiremux/issues/756)) ([fb9051b](https://github.com/wiremuxhq/wiremux/commit/fb9051b3acb225e7fbd2183fb5744c836bd7caa0))
+
 ## [0.11.14](https://github.com/wiremuxhq/wiremux/compare/v0.11.13...v0.11.14) (2026-11-26)
 
 
