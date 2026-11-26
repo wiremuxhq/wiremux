@@ -1256,6 +1256,24 @@ pub(super) fn reject_sampling_number(
     Ok(())
 }
 
+/// A missing role uses `fallback`. A present role that is not allowed is dropped.
+pub(super) fn known_role<'a>(
+    raw: Option<&'a str>,
+    allowed: &[&str],
+    fallback: &'static str,
+    report: &mut LossReport,
+    path: &str,
+) -> Option<&'a str> {
+    match raw {
+        None => Some(fallback),
+        Some(role) if allowed.contains(&role) => Some(role),
+        Some(role) => {
+            report.record(path, LossAction::Drop, format!("{role} is not a role"));
+            None
+        }
+    }
+}
+
 fn stop_values(value: &Value, keys: &[&str]) -> Vec<String> {
     for key in keys {
         let Some(raw) = value.get(*key) else {

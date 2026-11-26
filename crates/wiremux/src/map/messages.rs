@@ -22,7 +22,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     decode_system(value.get("system"), &mut items);
 
     for msg in super::array_or_drop(value, "messages", &mut report) {
-        decode_message(msg, &mut items);
+        decode_message(msg, &mut items, &mut report);
     }
 
     let tools = value
@@ -74,8 +74,16 @@ fn decode_system(system: Option<&Value>, items: &mut Vec<IrItem>) {
     }
 }
 
-fn decode_message(msg: &Value, items: &mut Vec<IrItem>) {
-    let role = msg.get("role").and_then(Value::as_str).unwrap_or("user");
+fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport) {
+    let Some(role) = super::known_role(
+        msg.get("role").and_then(Value::as_str),
+        &["user", "assistant"],
+        "user",
+        report,
+        "messages.role",
+    ) else {
+        return;
+    };
     let content = msg.get("content");
     match role {
         "assistant" => decode_assistant(content, items),

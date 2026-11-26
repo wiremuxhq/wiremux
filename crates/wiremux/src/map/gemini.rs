@@ -26,7 +26,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         });
     }
     for content in super::array_or_drop(value, "contents", &mut report) {
-        decode_content(content, &mut items);
+        decode_content(content, &mut items, &mut report);
     }
     let tools = decode_tools(value);
     let ir = IrRequest {
@@ -107,11 +107,16 @@ fn unmatched_call_id(items: &[IrItem], name: &str, skip_trailing_user: bool) -> 
         .find_map(|item| unmatched_id(item, name, &used).map(str::to_string))
 }
 
-fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
-    let role = content
-        .get("role")
-        .and_then(Value::as_str)
-        .unwrap_or("user");
+fn decode_content(content: &Value, items: &mut Vec<IrItem>, report: &mut LossReport) {
+    let Some(role) = super::known_role(
+        content.get("role").and_then(Value::as_str),
+        &["user", "model"],
+        "user",
+        report,
+        "contents.role",
+    ) else {
+        return;
+    };
     let parts = content.get("parts").and_then(Value::as_array);
     let Some(parts) = parts else {
         return;

@@ -44,7 +44,15 @@ fn decode_message(
     items: &mut Vec<IrItem>,
     report: &mut LossReport,
 ) -> Result<(), MapError> {
-    let role = msg.get("role").and_then(Value::as_str).unwrap_or("user");
+    let Some(role) = super::known_role(
+        msg.get("role").and_then(Value::as_str),
+        &["system", "developer", "assistant", "tool", "user"],
+        "user",
+        report,
+        "messages.role",
+    ) else {
+        return Ok(());
+    };
     let mut parts = decode_content(msg.get("content"));
     if role == "assistant"
         && let Some(refusal) = str_field(msg, "refusal").filter(|text| !text.is_empty())
