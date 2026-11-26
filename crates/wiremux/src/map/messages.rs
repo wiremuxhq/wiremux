@@ -575,6 +575,7 @@ pub(super) fn encode(
     tools: &[PreparedTool],
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
+    super::reject_blank_tool_ids(ir)?;
     let mut tool_ids = HashMap::new();
     let (system, messages) = encode_items(ir, &mut tool_ids, report);
     // A system prompt with no turn is not a request Anthropic will accept.
