@@ -17,7 +17,7 @@ use crate::ir::{
 };
 
 pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError> {
-    let report = LossReport::default();
+    let mut report = LossReport::default();
     let mut items = Vec::new();
     if let Some(instructions) = str_field(value, "instructions")
         && !instructions.is_empty()
@@ -35,7 +35,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         }),
         Some(Value::Array(arr)) => {
             for item in arr {
-                items.extend(decode_input_item(item));
+                items.extend(decode_input_item(item, &mut report));
             }
         }
         _ => {}
@@ -51,12 +51,12 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         model: str_field(value, "model").unwrap_or_default(),
         items,
         tools,
-        sampling: decode_sampling(value),
+        sampling: decode_sampling(value, &mut report),
     };
     Ok((ir, report))
 }
 
-fn decode_input_item(item: &Value) -> Vec<IrItem> {
+fn decode_input_item(item: &Value, report: &mut LossReport) -> Vec<IrItem> {
     if let Some(text) = item.as_str() {
         return vec![IrItem::User {
             parts: vec![IrPart::Text(text.to_string())],
@@ -89,7 +89,7 @@ fn decode_input_item(item: &Value) -> Vec<IrItem> {
             summary: reasoning_summary(item),
             raw: Some(item.clone()),
         }],
-        "message" | "" => decode_message_item(item),
+        "message" | "" => decode_message_item(item, report),
         other if is_hosted_item(other) => vec![IrItem::HostedToolCall {
             kind: other.to_string(),
             raw: item.clone(),
@@ -162,8 +162,16 @@ fn reasoning_summary(item: &Value) -> Option<String> {
     }
 }
 
-fn decode_message_item(item: &Value) -> Vec<IrItem> {
-    let role = item.get("role").and_then(Value::as_str).unwrap_or("user");
+fn decode_message_item(item: &Value, report: &mut LossReport) -> Vec<IrItem> {
+    let Some(role) = super::known_role(
+        item.get("role").and_then(Value::as_str),
+        &["system", "developer", "assistant", "user"],
+        "user",
+        report,
+        "input.role",
+    ) else {
+        return Vec::new();
+    };
     let parts = decode_parts(item.get("content"));
     match role {
         "system" => vec![IrItem::System {
@@ -314,7 +322,7 @@ fn parts_text(parts: &[IrPart]) -> String {
         .join("")
 }
 
-fn decode_sampling(value: &Value) -> IrSampling {
+fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     let (json_schema, json_schema_name, json_schema_strict, json_schema_description) =
         responses_json_schema(value);
     let json_object = responses_json_object(value);
@@ -324,7 +332,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         top_k: None,
         max_tokens: u32_field(value, "max_output_tokens")
             .or_else(|| u32_field(value, "max_tokens")),
-        stop: stop_values(value, &["stop"]),
+        stop: stop_values(value, &["stop"], report),
         tool_choice: decode_tool_choice(value.get("tool_choice")),
         parallel_tool_calls: bool_field(value, "parallel_tool_calls"),
         store: bool_field(value, "store"),

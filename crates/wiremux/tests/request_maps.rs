@@ -15023,6 +15023,49 @@ fn converse_system_role_tool_add_and_remove_round_trip() {
 }
 
 #[test]
+fn unknown_role_is_not_a_user_turn() {
+    let cases: [(Wire, &[u8], &str); 4] = [
+        (
+            Wire::ChatCompletions,
+            br#"{"model":"gpt-4o","messages":[{"role":"nope","content":"ping"}]}"#,
+            "messages.role",
+        ),
+        (
+            Wire::Messages,
+            br#"{"model":"claude","messages":[{"role":"nope","content":"ping"}]}"#,
+            "messages.role",
+        ),
+        (
+            Wire::Gemini,
+            br#"{"contents":[{"role":"nope","parts":[{"text":"ping"}]}]}"#,
+            "contents.role",
+        ),
+        (
+            Wire::Responses,
+            br#"{"model":"gpt-4o","input":[{"role":"nope","content":"ping"}]}"#,
+            "input.role",
+        ),
+    ];
+    for (wire, body, path) in cases {
+        let (ir, report) = decode(wire, body).expect("decode");
+        assert!(
+            !ir.items
+                .iter()
+                .any(|item| matches!(item, IrItem::User { .. })),
+            "{wire:?} invented a user turn: {ir:?}"
+        );
+        assert!(
+            report.events.iter().any(|event| {
+                event.action == LossAction::Drop
+                    && event.path == path
+                    && event.detail.contains("nope is not a role")
+            }),
+            "{wire:?} {report:?}"
+        );
+    }
+}
+
+#[test]
 fn non_array_message_lists_are_dropped() {
     for (wire, body, path) in [
         (

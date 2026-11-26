@@ -34,7 +34,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         model: str_field(value, "model").unwrap_or_default(),
         items,
         tools,
-        sampling: decode_sampling(value),
+        sampling: decode_sampling(value, &mut report),
     };
     Ok((ir, report))
 }
@@ -44,7 +44,15 @@ fn decode_message(
     items: &mut Vec<IrItem>,
     report: &mut LossReport,
 ) -> Result<(), MapError> {
-    let role = msg.get("role").and_then(Value::as_str).unwrap_or("user");
+    let Some(role) = super::known_role(
+        msg.get("role").and_then(Value::as_str),
+        &["system", "developer", "assistant", "tool", "user"],
+        "user",
+        report,
+        "messages.role",
+    ) else {
+        return Ok(());
+    };
     let mut parts = decode_content(msg.get("content"));
     if role == "assistant"
         && let Some(refusal) = str_field(msg, "refusal").filter(|text| !text.is_empty())
@@ -260,7 +268,7 @@ fn parts_text(parts: &[IrPart]) -> String {
         .join("")
 }
 
-fn decode_sampling(value: &Value) -> IrSampling {
+fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
     let (json_schema, json_schema_name, json_schema_strict, json_schema_description) =
         chat_json_schema(value);
     let json_object = chat_json_object(value);
@@ -272,7 +280,7 @@ fn decode_sampling(value: &Value) -> IrSampling {
         top_k: None,
         max_tokens: u32_field(value, "max_completion_tokens")
             .or_else(|| u32_field(value, "max_tokens")),
-        stop: stop_values(value, &["stop"]),
+        stop: stop_values(value, &["stop"], report),
         tool_choice: decode_tool_choice(value.get("tool_choice")),
         parallel_tool_calls: bool_field(value, "parallel_tool_calls"),
         store: bool_field(value, "store"),
@@ -1703,6 +1711,25 @@ mod tests {
     use super::encode_parts;
     use crate::ir::{IrPart, LossAction};
     use serde_json::json;
+
+    #[test]
+    fn numeric_stop_is_dropped() {
+        let (ir, report) = super::decode(&json!({
+            "model": "gpt-4o",
+            "stop": 5,
+            "messages": [{"role": "user", "content": "ping"}]
+        }))
+        .expect("decode");
+        assert!(ir.sampling.stop.is_empty(), "{ir:?}");
+        assert!(
+            report.events.iter().any(|event| {
+                event.action == LossAction::Drop
+                    && event.path == "stop"
+                    && event.detail.contains("string or array")
+            }),
+            "{report:?}"
+        );
+    }
 
     #[test]
     fn tool_call_without_id_fails() {

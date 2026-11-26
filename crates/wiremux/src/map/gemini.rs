@@ -26,7 +26,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         });
     }
     for content in super::array_or_drop(value, "contents", &mut report) {
-        decode_content(content, &mut items);
+        decode_content(content, &mut items, &mut report);
     }
     let tools = decode_tools(value);
     let ir = IrRequest {
@@ -107,11 +107,16 @@ fn unmatched_call_id(items: &[IrItem], name: &str, skip_trailing_user: bool) -> 
         .find_map(|item| unmatched_id(item, name, &used).map(str::to_string))
 }
 
-fn decode_content(content: &Value, items: &mut Vec<IrItem>) {
-    let role = content
-        .get("role")
-        .and_then(Value::as_str)
-        .unwrap_or("user");
+fn decode_content(content: &Value, items: &mut Vec<IrItem>, report: &mut LossReport) {
+    let Some(role) = super::known_role(
+        content.get("role").and_then(Value::as_str),
+        &["user", "model"],
+        "user",
+        report,
+        "contents.role",
+    ) else {
+        return;
+    };
     let parts = content.get("parts").and_then(Value::as_array);
     let Some(parts) = parts else {
         return;
@@ -472,7 +477,7 @@ fn decode_sampling(value: &Value, report: &mut LossReport) -> IrSampling {
         top_p: f32_field(cfg, "topP").or_else(|| f32_field(cfg, "top_p")),
         top_k: u32_field(cfg, "topK").or_else(|| u32_field(cfg, "top_k")),
         max_tokens: u32_field(cfg, "maxOutputTokens").or_else(|| u32_field(cfg, "max_tokens")),
-        stop: stop_values(cfg, &["stopSequences", "stop"]),
+        stop: stop_values(cfg, &["stopSequences", "stop"], report),
         tool_choice,
         parallel_tool_calls: bool_field(value, "parallel_tool_calls"),
         store: bool_field(value, "store"),

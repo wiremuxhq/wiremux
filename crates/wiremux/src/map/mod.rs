@@ -1256,20 +1256,53 @@ pub(super) fn reject_sampling_number(
     Ok(())
 }
 
-fn stop_values(value: &Value, keys: &[&str]) -> Vec<String> {
+/// A missing role uses `fallback`. A present role that is not allowed is dropped.
+pub(super) fn known_role<'a>(
+    raw: Option<&'a str>,
+    allowed: &[&str],
+    fallback: &'static str,
+    report: &mut LossReport,
+    path: &str,
+) -> Option<&'a str> {
+    match raw {
+        None => Some(fallback),
+        Some(role) if allowed.contains(&role) => Some(role),
+        Some(role) => {
+            report.record(path, LossAction::Drop, format!("{role} is not a role"));
+            None
+        }
+    }
+}
+
+fn stop_values(value: &Value, keys: &[&str], report: &mut LossReport) -> Vec<String> {
     for key in keys {
         let Some(raw) = value.get(*key) else {
             continue;
         };
-        if let Some(s) = raw.as_str() {
-            return vec![s.to_string()];
+        if let Some(text) = raw.as_str() {
+            return vec![text.to_string()];
         }
         if let Some(arr) = raw.as_array() {
-            return arr
-                .iter()
-                .filter_map(|item| item.as_str().map(str::to_string))
-                .collect();
+            let mut out = Vec::new();
+            let mut bad = false;
+            for item in arr {
+                if let Some(text) = item.as_str() {
+                    out.push(text.to_string());
+                } else {
+                    bad = true;
+                }
+            }
+            if bad {
+                report.record(*key, LossAction::Drop, "stop value is not a string");
+            }
+            return out;
         }
+        report.record(
+            *key,
+            LossAction::Drop,
+            format!("stop must be a string or array, got {}", json_kind(raw)),
+        );
+        return Vec::new();
     }
     Vec::new()
 }
