@@ -355,6 +355,27 @@ pub(super) fn dropped_details(report: &LossReport) -> Vec<&str> {
         .collect()
 }
 
+/// A blank or whitespace tool id is not a call. Converse already
+/// rejects it. The other wires must fail here too, before encode
+/// writes `""`, `"  "`, or a Messages id of `_`.
+pub(super) fn reject_blank_tool_ids(ir: &IrRequest) -> Result<(), MapError> {
+    for (idx, item) in ir.items.iter().enumerate() {
+        let call_id = match item {
+            IrItem::FunctionCall { call_id, .. }
+            | IrItem::CustomToolCall { call_id, .. }
+            | IrItem::FunctionOutput { call_id, .. } => call_id.as_str(),
+            _ => continue,
+        };
+        if call_id.trim().is_empty() {
+            return Err(MapError::hard(
+                format!("items[{idx}]"),
+                "tool call id is empty",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Chat Completions, Responses, and Gemini have no vendor field for a
 /// failed tool. A drop would send the same body as a success. Messages
 /// writes `is_error` and Converse writes `toolResult.status`, so those
@@ -1721,5 +1742,72 @@ mod tests {
     fn snake_and_kebab_leave_dots() {
         assert_eq!(convert_case("crm.lookupId", '_'), "crm.lookup_id");
         assert_eq!(convert_case("crm.lookup_id", '-'), "crm.lookup-id");
+    }
+
+    fn tool_output(call_id: &str) -> IrRequest {
+        IrRequest::new(
+            "m",
+            vec![IrItem::FunctionOutput {
+                call_id: call_id.into(),
+                output: "ok".into(),
+                parts: Vec::new(),
+                is_error: false,
+            }],
+        )
+    }
+
+    #[test]
+    fn blank_tool_id_fails_encode_on_every_wire() {
+        for call_id in ["", "  "] {
+            let ir = tool_output(call_id);
+            let mut report = LossReport::default();
+            for result in [
+                chat::encode(&ir, &[], &mut report).map(|_| ()),
+                messages::encode(&ir, &[], &mut report).map(|_| ()),
+                gemini::encode(&ir, &[], &mut report).map(|_| ()),
+            ] {
+                let err = result.expect_err("blank id");
+                let text = err.to_string();
+                assert!(
+                    text.contains("items[0]") && text.contains("tool call id is empty"),
+                    "{call_id:?} {text}"
+                );
+            }
+            let profile = wiremux_auth::parse_profile_str(
+                "schema_version = 1\nid = \"t\"\nwire = \"responses\"\nauth_scheme = \"bearer\"\n",
+            )
+            .expect("profile");
+            let err = encode(Wire::Responses, &ir, &profile).expect_err("responses");
+            let text = err.to_string();
+            assert!(
+                text.contains("items[0]") && text.contains("tool call id is empty"),
+                "{text}"
+            );
+            let err = converse::encode(&ir, &[], &mut report).expect_err("converse");
+            assert!(err.to_string().contains("toolUseId is empty"), "{err}");
+            let call = IrRequest::new(
+                "m",
+                vec![IrItem::FunctionCall {
+                    call_id: call_id.into(),
+                    name: "read_file".into(),
+                    arguments: "{}".into(),
+                    thought_signature: None,
+                }],
+            );
+            let err = chat::encode(&call, &[], &mut report).expect_err("blank call");
+            let text = err.to_string();
+            assert!(
+                text.contains("items[0]") && text.contains("tool call id is empty"),
+                "{call_id:?} {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonempty_tool_id_still_encodes_on_chat() {
+        let ir = tool_output("call_1");
+        let mut report = LossReport::default();
+        let body = chat::encode(&ir, &[], &mut report).expect("encode");
+        assert_eq!(body["messages"][0]["tool_call_id"], "call_1");
     }
 }

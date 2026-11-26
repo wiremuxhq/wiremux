@@ -760,6 +760,7 @@ pub(super) fn encode(
     prepared: &[PreparedTool],
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
+    super::reject_blank_tool_ids(ir)?;
     super::refuse_tool_error_without_slot(ir, Wire::Gemini)?;
     let mut system_parts = Vec::new();
     let mut contents = Vec::new();

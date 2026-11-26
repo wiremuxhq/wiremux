@@ -501,6 +501,7 @@ pub(super) fn encode(
     tools: &[PreparedTool],
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
+    super::reject_blank_tool_ids(ir)?;
     super::refuse_tool_error_without_slot(ir, Wire::ChatCompletions)?;
     let messages = encode_messages(ir, report);
     if messages.as_array().is_none_or(|rows| rows.is_empty()) {

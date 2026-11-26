@@ -527,6 +527,7 @@ pub(super) fn encode(
     profile: &ResolvedProfile,
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
+    super::reject_blank_tool_ids(ir)?;
     super::refuse_tool_error_without_slot(ir, Wire::Responses)?;
     // Split dotted IR names only when keeping native namespace tools (hard-error).
     // flatten-namespace emits dotted function names on the wire, including Responses.
