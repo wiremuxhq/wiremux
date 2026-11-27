@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.16](https://github.com/wiremuxhq/wiremux/compare/v0.11.15...v0.11.16) (2026-11-27)
+
+
+### Bug Fixes
+
+* hold split custom tool starts until the name arrives ([#761](https://github.com/wiremuxhq/wiremux/issues/761)) ([e9876a6](https://github.com/wiremuxhq/wiremux/commit/e9876a65aa9d0a6baba4342aa6111962d841dbaa))
+* reject blank tool ids on decode and blank call names on encode ([#759](https://github.com/wiremuxhq/wiremux/issues/759)) ([53082a0](https://github.com/wiremuxhq/wiremux/commit/53082a0f8f037a9e37e51d7e793fb125c2c8db3c)), closes [#758](https://github.com/wiremuxhq/wiremux/issues/758)
+
 ## [0.11.15](https://github.com/wiremuxhq/wiremux/compare/v0.11.14...v0.11.15) (2026-11-26)
 
 
