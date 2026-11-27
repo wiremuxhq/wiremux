@@ -9697,6 +9697,198 @@ fn chat_id_then_name_assembles_one_start() {
 }
 
 #[test]
+fn chat_custom_id_then_name_assembles_one_start() {
+    let id_only = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"custom","custom":{"name":""}}]}}]}"#.into(),
+    };
+    let name_only = RawSse {
+        event: None,
+        data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"type":"custom","custom":{"name":"lookup"}}]}}]}"#.into(),
+    };
+    let mut asm = ToolCallAssembler::new();
+    let first = decode_stream_events(Wire::ChatCompletions, &id_only, &chat_profile()).expect("id");
+    let mut out = Vec::new();
+    for ev in first {
+        out.extend(asm.push(ev));
+    }
+    assert!(
+        out.is_empty(),
+        "custom id-only start must wait for the name, got {out:?}"
+    );
+    let second =
+        decode_stream_events(Wire::ChatCompletions, &name_only, &chat_profile()).expect("name");
+    for ev in second {
+        out.extend(asm.push(ev));
+    }
+    assert_eq!(out.len(), 1, "must merge to one custom start, got {out:?}");
+    assert!(
+        matches!(
+            &out[0],
+            IrStreamEvent::CustomToolCallStart { id, name, .. } if id == "call_1" && name == "lookup"
+        ),
+        "merged custom start, got {out:?}"
+    );
+}
+
+#[test]
+fn chat_custom_input_between_id_and_name_stays_one_call() {
+    let frames = [
+        r#"{"id":"chatcmpl-1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"custom","custom":{"name":""}}]}}]}"#,
+        r#"{"id":"chatcmpl-1","choices":[{"delta":{"tool_calls":[{"index":0,"type":"custom","custom":{"input":"{\"q\":1}"}}]}}]}"#,
+        r#"{"id":"chatcmpl-1","choices":[{"delta":{"tool_calls":[{"index":0,"type":"custom","custom":{"name":"lookup"}}]}}]}"#,
+    ];
+    let mut asm = ToolCallAssembler::new();
+    let mut out = Vec::new();
+    for data in frames {
+        let raw = RawSse {
+            event: None,
+            data: data.into(),
+        };
+        for ev in decode_stream_events(Wire::ChatCompletions, &raw, &chat_profile()).expect("dec") {
+            out.extend(asm.push(ev));
+        }
+    }
+    out.extend(asm.flush());
+    let starts: Vec<(&str, &str, u32)> = out
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::CustomToolCallStart { id, name, index } => {
+                Some((id.as_str(), name.as_str(), *index))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        vec![("call_1", "lookup", 0)],
+        "custom input must not split id and name, got {out:?}"
+    );
+    let args: Vec<(&str, u32)> = out
+        .iter()
+        .filter_map(|ev| match ev {
+            IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
+                Some((delta.as_str(), *index))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(args, vec![(r#"{"q":1}"#, 0)], "got {out:?}");
+}
+
+#[test]
+fn mixed_function_and_custom_on_one_index_both_survive() {
+    let function_id = IrStreamEvent::ToolCallStart {
+        id: "call_fn".into(),
+        name: String::new(),
+        thought_signature: None,
+        index: 0,
+    };
+    let function_name = IrStreamEvent::ToolCallStart {
+        id: String::new(),
+        name: "fn_name".into(),
+        thought_signature: None,
+        index: 0,
+    };
+    let custom = IrStreamEvent::CustomToolCallStart {
+        id: "call_cu".into(),
+        name: "lookup".into(),
+        index: 0,
+    };
+
+    let mut function_first = ToolCallAssembler::new();
+    assert!(
+        function_first.push(function_id.clone()).is_empty(),
+        "function id must stay held"
+    );
+    let custom_out = function_first.push(custom.clone());
+    assert!(
+        matches!(
+            custom_out.as_slice(),
+            [IrStreamEvent::CustomToolCallStart { id, name, index: 0 }]
+                if id == "call_cu" && name == "lookup"
+        ),
+        "custom start must not take the function id, got {custom_out:?}"
+    );
+    let function_out = function_first.push(function_name.clone());
+    assert!(
+        matches!(
+            function_out.as_slice(),
+            [IrStreamEvent::ToolCallStart { id, name, index: 0, .. }]
+                if id == "call_fn" && name == "fn_name"
+        ),
+        "function name must join its own id, got {function_out:?}"
+    );
+
+    let mut custom_first = ToolCallAssembler::new();
+    let first = custom_first.push(custom);
+    assert!(
+        matches!(
+            first.as_slice(),
+            [IrStreamEvent::CustomToolCallStart { id, name, index: 0 }]
+                if id == "call_cu" && name == "lookup"
+        ),
+        "complete custom start is emitted on its own, got {first:?}"
+    );
+    assert!(
+        custom_first.push(function_id).is_empty(),
+        "function id must stay held after a custom start on the same index"
+    );
+    let second = custom_first.push(function_name);
+    assert!(
+        matches!(
+            second.as_slice(),
+            [IrStreamEvent::ToolCallStart { id, name, index: 0, .. }]
+                if id == "call_fn" && name == "fn_name"
+        ),
+        "function name must not reuse the custom id, got {second:?}"
+    );
+
+    let mut split_delta = ToolCallAssembler::new();
+    assert!(
+        split_delta
+            .push(IrStreamEvent::ToolCallStart {
+                id: "call_fn".into(),
+                name: String::new(),
+                thought_signature: None,
+                index: 0,
+            })
+            .is_empty()
+    );
+    assert!(
+        split_delta
+            .push(IrStreamEvent::CustomToolCallInputDelta {
+                delta: "print(1)".into(),
+                index: 0,
+            })
+            .is_empty(),
+        "custom input must not release the held function start"
+    );
+    let named = split_delta.push(IrStreamEvent::ToolCallStart {
+        id: String::new(),
+        name: "fn_name".into(),
+        thought_signature: None,
+        index: 0,
+    });
+    assert!(
+        matches!(
+            named.as_slice(),
+            [IrStreamEvent::ToolCallStart { id, name, index: 0, .. }]
+                if id == "call_fn" && name == "fn_name"
+        ),
+        "function start must not include the custom input, got {named:?}"
+    );
+    let tail = split_delta.flush();
+    assert!(
+        matches!(
+            tail.as_slice(),
+            [IrStreamEvent::CustomToolCallInputDelta { delta, index: 0 }] if delta == "print(1)"
+        ),
+        "custom input stays on the custom slot, got {tail:?}"
+    );
+}
+
+#[test]
 fn chat_arguments_between_id_and_name_stay_one_call() {
     let frames = [
         r#"{"id":"chatcmpl-1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":""}}]}}]}"#,
