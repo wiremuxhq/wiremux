@@ -30,7 +30,10 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
             let block = value.get("content_block").unwrap_or(value);
             match block.get("type").and_then(Value::as_str) {
                 Some("tool_use") => Ok(Some(IrStreamEvent::ToolCallStart {
-                    id: str_field(block, "id").unwrap_or_default(),
+                    id: crate::map::require_tool_id(
+                        str_field(block, "id").as_deref(),
+                        "tool_use id",
+                    )?,
                     name: str_field(block, "name").unwrap_or_default(),
                     thought_signature: None,
                     index: block_index(value),

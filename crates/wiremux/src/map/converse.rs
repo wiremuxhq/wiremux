@@ -653,6 +653,7 @@ pub(super) fn encode(
     prepared: &[PreparedTool],
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
+    super::reject_blank_tool_names(ir)?;
     if !ir.model.is_empty() {
         // Bedrock takes the model from the URL path. The JSON body must
         // stay free of modelId, and map must say where the value went.

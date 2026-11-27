@@ -35,7 +35,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         }),
         Some(Value::Array(arr)) => {
             for item in arr {
-                items.extend(decode_input_item(item, &mut report));
+                items.extend(decode_input_item(item, &mut report)?);
             }
         }
         _ => {}
@@ -56,53 +56,68 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     Ok((ir, report))
 }
 
-fn decode_input_item(item: &Value, report: &mut LossReport) -> Vec<IrItem> {
+fn decode_input_item(item: &Value, report: &mut LossReport) -> Result<Vec<IrItem>, MapError> {
     if let Some(text) = item.as_str() {
-        return vec![IrItem::User {
+        return Ok(vec![IrItem::User {
             parts: vec![IrPart::Text(text.to_string())],
-        }];
+        }]);
     }
     let ty = item.get("type").and_then(Value::as_str).unwrap_or("");
     match ty {
-        "function_call" => vec![IrItem::FunctionCall {
-            call_id: str_field(item, "call_id")
-                .or_else(|| str_field(item, "id"))
-                .unwrap_or_default(),
-            name: qualify_call_name(item),
-            arguments: item
-                .get("arguments")
-                .map(value_as_string)
-                .unwrap_or_else(|| "{}".into()),
-            thought_signature: None,
-        }],
-        "custom_tool_call" => vec![IrItem::CustomToolCall {
-            call_id: str_field(item, "call_id")
-                .or_else(|| str_field(item, "id"))
-                .unwrap_or_default(),
-            name: str_field(item, "name").unwrap_or_default(),
-            input: item.get("input").map(value_as_string).unwrap_or_default(),
-            responses_item: Some(item.clone()),
-        }],
-        "function_call_output" => vec![decode_function_output(item)],
-        "reasoning" => vec![IrItem::Reasoning {
+        "function_call" => {
+            let call_id = super::require_tool_id(
+                str_field(item, "call_id")
+                    .or_else(|| str_field(item, "id"))
+                    .as_deref(),
+                "function_call call_id",
+            )?;
+            Ok(vec![IrItem::FunctionCall {
+                call_id,
+                name: qualify_call_name(item),
+                arguments: item
+                    .get("arguments")
+                    .map(value_as_string)
+                    .unwrap_or_else(|| "{}".into()),
+                thought_signature: None,
+            }])
+        }
+        "custom_tool_call" => {
+            let call_id = super::require_tool_id(
+                str_field(item, "call_id")
+                    .or_else(|| str_field(item, "id"))
+                    .as_deref(),
+                "custom_tool_call call_id",
+            )?;
+            Ok(vec![IrItem::CustomToolCall {
+                call_id,
+                name: str_field(item, "name").unwrap_or_default(),
+                input: item.get("input").map(value_as_string).unwrap_or_default(),
+                responses_item: Some(item.clone()),
+            }])
+        }
+        "function_call_output" => Ok(vec![decode_function_output(item)?]),
+        "reasoning" => Ok(vec![IrItem::Reasoning {
             encrypted: str_field(item, "encrypted_content"),
             summary: reasoning_summary(item),
             raw: Some(item.clone()),
-        }],
-        "message" | "" => decode_message_item(item, report),
-        other if is_hosted_item(other) => vec![IrItem::HostedToolCall {
+        }]),
+        "message" | "" => Ok(decode_message_item(item, report)),
+        other if is_hosted_item(other) => Ok(vec![IrItem::HostedToolCall {
             kind: other.to_string(),
             raw: item.clone(),
-        }],
-        other => vec![IrItem::Unknown {
+        }]),
+        other => Ok(vec![IrItem::Unknown {
             type_name: other.to_string(),
             raw: item.clone(),
-        }],
+        }]),
     }
 }
 
-fn decode_function_output(item: &Value) -> IrItem {
-    let call_id = str_field(item, "call_id").unwrap_or_default();
+fn decode_function_output(item: &Value) -> Result<IrItem, MapError> {
+    let call_id = super::require_tool_id(
+        str_field(item, "call_id").as_deref(),
+        "function_call_output call_id",
+    )?;
     let (output, parts) = match item.get("output") {
         Some(Value::Array(arr)) => {
             let decoded: Vec<IrPart> = arr
@@ -130,12 +145,12 @@ fn decode_function_output(item: &Value) -> IrItem {
         Some(other) => (value_as_string(other), Vec::new()),
         None => (String::new(), Vec::new()),
     };
-    IrItem::FunctionOutput {
+    Ok(IrItem::FunctionOutput {
         call_id,
         output,
         parts,
         is_error: false,
-    }
+    })
 }
 
 fn is_hosted_item(ty: &str) -> bool {
@@ -528,6 +543,7 @@ pub(super) fn encode(
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
     super::reject_blank_tool_ids(ir)?;
+    super::reject_blank_tool_names(ir)?;
     super::refuse_tool_error_without_slot(ir, Wire::Responses)?;
     // Split dotted IR names only when keeping native namespace tools (hard-error).
     // flatten-namespace emits dotted function names on the wire, including Responses.

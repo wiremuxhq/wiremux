@@ -67,11 +67,10 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
     if let Some(start) = value.get("contentBlockStart")
         && let Some(tool) = start.pointer("/start/toolUse")
     {
-        let id = tool
-            .get("toolUseId")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
+        let id = crate::map::require_tool_id(
+            tool.get("toolUseId").and_then(Value::as_str),
+            "toolUse toolUseId",
+        )?;
         let name = tool
             .get("name")
             .and_then(Value::as_str)
@@ -690,11 +689,10 @@ pub(super) fn decode_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapEr
             .get("toolUse")
             .filter(|tool| converse_tool_visible(tool))
         {
-            let id = tool
-                .get("toolUseId")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
+            let id = crate::map::require_tool_id(
+                tool.get("toolUseId").and_then(Value::as_str),
+                "toolUse toolUseId",
+            )?;
             let name = tool
                 .get("name")
                 .and_then(Value::as_str)

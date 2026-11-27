@@ -1632,10 +1632,11 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
             if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
                     check_index(call, "index", MAX_TOOL_CALL_INDEX, "tool call")?;
-                    out.extend(complete_chat_tool_call(call)?);
+                    out.extend(complete_chat_tool_call(call, true)?);
                 }
             } else if let Some(fc) = message.get("function_call").filter(|v| v.is_object()) {
-                out.extend(complete_chat_tool_call(fc)?);
+                // The legacy `function_call` object has no id field.
+                out.extend(complete_chat_tool_call(fc, false)?);
             }
         }
         if let Some(ev) = super::chat::chat_logprobs_event(choice) {
@@ -1659,12 +1660,24 @@ fn decode_chat_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
     Ok(out)
 }
 
-fn complete_chat_tool_call(call: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
+fn complete_chat_id(call: &Value, required: bool) -> Result<String, MapError> {
+    match str_field(call, "id") {
+        Some(id) if !id.trim().is_empty() => Ok(id),
+        Some(_) => Err(MapError::Invalid("tool call id is empty".into())),
+        None if required => Err(MapError::Invalid("tool call id is empty".into())),
+        None => Ok(String::new()),
+    }
+}
+
+fn complete_chat_tool_call(
+    call: &Value,
+    id_required: bool,
+) -> Result<Vec<IrStreamEvent>, MapError> {
     if let Some(ty) = call.get("type").and_then(Value::as_str)
         && ty == "custom"
     {
         let custom = call.get("custom").unwrap_or(call);
-        let id = str_field(call, "id").unwrap_or_default();
+        let id = complete_chat_id(call, id_required)?;
         let name = str_field(custom, "name").unwrap_or_default();
         let input = super::json_text_field(custom, "input")?;
         let index = super::chat::tool_call_index(call);
@@ -1684,7 +1697,7 @@ fn complete_chat_tool_call(call: &Value) -> Result<Vec<IrStreamEvent>, MapError>
         }]);
     }
     let func = call.get("function").unwrap_or(call);
-    let id = str_field(call, "id").unwrap_or_default();
+    let id = complete_chat_id(call, id_required)?;
     let name = str_field(func, "name").unwrap_or_default();
     let args = super::json_text_field(func, "arguments")?;
     let index = super::chat::tool_call_index(call);
@@ -1751,7 +1764,10 @@ fn decode_messages_complete(value: &Value) -> Result<Vec<IrStreamEvent>, MapErro
                     let index = tool_index;
                     tool_index = tool_index.saturating_add(1);
                     out.push(IrStreamEvent::ToolCallStart {
-                        id: str_field(block, "id").unwrap_or_default(),
+                        id: crate::map::require_tool_id(
+                            str_field(block, "id").as_deref(),
+                            "tool_use id",
+                        )?,
                         name: str_field(block, "name").unwrap_or_default(),
                         thought_signature: None,
                         index,
@@ -2286,9 +2302,12 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
                     out.push(ev);
                 }
                 out.push(IrStreamEvent::ToolCallStart {
-                    id: str_field(item, "call_id")
-                        .or_else(|| str_field(item, "id"))
-                        .unwrap_or_default(),
+                    id: crate::map::require_tool_id(
+                        str_field(item, "call_id")
+                            .or_else(|| str_field(item, "id"))
+                            .as_deref(),
+                        "function_call call_id",
+                    )?,
                     name: str_field(item, "name").unwrap_or_default(),
                     thought_signature: None,
                     index,
@@ -2317,9 +2336,12 @@ fn complete_responses_output_events(value: &Value) -> Result<Vec<IrStreamEvent>,
                     out.push(ev);
                 }
                 out.push(IrStreamEvent::CustomToolCallStart {
-                    id: str_field(item, "call_id")
-                        .or_else(|| str_field(item, "id"))
-                        .unwrap_or_default(),
+                    id: crate::map::require_tool_id(
+                        str_field(item, "call_id")
+                            .or_else(|| str_field(item, "id"))
+                            .as_deref(),
+                        "custom_tool_call call_id",
+                    )?,
                     name: str_field(item, "name").unwrap_or_default(),
                     index,
                 });
@@ -2821,12 +2843,12 @@ wire = "converse"
                 keep: "no",
             },
             Row {
-                label: "responses named tool beside error",
+                label: "responses tool call without an id",
                 wire: Wire::Responses,
                 wire_name: "responses",
                 body: r#"{"status":"completed","output":[{"type":"function_call","name":"lookup","arguments":"{}"}],"error":{"message":"please wait"}}"#,
-                error_has: None,
-                keep: "lookup",
+                error_has: Some("function_call call_id is empty"),
+                keep: "",
             },
             Row {
                 label: "responses audio beside error",

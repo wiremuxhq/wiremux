@@ -160,9 +160,12 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                 }
                 super::json_text_field(item, "arguments")?;
                 Ok(Some(IrStreamEvent::ToolCallStart {
-                    id: str_field(item, "call_id")
-                        .or_else(|| str_field(item, "id"))
-                        .unwrap_or_default(),
+                    id: crate::map::require_tool_id(
+                        str_field(item, "call_id")
+                            .or_else(|| str_field(item, "id"))
+                            .as_deref(),
+                        "function_call call_id",
+                    )?,
                     name: str_field(item, "name").unwrap_or_default(),
                     thought_signature: None,
                     index: output_index(value),
@@ -178,9 +181,12 @@ pub(super) fn decode(name: &str, value: &Value) -> Result<Option<IrStreamEvent>,
                 }
                 super::json_text_field(item, "input")?;
                 Ok(Some(IrStreamEvent::CustomToolCallStart {
-                    id: str_field(item, "call_id")
-                        .or_else(|| str_field(item, "id"))
-                        .unwrap_or_default(),
+                    id: crate::map::require_tool_id(
+                        str_field(item, "call_id")
+                            .or_else(|| str_field(item, "id"))
+                            .as_deref(),
+                        "custom_tool_call call_id",
+                    )?,
                     name: str_field(item, "name").unwrap_or_default(),
                     index: output_index(value),
                 }))
@@ -370,9 +376,12 @@ fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
                 out.push(ev);
             }
             out.push(IrStreamEvent::ToolCallStart {
-                id: str_field(item, "call_id")
-                    .or_else(|| str_field(item, "id"))
-                    .unwrap_or_default(),
+                id: crate::map::require_tool_id(
+                    str_field(item, "call_id")
+                        .or_else(|| str_field(item, "id"))
+                        .as_deref(),
+                    "function_call call_id",
+                )?,
                 name: str_field(item, "name").unwrap_or_default(),
                 thought_signature: None,
                 index,
@@ -400,9 +409,12 @@ fn added_item_events(value: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
                 out.push(ev);
             }
             out.push(IrStreamEvent::CustomToolCallStart {
-                id: str_field(item, "call_id")
-                    .or_else(|| str_field(item, "id"))
-                    .unwrap_or_default(),
+                id: crate::map::require_tool_id(
+                    str_field(item, "call_id")
+                        .or_else(|| str_field(item, "id"))
+                        .as_deref(),
+                    "custom_tool_call call_id",
+                )?,
                 name: str_field(item, "name").unwrap_or_default(),
                 index,
             });
