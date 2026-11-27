@@ -2569,7 +2569,7 @@ dependencies = [
 
 [[package]]
 name = "wiremux"
-version = "0.11.15"
+version = "0.11.16"
 dependencies = [
  "bytes",
  "clap",
@@ -2587,7 +2587,7 @@ dependencies = [
 
 [[package]]
 name = "wiremux-auth"
-version = "0.11.15"
+version = "0.11.16"
 dependencies = [
  "fs4",
  "getrandom 0.4.3",
