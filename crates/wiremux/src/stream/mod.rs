@@ -970,17 +970,20 @@ fn expand_responses_function_call(
 
 /// Merge Chat tool-call starts that arrive as id-only then name-only.
 ///
-/// Pending starts are keyed by `index` so interleaved parallel calls
-/// do not overwrite each other. Argument deltas stay on that index
+/// Function and custom calls use the same hold on separate slots, so
+/// a mixed index does not release either call early. A custom start
+/// is not released until its name arrives, same as a function start.
+/// Pending starts are keyed by index and kind so interleaved parallel
+/// calls do not overwrite each other. Argument deltas stay on that index
 /// until the id and the name have both arrived, including deltas that
 /// arrive before any start. After the start is emitted, later deltas
 /// for that index pass through.
 #[derive(Debug, Default)]
 pub struct ToolCallAssembler {
-    pending: std::collections::BTreeMap<u32, PendingToolStart>,
-    /// Indexes whose start was already emitted. Later argument deltas
-    /// for those indexes must not wait for another start.
-    started: std::collections::BTreeSet<u32>,
+    pending: std::collections::BTreeMap<(u32, bool), PendingToolStart>,
+    /// Index and kind whose start was already emitted. Later argument
+    /// deltas for that pair must not wait for another start.
+    started: std::collections::BTreeSet<(u32, bool)>,
 }
 
 #[derive(Debug)]
@@ -990,6 +993,7 @@ struct PendingToolStart {
     thought_signature: Option<String>,
     index: u32,
     args: Vec<String>,
+    custom: bool,
 }
 
 impl ToolCallAssembler {
@@ -1010,28 +1014,15 @@ impl ToolCallAssembler {
                 name,
                 thought_signature,
                 index,
-            } => self.push_start(id, name, thought_signature, index),
+            } => self.push_start(id, name, thought_signature, index, false),
+            IrStreamEvent::CustomToolCallStart { id, name, index } => {
+                self.push_start(id, name, None, index, true)
+            }
             IrStreamEvent::ToolCallArgDelta { delta, index } => {
-                if let Some(pending) = self.pending.get_mut(&index) {
-                    pending.args.push(delta);
-                    return Vec::new();
-                }
-                if self.started.contains(&index) {
-                    return vec![IrStreamEvent::ToolCallArgDelta { delta, index }];
-                }
-                // No start yet. Hold the fragment so a later start can
-                // lead it. `flush` still releases it if the name never comes.
-                self.pending.insert(
-                    index,
-                    PendingToolStart {
-                        id: String::new(),
-                        name: String::new(),
-                        thought_signature: None,
-                        index,
-                        args: vec![delta],
-                    },
-                );
-                Vec::new()
+                self.push_delta(delta, index, false)
+            }
+            IrStreamEvent::CustomToolCallInputDelta { delta, index } => {
+                self.push_delta(delta, index, true)
             }
             other => {
                 // Every Chat chunk carries `id` before the tool fields.
@@ -1057,12 +1048,45 @@ impl ToolCallAssembler {
         let pending = std::mem::take(&mut self.pending);
         let mut out = Vec::new();
         for (_, pending) in pending {
-            if !pending.id.is_empty() || !pending.name.is_empty() {
-                self.started.insert(pending.index);
-            }
-            out.extend(pending.into_events());
+            out.extend(self.emit_pending(pending));
         }
         out
+    }
+
+    fn push_delta(&mut self, delta: String, index: u32, custom: bool) -> Vec<IrStreamEvent> {
+        let key = (index, custom);
+        if let Some(pending) = self.pending.get_mut(&key) {
+            pending.args.push(delta);
+            return Vec::new();
+        }
+        if self.started.contains(&key) {
+            return vec![if custom {
+                IrStreamEvent::CustomToolCallInputDelta { delta, index }
+            } else {
+                IrStreamEvent::ToolCallArgDelta { delta, index }
+            }];
+        }
+        // No start yet. Hold the fragment so a later start can lead it.
+        // `flush` still releases it if the name never comes.
+        self.pending.insert(
+            key,
+            PendingToolStart {
+                id: String::new(),
+                name: String::new(),
+                thought_signature: None,
+                index,
+                args: vec![delta],
+                custom,
+            },
+        );
+        Vec::new()
+    }
+
+    fn emit_pending(&mut self, pending: PendingToolStart) -> Vec<IrStreamEvent> {
+        if !pending.id.is_empty() || !pending.name.is_empty() {
+            self.started.insert((pending.index, pending.custom));
+        }
+        pending.into_events()
     }
 
     fn push_start(
@@ -1071,14 +1095,16 @@ impl ToolCallAssembler {
         name: String,
         thought_signature: Option<String>,
         index: u32,
+        custom: bool,
     ) -> Vec<IrStreamEvent> {
         // A later chunk can repeat the id after the call already started.
         // That is the same call. A new pending start would flush as a
         // second tool with an empty name.
-        if self.started.contains(&index) {
+        let key = (index, custom);
+        if self.started.contains(&key) {
             return Vec::new();
         }
-        let (id, name, thought_signature, args) = if let Some(prev) = self.pending.remove(&index) {
+        let (id, name, thought_signature, args) = if let Some(prev) = self.pending.remove(&key) {
             (
                 if id.is_empty() { prev.id } else { id },
                 if name.is_empty() { prev.name } else { name },
@@ -1094,12 +1120,13 @@ impl ToolCallAssembler {
             thought_signature,
             index,
             args,
+            custom,
         };
         if pending.id.is_empty() || pending.name.is_empty() {
-            self.pending.insert(index, pending);
+            self.pending.insert(key, pending);
             Vec::new()
         } else {
-            self.started.insert(index);
+            self.started.insert(key);
             pending.into_events()
         }
     }
@@ -1111,18 +1138,33 @@ impl PendingToolStart {
         // Arguments that never received an id or a name are still the
         // call's fragments. An empty start would look like a second call.
         if !self.id.is_empty() || !self.name.is_empty() {
-            out.push(IrStreamEvent::ToolCallStart {
-                id: self.id,
-                name: self.name,
-                thought_signature: self.thought_signature,
-                index: self.index,
-            });
+            if self.custom {
+                out.push(IrStreamEvent::CustomToolCallStart {
+                    id: self.id,
+                    name: self.name,
+                    index: self.index,
+                });
+            } else {
+                out.push(IrStreamEvent::ToolCallStart {
+                    id: self.id,
+                    name: self.name,
+                    thought_signature: self.thought_signature,
+                    index: self.index,
+                });
+            }
         }
         for delta in self.args {
-            out.push(IrStreamEvent::ToolCallArgDelta {
-                delta,
-                index: self.index,
-            });
+            if self.custom {
+                out.push(IrStreamEvent::CustomToolCallInputDelta {
+                    delta,
+                    index: self.index,
+                });
+            } else {
+                out.push(IrStreamEvent::ToolCallArgDelta {
+                    delta,
+                    index: self.index,
+                });
+            }
         }
         out
     }
