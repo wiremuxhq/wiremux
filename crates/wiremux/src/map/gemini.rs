@@ -26,7 +26,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
         });
     }
     for content in super::array_or_drop(value, "contents", &mut report) {
-        decode_content(content, &mut items, &mut report);
+        decode_content(content, &mut items, &mut report)?;
     }
     let tools = decode_tools(value);
     let ir = IrRequest {
@@ -107,7 +107,11 @@ fn unmatched_call_id(items: &[IrItem], name: &str, skip_trailing_user: bool) -> 
         .find_map(|item| unmatched_id(item, name, &used).map(str::to_string))
 }
 
-fn decode_content(content: &Value, items: &mut Vec<IrItem>, report: &mut LossReport) {
+fn decode_content(
+    content: &Value,
+    items: &mut Vec<IrItem>,
+    report: &mut LossReport,
+) -> Result<(), MapError> {
     let Some(role) = super::known_role(
         content.get("role").and_then(Value::as_str),
         &["user", "model"],
@@ -115,11 +119,11 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>, report: &mut LossRep
         report,
         "contents.role",
     ) else {
-        return;
+        return Ok(());
     };
     let parts = content.get("parts").and_then(Value::as_array);
     let Some(parts) = parts else {
-        return;
+        return Ok(());
     };
     let mut text_parts = Vec::new();
     for part in parts {
@@ -128,7 +132,7 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>, report: &mut LossRep
             let name = str_field(fc, "name").unwrap_or_default();
             let args = fc.get("args").cloned().unwrap_or_else(|| json!({}));
             items.push(IrItem::FunctionCall {
-                call_id: crate::stream::gemini_call_id(fc, &name, items.len()),
+                call_id: crate::stream::gemini_call_id(fc, &name, items.len())?,
                 name,
                 arguments: args.to_string(),
                 thought_signature: part
@@ -147,13 +151,16 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>, report: &mut LossRep
                 .get("response")
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "{}".into());
-            let call_id = fr
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .or_else(|| unmatched_call_id(items, &name, skip_trailing_user))
-                .unwrap_or(name);
+            let call_id = match fr.get("id") {
+                Some(Value::String(id)) if id.trim().is_empty() => {
+                    return Err(MapError::Invalid("functionResponse id is empty".into()));
+                }
+                Some(Value::String(id)) => id.clone(),
+                _ => unmatched_call_id(items, &name, skip_trailing_user).unwrap_or(name),
+            };
+            if call_id.trim().is_empty() {
+                return Err(MapError::Invalid("functionResponse id is empty".into()));
+            }
             items.push(IrItem::FunctionOutput {
                 call_id,
                 output,
@@ -284,6 +291,7 @@ fn decode_content(content: &Value, items: &mut Vec<IrItem>, report: &mut LossRep
         }
     }
     flush_parts(role, &mut text_parts, items);
+    Ok(())
 }
 
 fn decode_function_response_parts(fr: &Value) -> Vec<IrPart> {
@@ -761,6 +769,7 @@ pub(super) fn encode(
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
     super::reject_blank_tool_ids(ir)?;
+    super::reject_blank_tool_names(ir)?;
     super::refuse_tool_error_without_slot(ir, Wire::Gemini)?;
     let mut system_parts = Vec::new();
     let mut contents = Vec::new();

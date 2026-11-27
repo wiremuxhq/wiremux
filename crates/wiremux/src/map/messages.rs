@@ -22,7 +22,7 @@ pub(super) fn decode(value: &Value) -> Result<(IrRequest, LossReport), MapError>
     decode_system(value.get("system"), &mut items);
 
     for msg in super::array_or_drop(value, "messages", &mut report) {
-        decode_message(msg, &mut items, &mut report);
+        decode_message(msg, &mut items, &mut report)?;
     }
 
     let tools = value
@@ -74,7 +74,11 @@ fn decode_system(system: Option<&Value>, items: &mut Vec<IrItem>) {
     }
 }
 
-fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport) {
+fn decode_message(
+    msg: &Value,
+    items: &mut Vec<IrItem>,
+    report: &mut LossReport,
+) -> Result<(), MapError> {
     let Some(role) = super::known_role(
         msg.get("role").and_then(Value::as_str),
         &["user", "assistant"],
@@ -82,7 +86,7 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport)
         report,
         "messages.role",
     ) else {
-        return;
+        return Ok(());
     };
     let content = msg.get("content");
     match role {
@@ -91,21 +95,23 @@ fn decode_message(msg: &Value, items: &mut Vec<IrItem>, report: &mut LossReport)
     }
 }
 
-fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) {
+fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), MapError> {
     if let Some(Value::String(text)) = content {
         items.push(IrItem::Assistant {
             parts: vec![IrPart::Text(text.clone())],
             phase: None,
         });
-        return;
+        return Ok(());
     }
     let mut parts = Vec::new();
     for block in content_blocks(content) {
         match block.get("type").and_then(Value::as_str).unwrap_or("text") {
             "tool_use" => {
                 flush_assistant(&mut parts, items);
+                let call_id =
+                    super::require_tool_id(str_field(block, "id").as_deref(), "tool_use id")?;
                 items.push(IrItem::FunctionCall {
-                    call_id: str_field(block, "id").unwrap_or_default(),
+                    call_id,
                     name: str_field(block, "name").unwrap_or_default(),
                     arguments: block
                         .get("input")
@@ -135,23 +141,28 @@ fn decode_assistant(content: Option<&Value>, items: &mut Vec<IrItem>) {
         }
     }
     flush_assistant(&mut parts, items);
+    Ok(())
 }
 
-fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) {
+fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) -> Result<(), MapError> {
     if let Some(Value::String(text)) = content {
         items.push(IrItem::User {
             parts: vec![IrPart::Text(text.clone())],
         });
-        return;
+        return Ok(());
     }
     let mut parts = Vec::new();
     for block in content_blocks(content) {
         match block.get("type").and_then(Value::as_str).unwrap_or("text") {
             "tool_result" => {
                 flush_user(&mut parts, items);
+                let call_id = super::require_tool_id(
+                    str_field(block, "tool_use_id").as_deref(),
+                    "tool_result tool_use_id",
+                )?;
                 let (output, result_parts) = decode_tool_result(block);
                 items.push(IrItem::FunctionOutput {
-                    call_id: str_field(block, "tool_use_id").unwrap_or_default(),
+                    call_id,
                     output,
                     parts: result_parts,
                     is_error: block
@@ -168,6 +179,7 @@ fn decode_user(content: Option<&Value>, items: &mut Vec<IrItem>) {
         }
     }
     flush_user(&mut parts, items);
+    Ok(())
 }
 
 fn flush_assistant(parts: &mut Vec<IrPart>, items: &mut Vec<IrItem>) {
@@ -576,6 +588,7 @@ pub(super) fn encode(
     report: &mut LossReport,
 ) -> Result<Value, MapError> {
     super::reject_blank_tool_ids(ir)?;
+    super::reject_blank_tool_names(ir)?;
     let mut tool_ids = HashMap::new();
     let (system, messages) = encode_items(ir, &mut tool_ids, report);
     // A system prompt with no turn is not a request Anthropic will accept.

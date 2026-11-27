@@ -43,6 +43,9 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
             return Err(singular_tool_limit());
         }
         if let Some(call) = calls.first() {
+            if str_field(call, "id").is_some_and(|id| id.trim().is_empty()) {
+                return Err(MapError::Invalid("tool call id is empty".into()));
+            }
             return Ok(Some(decode_tool_call(call, value)));
         }
     }
@@ -53,6 +56,9 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
         super::json_text_field(function_body(fc), "arguments")?;
         if call_bundles_arguments(fc) {
             return Err(singular_tool_limit());
+        }
+        if str_field(fc, "id").is_some_and(|id| id.trim().is_empty()) {
+            return Err(MapError::Invalid("tool call id is empty".into()));
         }
         return Ok(Some(decode_tool_call(fc, value)));
     }
@@ -551,6 +557,9 @@ fn is_custom_tool_call(call: &Value) -> bool {
 }
 
 fn expand_custom_tool_call(call: &Value, chunk: &Value) -> Result<Vec<IrStreamEvent>, MapError> {
+    if str_field(call, "id").is_some_and(|id| id.trim().is_empty()) {
+        return Err(MapError::Invalid("tool call id is empty".into()));
+    }
     let custom = call.get("custom").unwrap_or(call);
     let id = str_field(call, "id").unwrap_or_default();
     let name = str_field(custom, "name").unwrap_or_default();
@@ -578,6 +587,9 @@ pub(super) fn expand_tool_call(
     call: &Value,
     chunk: &Value,
 ) -> Result<Vec<IrStreamEvent>, MapError> {
+    if str_field(call, "id").is_some_and(|id| id.trim().is_empty()) {
+        return Err(MapError::Invalid("tool call id is empty".into()));
+    }
     if is_custom_tool_call(call) {
         return expand_custom_tool_call(call, chunk);
     }

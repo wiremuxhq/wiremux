@@ -376,6 +376,34 @@ pub(super) fn reject_blank_tool_ids(ir: &IrRequest) -> Result<(), MapError> {
     Ok(())
 }
 
+/// A function or custom tool call with no name is not a call.
+/// Tool definitions already fail this way. The call must too.
+pub(super) fn reject_blank_tool_names(ir: &IrRequest) -> Result<(), MapError> {
+    for (idx, item) in ir.items.iter().enumerate() {
+        let name = match item {
+            IrItem::FunctionCall { name, .. } | IrItem::CustomToolCall { name, .. } => {
+                name.as_str()
+            }
+            _ => continue,
+        };
+        if name.trim().is_empty() {
+            return Err(MapError::hard(
+                format!("items[{idx}]"),
+                "tool call name is empty",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Missing, empty, and whitespace-only tool ids are not an identity.
+pub(crate) fn require_tool_id(id: Option<&str>, what: &str) -> Result<String, MapError> {
+    match id {
+        Some(id) if !id.trim().is_empty() => Ok(id.to_string()),
+        _ => Err(MapError::Invalid(format!("{what} is empty"))),
+    }
+}
+
 /// Chat Completions, Responses, and Gemini have no vendor field for a
 /// failed tool. A drop would send the same body as a success. Messages
 /// writes `is_error` and Converse writes `toolResult.status`, so those
@@ -1809,5 +1837,159 @@ mod tests {
         let mut report = LossReport::default();
         let body = chat::encode(&ir, &[], &mut report).expect("encode");
         assert_eq!(body["messages"][0]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn blank_tool_id_fails_request_decode() {
+        let cases: &[(_, &[u8], &str)] = &[
+            (
+                Wire::Messages,
+                br#"{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"  ","name":"read_file","input":{}}]}]}"#,
+                "tool_use id is empty",
+            ),
+            (
+                Wire::Messages,
+                br#"{"messages":[{"role":"assistant","content":[{"type":"tool_use","name":"read_file","input":{}}]}]}"#,
+                "tool_use id is empty",
+            ),
+            (
+                Wire::Messages,
+                br#"{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"","content":"ok"}]}]}"#,
+                "tool_result tool_use_id is empty",
+            ),
+            (
+                Wire::Responses,
+                br#"{"input":[{"type":"function_call","call_id":" ","name":"read_file","arguments":"{}"}]}"#,
+                "function_call call_id is empty",
+            ),
+            (
+                Wire::Responses,
+                br#"{"input":[{"type":"custom_tool_call","call_id":"","name":"read_file","input":"{}"}]}"#,
+                "custom_tool_call call_id is empty",
+            ),
+            (
+                Wire::Responses,
+                br#"{"input":[{"type":"function_call_output","call_id":"  ","output":"ok"}]}"#,
+                "function_call_output call_id is empty",
+            ),
+            (
+                Wire::Gemini,
+                br#"{"contents":[{"role":"model","parts":[{"functionCall":{"id":"","name":"read_file","args":{}}}]}]}"#,
+                "functionCall id is empty",
+            ),
+            (
+                Wire::Gemini,
+                br#"{"contents":[{"role":"model","parts":[{"functionCall":{"id":"  ","name":"read_file","args":{}}}]}]}"#,
+                "functionCall id is empty",
+            ),
+            (
+                Wire::Gemini,
+                br#"{"contents":[{"role":"user","parts":[{"functionResponse":{"id":"","name":"read_file","response":{"ok":true}}}]}]}"#,
+                "functionResponse id is empty",
+            ),
+        ];
+        for (wire, body, detail) in cases {
+            let err = decode(*wire, body).expect_err(detail);
+            assert!(
+                err.to_string().contains(detail),
+                "{wire:?} {detail} got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn gemini_omitted_function_call_id_still_synthesizes() {
+        let body = br#"{"contents":[{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{}}}]}]}"#;
+        let (ir, _) = decode(Wire::Gemini, body).expect("omitted id");
+        match &ir.items[0] {
+            crate::ir::IrItem::FunctionCall { call_id, .. } => {
+                assert_eq!(call_id, "read_file#0");
+            }
+            other => panic!("expected a function call, got {other:?}"),
+        }
+        let profile =
+            crate::parse_profile_str("schema_version = 1\nid = \"t\"\nwire = \"gemini\"\n")
+                .expect("profile");
+        let (bytes, _) = encode(Wire::Gemini, &ir, &profile).expect("round trip");
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(text.contains("read_file#0"), "{text}");
+    }
+
+    #[test]
+    fn blank_tool_name_fails_encode() {
+        for name in ["", "  "] {
+            for item in [
+                crate::ir::IrItem::FunctionCall {
+                    call_id: "call_1".into(),
+                    name: name.into(),
+                    arguments: "{}".into(),
+                    thought_signature: None,
+                },
+                crate::ir::IrItem::CustomToolCall {
+                    call_id: "call_1".into(),
+                    name: name.into(),
+                    input: "{}".into(),
+                    responses_item: None,
+                },
+            ] {
+                let ir = crate::ir::IrRequest::new("m", vec![item]);
+                let mut report = LossReport::default();
+                for result in [
+                    chat::encode(&ir, &[], &mut report).map(|_| ()),
+                    messages::encode(&ir, &[], &mut report).map(|_| ()),
+                    gemini::encode(&ir, &[], &mut report).map(|_| ()),
+                    converse::encode(&ir, &[], &mut report).map(|_| ()),
+                ] {
+                    let err = result.expect_err("blank name");
+                    let text = err.to_string();
+                    assert!(
+                        text.contains("items[0]") && text.contains("tool call name is empty"),
+                        "{name:?} {text}"
+                    );
+                }
+                let profile = crate::parse_profile_str(
+                    "schema_version = 1\nid = \"t\"\nwire = \"responses\"\nauth_scheme = \"bearer\"\n",
+                )
+                .expect("profile");
+                let err = encode(Wire::Responses, &ir, &profile).expect_err("responses");
+                let text = err.to_string();
+                assert!(
+                    text.contains("items[0]") && text.contains("tool call name is empty"),
+                    "{text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tool_name_with_a_space_still_encodes() {
+        let ir = crate::ir::IrRequest::new(
+            "m",
+            vec![crate::ir::IrItem::FunctionCall {
+                call_id: "call_1".into(),
+                name: "read file".into(),
+                arguments: "{}".into(),
+                thought_signature: None,
+            }],
+        );
+        let mut report = LossReport::default();
+        for body in [
+            chat::encode(&ir, &[], &mut report).expect("chat"),
+            messages::encode(&ir, &[], &mut report).expect("messages"),
+            gemini::encode(&ir, &[], &mut report).expect("gemini"),
+            converse::encode(&ir, &[], &mut report).expect("converse"),
+        ] {
+            assert!(
+                body.to_string().contains("read file"),
+                "name must stay, got {body}"
+            );
+        }
+        let profile = crate::parse_profile_str(
+            "schema_version = 1\nid = \"t\"\nwire = \"responses\"\nauth_scheme = \"bearer\"\n",
+        )
+        .expect("profile");
+        let (bytes, _) = encode(Wire::Responses, &ir, &profile).expect("responses");
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(text.contains("read file"), "{text}");
     }
 }

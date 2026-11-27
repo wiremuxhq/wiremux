@@ -336,7 +336,7 @@ fn decode_stream_events_seq(
     // with no candidate used to be dropped because Ok(None) returned first.
     if matches!(wire, Wire::Gemini)
         && let Ok(value) = serde_json::from_str::<Value>(&raw.data)
-        && let Some(events) = fan_out_gemini_parts(&value, call_seq)
+        && let Some(events) = fan_out_gemini_parts(&value, call_seq)?
     {
         return Ok(events);
     }
@@ -461,7 +461,10 @@ fn gemini_value_has_function_call(value: &Value) -> bool {
         })
 }
 
-fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStreamEvent>> {
+fn fan_out_gemini_parts(
+    value: &Value,
+    call_seq: &mut usize,
+) -> Result<Option<Vec<IrStreamEvent>>, MapError> {
     let seq_at_entry = *call_seq;
     let mut out = Vec::new();
     if let Some(id) = value
@@ -479,7 +482,7 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
         .and_then(Value::as_array)
     {
         for part in parts {
-            out.extend(gemini_part_events(part, call_seq));
+            out.extend(gemini_part_events(part, call_seq)?);
         }
     }
     if let Some(chunks) = value
@@ -659,9 +662,9 @@ fn fan_out_gemini_parts(value: &Value, call_seq: &mut usize) -> Option<Vec<IrStr
     }
     if out.is_empty() {
         *call_seq = seq_at_entry;
-        return None;
+        return Ok(None);
     }
-    Some(out)
+    Ok(Some(out))
 }
 
 /// Why a client or proxy rejects a stream that produced frames and then ended.
@@ -765,7 +768,7 @@ fn gemini_frame_is_terminal(raw: &RawSse) -> bool {
         .is_some_and(|reason| !reason.is_empty())
 }
 
-fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> {
+fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Result<Vec<IrStreamEvent>, MapError> {
     let mut out = Vec::new();
     if part.get("thought").and_then(Value::as_bool) == Some(true)
         && let Some(text) = part
@@ -799,7 +802,7 @@ fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> 
             .map(str::to_string);
         let seq = *call_seq;
         *call_seq += 1;
-        let id = gemini::gemini_call_id(fc, &name, seq);
+        let id = gemini::gemini_call_id(fc, &name, seq)?;
         let index = u32::try_from(seq).unwrap_or(0);
         out.push(IrStreamEvent::ToolCallStart {
             id,
@@ -833,7 +836,7 @@ fn gemini_part_events(part: &Value, call_seq: &mut usize) -> Vec<IrStreamEvent> 
             text: text.to_string(),
         });
     }
-    out
+    Ok(out)
 }
 
 fn expand_complete_tool_call(
@@ -846,7 +849,7 @@ fn expand_complete_tool_call(
     };
     match wire {
         Wire::ChatCompletions => expand_chat_tool_call(first, &value),
-        Wire::Gemini => Ok(expand_gemini_function_call(first, &value)),
+        Wire::Gemini => expand_gemini_function_call(first, &value),
         Wire::Responses => Ok(expand_responses_function_call(first, &value)),
         Wire::Messages | Wire::Converse => Ok(None),
         _ => Ok(None),
@@ -887,16 +890,29 @@ fn expand_chat_tool_call(
     Ok(Some(out))
 }
 
-fn expand_gemini_function_call(first: &IrStreamEvent, value: &Value) -> Option<Vec<IrStreamEvent>> {
-    let parts = value
+fn expand_gemini_function_call(
+    first: &IrStreamEvent,
+    value: &Value,
+) -> Result<Option<Vec<IrStreamEvent>>, MapError> {
+    let Some(parts) = value
         .pointer("/candidates/0/content/parts")
-        .and_then(Value::as_array)?;
-    let part = parts.iter().find(|p| p.get("functionCall").is_some())?;
-    let fc = part.get("functionCall")?;
+        .and_then(Value::as_array)
+    else {
+        return Ok(None);
+    };
+    let Some(part) = parts.iter().find(|p| p.get("functionCall").is_some()) else {
+        return Ok(None);
+    };
+    let Some(fc) = part.get("functionCall") else {
+        return Ok(None);
+    };
     let name = str_field(fc, "name").unwrap_or_default();
-    let args = fc
+    let Some(args) = fc
         .get("args")
-        .filter(|a| a.as_object().is_none_or(|m| !m.is_empty()) && !a.is_null())?;
+        .filter(|a| a.as_object().is_none_or(|m| !m.is_empty()) && !a.is_null())
+    else {
+        return Ok(None);
+    };
     let thought_signature = part
         .get("thoughtSignature")
         .and_then(Value::as_str)
@@ -904,11 +920,12 @@ fn expand_gemini_function_call(first: &IrStreamEvent, value: &Value) -> Option<V
         .map(str::to_string);
     match first {
         IrStreamEvent::Protocol { .. } | IrStreamEvent::ToolCallStart { .. } => {}
-        _ => return None,
+        _ => return Ok(None),
     }
-    Some(vec![
+    let id = gemini::gemini_call_id(fc, &name, 0)?;
+    Ok(Some(vec![
         IrStreamEvent::ToolCallStart {
-            id: gemini::gemini_call_id(fc, &name, 0),
+            id,
             name,
             thought_signature,
             index: 0,
@@ -917,7 +934,7 @@ fn expand_gemini_function_call(first: &IrStreamEvent, value: &Value) -> Option<V
             delta: args.to_string(),
             index: 0,
         },
-    ])
+    ]))
 }
 
 fn expand_responses_function_call(
@@ -1695,6 +1712,155 @@ base_url = "http://127.0.0.1"
     }
 
     #[test]
+    fn blank_tool_id_fails_response_and_stream_decode() {
+        let chat = profile();
+        let messages = wiremux_auth::parse_profile_str(
+            "schema_version = 1\nid = \"t\"\nwire = \"messages\"\nbase_url = \"http://127.0.0.1\"\n",
+        )
+        .expect("messages");
+        let gemini = wiremux_auth::parse_profile_str(
+            "schema_version = 1\nid = \"t\"\nwire = \"gemini\"\nbase_url = \"http://127.0.0.1\"\n",
+        )
+        .expect("gemini");
+        let responses = responses_profile();
+        let converse = converse_profile();
+
+        assert_stream_invalid(
+            Wire::ChatCompletions,
+            &frame(
+                None,
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"  ","type":"function","function":{"name":"read_file","arguments":""}}]}}]}"#,
+            ),
+            &chat,
+            "tool call id is empty",
+        );
+        assert_stream_invalid(
+            Wire::ChatCompletions,
+            &frame(
+                None,
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"read_file"}}]}}]}"#,
+            ),
+            &chat,
+            "tool call id is empty",
+        );
+        let named_later = decode_stream_events(
+            Wire::ChatCompletions,
+            &frame(
+                None,
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"lookup"}}]}}]}"#,
+            ),
+            &chat,
+        )
+        .expect("omitted id still joins a later name");
+        assert!(
+            named_later.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::ToolCallStart { id, name, .. } if id.is_empty() && name == "lookup"
+            )),
+            "{named_later:?}"
+        );
+
+        assert_stream_invalid(
+            Wire::Messages,
+            &frame(
+                Some("content_block_start"),
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"  ","name":"read_file","input":{}}}"#,
+            ),
+            &messages,
+            "tool_use id is empty",
+        );
+        assert_stream_invalid(
+            Wire::Responses,
+            &frame(
+                Some("response.output_item.added"),
+                r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":" ","name":"read_file","arguments":""}}"#,
+            ),
+            &responses,
+            "function_call call_id is empty",
+        );
+        assert_stream_invalid(
+            Wire::Converse,
+            &frame(
+                None,
+                r#"{"contentBlockStart":{"start":{"toolUse":{"toolUseId":"  ","name":"read_file"}}}}"#,
+            ),
+            &converse,
+            "toolUse toolUseId is empty",
+        );
+        assert_stream_invalid(
+            Wire::Gemini,
+            &frame(
+                None,
+                r#"{"candidates":[{"content":{"parts":[{"functionCall":{"id":"  ","name":"read_file","args":{}}}]}}]}"#,
+            ),
+            &gemini,
+            "functionCall id is empty",
+        );
+        let synthesized = decode_stream_events(
+            Wire::Gemini,
+            &frame(
+                None,
+                r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_file","args":{}}}]}}]}"#,
+            ),
+            &gemini,
+        )
+        .expect("omitted gemini id");
+        assert!(
+            synthesized.iter().any(|ev| matches!(
+                ev,
+                IrStreamEvent::ToolCallStart { id, .. } if id == "read_file#0"
+            )),
+            "{synthesized:?}"
+        );
+
+        assert_invalid(
+            decode_response(
+                Wire::ChatCompletions,
+                br#"{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"","type":"function","function":{"name":"read_file","arguments":"{}"}}]}}]}"#,
+                &chat,
+            )
+            .expect_err("chat complete"),
+            "tool call id is empty",
+        );
+        assert_invalid(
+            decode_response(
+                Wire::Messages,
+                br#"{"content":[{"type":"tool_use","id":"  ","name":"read_file","input":{}}]}"#,
+                &messages,
+            )
+            .expect_err("messages complete"),
+            "tool_use id is empty",
+        );
+        assert_invalid(
+            decode_response(
+                Wire::Responses,
+                br#"{"output":[{"type":"function_call","call_id":" ","name":"read_file","arguments":"{}"}]}"#,
+                &responses,
+            )
+            .expect_err("responses complete"),
+            "function_call call_id is empty",
+        );
+        assert_invalid(
+            decode_response(
+                Wire::Converse,
+                br#"{"output":{"message":{"content":[{"toolUse":{"toolUseId":"  ","name":"read_file","input":{}}}]}}}"#,
+                &converse,
+            )
+            .expect_err("converse complete"),
+            "toolUse toolUseId is empty",
+        );
+        assert_invalid(
+            decode_response(
+                Wire::Gemini,
+                br#"{"candidates":[{"content":{"parts":[{"functionCall":{"id":"","name":"read_file","args":{}}}]}}]}"#,
+                &gemini,
+            )
+            .expect_err("gemini complete"),
+            "functionCall id is empty",
+        );
+    }
+
+    #[test]
     fn chat_tool_stream_without_done_is_not_terminal() {
         let profile = profile();
         let frames = [frame(
@@ -1750,7 +1916,7 @@ base_url = "http://127.0.0.1"
             "thoughtSignature": "sig"
         });
         let mut seq = 0;
-        let events = gemini_part_events(&part, &mut seq);
+        let events = gemini_part_events(&part, &mut seq).expect("parts");
         assert!(
             events
                 .iter()

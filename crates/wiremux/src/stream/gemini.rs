@@ -94,7 +94,7 @@ pub(super) fn decode(value: &Value) -> Result<Option<IrStreamEvent>, MapError> {
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
                 return Ok(Some(IrStreamEvent::ToolCallStart {
-                    id: gemini_call_id(fc, &name, 0),
+                    id: gemini_call_id(fc, &name, 0)?,
                     name,
                     thought_signature,
                     index: 0,
@@ -242,12 +242,14 @@ pub(super) fn inline_data_event(part: &Value) -> Option<IrStreamEvent> {
     None
 }
 
-pub(crate) fn gemini_call_id(fc: &Value, name: &str, seq: usize) -> String {
-    fc.get("id")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{name}#{seq}"))
+pub(crate) fn gemini_call_id(fc: &Value, name: &str, seq: usize) -> Result<String, MapError> {
+    match fc.get("id") {
+        Some(Value::String(id)) if id.trim().is_empty() => {
+            Err(MapError::Invalid("functionCall id is empty".into()))
+        }
+        Some(Value::String(id)) => Ok(id.clone()),
+        _ => Ok(format!("{name}#{seq}")),
+    }
 }
 
 pub(super) fn map_finish(reason: &str, has_function_call: bool) -> String {
